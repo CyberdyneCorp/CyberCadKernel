@@ -2,11 +2,14 @@
 
 Verification levels used below: **host** = no-OCCT host build + CTest (6/6 pass);
 **ios-sim** = OCCT adapter compiles + archives + link-checks for
-`arm64-apple-ios-simulator` (`scripts/verify-ios-compile.sh`, 15 TUs). Items that
-need a running simulator/device or the app project are left `[ ]` with a note.
+`arm64-apple-ios-simulator` (`scripts/verify-ios-compile.sh`, 15 TUs) and
+device+sim `CyberCadKernel.xcframework` (`scripts/build-xcframework.sh`);
+**ios-run** = adapter runs in a booted simulator, 16/16 checks
+(`scripts/run-sim-harness.sh`). Items that need broader coverage, real hardware,
+or the app project are left `[ ]` with a note.
 
 ## 1. Library skeleton & build
-- [x] 1.1 CMake C++20 static library `CyberCadKernel`; targets arm64 iOS device + simulator. — builds on **host** (no-OCCT) and compiles/archives for **ios-sim**; the arm64-device slice uses the same toolchain path but is NOT built here (follow-up).
+- [x] 1.1 CMake C++20 static library `CyberCadKernel`; targets arm64 iOS device + simulator. — builds on **host** (no-OCCT); both the arm64 device and simulator slices compile + archive into `CyberCadKernel.xcframework` (`scripts/build-xcframework.sh`). Device slice is compile/link-verified, not run on hardware (follow-up).
 - [x] 1.2 Link the trimmed OCCT static libs (as the app builds today); OCCT headers private to adapter TUs only. — **ios-sim** link check links the TK* libs and produces an executable; only `src/engine/occt/*` include OCCT headers.
 - [x] 1.3 CI/build script parity with `cybercad/docs/occt-build.md`; document toolchain (Clang C++20, no modules). — `scripts/verify-ios-compile.sh` + `docs/build.md` (toolchain documented; no C++20 modules).
 
@@ -19,9 +22,9 @@ need a running simulator/device or the app project are left `[ ]` with a note.
 
 ## 3. engine-adapter
 - [x] 3.1 Internal C++20 engine interface grouped by capability (construct/boolean/fillet/tessellate/query/transform/exchange). — `src/engine/IEngine.h`; compiles in both builds.
-- [x] 3.2 OCCT adapter implementing the full set used by CyberCad (per `occt-usage`), with `IsDone`/`IsValid` validation. — `src/engine/occt/*` (~3.4k LOC) compiles + archives for **ios-sim**; runtime correctness is task 3.4.
-- [x] 3.3 Active-engine selection + registry; allow native + OCCT impls of a capability to coexist. — `engine_registry.cpp` (`active_engine`/`set_active_engine`); stub vs OCCT selected at build; compiles in both builds.
-- [ ] 3.4 Parity tests: each `cc_*` vs the current in-app bridge behaviour. — DEFERRED: OCCT-backed runtime parity needs the iOS simulator/app; not runnable in the host build (stub returns 0/nil).
+- [x] 3.2 OCCT adapter implementing the full set used by CyberCad (per `occt-usage`), with `IsDone`/`IsValid` validation. — `src/engine/occt/*` (~3.4k LOC) compiles + archives for **ios-sim**; core ops run correctly (**ios-run**, task 3.4).
+- [x] 3.3 Active-engine selection + registry; allow native + OCCT impls of a capability to coexist. — `engine_registry.cpp` (`active_engine`/`set_active_engine`); stub vs OCCT selected at build; compiles in both builds. (Registry + engine singletons intentionally leaked to avoid an OCCT static-teardown crash — see `docs/STATUS-phase-0-1.md`.)
+- [ ] 3.4 Parity tests: each `cc_*` vs the current in-app bridge behaviour. — PARTIAL (**ios-run**): `tests/sim/parity_bench.cpp` verifies core ops against analytic values on the simulator (box volume/area/bbox/edges, boolean fuse/cut/common 1875/875/125, fillet, STEP round-trip). Full coverage of all 57 `cc_*` and a direct diff vs the in-app `KernelBridge.mm` still pending.
 
 ## 4. operation-scheduler
 - [x] 4.1 `Task<T>` on C++20 coroutines; worker pool (`jthread`) off the UI thread. — coroutine `Task<T>` + `std::thread` pool (`scheduler.*`); `std::jthread` unavailable under Apple Clang libc++, so a plain pool is used. Covered by `test_scheduler` (**host**).

@@ -27,8 +27,9 @@ deferred to a simulator/app follow-up)*.
 - ◐ **Engine adapter** abstraction with an **OCCT adapter** as the first
   implementation — capability `engine-adapter`. Contract: the full `occt-usage`
   surface (construction, boolean, fillet, tessellate, query, transform,
-  exchange). *(interface + OCCT adapter implemented and compile-verified for
-  iOS-sim; per-`cc_*` runtime parity vs the app bridge NOT yet verified.)*
+  exchange). *(implemented; device+sim xcframework built; core ops run correctly
+  on the iOS simulator — 16/16 checks, exact boolean/STEP results. Full per-`cc_*`
+  parity vs the app bridge still pending.)*
 - ✅ **Operation scheduler**: coroutine-based, cancellable, progress-reporting
   execution off the UI thread — capability `operation-scheduler`. Addresses the
   non-cancellable `Build` (`occt-usage` §Performance & acceleration targets).
@@ -47,17 +48,19 @@ benchmark + runtime parity deferred to a simulator/device follow-up)* — capabi
 - ◐ Enable OCCT parallel booleans (`BOPAlgo_Options::SetRunParallel`) + tuned
   `SetFuzzyValue` behind `cc_boolean` — targets the fine-thread fuse/cut that
   pegs OCCT for minutes. Contract: `occt-usage` §Boolean operations, §Performance
-  (GitHub #286). *(implemented, compiles for iOS-sim; runtime unverified.)*
+  (GitHub #286). *(implemented; runs on the iOS simulator with correct results;
+  ≈5.9 ms/op on a box fuse. On-device + fine-thread benchmark pending.)*
 - ◐ Enable parallel meshing (`BRepMesh_IncrementalMesh` `isInParallel`) behind
   `cc_tessellate` / `cc_face_meshes`. Contract: `occt-usage` §Meshing.
-  *(implemented, compiles for iOS-sim; serial-vs-parallel output not yet
-  confirmed on a simulator.)*
+  *(implemented; runs on the simulator, output byte-identical across 16 runs.)*
 - ◐ Make long ops cancellable via the scheduler and gate fine-thread booleans
   until accelerated (fixes non-cancellable `Build`; `occt-usage` §Performance
   scenario). *(scheduler routing + fine-thread gate implemented; gate host-tested
   via `test_parallel_policy`.)*
-- ☐ Determinism audit: parallel results must be bit-reproducible before parallel
-  becomes the default. *(not started — needs simulator/device runtime.)*
+- ◐ Determinism audit: parallel results must be bit-reproducible before parallel
+  becomes the default. *(partial — parallel run-to-run reproducibility confirmed
+  on the simulator for box cases; serial-vs-parallel A/B needs an additive `cc_*`
+  toggle + more bodies.)*
 
 ## Phase 2 — GPU acceleration (Metal first)
 fp32-tolerant, data-parallel work through the compute backend. CPU stays the

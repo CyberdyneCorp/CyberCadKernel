@@ -30,10 +30,13 @@ using cyber::set_last_error;
 using cyber::ShapeRegistry;
 using cyber::ShapeResult;
 
-// Process-wide shape registry backing every CCShapeId.
+// Process-wide shape registry backing every CCShapeId. Intentionally leaked:
+// its destructor would free the stored TopoDS_Shapes during static destruction,
+// which races OCCT's own static teardown and crashes (SIGSEGV at process exit).
+// The library never "exits"; the OS reclaims the memory at process end.
 ShapeRegistry& registry() {
-    static ShapeRegistry reg;
-    return reg;
+    static ShapeRegistry* reg = new ShapeRegistry();
+    return *reg;
 }
 
 EngineShape resolve(CCShapeId id) {

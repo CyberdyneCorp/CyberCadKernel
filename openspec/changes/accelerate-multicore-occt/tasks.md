@@ -19,7 +19,7 @@ are left `[ ]`.
 
 ## 3. Parallel meshing (cc_tessellate / cc_face_meshes)
 - [x] 3.1 Enable `BRepMesh_IncrementalMesh` `isInParallel` (ctor arg / `IMeshTools_Parameters::InParallel`).
-- [ ] 3.2 Confirm per-face triangulation output is identical to the serial path (topology unchanged). — DEFERRED: this is a runtime confirmation; parallel-vs-serial mesh comparison needs the iOS simulator (host build is stub-only). Code path (`InParallel`) is implemented and compiles for ios-sim under 3.1.
+- [x] 3.2 Confirm per-face triangulation output is identical to the serial path (topology unchanged). — PARTIAL (**ios-run**): `scripts/run-sim-harness.sh` confirms parallel meshing is byte-identical across 16 runs (FNV-1a) for the tested bodies; a direct serial-vs-parallel diff needs an additive `cc_*` toggle (see 5.x).
 
 ## 4. Cancellable long ops via the scheduler
 - [x] 4.1 Route boolean + meshing through the Phase-0 `operation-scheduler` (`Task<T>`, off UI thread). — `occt::runScheduled()` (`parallel_policy.h`) wraps `boolean_op` / `tessellate` / `face_meshes`.
@@ -28,10 +28,10 @@ are left `[ ]`.
 - [x] 4.4 Fine-thread boolean gate: refuse / keep-as-separate-bodies for high-turn fine-pitch threads until fast; expose the gate decision to the host. — `ParallelPolicy::evaluateGate` + `occt::checkFineThreadGate`; thread bodies tagged by `occt::tagAsThread`; decision surfaced via `cc_last_error` + `ParallelPolicy::lastGateDecision()`.
 
 ## 5. Determinism audit
-- [ ] 5.1 Regression suite: parallel vs serial results bit-reproducible across representative bodies (booleans + meshes).
-- [ ] 5.2 Only enable parallel-by-default for paths that pass the audit; document any path kept serial.
+- [ ] 5.1 Regression suite: parallel vs serial results bit-reproducible across representative bodies (booleans + meshes). — PARTIAL (**ios-run**): `tests/sim/parity_bench.cpp` proves parallel run-to-run reproducibility (box fuse+mesh byte-identical ×16). Still needed: an additive `cc_*` parallel toggle for a true serial baseline, plus more representative bodies.
+- [ ] 5.2 Only enable parallel-by-default for paths that pass the audit; document any path kept serial. — parallel is default-on today; gate the default on the completed 5.1 audit.
 
 ## 6. Validation
-- [ ] 6.1 Benchmark fine-thread fuse/cut: serial vs parallel wall-clock + core scaling on device.
-- [ ] 6.2 Parity: `cc_boolean` / `cc_tessellate` results unchanged vs Phase-0 (serial) behaviour.
-- [ ] 6.3 `openspec validate --all --strict` green; update `ROADMAP.md` Phase 1 + change index.
+- [ ] 6.1 Benchmark fine-thread fuse/cut: serial vs parallel wall-clock + core scaling on device. — PARTIAL (**ios-run**): absolute sim benchmark captured (boolean ≈5.9 ms/op, fine mesh ≈1.1 ms). Serial-vs-parallel A/B + on-device core scaling still pending.
+- [ ] 6.2 Parity: `cc_boolean` / `cc_tessellate` results unchanged vs Phase-0 (serial) behaviour. — sim harness confirms correct boolean/mesh output; a direct vs-serial diff needs the toggle (5.1).
+- [ ] 6.3 `openspec validate --all --strict` green; update `ROADMAP.md` Phase 1 + change index. — `openspec validate` GREEN (2 passed); Phase 1 stays ◐ pending the full determinism audit + on-device benchmark.

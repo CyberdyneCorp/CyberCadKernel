@@ -18,13 +18,23 @@ Date: 2026-07-02 · Branch: `main`.
   gate green (`test_native_topology`, 13 cases, 0 failed) and native-vs-OCCT
   parity green on the booted iOS simulator (3 shapes × 5 checks = **15 passed,
   0 failed**, max accessor error **0.000e+00**).
-- **No regressions.** Host build + CTest **9/9** (8 existing + new
-  `test_native_topology`); `scripts/run-sim-suite.sh` stays **221 passed, 0
+- **Capability #3 `native-tessellation` — done at the Phase-4 verification bar.**
+  Deflection-driven native mesher (UV-grid face meshing + parameter-space hole
+  trimming + solid welding) consuming native-math surface eval and native-topology
+  faces. Host gate green (`test_native_tessellate`, 13 cases) and native-vs-OCCT
+  `BRepMesh` property-parity green on the booted iOS simulator (**All 20 checks PASS
+  across 4 shapes** — box / cylinder / sphere / filleted-box; **ALL four closed solids
+  watertight, `boundaryEdges==0`**; area/volume relMesh ≤ **6.0e-3**, relExact ≤
+  **1.24e-2**, bbox max corner delta ≤ **4.66e-2**, vertices-on-surface residual ≤
+  **5.7e-15**). The curved shared-edge seam (cylinder cap↔side, fillet blends) now
+  welds watertight via the two-stage shared-edge mesher.
+- **No regressions.** Host build + CTest **10/10** (9 existing + new
+  `test_native_tessellate`); `scripts/run-sim-suite.sh` stays **221 passed, 0
   failed**.
-- **Zero blast radius.** Native math lives entirely under `src/native/math/` and
-  native topology entirely under `src/native/topology/` (header-only). Neither is
-  reachable from the `cc_*` facade or the engine — no ABI change, no engine
-  wiring in either capability.
+- **Zero blast radius.** Native math lives under `src/native/math/`, native
+  topology under `src/native/topology/`, and native tessellation under
+  `src/native/tessellate/` (header-only). None is reachable from the `cc_*` facade
+  or the engine — no ABI change, no engine wiring in any of the three capabilities.
 
 ## Method recap — native rewrite (clean-room, OCCT as oracle)
 
@@ -176,23 +186,136 @@ Tests:
 - The parity **face-with-a-hole** fixture is deferred (no OCCT holed-face fixture
   in the importer path yet); inner-wire read-back is covered by a host test.
 
+## native-tessellation result table
+
+**Host invariant gate:** `test_native_tessellate` (compiled with Homebrew clang,
+`-std=c++20`, `CYBERCAD_HAS_OCCT=OFF`, `CYBERCAD_HAS_METAL=OFF`) reports all
+deflection-bound / on-surface / trimming / watertightness / area-volume
+convergence / determinism invariant tests green. It is one of **10/10** CTest
+targets green (with the 9 pre-existing: test_registry, test_guard, test_scheduler,
+test_compute_backend, test_parallel_policy, test_parallel_toggle, test_abi,
+test_native_math, test_native_topology). The test lives under `tests/native/`.
+
+**Native-vs-OCCT `BRepMesh` property-parity gate**
+(`tests/sim/native_tessellation_parity.mm`, booted iOS simulator, arm64): the
+same OCCT shape is meshed by the native mesher and by OCCT
+`BRepMesh_IncrementalMesh` at a matched deflection, then compared on
+watertightness / manifoldness, bbox, total surface area, and enclosed volume
+(triangle count/topology NOT compared — tessellation is an approximation). **All
+20 checks PASS across 4 shapes.** `[NTESS]` per-shape results:
+
+| Shape | Watertightness | tris | bbox maxCornerΔ (tol) | area native / occtMesh / exact · relMesh / relExact (tol) | volume native / occtMesh / exact · relMesh / relExact (tol) | vertices-on-surface maxDist (defl) |
+|---|---|---|---|---|---|---|
+| box | watertight, boundaryEdges=0 | 12 | 0.0000e+00 (2.0e-1) | relMesh 0.000e+00 / relExact 0.000e+00 (2.0e-2) | relMesh 0.000e+00 / relExact 0.000e+00 (2.0e-2) | 0.000e+00 |
+| cylinder | watertight, boundaryEdges=0 | 88 | 4.657e-02 | relMesh 2.826e-03 / relExact 5.838e-03 (2.0e-2) | relMesh 6.017e-03 / relExact 1.239e-02 (2.0e-2) | 0.000e+00 |
+| sphere | watertight, boundaryEdges=0 | 1680 | 2.950e-02 | relMesh 2.429e-03 / relExact 4.656e-03 (2.0e-2) | relMesh 5.212e-03 / relExact 9.290e-03 (2.0e-2) | 5.687e-15 |
+| filleted-box | watertight, boundaryEdges=0 | 332 | 4.440e-16 | relMesh 1.790e-03 / relExact 2.748e-03 (5.0e-2) | relMesh 2.004e-03 / relExact 3.012e-03 (5.0e-2) | 8.882e-16 |
+
+Watertightness: **ALL four closed solids now mesh watertight (`boundaryEdges=0`)** —
+box (12 tris), cylinder (88 tris), sphere (1680 tris), filleted-box (332 tris), each
+2-manifold with **0 open/boundary edges**. The curved shared-edge stitch is
+implemented — the mesher is a two-stage pipeline (STAGE 1 `edge_mesher.h` discretizes
+each unique topological edge ONCE into a shared deflection-based 1D fraction list,
+cached by the edge's `TShape` node; STAGE 2 `face_mesher.h` pins BOTH adjacent faces'
+boundary vertices to those SAME fractions mapped through each face's pcurve, so
+`S_face(pcurve(f)) == C_edge(f)`), exactly as OCCT `BRepMesh` builds its edge
+discretization before meshing faces, so a cylinder's circular cap↔side seam (formerly
+`boundaryFrac~0.119`, 2-manifold-bounded-open) and a fillet's blend seams now weld
+closed. Gate-2 now REQUIRES `isWatertight()` for every closed solid — there is no
+longer a weaker `manifold-bounded-open` pass. The host Gate-1 regressions
+(`cylinder_solid_watertight_curved_seam`, `cylinder_solid_watertight_converges`)
+confirm the cylinder solid is watertight (`boundaryEdges==0`) at every deflection with
+area/volume converging to the closed form. Vertices-on-surface deflection residuals
+are at machine epsilon (≤ 5.7e-15) — every emitted vertex is produced by `native-math`
+`value(u,v)`, on the surface by construction.
+
+**Spec conformance:** the `native-tessellation` spec's watertight requirement
+("Mesh a whole Solid by stitching shared edges into a watertight mesh" — *"For a
+closed solid the resulting mesh SHALL be watertight: every mesh edge SHALL be shared
+by exactly two triangles… no naked/boundary edges"*) is now **genuinely met for every
+closed solid**, including CURVED shared edges. Previously only planar-aligned (box)
+and seam/pole (sphere) edges welded and the requirement was met with a documented
+carve-out for curved seams; that carve-out is gone. The host regression hard-requires
+`isWatertight()` + `boundaryEdgeCount()==0` for closed solids — there is no weaker
+bounded-open acceptance path.
+
+### Files
+
+Native library (OCCT-free, header-only, `src/native/tessellate/`):
+
+- `mesh.h` — `TriMesh`/`FaceMesh`/`SolidMesh` representation (fp64 vertex buffer
+  with position + optional normal + per-vertex `(u,v)`, `uint32` CCW triangle
+  index buffer, per-triangle face-id tag) + mesh-derived area/volume.
+- `surface_eval.h` — deflection-driven UV-grid step selection over `native-math`
+  `value`/`normal`/derivatives.
+- `edge_mesher.h` — **STAGE 1**: `EdgeCache` — shared per-edge 1D discretization.
+  Each unique topological edge is discretized ONCE into a deflection-based fraction
+  list (3D-curvature sized), cached by edge `TShape` identity; both adjacent faces
+  reuse it. This is the seam that makes CURVED shared edges weld watertight.
+- `trim.h` — parameter-space wire flattening (pcurves → UV polygons) + even-odd
+  point-in-polygon keep test (outer ∧ ¬holes); `appendEdgeSamplesAtFracs` samples
+  an edge's pcurve at the shared STAGE-1 fractions.
+- `uv_triangulate.h` — robust ear-clipping triangulation of a UV polygon (with
+  bridged holes) for genuinely-trimmed faces (degeneracy-free; no incircle predicate).
+- `face_mesher.h` — **STAGE 2**: boundary pinned to the shared edge discretization;
+  structured-grid path for full-parametric-rectangle faces (boundary rows = shared
+  samples) and ear-clip path for trimmed faces; produces a `FaceMesh`.
+- `solid_mesher.h` — per-face meshing via `Explorer` sharing ONE `EdgeCache` +
+  spatial-hash vertex weld (`VertexWelder`, weld tol = ½·deflection) into a
+  `SolidMesh`.
+- `gpu_sample.h` — optional `#ifdef CYBERCAD_HAS_METAL` fp32 UV-grid fill for
+  GPU-eligible faces (display-only; correctness stays on the fp64 CPU path).
+- `native_tessellate.h` — umbrella header.
+
+Tests:
+
+- `tests/native/test_native_tessellate.cpp` — host invariant gate (no OCCT).
+- `tests/native/checks_tessellate.cpp` — shared property-check helpers.
+- `tests/sim/native_tessellation_parity.mm` — simulator native-vs-OCCT `BRepMesh`
+  property-parity gate (own runner; explicitly SKIPped by `run-sim-suite.sh`).
+- `tests/sim/native_tessellate_parity.mm` — companion sim parity source (own
+  `main()`; SKIPped by `run-sim-suite.sh`).
+
+### Resolved in this iteration
+
+- **Curved shared-edge stitch** — RESOLVED. The two-stage mesher (STAGE 1
+  `edge_mesher.h` shared per-edge 1D discretization, STAGE 2 `face_mesher.h` pins both
+  adjacent faces' boundaries to it) places coincident vertices on CURVED shared edges
+  (cylinder cap↔side circle, fillet blend seams), so those solids now weld fully
+  watertight (`boundaryEdges==0`). Was: 2-manifold-bounded-open.
+
+### Deferred (recorded, not blocking the bar — none affect watertightness)
+
+- **Ear-clip constrained re-triangulation** of boundary-straddling trim cells —
+  currently kept/dropped by centroid, so the hole silhouette is resolved to the
+  grid step (verified within a few-percent area bound) rather than clipped exactly.
+- **GPU fp32 sampling backend** — compiled behind `CYBERCAD_HAS_METAL` but
+  correctness only CPU-verified in this environment (host gate runs `METAL=OFF`);
+  the GPU path is display-only by design.
+- **Adaptive refinement quality / seam / degenerate faces** — grid density is
+  deflection-driven per direction; adaptive per-cell subdivision and explicit
+  degenerate/seam-face hardening are follow-ups.
+
 ## Regression evidence
 
 - Host build + CTest with Homebrew clang, `-DCYBERCAD_HAS_OCCT=OFF
   -DCYBERCAD_HAS_METAL=OFF`, fresh build dir: configure OK, build OK (no
-  warnings/errors), **CTest 9/9 passed, 0 failed** (8 existing +
-  `test_native_topology`; the topology test itself reports "13 cases, 0 failed").
+  warnings/errors), **CTest 10/10 passed, 0 failed** (9 existing +
+  `test_native_tessellate`).
 - `scripts/run-sim-suite.sh` (iphonesimulator arm64): still
-  **== 221 passed, 0 failed ==**. Both `.mm` parity tests
-  (`native_math_parity.mm`, `native_topology_parity.mm`) are in the script's SKIP
-  list and have their own runners, so the OCCT-only 221-assertion suite is
-  unchanged.
-- Isolation: native math (`src/native/math/`) and native topology
-  (`src/native/topology/`) are not referenced from `src/facade/cc_kernel.cpp` or
-  `src/engine/*`. Native topology is **header-only** (no `.cpp`), so the
-  `src/*.cpp` library GLOB picks up no new sources and `libcybercadkernel` is
-  byte-for-byte unchanged in content; native math `.cpp` files compile into the
-  library but are dead code for every `cc_*` path.
+  **== 221 passed, 0 failed ==** (8 sources compiled/linked, ran on a booted
+  device). The `.mm` parity tests (`native_math_parity.mm`,
+  `native_topology_parity.mm`, and the new `native_tessellate_parity.mm` /
+  `native_tessellation_parity.mm`) are in the script's SKIP list and carry their
+  own `main()`, so the OCCT-only 221-assertion suite count is unchanged.
+- Isolation: native math (`src/native/math/`), native topology
+  (`src/native/topology/`), and native tessellation (`src/native/tessellate/`) are
+  not referenced from `src/facade/cc_kernel.cpp` or `src/engine/*`. Native
+  tessellation is **header-only** (no `.cpp`), so the `src/*.cpp` library GLOB
+  picks up no new sources and cannot affect existing TUs — it enters the build only
+  via the new `test_native_tessellate` executable. Native topology is likewise
+  header-only; native math `.cpp` files compile into the library but are dead code
+  for every `cc_*` path.
 
 ## Per-capability status
 
@@ -200,6 +323,7 @@ Tests:
 |---|---|---|---|
 | 1 | `native-math` | **done at the bar** | Both gates green (55 host asserts + 24 parity groups, max err 1.486e-13); no regressions; not yet engine-wired (by design). |
 | 2 | `native-topology` | **done at the bar** | Both gates green (13 host cases + 3 shapes × 5 parity checks = 15/15, max accessor err 0.000e+00); no regressions (host CTest 9/9, `run-sim-suite.sh` 221/221); header-only, not engine-wired (by design). Deferred: non-manifold/degenerate + seam edges, `CompSolid`/`Internal`/`External`, holed-face parity fixture. |
-| 3 | `native-tessellation` | ☐ planned | Consumes native-math surface eval + native-topology faces; reuses Phase-2 GPU surface eval. Next up. |
-| 4–7 | construction → booleans → blends → exchange | ☐ planned | Proposed as each begins. |
+| 3 | `native-tessellation` | **done at the bar** | Both gates green (host `test_native_tessellate` + sim native-vs-OCCT `BRepMesh` parity, All 20 checks PASS across 4 shapes; ALL four closed solids watertight `boundaryEdges==0`; area/volume relMesh ≤ 6.0e-3, relExact ≤ 1.24e-2, bbox maxCornerΔ ≤ 4.66e-2, on-surface residual ≤ 5.7e-15); no regressions (host CTest 10/10, `run-sim-suite.sh` 221/221); header-only `src/native/tessellate/`, not engine-wired by design. RESOLVED: curved shared-edge stitch (two-stage shared per-edge discretization) — cylinder/filleted-box now watertight. Deferred (genuinely minor, not watertightness): ear-clip trim re-triangulation quality, adaptive per-cell refinement, GPU fp32 path CPU-verified only. |
+| 4 | `native-construction` | ☐ planned | Next up — primitive + swept-solid construction building native topology + geometry; first capability likely engine-wired for a `cc_*` comparison. |
+| 5–7 | booleans → blends → exchange | ☐ planned | Proposed as each begins. |
 | 8 | `drop-occt` | ☐ planned | Unlink OCCT once every capability is native. |

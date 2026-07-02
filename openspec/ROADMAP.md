@@ -204,8 +204,24 @@ the numeric oracle; native code is host-buildable (OCCT-free).
   `src/native/topology/`, not engine-wired by design. Deferred: non-manifold /
   degenerate + seam edges, `CompSolid`/`Internal`/`External`, holed-face parity
   fixture. Detail: `docs/STATUS-phase-4.md`.)*
-- ☐ Tessellation / meshing (native, GPU-backed via Phase 2). Change
-  **`add-native-tessellation`** — capability `native-tessellation`.
+- ✅ Tessellation / meshing (native, GPU-backed via Phase 2). Change
+  **`add-native-tessellation`** — capability `native-tessellation`. Contract:
+  `occt-usage` §Meshing (`BRepMesh`). *(done at the verification bar — third native
+  capability. Host invariant tests (`test_native_tessellate`, no OCCT — deflection
+  bound / on-surface / trimming / watertightness / area-volume convergence /
+  determinism) + native-vs-OCCT `BRepMesh` property-parity on iOS sim (4 shapes —
+  box / cylinder / sphere / filleted-box — All 20 checks PASS; ALL four closed solids
+  watertight `boundaryEdges==0`; area/volume relMesh ≤ 6.0e-3, relExact ≤ 1.24e-2,
+  bbox max corner delta ≤ 4.66e-2, on-surface residual ≤ 5.7e-15; triangle
+  count/topology NOT compared). No regressions (host CTest 10/10, `test_native_tessellate`
+  13 cases, `run-sim-suite.sh` 221/221). Header-only `src/native/tessellate/`, not
+  engine-wired by design. RESOLVED: curved shared-edge stitch — two-stage mesher
+  (shared per-edge 1D discretization, STAGE 1 `edge_mesher.h`, consumed by both
+  faces in STAGE 2, as OCCT `BRepMesh` does), so ALL closed solids
+  (box/cylinder/sphere/filleted-box) mesh WATERTIGHT (`boundaryEdges==0`, now
+  required — no weaker bounded-open pass). Deferred (not watertightness): GPU fp32
+  path CPU-verified only, ear-clip trim quality, adaptive refinement. Detail:
+  `docs/STATUS-phase-4.md`.)*
 - ☐ Primitive & swept-solid construction (extrude/revolve/loft/sweep). Change
   **`add-native-swept-solids`** — capability `native-construction`. Contract:
   `occt-usage` §Primitive & swept-solid, §B-rep construction, §Offsets/sweeps.
@@ -266,7 +282,7 @@ checkboxes as changes land; flip to ✅ when a change is validated and archived.
 | 3 | `add-reference-geometry` | reference-geometry | ✅ complete at acceptance bar (iOS-sim: 21/21 — datum planes/axes within 1e-9, 6/6 faces + 12/12 edges + cyl axis, degenerate guards hold); host stub returns 0 for derived; on-device = optional deferred |
 | 4 | `add-native-math-geometry` | native-math | ✅ done at verification bar (host analytic tests 55 asserts no-OCCT + iOS-sim native-vs-OCCT parity 24 groups/0 failed, overall max err 1.486e-13; host CTest 8/8, `run-sim-suite.sh` 221/221; OCCT-free math foundation, not engine-wired by design); archived to `openspec/specs/native-math` |
 | 4 | `add-native-brep-topology` | native-topology | ✅ done at verification bar (host invariant tests `test_native_topology` 13 cases no-OCCT + iOS-sim native-vs-OCCT parity 3 shapes × 5 checks = 15/15, accessor max err 0.000e+00; host CTest 9/9, `run-sim-suite.sh` 221/221; header-only, not engine-wired by design; deferred: non-manifold/degenerate+seam edges, `CompSolid`/`Internal`/`External`, holed-face fixture); archived to `openspec/specs/native-topology` |
-| 4 | `add-native-tessellation` | native-tessellation | ☐ planned |
+| 4 | `add-native-tessellation` | native-tessellation | ✅ done at verification bar (host invariant tests `test_native_tessellate` no-OCCT + iOS-sim native-vs-OCCT `BRepMesh` property-parity 4 shapes All 20 checks PASS — ALL four closed solids watertight `boundaryEdges==0`; area/volume relMesh ≤ 6.0e-3, relExact ≤ 1.24e-2, bbox maxCornerΔ ≤ 4.66e-2, on-surface residual ≤ 5.7e-15; host CTest 10/10, `run-sim-suite.sh` 221/221; header-only, not engine-wired by design; RESOLVED curved shared-edge stitch (two-stage shared per-edge discretization); deferred (not watertightness): ear-clip trim re-triangulation quality, adaptive refinement, GPU fp32 CPU-verified only); archived to `openspec/specs/native-tessellation` |
 | 4 | `add-native-swept-solids` | native-construction | ☐ planned |
 | 4 | `add-native-booleans` | native-booleans | ☐ planned |
 | 4 | `add-native-fillets-offsets` | native-blends | ☐ planned |

@@ -101,9 +101,35 @@ longest; a native exchange is lower priority than the modelling core.
   `Internal`/`External`, holed-face parity fixture. See
   [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md); living spec archived to
   `openspec/specs/native-topology`.
-- ☐ #3–#8 — planned; proposed (`/opsx:propose`) as each is about to start. Next:
-  **#3 `native-tessellation`** (consumes native-math surface eval + native-topology
-  faces; reuses the Phase-2 GPU surface eval).
+- ✅ **#3 `native-tessellation`** — done at the verification bar (third
+  capability). Both gates green: host invariant unit tests
+  (`test_native_tessellate`, no OCCT — deflection-bound, on-surface, trimming,
+  watertightness, area/volume convergence, determinism) + native-vs-OCCT
+  `BRepMesh` property-parity on the iOS sim (4 shapes — box / cylinder / sphere /
+  filleted-box — **All 20 checks PASS**; **ALL four closed solids watertight
+  `boundaryEdges==0`**; area/volume relMesh ≤ **6.0e-3**, relExact ≤ **1.24e-2**,
+  bbox max corner delta ≤ **4.66e-2**, on-surface residual ≤ **5.7e-15**; triangle
+  count/topology NOT compared — tessellation is an approximation). No regressions
+  (host CTest 10/10, `test_native_tessellate` 13 cases, `run-sim-suite.sh` 221/221).
+  Header-only under `src/native/tessellate/` (`mesh.h`, `surface_eval.h`,
+  `edge_mesher.h`, `trim.h`, `uv_triangulate.h`, `face_mesher.h`,
+  `solid_mesher.h`, `gpu_sample.h`, `native_tessellate.h`); not engine-wired — by
+  design. RESOLVED: the curved shared-edge stitch — the mesher is now a two-stage
+  pipeline (STAGE 1 `edge_mesher.h` discretizes each unique edge ONCE into a shared
+  deflection-based 1D fraction list; STAGE 2 `face_mesher.h` pins both adjacent
+  faces' boundaries to that shared discretization, structured-grid for full
+  parametric-rectangle faces and ear-clip (`uv_triangulate.h`) for trimmed faces),
+  so CURVED shared edges (cylinder cap↔side circle, fillet blend seams) weld
+  WATERTIGHT — every closed solid (box/cylinder/sphere/filleted-box) is now
+  required to mesh `boundaryEdges==0`; the weaker "bounded-open" pass is gone.
+  Deferred: GPU fp32 sampling path (compiled behind `CYBERCAD_HAS_METAL`,
+  CPU-verified only in this environment). See
+  [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md); living spec archived to
+  `openspec/specs/native-tessellation`.
+- ☐ #4–#8 — planned; proposed (`/opsx:propose`) as each is about to start. Next:
+  **#4 `native-construction`** (primitive + swept-solid construction —
+  extrude/revolve/loft/sweep — building native topology + geometry; the first
+  capability that will likely be engine-wired for a `cc_*` comparison).
 
 Progress is reflected in [ROADMAP.md](ROADMAP.md) Phase 4 and per-change
 `tasks.md`; living specs are synced/archived per capability as they pass the

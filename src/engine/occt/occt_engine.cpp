@@ -226,6 +226,17 @@ bool OcctEngine::available() const {
     return true;  // cc_brep_available() -> 1 when the OCCT adapter is active.
 }
 
+// ── Parallel control ──────────────────────────────────────────────────────────
+// Route the facade toggle to the process-wide ParallelPolicy the boolean/mesh
+// paths consult (occt::ParallelPolicy::parallelFor / applyOcctWorkerCap).
+void OcctEngine::set_parallel(bool enabled) {
+    occt::ParallelPolicy::instance().setEnabled(enabled);
+}
+
+bool OcctEngine::parallel_enabled() const {
+    return occt::ParallelPolicy::instance().enabled();
+}
+
 // ── Engine registration / selection ───────────────────────────────────────────
 // Defined here (not in the stub) so that whenever the OCCT adapter TUs are linked
 // (CYBERCAD_HAS_OCCT=ON), OcctEngine is the build's default/active engine. The

@@ -166,6 +166,12 @@ public:
     std::string name() const override;
     bool available() const override;
 
+    // ── parallel control ──────────────────────────────────────────────────────
+    // Drive cc_set_parallel / cc_parallel_enabled through occt::ParallelPolicy's
+    // process-wide toggle (setEnabled/enabled), which the boolean/mesh paths read.
+    void set_parallel(bool enabled) override;
+    bool parallel_enabled() const override;
+
     // ── construct (occt_construct.cpp) ────────────────────────────────────────
     Result<MeshData> extrude_mesh(const double* profileXY, int pointCount, double depth) override;
     ShapeResult solid_extrude(const double* profileXY, int pointCount, double depth) override;

@@ -76,6 +76,15 @@ public:
     virtual std::string name() const = 0;
     virtual bool available() const = 0;  // maps to cc_brep_available()
 
+    // ── parallel control (ADDITIVE) ─────────────────────────────────────────────
+    // Toggle multi-core execution of boolean/mesh so the facade's cc_set_parallel
+    // / cc_parallel_enabled can drive a serial-vs-parallel A/B (Phase 1 audit).
+    // Default no-op: the stub (and any engine without a parallel path) inherits a
+    // disabled toggle; the OCCT adapter overrides both to route through
+    // occt::ParallelPolicy.
+    virtual void set_parallel(bool /*enabled*/) {}
+    virtual bool parallel_enabled() const { return false; }
+
     // ── construct ─────────────────────────────────────────────────────────────
     virtual Result<MeshData> extrude_mesh(const double* profileXY, int pointCount, double depth) {
         (void)profileXY; (void)pointCount; (void)depth;

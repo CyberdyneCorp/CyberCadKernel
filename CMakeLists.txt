@@ -62,6 +62,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_scheduler
         test_compute_backend
         test_parallel_policy
+        test_parallel_toggle
         test_abi)
 
     foreach(test ${CYBERCAD_TESTS})

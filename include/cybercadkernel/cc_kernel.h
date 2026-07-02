@@ -94,6 +94,15 @@ void cc_mesh_free(CCMesh mesh);
 int cc_brep_available(void);                                   /* 1 when a B-rep engine is linked */
 const char *cc_last_error(void);                               /* last failure message (this thread), else "" */
 
+/* ── Parallel control ────────────────────────────────────────────────────── */
+
+/* ADDITIVE (not part of the mirrored KernelBridgeAPI.h ABI): toggle multi-core
+ * execution of boolean/mesh operations so a serial-vs-parallel A/B is possible
+ * (Phase 1 determinism audit). Default ON. In a build with no B-rep engine
+ * (host stub) this is a no-op and cc_parallel_enabled() reports 0. */
+void cc_set_parallel(int enabled);   /* toggle multi-core execution of boolean/mesh; default on */
+int  cc_parallel_enabled(void);      /* 1 if parallel is currently enabled */
+
 /* ── Construction ────────────────────────────────────────────────────────── */
 
 CCShapeId cc_solid_extrude(const double *profileXY, int pointCount, double depth);

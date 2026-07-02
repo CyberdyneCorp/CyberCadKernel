@@ -189,6 +189,16 @@ const char* cc_last_error(void) {
     return cyber::last_error_cstr();
 }
 
+// ── parallel control ──────────────────────────────────────────────────────────
+
+void cc_set_parallel(int enabled) {
+    cyber::guard_void([&]() { active_engine()->set_parallel(enabled != 0); });
+}
+
+int cc_parallel_enabled(void) {
+    return cyber::guard([]() -> int { return active_engine()->parallel_enabled() ? 1 : 0; }, 0);
+}
+
 // ── construction ──────────────────────────────────────────────────────────────
 
 CCShapeId cc_solid_extrude(const double* profileXY, int pointCount, double depth) {

@@ -14,6 +14,12 @@ Phase 0 and Phase 1 are scaffolded so far.
 
 Legend: ☐ not started · ◐ in progress · ✅ done.
 
+> **Acceptance bar (decided 2026-07-01):** the in-repo **simulator** integrated
+> suite (`scripts/run-sim-suite.sh` — all 57 `cc_*` + determinism + benchmark,
+> 221/221) is the acceptance bar for Phase 0/1. The **app link-swap** and
+> **on-device** benchmark are **optional, deferred by decision** (they would
+> touch the CyberCad app / need physical hardware) — not correctness gates.
+
 ## Phase 0 — Foundation (facade + wrapping OCCT)
 Stand up the library and move CyberCad's OCCT bridge into it, unchanged in
 behaviour. Establishes the seams everything else plugs into.
@@ -136,8 +142,8 @@ checkboxes as changes land; flip to ✅ when a change is validated and archived.
 
 | Phase | Change | Capability(ies) | Status |
 |---|---|---|---|
-| 0 | `add-kernel-foundation` | kernel-facade, engine-adapter, operation-scheduler, compute-backend | ◐ in progress (implemented; host tests pass; all 57 `cc_*` runtime-verified on iOS-sim (221/221); only app link-swap deferred) |
-| 1 | `accelerate-multicore-occt` | parallel-acceleration | ◐ in progress (parallel paths run on iOS-sim; determinism audit + serial-vs-parallel benchmark complete; only on-device core scaling deferred) |
+| 0 | `add-kernel-foundation` | kernel-facade, engine-adapter, operation-scheduler, compute-backend | ✅ complete at acceptance bar (host tests + all 57 `cc_*` on iOS-sim, 221/221); app link-swap = optional deferred |
+| 1 | `accelerate-multicore-occt` | parallel-acceleration | ✅ complete at acceptance bar (parallel paths on iOS-sim; determinism audit + serial-vs-parallel benchmark done); on-device scaling = optional deferred |
 | 2 | `add-metal-compute-backend` | metal-backend | ☐ planned |
 | 2 | `add-gpu-tessellation` | gpu-tessellation | ☐ planned |
 | 2 | `add-gpu-spatial-acceleration` | spatial-acceleration | ☐ planned |

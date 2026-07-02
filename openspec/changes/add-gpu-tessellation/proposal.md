@@ -19,34 +19,56 @@ result is a mesh identical (within fp32 tolerance) to the CPU-only path.
 - Add **GPU surface-grid evaluation**: for a NURBS/Bezier surface and a
   parameter grid `(u_i, v_j)`, evaluate positions and surface normals in parallel
   on the compute backend (fp32), returning grids of points and normals.
-- Feed those grids to a **CPU triangulator**: the CPU owns trimming, grid->triangle
-  connectivity, and stitching. **Topology stays on the CPU**; the GPU contributes
-  only the numeric sample fields.
+- **Wire the existing `gpu_surface_eval` module into `cc_tessellate` /
+  `cc_face_meshes`** behind a new, additive, default-OFF toggle
+  (`cc_set_gpu_tessellation` / `cc_gpu_tessellation_enabled`). When ON, each face
+  is classified for GPU-eligibility and, if eligible, tessellated from the GPU
+  grid; **every other face falls back to OCCT `BRepMesh_IncrementalMesh`**.
+- **Per-face GPU-eligibility with mandatory OCCT fallback**: a face is eligible
+  ONLY when it is an untrimmed rectangular patch — single outer wire, no holes, 2D
+  boundary equal to the `BRepTools::UVBounds` rectangle within tolerance — AND its
+  surface converts to a `cyber::metal::SurfaceDef` (via `Geom_BSplineSurface` /
+  `BRepBuilderAPI_NurbsConvert` / Bézier decomposition, degree within
+  `kMaxSurfaceDegree`). Holed, trimmed, unsupported, or unrepresentable-rational
+  faces fall back to OCCT. When in doubt, fall back.
+- **Stitch GPU-path and OCCT-fallback faces into one `CCMesh`**, welding
+  coincident boundary vertices within tolerance for watertightness (documented if
+  not welded), preserving the existing face-id tagging and traversal order.
 - Add **GPU per-vertex mesh normals**: a mesh post-processing pass that computes
   smooth per-vertex normals (area/angle-weighted face-normal accumulation) on the
   GPU for an existing vertex/index mesh.
-- Route both through the Phase-0 compute-backend (`SurfaceEval`,
-  `MeshPostProcess` work kinds) so they run on Metal when available and on the CPU
-  otherwise, with **identical-within-fp32-tolerance** results either way.
+- Route through the Phase-0 compute-backend (`SurfaceEval`, `MeshPostProcess` work
+  kinds) so it runs on Metal when available and on the CPU reference otherwise,
+  with **identical-within-fp32-tolerance** results either way.
 - Provide a **CPU reference** implementation for every GPU kernel so an
-  on-simulator GPU-vs-CPU parity test can assert the match.
+  on-simulator GPU-vs-CPU (and GPU-path-vs-OCCT-path) parity test can assert the
+  match.
 
-No `cc_*` signature change: `cc_tessellate` / `cc_face_meshes` gain a GPU
-evaluation path internally; the mesh they return is unchanged within tolerance.
+C ABI change is **ADDITIVE only**: two new entry points
+(`cc_set_gpu_tessellation(int)` + `cc_gpu_tessellation_enabled(void)`). The
+`cc_tessellate` / `cc_face_meshes` signatures are unchanged. GPU tessellation
+defaults OFF, so with it off `cc_tessellate` behaves EXACTLY as today. The GPU
+path is guarded by `#ifdef CYBERCAD_HAS_METAL` so the non-Metal OCCT build still
+compiles; GPU eval is fp32 (display mesh only) and the exact fp64 modeling core is
+untouched.
 
 ## Capabilities
 
 ### New Capabilities
 - `gpu-tessellation`: GPU-accelerated parametric surface-grid evaluation (points
-  + normals) feeding a CPU triangulator that owns topology, plus a GPU per-vertex
-  mesh-normal post-processing pass, with results matching a CPU reference within a
-  documented fp32 tolerance. Depends on `metal-backend` (the GPU dispatch path)
-  and `compute-backend` (interface + precision guard); consumes the CPU
-  triangulation/topology already behind `engine-adapter`.
+  + normals) wired into `cc_tessellate` / `cc_face_meshes` behind a default-OFF
+  toggle, with per-face GPU-eligibility classification and mandatory OCCT
+  `BRepMesh` fallback, plus a GPU per-vertex mesh-normal post-processing pass, with
+  results matching a CPU/OCCT reference within a documented fp32 tolerance. Depends
+  on `metal-backend` (the GPU dispatch path) and `compute-backend` (interface +
+  precision guard); consumes the OCCT triangulation/topology already behind
+  `engine-adapter`.
 
 ### Modified Capabilities
-<!-- none — gpu-tessellation is additive; the CPU triangulation path and the
-     cc_* meshing signatures are unchanged. -->
+<!-- none — gpu-tessellation is additive: the only ABI change is the two new
+     cc_set_gpu_tessellation / cc_gpu_tessellation_enabled entry points; the
+     cc_tessellate / cc_face_meshes signatures and the OCCT-only mesh (toggle OFF)
+     are unchanged. -->
 
 ## Impact
 

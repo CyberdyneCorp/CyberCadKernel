@@ -19,13 +19,19 @@ Date: 2026-07-02 · Branch: `main`.
   batched ray-picking, and GPU per-vertex mesh normals — each within an fp32
   tolerance against an independent CPU reference. The host (no-Metal) CTest stays
   green (`CYBERCAD_HAS_METAL=OFF`), so the CPU-only path is unaffected.
-- **NOT verified / not built here:** the **CPU triangulator** that turns
-  GPU-evaluated grids into a stitched/trimmed mesh (so no "GPU-fed mesh vs
-  CPU-only mesh" check exists); the **frustum-pick** parity leg (kernels + CPU
-  reference are coded but not asserted in the sim suite); **`cc_tessellate` /
-  `cc_face_meshes` integration** of the GPU eval path (modules are standalone,
-  not wired into the OCCT facade); explicit **repeat-run determinism** assertions;
-  and any **on-device** run.
+- **NEW — VERIFIED here (iOS simulator):** the GPU eval path is now wired into
+  **`cc_tessellate` / `cc_face_meshes`** behind the `cc_set_gpu_tessellation`
+  toggle, with per-face eligibility routing (planar/untrimmed → GPU grid
+  triangulator; holed/curved → OCCT fallback). The integration parity suite
+  (`scripts/run-sim-integ-suite.sh`) is **26 / 26** PASS, comparing the GPU-fed
+  mesh against the OCCT-only mesh (bbox + area + volume + watertightness) on an
+  all-GPU box and a mixed GPU+OCCT slab. The GPU-OFF sim suite stays **221 / 221**.
+  See "GPU tessellation integration" below.
+- **NOT verified / not built here:** the **frustum-pick** parity leg (kernels + CPU
+  reference are coded but not asserted in the sim suite); explicit **repeat-run
+  determinism** assertions; and any **on-device** run. Holed / trimmed / curved
+  faces **always fall back to OCCT by design** (not a gap — the GPU grid
+  triangulator only handles single-outer-wire, UV-rectangular, low-degree faces).
 
 ## What was implemented
 
@@ -109,6 +115,51 @@ round-trip, runtime MSL compile + pipeline cache, dispatch, and fp32 saxpy parit
 The host regression (`CYBERCAD_HAS_METAL=OFF` CTest) stays **PASS**, confirming
 the CPU-only path is untouched by the Metal target.
 
+## GPU tessellation integration
+
+The GPU surface-eval path is now stitched into the OCCT facade
+(`cc_tessellate` / `cc_face_meshes`) behind the `cc_set_gpu_tessellation` toggle
+(default OFF). Topology stays on the CPU; only per-face surface sampling is
+GPU-eligible.
+
+**Eligibility rule (per face).** A face routes to the GPU grid triangulator iff
+it has a single outer wire, **no inner wires (no holes)**, its 2D boundary equals
+the `BRepTools::UVBounds` rectangle within tolerance, and its surface converts to
+a low-degree `SurfaceDef` (`degree <= kMaxSurfaceDegree`). Every other face —
+holed, trimmed to a non-rectangular UV region, or high-degree/curved beyond the
+converter — falls back to OCCT `BRepMesh_IncrementalMesh`. Ambiguous cases and any
+`Standard_Failure` also fall back. Eligible faces are triangulated on a regular
+`(u,v)` grid on the CPU, matching OCCT winding (`+u×+v`, flipped for a REVERSED
+face), then stitched with the OCCT-fallback faces in the existing face-traversal
+order — one `cc_face_meshes` slot per face id.
+
+**Verified on the iOS simulator** (`scripts/run-sim-integ-suite.sh`,
+`brep_available=1`, kernel built from source with OCCT + Metal), **26 / 26** PASS:
+
+| Fixture | Routing (GPU / fallback) | GPU mesh | GPU-vs-OCCT parity | Watertight |
+|---|---|---|---|---|
+| Box 10×10×10 (all 6 faces planar/untrimmed) | **6 / 0** (all GPU) | v=600 t=972 | bbox match · area 600.000004 vs 600.000000 · enclosed vol 1000.000069 | yes (both paths) |
+| Slab 20×20×10 w/ round hole (mixed) | **4 / 3** of 7 (4 planar walls GPU; 3 holed/curved → OCCT) | v=674 t=1048 | bbox match · area 1732.037370 vs 1732.037356 · vol 3720.000797 vs 3720.000673 | yes (both paths) |
+
+The box exercises the all-GPU path; the slab proves the mixed router (`fallback>0`,
+`gpu<total`) and that a GPU+OCCT stitched mesh is still watertight and matches the
+OCCT-only mesh within fp32 tolerance.
+
+**GPU-OFF parity is byte-identical.** With `gpuOn=false` (default) and no
+`CYBERCAD_HAS_METAL`, `appendFaceMesh` delegates to `appendFaceTriangulation` with
+unchanged face traversal/merge — no GPU dispatch. `scripts/run-sim-suite.sh` stays
+**221 / 221** (rebuilt from current source, OCCT on / Metal off), and in the host
+stub `cc_set_gpu_tessellation` is a verified safe runtime no-op
+(`cc_gpu_tessellation_enabled()==0` before/after enable, no crash; CTest 7/7).
+
+One infra fix landed with the integration: `scripts/run-sim-suite.sh` previously
+skipped only `parity_bench.cpp`, but `tests/sim/` now also holds two standalone
+GPU harnesses with their own `main()` + GPU/Metal includes (`metal_selftest.cpp`,
+`integ_gpu_tess.cpp`) that were being swept into the OCCT-only compile and broke
+it; the skip list was extended to exclude all three standalone harnesses.
+(`metal_selftest.cpp`'s breakage was pre-existing at HEAD and independently
+reproduced; the integration only compounded it.)
+
 ## Reproduce commands
 
 ```sh
@@ -119,6 +170,12 @@ bash scripts/run-sim-gpu-selftest.sh   # expect: "device: Apple iOS simulator GP
 
 # Integrated GPU-vs-CPU parity suite on the iOS simulator GPU
 bash scripts/run-sim-gpu-suite.sh      # expect: "== 18 passed, 0 failed ==", exit 0
+
+# GPU-tessellation INTEGRATION suite (GPU path wired into cc_tessellate vs OCCT)
+bash scripts/run-sim-integ-suite.sh    # expect: "[ITEG] == 26 passed, 0 failed ==", exit 0
+
+# GPU-OFF baseline (default) — full cc_* suite unchanged
+bash scripts/run-sim-suite.sh          # expect: "== 221 passed, 0 failed ==", exit 0
 
 # Host (no-Metal) regression — CPU-only path unaffected
 cmake -S . -B build \
@@ -146,21 +203,29 @@ openspec validate --all --strict       # expect: all changes pass
 | GPU per-vertex normals match CPU reference per component (dot ≈ 1) | `run-sim-gpu-suite.sh` mesh-post checks |
 | fp32-only backend refuses fp64; precision guard keeps fp64 on CPU | `metal_backend.mm` fp64 guard + Phase-0 `ComputeRegistry` routing |
 | Integrated suite green | `== 18 passed, 0 failed ==` |
+| **GPU eval wired into `cc_tessellate` / `cc_face_meshes`** behind the toggle; per-face eligibility routing (planar/untrimmed → GPU, holed/curved → OCCT) | `run-sim-integ-suite.sh` box `gpu=6/0`, slab `gpu=4/3` |
+| **GPU-fed mesh vs OCCT-only mesh parity** (bbox + area + volume + watertight) on box + mixed slab | `run-sim-integ-suite.sh` → `[ITEG] == 26 passed, 0 failed ==` |
+| **GPU-OFF path byte-identical**; full `cc_*` suite unchanged with toggle OFF | `run-sim-suite.sh` → `== 221 passed, 0 failed ==` |
+| `cc_set_gpu_tessellation` is a safe runtime no-op in the non-Metal stub | host stub build CTest 7/7; `cc_gpu_tessellation_enabled()==0` before/after enable |
 
 ### FOLLOW-UP (not verified / not built here)
 
 | Follow-up | Why it is not done here | Task(s) |
 |---|---|---|
-| **CPU triangulator** consuming GPU grids (trimming, grid→triangle connectivity, cross-face stitching) + a GPU-fed-mesh vs CPU-only-mesh parity check | only the design is documented in the headers; no triangulator component exists, so there is no mesh-level parity check | `gpu-tessellation` 2.1, 2.2, 6.1 |
-| **`cc_tessellate` / `cc_face_meshes` integration** of the GPU eval path | the GPU surface-eval + mesh-normal modules are validated standalone; they are not wired into the OCCT facade path (no `src/facade` / `src/engine` references) | `gpu-tessellation` 4.3 |
+| **Holed / trimmed / curved faces on the GPU** | *by design*, not a gap — the GPU grid triangulator only handles single-outer-wire, UV-rectangular, low-degree faces; everything else falls back to OCCT `BRepMesh` (slab: 3 of 7 faces). Trimmed/curved GPU tessellation is a Phase-4-native concern | `gpu-tessellation` 3.1 (documented) |
+| **Explicit repeat-run determinism** assertion for the tessellation path | deterministic by construction (one GPU thread per grid sample, fixed CSR normal accumulation) but no repeat-run assertion runs in the integ suite | `gpu-tessellation` 6.1 |
 | **Frustum-pick parity on the sim** | `frustumPick` / `pickFrustum` kernels + CPU references are coded, but the 18-check suite only asserts ray/nearest-hit parity — no frustum assertion is run | `spatial-acceleration` 3.2, 3.4, 6.1 |
 | **Facade pick/cull wiring** for the GPU BVH/pick modules | modules gain the GPU option at the module level only; no OCCT-side pick/cull `cc_*` path exists to route through them today | `spatial-acceleration` 4.3 |
 | **Explicit repeat-run determinism** assertions (surface eval, mesh normals, nearest-hit, frustum) | deterministic by construction (fixed grid decomposition, fixed CSR accumulation order, epsilon + lowest-index tie-break, sorted sets) but no repeat-run check is in the sim suite | `gpu-tessellation` 5.1, `spatial-acceleration` 5.1 |
 | **On-device run** on physical Apple silicon | everything above ran on the booted **simulator** GPU only; nothing was run on hardware. The Phase-2 acceptance bar is the simulator, so this is optional | all Phase-2 changes |
 
 The GPU compute backend and all four GPU modules are verified on the iOS
-simulator GPU against independent CPU references (18/18, fp32 tolerance). What
-remains before Phase 2 can be flipped to ✅ is the **OCCT `cc_tessellate`
-integration** of GPU eval, the **CPU triangulator + GPU-fed-mesh check**, the
-**frustum-pick suite leg**, and the **facade pick/cull wiring** — so the three
-changes stay ◐ (in progress) in `ROADMAP.md`.
+simulator GPU against independent CPU references (18/18, fp32 tolerance), and the
+GPU surface-eval path is now **integrated into `cc_tessellate` / `cc_face_meshes`**
+behind the toggle, with GPU-fed-vs-OCCT mesh parity verified on the sim (integ
+suite 26/26, GPU-OFF suite 221/221). `add-gpu-tessellation` is therefore complete
+at the Phase-2 acceptance bar except for an explicit repeat-run determinism
+assertion; GPU tessellation of holed/trimmed/curved faces is deferred **by design**
+(they fall back to OCCT). What remains for `add-gpu-spatial-acceleration` is the
+**frustum-pick suite leg** and the **facade pick/cull wiring**, so that change
+stays ◐ (in progress) in `ROADMAP.md`.

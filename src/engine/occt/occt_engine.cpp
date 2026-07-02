@@ -237,6 +237,26 @@ bool OcctEngine::parallel_enabled() const {
     return occt::ParallelPolicy::instance().enabled();
 }
 
+// ── GPU tessellation control ──────────────────────────────────────────────────
+// The toggle only latches ON in a Metal build; without CYBERCAD_HAS_METAL there
+// is no GPU surface-eval module linked, so the flag stays OFF and cc_tessellate
+// runs the OCCT-only path (cc_gpu_tessellation_enabled() -> 0).
+void OcctEngine::set_gpu_tessellation(bool enabled) {
+#ifdef CYBERCAD_HAS_METAL
+    gpuTessellation_.store(enabled, std::memory_order_relaxed);
+#else
+    (void)enabled;  // no Metal backend in this build: GPU tessellation unavailable
+#endif
+}
+
+bool OcctEngine::gpu_tessellation_enabled() const {
+#ifdef CYBERCAD_HAS_METAL
+    return gpuTessellation_.load(std::memory_order_relaxed);
+#else
+    return false;
+#endif
+}
+
 // ── Engine registration / selection ───────────────────────────────────────────
 // Defined here (not in the stub) so that whenever the OCCT adapter TUs are linked
 // (CYBERCAD_HAS_OCCT=ON), OcctEngine is the build's default/active engine. The

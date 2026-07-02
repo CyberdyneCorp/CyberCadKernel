@@ -103,6 +103,19 @@ const char *cc_last_error(void);                               /* last failure m
 void cc_set_parallel(int enabled);   /* toggle multi-core execution of boolean/mesh; default on */
 int  cc_parallel_enabled(void);      /* 1 if parallel is currently enabled */
 
+/* ── GPU tessellation control ────────────────────────────────────────────── */
+
+/* ADDITIVE (not part of the mirrored KernelBridgeAPI.h ABI): toggle the GPU
+ * surface-evaluation tessellation path used by cc_tessellate / cc_face_meshes.
+ * Default OFF: with it off, cc_tessellate behaves EXACTLY as the OCCT-only
+ * BRepMesh path. When ON (and only on a build compiled with CYBERCAD_HAS_METAL),
+ * a face that is provably an untrimmed rectangular NURBS/Bezier patch is meshed
+ * from a GPU-evaluated (u,v) grid; every other face falls back to OCCT. On a
+ * build without Metal (or the host stub) the setter is a no-op and the query
+ * reports 0. The cc_tessellate / cc_face_meshes signatures are unchanged. */
+void cc_set_gpu_tessellation(int enabled);   /* toggle the GPU tessellation path; default off */
+int  cc_gpu_tessellation_enabled(void);      /* 1 iff GPU tessellation is on AND available */
+
 /* ── Construction ────────────────────────────────────────────────────────── */
 
 CCShapeId cc_solid_extrude(const double *profileXY, int pointCount, double depth);

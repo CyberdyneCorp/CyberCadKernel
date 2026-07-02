@@ -30,6 +30,7 @@
 // (isValid / addIfValid), the Poly_Triangulation -> MeshData converter, and the
 // stable TopExp sub-shape id maps used for edge/face picking.
 
+#include <atomic>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -172,6 +173,14 @@ public:
     void set_parallel(bool enabled) override;
     bool parallel_enabled() const override;
 
+    // ── GPU tessellation control ──────────────────────────────────────────────
+    // Hold the process-visible GPU-tessellation toggle the tessellate/face_meshes
+    // paths consult. The setter only latches ON when the build was compiled with
+    // CYBERCAD_HAS_METAL; otherwise it stays OFF so cc_gpu_tessellation_enabled()
+    // reports 0 and cc_tessellate runs the OCCT-only path unchanged.
+    void set_gpu_tessellation(bool enabled) override;
+    bool gpu_tessellation_enabled() const override;
+
     // ── construct (occt_construct.cpp) ────────────────────────────────────────
     Result<MeshData> extrude_mesh(const double* profileXY, int pointCount, double depth) override;
     ShapeResult solid_extrude(const double* profileXY, int pointCount, double depth) override;
@@ -272,6 +281,12 @@ public:
     ShapeResult step_import(const char* path) override;
     Result<void> iges_export(EngineShape body, const char* path) override;
     ShapeResult iges_import(const char* path) override;
+
+private:
+    // Process-visible GPU-tessellation toggle (default OFF). Read by the
+    // tessellate / face_meshes bodies in occt_tessellate.cpp to route per-face
+    // meshing to the GPU grid path (occt_gpu_tessellate.cpp) when ON.
+    std::atomic<bool> gpuTessellation_{false};
 };
 
 }  // namespace cyber

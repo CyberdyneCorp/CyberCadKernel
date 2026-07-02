@@ -54,8 +54,17 @@ endif()
 
 # ── Metal compute backend (iOS only) ──────────────────────────────────────────
 # Compile the Objective-C++ Metal backend ONLY when CYBERCAD_HAS_METAL=ON. The
-# host build (OFF) never sees these .mm files and stays CPU-only. GPU modules are
-# self-contained numeric code and MUST NOT link OCCT.
+# host build (OFF) never sees these .mm files and stays CPU-only. The GPU modules
+# themselves are self-contained fp32 numeric code and MUST NOT link OCCT.
+#
+# When CYBERCAD_HAS_METAL and CYBERCAD_HAS_OCCT are BOTH ON (the iOS GPU build),
+# the OCCT adapter and the Metal GPU modules end up in the SAME `cybercadkernel`
+# target, so the OCCT-side GPU tessellation TU (src/engine/occt/occt_gpu_tessellate.cpp)
+# links the surface-eval module directly. The target-wide CYBERCAD_HAS_METAL
+# define below reaches every TU (including the OCCT .cpp files), which is what
+# switches the per-face GPU path on inside occt_tessellate.cpp / occt_engine.cpp.
+# With either option OFF the host build is unchanged (no .mm, no define, OCCT-only
+# tessellation).
 if(CYBERCAD_HAS_METAL)
     enable_language(OBJCXX)
     file(GLOB CYBERCAD_METAL_SOURCES CONFIGURE_DEPENDS

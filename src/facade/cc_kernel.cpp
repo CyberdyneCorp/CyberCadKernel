@@ -199,6 +199,17 @@ int cc_parallel_enabled(void) {
     return cyber::guard([]() -> int { return active_engine()->parallel_enabled() ? 1 : 0; }, 0);
 }
 
+// ── GPU tessellation control ────────────────────────────────────────────────────
+
+void cc_set_gpu_tessellation(int enabled) {
+    cyber::guard_void([&]() { active_engine()->set_gpu_tessellation(enabled != 0); });
+}
+
+int cc_gpu_tessellation_enabled(void) {
+    return cyber::guard([]() -> int { return active_engine()->gpu_tessellation_enabled() ? 1 : 0; },
+                        0);
+}
+
 // ── construction ──────────────────────────────────────────────────────────────
 
 CCShapeId cc_solid_extrude(const double* profileXY, int pointCount, double depth) {

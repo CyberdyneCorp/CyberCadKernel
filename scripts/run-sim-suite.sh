@@ -14,11 +14,16 @@ LIB="$OUT/libcybercadkernel-SIMULATORARM64.a"
 [ -f "$LIB" ] || { echo "build the xcframework first (scripts/build-xcframework.sh)"; exit 1; }
 SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 
-# Every sim source EXCEPT parity_bench.cpp (its own single-file harness has a
-# competing main()). Includes full_suite.cpp + all checks_*.cpp modules.
+# Every sim source EXCEPT the standalone single-file harnesses that carry their
+# own competing main() and/or need the GPU/Metal include tree this OCCT-only link
+# does not provide. Each of these has its own runner: parity_bench.cpp
+# (run-sim-harness.sh), metal_selftest.cpp (run-metal-sim.sh), integ_gpu_tess.cpp
+# (run-sim-integ-suite.sh). What remains is the OCCT-only suite: full_suite.cpp +
+# all checks_*.cpp modules (221 assertions, GPU tessellation off).
+SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp"
 SRCS=()
 while IFS= read -r src; do
-  [ "$(basename "$src")" = "parity_bench.cpp" ] && continue
+  case " $SKIP " in *" $(basename "$src") "*) continue;; esac
   SRCS+=("$src")
 done < <(find "$REPO/tests/sim" -name '*.cpp' | sort)
 [ "${#SRCS[@]}" -gt 0 ] || { echo "no suite sources found under tests/sim"; exit 1; }

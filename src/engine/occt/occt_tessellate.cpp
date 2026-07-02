@@ -20,6 +20,8 @@
 // tagged with its id, and the deflection is clamped to 0.1 when non-positive.
 
 #include "engine/occt/occt_engine.h"
+#include "engine/occt/gpu_tess_stats.h"
+#include "engine/occt/occt_gpu_tessellate.h"
 #include "engine/occt/parallel_policy.h"
 
 #include <utility>
@@ -108,6 +110,31 @@ void appendFaceTriangulation(const TopoDS_Face& face, std::vector<double>& verti
         triangles.push_back(baseVertex + c - 1);
     }
 }
+
+// Mesh one face into (vertices, triangles) at `baseVertex`, honouring the GPU
+// tessellation toggle. When `gpuOn` and the face is provably a GPU-eligible
+// untrimmed rectangular patch, its triangles come from the GPU-evaluated (u,v)
+// grid; otherwise the face uses the OCCT triangulation already computed by the
+// whole-body BRepMesh pass — byte-for-byte the serial/OCCT path. With `gpuOn`
+// false (default) this is EXACTLY the previous behaviour and the GPU code is not
+// referenced. Per-face routing is recorded for diagnostics only when the GPU
+// toggle is active (the OFF path stays side-effect-free on the mesh).
+void appendFaceMesh(const TopoDS_Face& face, double deflection, bool gpuOn,
+                    std::vector<double>& vertices, std::vector<int>& triangles, int baseVertex) {
+#ifdef CYBERCAD_HAS_METAL
+    if (gpuOn) {
+        if (occt::tryTessellateFaceGPU(face, deflection, vertices, triangles, baseVertex)) {
+            occt::recordGpuTessFace(true);
+            return;
+        }
+        occt::recordGpuTessFace(false);  // not eligible / eval failed → OCCT fallback
+    }
+#else
+    (void)deflection;
+    (void)gpuOn;
+#endif
+    appendFaceTriangulation(face, vertices, triangles, baseVertex);
+}
 }  // namespace
 
 // ── tessellate ────────────────────────────────────────────────────────────────
@@ -116,26 +143,33 @@ Result<MeshData> OcctEngine::tessellate(EngineShape body, double deflection) {
     if (shape == nullptr) {
         return MeshData{};  // unknown body → empty mesh, matching the source
     }
+    // GPU tessellation toggle, read on the caller thread and captured for the
+    // worker. OFF (default) → the OCCT-only path below, unchanged.
+    const bool gpuOn = gpu_tessellation_enabled();
     // Route the long mesh off the caller's inline path through the operation-
     // scheduler with the cancellation-safe boundary (spec §"Cancellable
     // accelerated operations"); `body` is captured to keep the shape alive on the
     // worker thread.
-    return occt::runScheduled([body, deflection](OperationContext& ctx) -> Result<MeshData> {
+    return occt::runScheduled([body, deflection, gpuOn](OperationContext& ctx) -> Result<MeshData> {
         return occt::occtGuard([&]() -> Result<MeshData> {
             const TopoDS_Shape& s = *occt::unwrap(body);
+            occt::resetGpuTessStats();
             ctx.report(0.1, "mesh: triangulate");
             // Parallel per-face meshing behind cc_tessellate: one incremental mesh
             // over the whole body with InParallel on, then merge every face into a
-            // single buffer. Face traversal order and the per-face merge are the
-            // same as the serial path, so the merged mesh is identical for a given
-            // deflection — parallelism only changes which core meshes each face.
+            // single buffer. The whole-body mesh is always built so every OCCT
+            // fallback face has a triangulation; when the GPU toggle is on, a
+            // GPU-eligible face is instead meshed from its (u,v) grid (its OCCT
+            // triangulation is simply unused). Face traversal order and the
+            // per-face merge are unchanged, so with the toggle OFF the merged mesh
+            // is byte-identical to the serial path for a given deflection.
             BRepMesh_IncrementalMesh mesher(s, parallelMeshParams(clampDeflection(deflection)));
             (void)mesher;
             MeshData mesh;
             for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More(); ex.Next()) {
                 const int base = static_cast<int>(mesh.vertices.size() / 3);
-                appendFaceTriangulation(TopoDS::Face(ex.Current()), mesh.vertices, mesh.triangles,
-                                        base);
+                appendFaceMesh(TopoDS::Face(ex.Current()), clampDeflection(deflection), gpuOn,
+                               mesh.vertices, mesh.triangles, base);
             }
             ctx.report(1.0, "mesh: done");
             return mesh;
@@ -149,10 +183,12 @@ Result<std::vector<FaceMeshData>> OcctEngine::face_meshes(EngineShape body, doub
     if (shape == nullptr) {
         return std::vector<FaceMeshData>{};
     }
-    return occt::runScheduled([body, deflection](OperationContext& ctx)
+    const bool gpuOn = gpu_tessellation_enabled();
+    return occt::runScheduled([body, deflection, gpuOn](OperationContext& ctx)
                                   -> Result<std::vector<FaceMeshData>> {
         return occt::occtGuard([&]() -> Result<std::vector<FaceMeshData>> {
             const TopoDS_Shape& s = *occt::unwrap(body);
+            occt::resetGpuTessStats();
             // Iterate the FACE index map so faceId matches cc_subshape_ids/cc_shell.
             const TopTools_IndexedMapOfShape map = occt::mapFaces(s);
             const int count = map.Extent();
@@ -162,15 +198,19 @@ Result<std::vector<FaceMeshData>> OcctEngine::face_meshes(EngineShape body, doub
             }
             ctx.report(0.1, "mesh: triangulate");
             // One parallel incremental mesh for the whole body (same knobs as the
-            // display mesh), then read each face's triangulation back out with
-            // face-local 0-based indices (baseVertex 0).
+            // display mesh), then read each face's mesh back out with face-local
+            // 0-based indices (baseVertex 0). Exactly one CCFaceMesh slot per face
+            // id, in map order — unchanged from the OCCT-only path; only an
+            // eligible face's triangles change source (GPU grid) when the toggle
+            // is on.
             BRepMesh_IncrementalMesh mesher(s, parallelMeshParams(clampDeflection(deflection)));
             (void)mesher;
             faces.resize(static_cast<std::size_t>(count));
             for (int i = 1; i <= count; ++i) {
                 FaceMeshData& fm = faces[static_cast<std::size_t>(i - 1)];
                 fm.faceId = i;  // empty slot unless the face has a usable triangulation
-                appendFaceTriangulation(TopoDS::Face(map.FindKey(i)), fm.vertices, fm.triangles, 0);
+                appendFaceMesh(TopoDS::Face(map.FindKey(i)), clampDeflection(deflection), gpuOn,
+                               fm.vertices, fm.triangles, 0);
             }
             ctx.report(1.0, "mesh: done");
             return faces;

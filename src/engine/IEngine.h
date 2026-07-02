@@ -85,6 +85,16 @@ public:
     virtual void set_parallel(bool /*enabled*/) {}
     virtual bool parallel_enabled() const { return false; }
 
+    // ── GPU tessellation control (ADDITIVE) ─────────────────────────────────────
+    // Toggle the GPU surface-evaluation tessellation path so the facade's
+    // cc_set_gpu_tessellation / cc_gpu_tessellation_enabled can opt into GPU
+    // meshing. Default no-op / disabled: the stub and any engine without a GPU
+    // path inherit "off" (so a non-Metal build reports 0). The OCCT adapter
+    // overrides these; even there the flag only takes effect when the build was
+    // compiled with CYBERCAD_HAS_METAL.
+    virtual void set_gpu_tessellation(bool /*enabled*/) {}
+    virtual bool gpu_tessellation_enabled() const { return false; }
+
     // ── construct ─────────────────────────────────────────────────────────────
     virtual Result<MeshData> extrude_mesh(const double* profileXY, int pointCount, double depth) {
         (void)profileXY; (void)pointCount; (void)depth;

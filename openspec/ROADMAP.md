@@ -93,13 +93,20 @@ Changes: **`add-metal-compute-backend`** (capability `metal-backend`),
   init, buffer round-trip, runtime MSL compile + pipeline cache, dispatch, fp32
   saxpy parity; fp32-only, refuses fp64; host CTest stays green with
   `CYBERCAD_HAS_METAL=OFF`.)*
-- ◐ **Metal tessellation**: GPU NURBS/Bézier surface evaluation + GPU per-vertex
+- ✅ **Metal tessellation**: GPU NURBS/Bézier surface evaluation + GPU per-vertex
   normals, topology stays on CPU. → `gpu-tessellation`. Contract: `occt-usage`
   §Meshing. *(GPU surface-grid eval + per-vertex normals **verified on the
-  iOS-sim GPU** vs CPU reference (fp32). Remaining: the **CPU triangulator**
-  (grids→trimmed/stitched mesh + GPU-fed-mesh parity) and **`cc_tessellate` /
-  `cc_face_meshes` integration** — modules are standalone, not yet wired into the
-  OCCT facade.)*
+  iOS-sim GPU** vs CPU reference (fp32), and the GPU eval path is now **wired into
+  `cc_tessellate` / `cc_face_meshes`** behind the `cc_set_gpu_tessellation` toggle
+  (default OFF): per-face eligibility routing sends single-outer-wire /
+  UV-rectangular / low-degree faces to a GPU grid triangulator and falls back to
+  OCCT `BRepMesh` for holed/trimmed/curved faces. **Verified on the sim** —
+  integ suite (`run-sim-integ-suite.sh`) **26/26**: box routes gpu=6/0, mixed slab
+  routes gpu=4/3, GPU-fed mesh matches the OCCT-only mesh on bbox + area + volume +
+  watertightness (fp32); GPU-OFF path is byte-identical and `run-sim-suite.sh`
+  stays 221/221. Remaining: an explicit **repeat-run determinism** assertion;
+  GPU tessellation of **holed/trimmed/curved faces** is deferred **by design**
+  (they fall back to OCCT).)*
 - ◐ **Metal BVH** build/traversal (LBVH/Morton) for culling + selection. →
   `spatial-acceleration`. *(GPU LBVH build + stackless nearest-hit ray traversal
   **verified on the iOS-sim GPU** vs CPU brute force, same id + t (fp32).)*
@@ -168,7 +175,7 @@ checkboxes as changes land; flip to ✅ when a change is validated and archived.
 | 0 | `add-kernel-foundation` | kernel-facade, engine-adapter, operation-scheduler, compute-backend | ✅ complete at acceptance bar (host tests + all 57 `cc_*` on iOS-sim, 221/221); app link-swap = optional deferred |
 | 1 | `accelerate-multicore-occt` | parallel-acceleration | ✅ complete at acceptance bar (parallel paths on iOS-sim; determinism audit + serial-vs-parallel benchmark done); on-device scaling = optional deferred |
 | 2 | `add-metal-compute-backend` | metal-backend | ✅ complete at acceptance bar (backend self-test PASS on iOS-sim GPU; fp32-only + precision guard; host CTest green with METAL=OFF); on-device run = optional deferred |
-| 2 | `add-gpu-tessellation` | gpu-tessellation | ◐ in progress (GPU surface-grid eval + per-vertex normals verified on iOS-sim GPU, 18/18; CPU triangulator + GPU-fed-mesh check + `cc_tessellate` integration + determinism/repeat-run assertions deferred) |
+| 2 | `add-gpu-tessellation` | gpu-tessellation | ✅ complete at acceptance bar (GPU surface-eval + per-vertex normals on iOS-sim GPU 18/18; GPU eval wired into `cc_tessellate` behind the toggle, integ suite 26/26 GPU-fed-vs-OCCT parity, GPU-OFF suite 221/221); repeat-run determinism assertion + GPU tessellation of holed/trimmed faces (falls back to OCCT by design) deferred |
 | 2 | `add-gpu-spatial-acceleration` | spatial-acceleration | ◐ in progress (GPU LBVH nearest-hit + batched ray-pick verified on iOS-sim GPU, 18/18; frustum-pick parity leg, facade pick/cull wiring + repeat-run determinism deferred) |
 | 3 | `add-g2-blend-fillet` | g2-blend | ☐ planned (#284) |
 | 3 | `add-full-round-fillet` | full-round-fillet | ☐ planned (#285) |

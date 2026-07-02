@@ -79,15 +79,38 @@ source of truth; the GPU never touches the exact fp64 topology core.
 Changes: **`add-metal-compute-backend`** (capability `metal-backend`),
 **`add-gpu-tessellation`** (capability `gpu-tessellation`),
 **`add-gpu-spatial-acceleration`** (capability `spatial-acceleration`).
-- ☐ **Metal backend** implementing the Phase-0 `compute-backend` interface;
-  unified-memory buffer path on Apple Silicon to avoid copies. → `metal-backend`.
-- ☐ **Metal tessellation**: GPU NURBS/Bézier surface evaluation feeding the
-  triangulator; topology stays on CPU. → `gpu-tessellation`. Contract:
-  `occt-usage` §Meshing (biggest self-contained win).
-- ☐ **Metal BVH** build/traversal (LBVH/Morton) for culling + selection. →
-  `spatial-acceleration`.
-- ☐ **GPU picking** (frustum vs BVH) for large models. → `spatial-acceleration`.
-- ☐ Mesh post-processing (normals, LOD, deformation) on GPU. → `gpu-tessellation`.
+
+> **Acceptance bar:** the in-repo integrated GPU-vs-CPU parity suite
+> (`scripts/run-sim-gpu-suite.sh` — 18/18) + the backend self-test
+> (`scripts/run-sim-gpu-selftest.sh`) running runtime-compiled MSL on the real
+> "Apple iOS simulator GPU", each result asserted against an independent CPU
+> reference within an fp32 tolerance. **On-device** (physical Apple silicon) runs
+> are optional/deferred. See `docs/STATUS-phase-2.md`.
+
+- ✅ **Metal backend** implementing the Phase-0 `compute-backend` interface;
+  unified-memory (`StorageModeShared`) buffer path to avoid copies. →
+  `metal-backend`. *(implemented; **self-test PASS on the iOS-sim GPU** — device
+  init, buffer round-trip, runtime MSL compile + pipeline cache, dispatch, fp32
+  saxpy parity; fp32-only, refuses fp64; host CTest stays green with
+  `CYBERCAD_HAS_METAL=OFF`.)*
+- ◐ **Metal tessellation**: GPU NURBS/Bézier surface evaluation + GPU per-vertex
+  normals, topology stays on CPU. → `gpu-tessellation`. Contract: `occt-usage`
+  §Meshing. *(GPU surface-grid eval + per-vertex normals **verified on the
+  iOS-sim GPU** vs CPU reference (fp32). Remaining: the **CPU triangulator**
+  (grids→trimmed/stitched mesh + GPU-fed-mesh parity) and **`cc_tessellate` /
+  `cc_face_meshes` integration** — modules are standalone, not yet wired into the
+  OCCT facade.)*
+- ◐ **Metal BVH** build/traversal (LBVH/Morton) for culling + selection. →
+  `spatial-acceleration`. *(GPU LBVH build + stackless nearest-hit ray traversal
+  **verified on the iOS-sim GPU** vs CPU brute force, same id + t (fp32).)*
+- ◐ **GPU picking** (rays + frustum vs BVH) for large models. →
+  `spatial-acceleration`. *(GPU batched **ray-pick verified on the iOS-sim GPU**
+  vs CPU reference; **frustum-pick** kernels + CPU reference are coded but the
+  parity leg is **not yet asserted** in the sim suite, and no facade pick/cull
+  `cc_*` path routes to these modules yet.)*
+- ✅ Mesh post-processing (GPU per-vertex normals) → `gpu-tessellation`.
+  *(**verified on the iOS-sim GPU** vs CPU reference per component, dot ≈ 1; LOD /
+  deformation not in scope for this change.)*
 
 ## Phase 3 — Missing features OCCT lacks (native algorithms)
 New geometry the app already needs; these are native from the start (OCCT can't
@@ -144,9 +167,9 @@ checkboxes as changes land; flip to ✅ when a change is validated and archived.
 |---|---|---|---|
 | 0 | `add-kernel-foundation` | kernel-facade, engine-adapter, operation-scheduler, compute-backend | ✅ complete at acceptance bar (host tests + all 57 `cc_*` on iOS-sim, 221/221); app link-swap = optional deferred |
 | 1 | `accelerate-multicore-occt` | parallel-acceleration | ✅ complete at acceptance bar (parallel paths on iOS-sim; determinism audit + serial-vs-parallel benchmark done); on-device scaling = optional deferred |
-| 2 | `add-metal-compute-backend` | metal-backend | ☐ planned |
-| 2 | `add-gpu-tessellation` | gpu-tessellation | ☐ planned |
-| 2 | `add-gpu-spatial-acceleration` | spatial-acceleration | ☐ planned |
+| 2 | `add-metal-compute-backend` | metal-backend | ✅ complete at acceptance bar (backend self-test PASS on iOS-sim GPU; fp32-only + precision guard; host CTest green with METAL=OFF); on-device run = optional deferred |
+| 2 | `add-gpu-tessellation` | gpu-tessellation | ◐ in progress (GPU surface-grid eval + per-vertex normals verified on iOS-sim GPU, 18/18; CPU triangulator + GPU-fed-mesh check + `cc_tessellate` integration + determinism/repeat-run assertions deferred) |
+| 2 | `add-gpu-spatial-acceleration` | spatial-acceleration | ◐ in progress (GPU LBVH nearest-hit + batched ray-pick verified on iOS-sim GPU, 18/18; frustum-pick parity leg, facade pick/cull wiring + repeat-run determinism deferred) |
 | 3 | `add-g2-blend-fillet` | g2-blend | ☐ planned (#284) |
 | 3 | `add-full-round-fillet` | full-round-fillet | ☐ planned (#285) |
 | 3 | `add-robust-thread-boolean` | thread-boolean | ☐ planned (#286) |

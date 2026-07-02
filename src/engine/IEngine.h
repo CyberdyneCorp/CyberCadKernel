@@ -250,10 +250,42 @@ public:
         return engine_unsupported("split_plane");
     }
 
+    // ── Phase-3 additive feature: full-round fillet (face-consuming blend) ──────
+    // Replace the middle face with a rolling-ball blend tangent to its two opposite
+    // neighbours. full_round_fillet auto-detects the neighbours of faceId;
+    // full_round_fillet_faces takes them explicitly. Stub inherits unsupported.
+    virtual ShapeResult full_round_fillet(EngineShape body, int faceId) {
+        (void)body; (void)faceId;
+        return engine_unsupported("full_round_fillet");
+    }
+    virtual ShapeResult full_round_fillet_faces(EngineShape body, int leftFaceId, int middleFaceId,
+                                                int rightFaceId) {
+        (void)body; (void)leftFaceId; (void)middleFaceId; (void)rightFaceId;
+        return engine_unsupported("full_round_fillet_faces");
+    }
+
+    // ── Phase-3 additive feature: G2 (curvature-continuous) blend fillet ────────
+    // Curvature-continuous blend along the given edges at the nominal radius; the
+    // stock fillet_edges (G1) is unchanged. Stub inherits unsupported.
+    virtual ShapeResult fillet_edges_g2(EngineShape body, const int* edgeIds, int edgeCount,
+                                        double radius) {
+        (void)body; (void)edgeIds; (void)edgeCount; (void)radius;
+        return engine_unsupported("fillet_edges_g2");
+    }
+
     // ── boolean ───────────────────────────────────────────────────────────────
     virtual ShapeResult boolean_op(EngineShape a, EngineShape b, int op) {
         (void)a; (void)b; (void)op;
         return engine_unsupported("boolean_op");
+    }
+
+    // ── Phase-3 additive boolean: robust segmented thread apply ─────────────────
+    // Apply a helical thread body to a shaft by a segmented / feature-based boolean
+    // under the operation scheduler's time budget (op 0 fuse / op 1 cut; any other
+    // op -> failure). Stub inherits unsupported.
+    virtual ShapeResult thread_apply(EngineShape shaft, EngineShape thread, int op) {
+        (void)shaft; (void)thread; (void)op;
+        return engine_unsupported("thread_apply");
     }
 
     // ── tessellate ────────────────────────────────────────────────────────────
@@ -286,6 +318,26 @@ public:
     virtual Result<std::vector<double>> face_axis(EngineShape body, int faceId) {
         (void)body; (void)faceId;
         return engine_unsupported("face_axis");  // expects 6 values
+    }
+
+    // ── reference geometry (Phase-3 additive; derived datum from geometry) ──────
+    // The three point-only reference constructors (plane-from-3-points, offset
+    // plane, axis-from-2-points) are exact fp64 math done facade-side and do NOT
+    // touch the engine, so they work in every build. Only these three DERIVED
+    // datums (which read an existing body's surface/curve) route through the
+    // engine; the stub inherits the unsupported default -> facade returns 0.
+    // Each returns [ox,oy,oz, nx|dx, ny|dy, nz|dz] (6 values).
+    virtual Result<std::vector<double>> ref_plane_from_face(EngineShape body, int faceId) {
+        (void)body; (void)faceId;
+        return engine_unsupported("ref_plane_from_face");  // expects 6 values
+    }
+    virtual Result<std::vector<double>> ref_axis_from_edge(EngineShape body, int edgeId) {
+        (void)body; (void)edgeId;
+        return engine_unsupported("ref_axis_from_edge");  // expects 6 values
+    }
+    virtual Result<std::vector<double>> ref_axis_from_face(EngineShape body, int faceId) {
+        (void)body; (void)faceId;
+        return engine_unsupported("ref_axis_from_face");  // expects 6 values
     }
     virtual Result<std::vector<int>> subshape_ids(EngineShape body, int kind) {
         (void)body; (void)kind;

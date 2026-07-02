@@ -6,6 +6,7 @@
 // C-owned malloc buffers.
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -156,6 +157,30 @@ std::vector<ProfileSeg> to_profile_segs(const CCProfileSeg* segs, int segCount) 
         out.push_back(p);
     }
     return out;
+}
+
+// ── Phase-3 point-only reference geometry (exact fp64, engine-independent) ─────
+// These three constructors are pure double-precision vector math, so they work in
+// EVERY build (including the no-OCCT host stub) without touching active_engine().
+// A single absolute tolerance on the resulting vector magnitude gates degeneracy
+// (colinear/coincident points -> zero cross product/difference; zero-length
+// normal), matching the reference-geometry spec's 1e-9 unit-length guarantee.
+constexpr double kRefEps = 1e-9;
+
+// Write origin + normalize(v) into out6 = [ox,oy,oz, ux,uy,uz]; return 1, or 0 if
+// v is shorter than kRefEps (degenerate) or out6 is null.
+int ref_emit(const double origin[3], double vx, double vy, double vz, double* out6) {
+    const double mag = std::sqrt(vx * vx + vy * vy + vz * vz);
+    if (mag < kRefEps || out6 == nullptr) {
+        return 0;
+    }
+    out6[0] = origin[0];
+    out6[1] = origin[1];
+    out6[2] = origin[2];
+    out6[3] = vx / mag;
+    out6[4] = vy / mag;
+    out6[5] = vz / mag;
+    return 1;
 }
 
 }  // namespace
@@ -810,6 +835,126 @@ CCShapeId cc_place_on_frame(CCShapeId body, double ox, double oy, double oz, dou
         [&]() -> CCShapeId {
             auto r = active_engine()->place_on_frame(resolve(body), ox, oy, oz, ux, uy, uz, vx, vy,
                                                      vz);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
+}
+
+// ── Phase-3: robust thread boolean ────────────────────────────────────────────
+
+CCShapeId cc_thread_apply(CCShapeId shaft, CCShapeId thread, int op) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            auto r = active_engine()->thread_apply(resolve(shaft), resolve(thread), op);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
+}
+
+// ── Phase-3: reference geometry (datum planes / axes) ─────────────────────────
+
+int cc_ref_plane_from_points(const double p0[3], const double p1[3], const double p2[3],
+                             double out6[6]) {
+    return cyber::guard(
+        [&]() -> int {
+            if (p0 == nullptr || p1 == nullptr || p2 == nullptr) {
+                return 0;
+            }
+            const double ux = p1[0] - p0[0], uy = p1[1] - p0[1], uz = p1[2] - p0[2];
+            const double vx = p2[0] - p0[0], vy = p2[1] - p0[1], vz = p2[2] - p0[2];
+            // normal = (p1-p0) x (p2-p0); |normal| ∝ triangle area -> colinear fails.
+            const double nx = uy * vz - uz * vy;
+            const double ny = uz * vx - ux * vz;
+            const double nz = ux * vy - uy * vx;
+            return ref_emit(p0, nx, ny, nz, out6);
+        },
+        0);
+}
+
+int cc_ref_plane_offset(const double origin[3], const double normal[3], double dist,
+                        double out6[6]) {
+    return cyber::guard(
+        [&]() -> int {
+            if (origin == nullptr || normal == nullptr || out6 == nullptr) {
+                return 0;
+            }
+            const double mag =
+                std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+            if (mag < kRefEps) {
+                return 0;
+            }
+            const double nx = normal[0] / mag, ny = normal[1] / mag, nz = normal[2] / mag;
+            const double moved[3] = {origin[0] + dist * nx, origin[1] + dist * ny,
+                                     origin[2] + dist * nz};
+            return ref_emit(moved, nx, ny, nz, out6);
+        },
+        0);
+}
+
+int cc_ref_axis_from_points(const double a[3], const double b[3], double out6[6]) {
+    return cyber::guard(
+        [&]() -> int {
+            if (a == nullptr || b == nullptr) {
+                return 0;
+            }
+            return ref_emit(a, b[0] - a[0], b[1] - a[1], b[2] - a[2], out6);
+        },
+        0);
+}
+
+int cc_ref_plane_from_face(CCShapeId body, int faceId, double out6[6]) {
+    return cyber::guard(
+        [&]() -> int {
+            auto r = active_engine()->ref_plane_from_face(resolve(body), faceId);
+            return finish_fixed(r, out6, 6);
+        },
+        0);
+}
+
+int cc_ref_axis_from_edge(CCShapeId body, int edgeId, double out6[6]) {
+    return cyber::guard(
+        [&]() -> int {
+            auto r = active_engine()->ref_axis_from_edge(resolve(body), edgeId);
+            return finish_fixed(r, out6, 6);
+        },
+        0);
+}
+
+int cc_ref_axis_from_face(CCShapeId body, int faceId, double out6[6]) {
+    return cyber::guard(
+        [&]() -> int {
+            auto r = active_engine()->ref_axis_from_face(resolve(body), faceId);
+            return finish_fixed(r, out6, 6);
+        },
+        0);
+}
+
+// ── Phase-3: full-round fillet + G2 blend ─────────────────────────────────────
+
+CCShapeId cc_full_round_fillet(CCShapeId body, int faceId) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            auto r = active_engine()->full_round_fillet(resolve(body), faceId);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
+}
+
+CCShapeId cc_full_round_fillet_faces(CCShapeId body, int leftFaceId, int middleFaceId,
+                                     int rightFaceId) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            auto r = active_engine()->full_round_fillet_faces(resolve(body), leftFaceId,
+                                                              middleFaceId, rightFaceId);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
+}
+
+CCShapeId cc_fillet_edges_g2(CCShapeId body, const int* edgeIds, int edgeCount, double radius) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            auto r = active_engine()->fillet_edges_g2(resolve(body), edgeIds, edgeCount, radius);
             return finish_shape(r);
         },
         CCShapeId{0});

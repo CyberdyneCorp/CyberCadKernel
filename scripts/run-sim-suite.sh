@@ -18,9 +18,13 @@ SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 # own competing main() and/or need the GPU/Metal include tree this OCCT-only link
 # does not provide. Each of these has its own runner: parity_bench.cpp
 # (run-sim-harness.sh), metal_selftest.cpp (run-metal-sim.sh), integ_gpu_tess.cpp
-# (run-sim-integ-suite.sh). What remains is the OCCT-only suite: full_suite.cpp +
-# all checks_*.cpp modules (221 assertions, GPU tessellation off).
-SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp"
+# (run-sim-integ-suite.sh), and the Phase-3 suite — phase3_suite.cpp (its own
+# main()) plus its checks_*.cpp modules (which record against phase3_checks.h's
+# Ctx, not checks.h's) — has run-sim-phase3-suite.sh. What remains is the OCCT-only
+# suite: full_suite.cpp + the Phase-0/1 checks_*.cpp modules (221 assertions).
+SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp \
+      phase3_suite.cpp checks_reference_geometry.cpp checks_wrap_emboss.cpp \
+      checks_thread_boolean.cpp checks_full_round_fillet.cpp checks_g2_fillet.cpp"
 SRCS=()
 while IFS= read -r src; do
   case " $SKIP " in *" $(basename "$src") "*) continue;; esac

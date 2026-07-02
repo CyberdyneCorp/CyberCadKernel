@@ -20,6 +20,12 @@
 //     tessellate          -> occt_tessellate.cpp
 //     query               -> occt_query.cpp
 //     exchange            -> occt_exchange.cpp
+//   Phase-3 features, each owned by its own TU so they land in disjoint files:
+//     wrap_emboss (robust) -> occt_wrap_emboss.cpp
+//     reference geometry   -> occt_reference_geometry.cpp
+//     thread apply         -> occt_thread_boolean.cpp
+//     full-round fillet    -> occt_full_round_fillet.cpp
+//     G2 blend fillet      -> occt_g2_fillet.cpp
 //     spine (this class's name()/available(), helpers, registration)
 //                         -> occt_engine.cpp
 //
@@ -197,6 +203,8 @@ public:
                                 int aCount, const double* profileB_XY, int bCount) override;
     ShapeResult guided_sweep(const double* profileXY, int profileCount, const double* pathXYZ,
                              int pathCount, const double* guideXYZ, int guideCount) override;
+    // wrap_emboss is DEFINED in its own TU (occt_wrap_emboss.cpp) so the robust
+    // sewn-pad rework (Phase-3) can be owned there without touching occt_construct.cpp.
     ShapeResult wrap_emboss(EngineShape body, int faceId, const double* profileXY, int count,
                             double depth, int boss) override;
     ShapeResult helical_thread(double majorRadiusMM, double pitchMM, double turns, double depthMM,
@@ -243,8 +251,20 @@ public:
     ShapeResult split_plane(EngineShape body, double ox, double oy, double oz, double nx, double ny,
                             double nz, int keepPositive) override;
 
+    // ── Phase-3 feature: full-round fillet (occt_full_round_fillet.cpp) ────────
+    ShapeResult full_round_fillet(EngineShape body, int faceId) override;
+    ShapeResult full_round_fillet_faces(EngineShape body, int leftFaceId, int middleFaceId,
+                                        int rightFaceId) override;
+
+    // ── Phase-3 feature: G2 blend fillet (occt_g2_fillet.cpp) ──────────────────
+    ShapeResult fillet_edges_g2(EngineShape body, const int* edgeIds, int edgeCount,
+                                double radius) override;
+
     // ── boolean (occt_booltransform.cpp) ──────────────────────────────────────
     ShapeResult boolean_op(EngineShape a, EngineShape b, int op) override;
+
+    // ── Phase-3 boolean: robust thread apply (occt_thread_boolean.cpp) ─────────
+    ShapeResult thread_apply(EngineShape shaft, EngineShape thread, int op) override;
 
     // ── tessellate (occt_tessellate.cpp) ──────────────────────────────────────
     Result<MeshData> tessellate(EngineShape body, double deflection) override;
@@ -263,6 +283,13 @@ public:
                                              int edgeCount) override;
     Result<std::vector<double>> offset_face_boundary(EngineShape body, int faceId,
                                                      double distance) override;
+
+    // ── Phase-3 reference geometry (occt_reference_geometry.cpp) ───────────────
+    // Derived datums that read an existing body's geometry (the point-only trio is
+    // pure fp64 math and lives facade-side). Each fills 6 values.
+    Result<std::vector<double>> ref_plane_from_face(EngineShape body, int faceId) override;
+    Result<std::vector<double>> ref_axis_from_edge(EngineShape body, int edgeId) override;
+    Result<std::vector<double>> ref_axis_from_face(EngineShape body, int faceId) override;
 
     // ── transform (occt_booltransform.cpp) ────────────────────────────────────
     ShapeResult scale_shape(EngineShape body, double factor) override;

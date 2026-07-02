@@ -266,6 +266,56 @@ CCShapeId cc_place_on_frame(CCShapeId body,
                             double ux, double uy, double uz,
                             double vx, double vy, double vz);
 
+/* ── Phase-3 additive: reference geometry (datum planes / axes) ──────────────── */
+
+/* ADDITIVE (not part of the mirrored KernelBridgeAPI.h ABI): compute datum
+ * reference geometry and return it as a POD out-array with a 1/0 success flag,
+ * creating NO shape handle. For a plane out6 = [ox,oy,oz, nx,ny,nz] (origin +
+ * unit normal); for an axis out6 = [ox,oy,oz, dx,dy,dz] (origin + unit
+ * direction). On success the normal/direction is unit-length within 1e-9.
+ *
+ * The three point-only constructors are exact fp64 vector math and work in EVERY
+ * build (including the no-OCCT host stub). The three derived constructors read an
+ * existing body's geometry and require a B-rep engine; in the host stub they
+ * return 0 (unsupported) without crashing. */
+int cc_ref_plane_from_points(const double p0[3], const double p1[3], const double p2[3],
+                             double out6[6]);
+int cc_ref_plane_offset(const double origin[3], const double normal[3], double dist,
+                        double out6[6]);
+int cc_ref_plane_from_face(CCShapeId body, int faceId, double out6[6]);
+int cc_ref_axis_from_points(const double a[3], const double b[3], double out6[6]);
+int cc_ref_axis_from_edge(CCShapeId body, int edgeId, double out6[6]);
+int cc_ref_axis_from_face(CCShapeId body, int faceId, double out6[6]);
+
+/* ── Phase-3 additive: robust thread boolean ─────────────────────────────────── */
+
+/* ADDITIVE: apply a helical thread body to a shaft by a segmented / feature-based
+ * boolean that completes within a wall-clock budget where a single brute-force
+ * boolean on the full helix would hang. op = 0 fuses the thread onto the shaft
+ * (external thread), op = 1 cuts it out (internal thread); any other op returns 0.
+ * Returns a new body id on success, 0 on failure. Safe no-op (returns 0) in the
+ * host stub. cc_boolean and the thread builders are unchanged. */
+CCShapeId cc_thread_apply(CCShapeId shaft, CCShapeId thread, int op);
+
+/* ── Phase-3 additive: full-round fillet (face-consuming rolling-ball blend) ──── */
+
+/* ADDITIVE: replace a narrow face with a rolling-ball blend tangent to its two
+ * opposite neighbour faces (consuming the middle face). cc_full_round_fillet
+ * auto-detects the two opposite neighbours of faceId; cc_full_round_fillet_faces
+ * consumes middleFaceId and blends tangent to leftFaceId and rightFaceId. Returns
+ * a new body id on success, 0 on failure. Safe no-op (returns 0) in the host stub. */
+CCShapeId cc_full_round_fillet(CCShapeId body, int faceId);
+CCShapeId cc_full_round_fillet_faces(CCShapeId body, int leftFaceId, int middleFaceId,
+                                     int rightFaceId);
+
+/* ── Phase-3 additive: G2 (curvature-continuous) blend fillet ────────────────── */
+
+/* ADDITIVE: build a curvature-continuous (G2, or best-achievable) blend along the
+ * given edges at the nominal radius. Returns a new body id on success, 0 on
+ * failure. The stock cc_fillet_edges (G1 baseline) is unchanged. Safe no-op
+ * (returns 0) in the host stub. */
+CCShapeId cc_fillet_edges_g2(CCShapeId body, const int *edgeIds, int edgeCount, double radius);
+
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
 /* Release a body held in the kernel's shape registry. */

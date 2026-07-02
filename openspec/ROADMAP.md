@@ -122,21 +122,51 @@ Changes: **`add-metal-compute-backend`** (capability `metal-backend`),
 ## Phase 3 — Missing features OCCT lacks (native algorithms)
 New geometry the app already needs; these are native from the start (OCCT can't
 do them). Each replaces/augments its `cc_*` behind the facade.
-- ☐ **Curvature-continuous (G2) fillet / blend surfaces** (OCCT is G1/circular
+
+> **Acceptance bar:** the in-repo Phase-3 property suite
+> (`scripts/run-sim-phase3-suite.sh`) on the booted iOS simulator with OCCT
+> linked (`cc_brep_available()==1`), each result asserted against a REAL
+> geometric property (`IsValid`, watertight, volume sign, `1e-9` normals,
+> G1-tangency, or a MEASURED curvature gap). Result: **65 passed, 0 failed, 1
+> deferred**. On-device runs + app link-swap are optional/deferred. See
+> `docs/STATUS-phase-3.md`.
+
+- ✅ **Curvature-continuous (G2) fillet / blend surfaces** (OCCT is G1/circular
   only). Change **`add-g2-blend-fillet`** — capability `g2-blend`. Contract:
   `occt-usage` §Fillets & chamfers limitation (GitHub #284); `cc_fillet_edges`.
-- ☐ **Rolling-ball / full-round fillet.** Change **`add-full-round-fillet`** —
-  capability `full-round-fillet` (GitHub #285).
-- ☐ **Robust thread↔shaft boolean** (feature-based, doesn't hang on fine
+  *(implemented; **verified on the iOS sim** — valid + watertight solid, MEASURED
+  seam curvature gap **0.018835 within G2 tol 0.05** (1/r=0.333333) while the stock
+  G1 baseline **0.309740 fails** the bar; G2 measurably smaller than G1; bit-exact
+  determinism (dV=dBBox=dGap=0). G2 is claimed because the numbers show it.)*
+- ◐ **Rolling-ball / full-round fillet.** Change **`add-full-round-fillet`** —
+  capability `full-round-fillet` (GitHub #285). *(implemented; **verified on the
+  iOS sim** for tangent/parallel-wall strips — 10 checks: middle face consumed,
+  cylinder blend, axis equidistant, **G1-tangent both seams dot=1.000000**
+  (tol cos1°=0.999848), deterministic, single-arg auto-detect matches. **DEFERRED
+  (measured):** non-parallel walls (off-parallel 22.62°, n_L·n_R=-0.9231) fall
+  back to a VALID standard edge fillet, middle face NOT consumed (vol=1597.844).)*
+- ✅ **Robust thread↔shaft boolean** (feature-based, doesn't hang on fine
   helices). Change **`add-robust-thread-boolean`** — capability `thread-boolean`.
   Contract: `occt-usage` §Performance (GitHub #286); `cc_boolean`,
-  `cc_helical_thread`.
-- ☐ **Robust wrap-emboss** (cap-and-side / healed sew vs fragile ThruSections).
+  `cc_helical_thread`. *(implemented; **verified on the iOS sim** — segmented
+  apply of a fine multi-turn thread: FUSE **4.3778 s < 8 s budget**, CUT
+  **4.4817 s < 8 s**, both `BRepCheck`-valid + watertight (0 free / 0 non-manifold),
+  correct volume sign (fuse +29.80; cut removes ≈V_thread), naive `cc_boolean`
+  NOT run. Determinism within tolerance, not bit-exact (\|ΔV\|=0.2004, rel 2e-4 —
+  parallel BOPAlgo).)*
+- ✅ **Robust wrap-emboss** (cap-and-side / healed sew vs fragile ThruSections).
   Change **`add-robust-wrap-emboss`** — capability `wrap-emboss`. Contract:
   `occt-usage` §Offsets/sweeps/lofts (GitHub #290); `cc_wrap_emboss`.
-- ☐ **Reference geometry** primitives (datum planes/axes) if kernel support
+  *(implemented; **verified on the iOS sim** — emboss + deboss both valid +
+  watertight (naked=0), correct volume sign (V_base=12566.37; emboss Δ=+105.60,
+  deboss Δ=-86.40), reproducible, wide high-curvature profile valid + watertight
+  (Δ=369.60); falls back sewn→coarse ThruSections→`0`.)*
+- ✅ **Reference geometry** primitives (datum planes/axes) if kernel support
   needed. Change **`add-reference-geometry`** — capability `reference-geometry`.
-  Cross-refs `cybercad` `add-datum-plane-sketching`.
+  Cross-refs `cybercad` `add-datum-plane-sketching`. *(implemented; **verified on
+  the iOS sim** — 21/21: plane/axis from points/offset/face/edge; 6/6 box faces
+  resolve planes with unit normals within `1e-9`; 12/12 box edges resolve axes;
+  cylinder axis unit ±Z; planar-cap / non-planar / degenerate guards hold.)*
 
 ## Phase 4 — Native rewrite (retire OCCT, capability by capability)
 Replace the OCCT adapter with native C++20 implementations, one capability at a
@@ -177,11 +207,11 @@ checkboxes as changes land; flip to ✅ when a change is validated and archived.
 | 2 | `add-metal-compute-backend` | metal-backend | ✅ complete at acceptance bar (backend self-test PASS on iOS-sim GPU; fp32-only + precision guard; host CTest green with METAL=OFF); on-device run = optional deferred |
 | 2 | `add-gpu-tessellation` | gpu-tessellation | ✅ complete at acceptance bar (GPU surface-eval + per-vertex normals on iOS-sim GPU 18/18; GPU eval wired into `cc_tessellate` behind the toggle, integ suite 26/26 GPU-fed-vs-OCCT parity, GPU-OFF suite 221/221); repeat-run determinism assertion + GPU tessellation of holed/trimmed faces (falls back to OCCT by design) deferred |
 | 2 | `add-gpu-spatial-acceleration` | spatial-acceleration | ◐ in progress (GPU LBVH nearest-hit + batched ray-pick verified on iOS-sim GPU, 18/18; frustum-pick parity leg, facade pick/cull wiring + repeat-run determinism deferred) |
-| 3 | `add-g2-blend-fillet` | g2-blend | ☐ planned (#284) |
-| 3 | `add-full-round-fillet` | full-round-fillet | ☐ planned (#285) |
-| 3 | `add-robust-thread-boolean` | thread-boolean | ☐ planned (#286) |
-| 3 | `add-robust-wrap-emboss` | wrap-emboss | ☐ planned (#290) |
-| 3 | `add-reference-geometry` | reference-geometry | ☐ planned |
+| 3 | `add-g2-blend-fillet` | g2-blend | ✅ complete at acceptance bar (#284) (iOS-sim: valid+watertight, MEASURED curvature gap 0.018835 within G2 tol 0.05, G1 baseline 0.309740 fails, bit-exact determinism); on-device + app link-swap = optional deferred |
+| 3 | `add-full-round-fillet` | full-round-fillet | ◐ in progress (#285) (iOS-sim: true rolling-ball blend verified for tangent/parallel walls — middle face consumed, G1 dot=1.000000, deterministic; **deferred**: non-parallel walls 22.62° → valid standard edge fillet, face not consumed) |
+| 3 | `add-robust-thread-boolean` | thread-boolean | ✅ complete at acceptance bar (#286) (iOS-sim: FUSE 4.38 s / CUT 4.48 s both < 8 s budget, valid+watertight, correct volume sign, naive path not run; determinism within rel 2e-4, not bit-exact — parallel BOPAlgo); on-device = optional deferred |
+| 3 | `add-robust-wrap-emboss` | wrap-emboss | ✅ complete at acceptance bar (#290) (iOS-sim: emboss+deboss valid+watertight, correct volume sign, reproducible, high-curvature valid; sewn→coarse fallback); on-device + app link-swap = optional deferred |
+| 3 | `add-reference-geometry` | reference-geometry | ✅ complete at acceptance bar (iOS-sim: 21/21 — datum planes/axes within 1e-9, 6/6 faces + 12/12 edges + cyl axis, degenerate guards hold); host stub returns 0 for derived; on-device = optional deferred |
 | 4 | `add-native-math-geometry` | native-math | ☐ planned |
 | 4 | `add-native-brep-topology` | native-topology | ☐ planned |
 | 4 | `add-native-tessellation` | native-tessellation | ☐ planned |

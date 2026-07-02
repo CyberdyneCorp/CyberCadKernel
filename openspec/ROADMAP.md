@@ -107,14 +107,17 @@ Changes: **`add-metal-compute-backend`** (capability `metal-backend`),
   stays 221/221. Remaining: an explicit **repeat-run determinism** assertion;
   GPU tessellation of **holed/trimmed/curved faces** is deferred **by design**
   (they fall back to OCCT).)*
-- ◐ **Metal BVH** build/traversal (LBVH/Morton) for culling + selection. →
+- ✅ **Metal BVH** build/traversal (LBVH/Morton) for culling + selection. →
   `spatial-acceleration`. *(GPU LBVH build + stackless nearest-hit ray traversal
   **verified on the iOS-sim GPU** vs CPU brute force, same id + t (fp32).)*
-- ◐ **GPU picking** (rays + frustum vs BVH) for large models. →
-  `spatial-acceleration`. *(GPU batched **ray-pick verified on the iOS-sim GPU**
-  vs CPU reference; **frustum-pick** kernels + CPU reference are coded but the
-  parity leg is **not yet asserted** in the sim suite, and no facade pick/cull
-  `cc_*` path routes to these modules yet.)*
+- ✅ **GPU picking** (rays + frustum vs BVH) for large models. →
+  `spatial-acceleration`. *(GPU batched **ray-pick + frustum-pick both verified on
+  the iOS-sim GPU** vs CPU reference — frustum set equals the CPU reference set
+  (subset {0,1} / empty / all-enclosing), sorted ascending, and **byte-identical
+  across 8 runs** (ray-pick + frustum-pick); GPU pick suite now **26/26**. The
+  only remaining spatial item is the **OPTIONAL additive `cc_*` pick/cull facade
+  entry** (app-facing, out of scope for this change — no OCCT-side pick path
+  exists in the facade today).)*
 - ✅ Mesh post-processing (GPU per-vertex normals) → `gpu-tessellation`.
   *(**verified on the iOS-sim GPU** vs CPU reference per component, dot ≈ 1; LOD /
   deformation not in scope for this change.)*
@@ -232,7 +235,7 @@ checkboxes as changes land; flip to ✅ when a change is validated and archived.
 | 1 | `accelerate-multicore-occt` | parallel-acceleration | ✅ complete at acceptance bar (parallel paths on iOS-sim; determinism audit + serial-vs-parallel benchmark done); on-device scaling = optional deferred |
 | 2 | `add-metal-compute-backend` | metal-backend | ✅ complete at acceptance bar (backend self-test PASS on iOS-sim GPU; fp32-only + precision guard; host CTest green with METAL=OFF); on-device run = optional deferred |
 | 2 | `add-gpu-tessellation` | gpu-tessellation | ✅ complete at acceptance bar (GPU surface-eval + per-vertex normals on iOS-sim GPU 18/18; GPU eval wired into `cc_tessellate` behind the toggle, integ suite 26/26 GPU-fed-vs-OCCT parity, GPU-OFF suite 221/221); repeat-run determinism assertion + GPU tessellation of holed/trimmed faces (falls back to OCCT by design) deferred |
-| 2 | `add-gpu-spatial-acceleration` | spatial-acceleration | ◐ in progress (GPU LBVH nearest-hit + batched ray-pick verified on iOS-sim GPU, 18/18; frustum-pick parity leg, facade pick/cull wiring + repeat-run determinism deferred) |
+| 2 | `add-gpu-spatial-acceleration` | spatial-acceleration | ✅ complete at acceptance bar (iOS-sim GPU: LBVH nearest-hit + batched ray-pick + **frustum-pick** all vs CPU reference, GPU pick suite **26/26** — frustum set == CPU set {0,1}/empty/all-enclosing, sorted ascending, **byte-identical ×8 runs** for ray + frustum); optional additive `cc_*` pick/cull facade entry = app-facing, out of scope |
 | 3 | `add-g2-blend-fillet` | g2-blend | ✅ complete at acceptance bar (#284) (iOS-sim: valid+watertight, MEASURED curvature gap 0.018835 within G2 tol 0.05, G1 baseline 0.309740 fails, bit-exact determinism); on-device + app link-swap = optional deferred |
 | 3 | `add-full-round-fillet` | full-round-fillet | ◐ in progress (#285) (iOS-sim: true rolling-ball blend verified for tangent/parallel walls — middle face consumed, G1 dot=1.000000, deterministic; **deferred**: non-parallel walls 22.62° → valid standard edge fillet, face not consumed) |
 | 3 | `add-robust-thread-boolean` | thread-boolean | ✅ complete at acceptance bar (#286) (iOS-sim: FUSE 4.38 s / CUT 4.48 s both < 8 s budget, valid+watertight, correct volume sign, naive path not run; determinism within rel 2e-4, not bit-exact — parallel BOPAlgo); on-device = optional deferred |

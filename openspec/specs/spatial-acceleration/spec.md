@@ -1,7 +1,11 @@
 # spatial-acceleration Specification
 
 ## Purpose
-TBD - synced from change add-gpu-spatial-acceleration (not archived; deferred tasks remain). Update Purpose when the change is archived.
+GPU-accelerated spatial data structures and queries for large models: a fp32 LBVH
+built on the Metal compute backend, stackless nearest-hit ray traversal, and ray +
+frustum picking — each verified against a CPU brute-force reference on the iOS
+simulator GPU, deterministic across runs, with a CPU fallback and no `cc_*`
+signature change. Delivered by `add-gpu-spatial-acceleration`.
 ## Requirements
 
 ### Requirement: GPU LBVH build

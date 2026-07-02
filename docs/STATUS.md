@@ -19,10 +19,10 @@ the CyberCad **app link-swap** are optional, deferred follow-ups — not gates.
 |---|---|---|
 | Host unit tests (CPU-only, stub engine) | `ctest` (host build) | **7 / 7** |
 | Full `cc_*` runtime + determinism + benchmark | `scripts/run-sim-suite.sh` | **221 / 221** |
-| GPU-vs-CPU parity (Metal) | `scripts/run-sim-gpu-suite.sh` | **18 / 18** |
+| GPU-vs-CPU parity (Metal) | `scripts/run-sim-gpu-suite.sh` | **26 / 26** |
 | GPU tessellation wired into `cc_tessellate` | `scripts/run-sim-integ-suite.sh` | **26 / 26** |
 | Native features (Phase 3) | `scripts/run-sim-phase3-suite.sh` | **65 / 65 (+1 deferred)** |
-| Spec validation | `openspec validate --all --strict` | **10 / 10** |
+| Spec validation | `openspec validate --all --strict` | **17 / 17** |
 
 Highlights (measured, not asserted-trivially):
 
@@ -41,7 +41,7 @@ Highlights (measured, not asserted-trivially):
 |---|---|---|
 | **0 — Foundation** | `add-kernel-foundation` | ✅ complete at acceptance bar |
 | **1 — Multi-core** | `accelerate-multicore-occt` | ✅ complete at acceptance bar |
-| **2 — GPU (Metal)** | `add-metal-compute-backend` ✅ · `add-gpu-tessellation` ✅ · `add-gpu-spatial-acceleration` ◐ | ◐ backend + tessellation done; spatial tail open |
+| **2 — GPU (Metal)** | `add-metal-compute-backend` ✅ · `add-gpu-tessellation` ✅ · `add-gpu-spatial-acceleration` ✅ | ✅ complete at acceptance bar; optional `cc_*` pick/cull facade entry deferred |
 | **3 — Missing features** | `add-reference-geometry` ✅ · `add-robust-wrap-emboss` ✅ · `add-robust-thread-boolean` ✅ · `add-g2-blend-fillet` ✅ · `add-full-round-fillet` ◐ | ◐ 4/5 full; full-round parallel-wall only |
 | **4 — Native rewrite** | (8 changes, planned) | ☐ planned |
 
@@ -50,8 +50,11 @@ Detail: [STATUS-phase-0-1.md](STATUS-phase-0-1.md) ·
 
 ## Open / deferred (honest)
 
-- **Phase 2 spatial tail:** GPU **frustum-pick** parity leg + a `cc_*` pick/cull
-  path routing to the GPU BVH (ray-pick + BVH already verified).
+- **Phase 2 spatial tail:** GPU **frustum-pick** parity + **repeat-run
+  determinism** now VERIFIED on the sim (GPU pick suite 26/26; frustum set == CPU
+  set, sorted ascending, byte-identical ×8 for ray + frustum). The only remaining
+  item is the **OPTIONAL additive `cc_*` pick/cull facade entry** (app-facing, out
+  of scope — no OCCT-side pick path exists in the facade today).
 - **Full-round fillet (#285):** non-parallel walls fall back to a valid edge
   fillet (rolling-ball only for tangent/parallel walls).
 - **G2 fillet (#284):** non-straight seams defer to a standard fillet.

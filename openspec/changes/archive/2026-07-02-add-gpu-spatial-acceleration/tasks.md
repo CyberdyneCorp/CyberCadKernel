@@ -29,20 +29,22 @@ pass — this is the acceptance bar for every parity requirement below.
   batched rays). (**ios-sim-run**)
   <br>Verified: `[GPU] PASS bvh: GPU closestHit batch succeeds` and
   `[GPU] PASS pick: GPU batched ray-pick succeeds`.
-- [ ] 3.2 GPU frustum-pick: primitives whose AABB intersects the selection
+- [x] 3.2 GPU frustum-pick: primitives whose AABB intersects the selection
   frustum, returned as a sorted index set. (**ios-sim-run**)
-  <br>IMPLEMENTED but NOT EXERCISED on the sim: `frustumPick` (bvh) / `pickFrustum`
-  (pick) plus their CPU references are coded, but the current 18-check sim suite
-  only asserts ray/nearest-hit parity — no frustum-pick check is run. Follow-up:
-  add a frustum-pick parity assertion to `run-sim-gpu-suite.sh`.
+  <br>Verified on the sim: `[GPU] PASS pick: GPU frustum-pick succeeds` and
+  `[GPU] PASS pick: GPU frustum set is sorted ascending` (strictly-increasing ids)
+  in `tests/sim/gpu_pick_check.mm`, exercising `GpuPick::pickFrustum`.
 - [x] 3.3 Parity: GPU nearest-hit (primitive id + hit point within fp32 tolerance)
   equals the CPU brute-force reference. (**ios-sim-run**)
   <br>Verified: `[GPU] PASS bvh: GPU nearest hit matches brute force (same id + t
   within fp32 tol)` and `[GPU] PASS pick: GPU ray-pick matches CPU reference
   (same id + point within tol)`.
-- [ ] 3.4 Parity: GPU frustum pick set equals the CPU brute-force set. (**ios-sim-run**)
-  <br>NOT EXERCISED on the sim (depends on 3.2's suite check). The CPU reference
-  and GPU frustum kernels exist; the parity assertion is not yet in the suite run.
+- [x] 3.4 Parity: GPU frustum pick set equals the CPU brute-force set. (**ios-sim-run**)
+  <br>Verified: `[GPU] PASS pick: GPU frustum set equals CPU reference set (same ids)`
+  compares `GpuPick::pickFrustum` against `cpuFrustumReference` on a known subset
+  {0,1}, plus empty-selection ({}) and all-enclosing (all ids) edge cases — each
+  asserted equal to the CPU reference. A guard check confirms the reference is the
+  real subset {0,1}, so the equality is not trivially-true.
 
 ## 4. Backend routing + fallback
 - [x] 4.1 Route BVH build + picking through the compute backend (Metal when
@@ -63,19 +65,21 @@ pass — this is the acceptance bar for every parity requirement below.
   pick/cull call to these modules is a follow-up.
 
 ## 5. Determinism
-- [ ] 5.1 Fixed tie-break + set-sort: repeated GPU nearest-hit and frustum-pick
+- [x] 5.1 Fixed tie-break + set-sort: repeated GPU nearest-hit and frustum-pick
   runs on the same scene are reproducible regardless of thread ordering. (**ios-sim-run**)
-  <br>Deterministic by construction (documented epsilon + lowest-index tie-break
-  for nearest-hit; ascending-sorted frustum set independent of thread order), and
-  a design check confirms nearest-hit selection resolves the stacked/miss scene as
-  intended, but no explicit repeat-run reproducibility assertion is in the sim
-  suite yet. Follow-up: add a repeat-run check.
+  <br>Verified: `[GPU] PASS pick: GPU ray-pick is byte-identical across 8 runs`
+  (primitive id + t + hit point compared bit-for-bit via memcmp, not within a
+  tolerance) and `[GPU] PASS pick: GPU frustum-pick is byte-identical across 8 runs`
+  (identical sorted id set each run). Confirms the documented epsilon/lowest-index
+  tie-break and ascending set-sort make the observable result independent of GPU
+  thread ordering.
 
 ## 6. Validation
-- [ ] 6.1 On-simulator GPU-vs-CPU parity suite (LBVH nearest-hit, frustum pick)
+- [x] 6.1 On-simulator GPU-vs-CPU parity suite (LBVH nearest-hit, frustum pick)
   green within fp32 tolerance. (**ios-sim-run**)
-  <br>PARTIAL: LBVH nearest-hit parity is green on the simulator (all 18 checks in
-  `run-sim-gpu-suite.sh` pass); the **frustum-pick** leg is not yet asserted in the
-  suite (see 3.2 / 3.4).
+  <br>Green: `run-sim-gpu-suite.sh` now runs 26 checks (0 failed), covering LBVH
+  nearest-hit parity, the pick-module frustum-pick set parity (subset / empty /
+  all-enclosing), sorted-set ordering, and 8x repeat-run determinism for both
+  ray-pick and frustum-pick.
 - [x] 6.2 `openspec validate --all --strict` green; update `ROADMAP.md` Phase 2 +
   change index for `spatial-acceleration`.

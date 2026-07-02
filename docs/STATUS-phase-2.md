@@ -9,16 +9,19 @@ acceptance bar for Phase 2 (decided alongside the change specs) is the
 CPU reference within an fp32 tolerance. On-device (physical Apple silicon) runs
 and OCCT `cc_tessellate` integration are explicit follow-ups.
 
-Date: 2026-07-02 · Branch: `main`.
+Date: 2026-07-02 · Branch: `main`. Spatial-acceleration frustum-pick + determinism
+leg landed (GPU pick suite 18 → 26).
 
 ## TL;DR
 
 - **VERIFIED here (iOS simulator GPU):** the Metal compute backend self-test
-  passes, and the integrated GPU-vs-CPU parity suite passes **18 / 18** checks —
+  passes, and the integrated GPU-vs-CPU parity suite passes **26 / 26** checks —
   surface-grid evaluation, LBVH build + stackless nearest-hit ray traversal,
-  batched ray-picking, and GPU per-vertex mesh normals — each within an fp32
-  tolerance against an independent CPU reference. The host (no-Metal) CTest stays
-  green (`CYBERCAD_HAS_METAL=OFF`), so the CPU-only path is unaffected.
+  batched ray-picking, **frustum-picking** (set parity vs CPU reference + sorted
+  ordering), **repeat-run determinism** (ray + frustum byte-identical ×8), and GPU
+  per-vertex mesh normals — each within an fp32 tolerance against an independent
+  CPU reference. The host (no-Metal) CTest stays green (`CYBERCAD_HAS_METAL=OFF`),
+  so the CPU-only path is unaffected.
 - **NEW — VERIFIED here (iOS simulator):** the GPU eval path is now wired into
   **`cc_tessellate` / `cc_face_meshes`** behind the `cc_set_gpu_tessellation`
   toggle, with per-face eligibility routing (planar/untrimmed → GPU grid
@@ -27,9 +30,10 @@ Date: 2026-07-02 · Branch: `main`.
   mesh against the OCCT-only mesh (bbox + area + volume + watertightness) on an
   all-GPU box and a mixed GPU+OCCT slab. The GPU-OFF sim suite stays **221 / 221**.
   See "GPU tessellation integration" below.
-- **NOT verified / not built here:** the **frustum-pick** parity leg (kernels + CPU
-  reference are coded but not asserted in the sim suite); explicit **repeat-run
-  determinism** assertions; and any **on-device** run. Holed / trimmed / curved
+- **NOT verified / not built here:** the **OPTIONAL additive `cc_*` pick/cull
+  facade entry** (app-facing — no OCCT-side pick path exists in the facade today;
+  out of scope for `add-gpu-spatial-acceleration`), and any **on-device** run.
+  Holed / trimmed / curved
   faces **always fall back to OCCT by design** (not a gap — the GPU grid
   triangulator only handles single-outer-wire, UV-rectangular, low-degree faces).
 
@@ -102,14 +106,17 @@ Both suites run runtime-compiled MSL on the real "Apple iOS simulator GPU" via
 round-trip, runtime MSL compile + pipeline cache, dispatch, and fp32 saxpy parity.
 
 **Integrated parity suite** (`scripts/run-sim-gpu-suite.sh`):
-`== 18 passed, 0 failed ==`.
+`== 26 passed, 0 failed ==` (baseline 18 + 8 new frustum/determinism checks;
+re-run confirmed identical 26 / 0).
 
 | Module | Checks (all PASS) |
 |---|---|
 | device | metal device available on simulator GPU |
 | surface-eval | GPU Bezier grid evaluates · grid dimensions match request · GPU grid matches de Casteljau reference (fp32 rel ~1e-4) |
 | bvh | LBVH builds on GPU · query path bound to the Metal backend · GPU closestHit batch succeeds · GPU nearest hit matches brute force (same id + t, fp32 tol) · nearest-hit selection resolves the stacked/miss scene as designed |
-| pick | GpuPick engine compiles pipelines · engine driven by the Metal GPU · GPU batched ray-pick succeeds · GPU ray-pick matches CPU reference (same id + point, tol) · nearest-hit / miss resolved as designed |
+| pick (ray) | GpuPick engine compiles pipelines · engine driven by the Metal GPU · GPU batched ray-pick succeeds · GPU ray-pick matches CPU reference (same id + point, tol) · nearest-hit / miss resolved as designed |
+| pick (frustum) | GPU frustum-pick succeeds · GPU frustum set == CPU reference set (same ids) · frustum reference selects the known subset {0,1} · GPU frustum set is sorted ascending · empty-selection frustum returns {} (matches CPU) · all-enclosing frustum returns every id |
+| determinism | GPU ray-pick byte-identical across 8 runs · GPU frustum-pick byte-identical across 8 runs |
 | mesh-post | GPU per-vertex normals compute · one normal per input vertex · GPU normals match CPU reference per component (fp32) · GPU/CPU normal dot product ~ 1 (aligned unit vectors) |
 
 The host regression (`CYBERCAD_HAS_METAL=OFF` CTest) stays **PASS**, confirming
@@ -169,7 +176,7 @@ cd /Users/leonardoaraujo/work/CyberCadKernel
 bash scripts/run-sim-gpu-selftest.sh   # expect: "device: Apple iOS simulator GPU", "SELFTEST PASS", exit 0
 
 # Integrated GPU-vs-CPU parity suite on the iOS simulator GPU
-bash scripts/run-sim-gpu-suite.sh      # expect: "== 18 passed, 0 failed ==", exit 0
+bash scripts/run-sim-gpu-suite.sh      # expect: "== 26 passed, 0 failed ==", exit 0
 
 # GPU-tessellation INTEGRATION suite (GPU path wired into cc_tessellate vs OCCT)
 bash scripts/run-sim-integ-suite.sh    # expect: "[ITEG] == 26 passed, 0 failed ==", exit 0
@@ -200,9 +207,11 @@ openspec validate --all --strict       # expect: all changes pass
 | GPU surface-grid eval matches the CPU de Casteljau reference (fp32) | `run-sim-gpu-suite.sh` surface-eval checks |
 | GPU LBVH build + stackless nearest-hit ray traversal matches CPU brute force (same id + t) | `run-sim-gpu-suite.sh` bvh checks |
 | GPU batched ray-pick matches CPU reference (same id + point) | `run-sim-gpu-suite.sh` pick checks |
+| **GPU frustum-pick set == CPU reference set** (subset {0,1} / empty / all-enclosing, sorted ascending; guarded so equality is not trivially-true) | `run-sim-gpu-suite.sh` frustum checks |
+| **GPU pick determinism** — ray-pick + frustum-pick **byte-identical across 8 runs** (memcmp, not within tolerance) | `run-sim-gpu-suite.sh` determinism checks |
 | GPU per-vertex normals match CPU reference per component (dot ≈ 1) | `run-sim-gpu-suite.sh` mesh-post checks |
 | fp32-only backend refuses fp64; precision guard keeps fp64 on CPU | `metal_backend.mm` fp64 guard + Phase-0 `ComputeRegistry` routing |
-| Integrated suite green | `== 18 passed, 0 failed ==` |
+| Integrated suite green | `== 26 passed, 0 failed ==` |
 | **GPU eval wired into `cc_tessellate` / `cc_face_meshes`** behind the toggle; per-face eligibility routing (planar/untrimmed → GPU, holed/curved → OCCT) | `run-sim-integ-suite.sh` box `gpu=6/0`, slab `gpu=4/3` |
 | **GPU-fed mesh vs OCCT-only mesh parity** (bbox + area + volume + watertight) on box + mixed slab | `run-sim-integ-suite.sh` → `[ITEG] == 26 passed, 0 failed ==` |
 | **GPU-OFF path byte-identical**; full `cc_*` suite unchanged with toggle OFF | `run-sim-suite.sh` → `== 221 passed, 0 failed ==` |
@@ -214,9 +223,8 @@ openspec validate --all --strict       # expect: all changes pass
 |---|---|---|
 | **Holed / trimmed / curved faces on the GPU** | *by design*, not a gap — the GPU grid triangulator only handles single-outer-wire, UV-rectangular, low-degree faces; everything else falls back to OCCT `BRepMesh` (slab: 3 of 7 faces). Trimmed/curved GPU tessellation is a Phase-4-native concern | `gpu-tessellation` 3.1 (documented) |
 | **Explicit repeat-run determinism** assertion for the tessellation path | deterministic by construction (one GPU thread per grid sample, fixed CSR normal accumulation) but no repeat-run assertion runs in the integ suite | `gpu-tessellation` 6.1 |
-| **Frustum-pick parity on the sim** | `frustumPick` / `pickFrustum` kernels + CPU references are coded, but the 18-check suite only asserts ray/nearest-hit parity — no frustum assertion is run | `spatial-acceleration` 3.2, 3.4, 6.1 |
-| **Facade pick/cull wiring** for the GPU BVH/pick modules | modules gain the GPU option at the module level only; no OCCT-side pick/cull `cc_*` path exists to route through them today | `spatial-acceleration` 4.3 |
-| **Explicit repeat-run determinism** assertions (surface eval, mesh normals, nearest-hit, frustum) | deterministic by construction (fixed grid decomposition, fixed CSR accumulation order, epsilon + lowest-index tie-break, sorted sets) but no repeat-run check is in the sim suite | `gpu-tessellation` 5.1, `spatial-acceleration` 5.1 |
+| **OPTIONAL additive `cc_*` pick/cull facade entry** for the GPU BVH/pick modules | app-facing and **out of scope** for `add-gpu-spatial-acceleration` — the GPU BVH/pick modules are fully verified standalone; no OCCT-side pick/cull `cc_*` path exists in the facade today, so exposing one is a separate app-facing change | — (out of scope) |
+| **Explicit repeat-run determinism** assertions (surface eval, mesh normals) | deterministic by construction (fixed grid decomposition, fixed CSR accumulation order) but no repeat-run check is in the sim suite. *(Spatial-acceleration determinism — nearest-hit + frustum, byte-identical ×8 — is now VERIFIED above.)* | `gpu-tessellation` 5.1 |
 | **On-device run** on physical Apple silicon | everything above ran on the booted **simulator** GPU only; nothing was run on hardware. The Phase-2 acceptance bar is the simulator, so this is optional | all Phase-2 changes |
 
 The GPU compute backend and all four GPU modules are verified on the iOS
@@ -226,6 +234,10 @@ behind the toggle, with GPU-fed-vs-OCCT mesh parity verified on the sim (integ
 suite 26/26, GPU-OFF suite 221/221). `add-gpu-tessellation` is therefore complete
 at the Phase-2 acceptance bar except for an explicit repeat-run determinism
 assertion; GPU tessellation of holed/trimmed/curved faces is deferred **by design**
-(they fall back to OCCT). What remains for `add-gpu-spatial-acceleration` is the
-**frustum-pick suite leg** and the **facade pick/cull wiring**, so that change
-stays ◐ (in progress) in `ROADMAP.md`.
+(they fall back to OCCT). `add-gpu-spatial-acceleration` is now **complete at the
+Phase-2 acceptance bar** — the GPU pick suite is **26/26** with frustum-pick set
+parity (vs CPU reference, subset / empty / all-enclosing, sorted ascending) and
+byte-identical ×8 repeat-run determinism for both ray-pick and frustum-pick — so
+that change is ✅ in `ROADMAP.md`. The only remaining spatial item is the
+**OPTIONAL additive `cc_*` pick/cull facade entry** (app-facing, out of scope for
+this change — no OCCT-side pick path exists in the facade today).

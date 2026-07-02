@@ -1,0 +1,79 @@
+# Status
+
+A single, honest snapshot of what is implemented and **verified**, with the
+commands to reproduce it. Nothing here is claimed working unless it was actually
+built/run in-repo. Per-phase detail lives in the phase status docs linked below.
+
+_Last updated: 2026-07-02._
+
+## Acceptance bar
+
+The **in-repo iOS-simulator suite** is the acceptance bar: correctness is
+asserted against analytic references, GPU results against CPU references, and
+B-rep results against validity/watertightness/volume. Physical-device runs and
+the CyberCad **app link-swap** are optional, deferred follow-ups — not gates.
+
+## Verified in-repo
+
+| Suite | Command | Result |
+|---|---|---|
+| Host unit tests (CPU-only, stub engine) | `ctest` (host build) | **7 / 7** |
+| Full `cc_*` runtime + determinism + benchmark | `scripts/run-sim-suite.sh` | **221 / 221** |
+| GPU-vs-CPU parity (Metal) | `scripts/run-sim-gpu-suite.sh` | **18 / 18** |
+| GPU tessellation wired into `cc_tessellate` | `scripts/run-sim-integ-suite.sh` | **26 / 26** |
+| Native features (Phase 3) | `scripts/run-sim-phase3-suite.sh` | **65 / 65 (+1 deferred)** |
+| Spec validation | `openspec validate --all --strict` | **10 / 10** |
+
+Highlights (measured, not asserted-trivially):
+
+- **Determinism:** parallel booleans + meshing are **bit-identical** to serial
+  (mesh hash + exact volume + tri count), stable across 8 runs.
+- **Thread boolean (#286):** fine multi-turn fuse/cut completes in **~4.3–4.4 s**
+  (< 8 s budget), valid + watertight — no minutes-long OCCT hang.
+- **GPU tessellation:** box routes 6/6 faces to the GPU (area 600.000004 vs OCCT
+  600.000000); holed slab routes 4 GPU / 3 OCCT-fallback, bbox+area+volume match.
+- **G2 fillet (#284):** measured seam curvature gap **0.0188** (≤ 0.05 tol) vs
+  stock G1 baseline **0.31** — a real, measured curvature improvement.
+
+## Per-phase status
+
+| Phase | Change(s) | Status |
+|---|---|---|
+| **0 — Foundation** | `add-kernel-foundation` | ✅ complete at acceptance bar |
+| **1 — Multi-core** | `accelerate-multicore-occt` | ✅ complete at acceptance bar |
+| **2 — GPU (Metal)** | `add-metal-compute-backend` ✅ · `add-gpu-tessellation` ✅ · `add-gpu-spatial-acceleration` ◐ | ◐ backend + tessellation done; spatial tail open |
+| **3 — Missing features** | `add-reference-geometry` ✅ · `add-robust-wrap-emboss` ✅ · `add-robust-thread-boolean` ✅ · `add-g2-blend-fillet` ✅ · `add-full-round-fillet` ◐ | ◐ 4/5 full; full-round parallel-wall only |
+| **4 — Native rewrite** | (8 changes, planned) | ☐ planned |
+
+Detail: [STATUS-phase-0-1.md](STATUS-phase-0-1.md) ·
+[STATUS-phase-2.md](STATUS-phase-2.md) · [STATUS-phase-3.md](STATUS-phase-3.md).
+
+## Open / deferred (honest)
+
+- **Phase 2 spatial tail:** GPU **frustum-pick** parity leg + a `cc_*` pick/cull
+  path routing to the GPU BVH (ray-pick + BVH already verified).
+- **Full-round fillet (#285):** non-parallel walls fall back to a valid edge
+  fillet (rolling-ball only for tangent/parallel walls).
+- **G2 fillet (#284):** non-straight seams defer to a standard fillet.
+- **Thread boolean determinism:** reproducible within rel 2e-4, not bit-exact
+  (parallel `BOPAlgo`).
+- **On-device runs** (physical Apple silicon) and the **CyberCad app link-swap**
+  — verified/derived on the simulator only; both optional by the acceptance bar.
+
+## Reproduce everything
+
+```sh
+# Host CPU-only build + unit tests
+cmake -S . -B build -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++ \
+  -DCYBERCAD_HAS_OCCT=OFF -DCYBERCAD_HAS_METAL=OFF
+cmake --build build && (cd build && ctest --output-on-failure)
+
+# iOS-simulator integrated suites (a booted simulator is required)
+bash scripts/run-sim-suite.sh
+bash scripts/run-sim-gpu-suite.sh
+bash scripts/run-sim-integ-suite.sh
+bash scripts/run-sim-phase3-suite.sh
+
+# Specs
+openspec validate --all --strict
+```

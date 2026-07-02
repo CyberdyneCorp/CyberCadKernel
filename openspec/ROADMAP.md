@@ -195,6 +195,32 @@ OCCT unlinked for that capability. Dependency order below is the change order.
 - ☐ **Drop OCCT**: kernel is fully native C++20, MIT, no LGPL obligation. Change
   **`drop-occt`** — retires the OCCT adapter (no new capability).
 
+## Tooling & bindings
+
+Cross-cutting developer tooling that consumes the `cc_*` ABI without changing it.
+These are **desktop, development-only** artifacts (not shipped to iOS); they exist
+to drive, test, and *see* the kernel while the phases above evolve the engine
+behind the facade.
+
+- ◐ **Python binding** — a desktop (macOS arm64) Python package
+  (`cybercadkernel`) over the `cc_*` ABI: a low-level 1:1 `ctypes` binding of
+  every `cc_*` fn + POD struct, a pythonic `Kernel`/`Shape` object model
+  (context-managed handle lifetime, NumPy meshes, exceptions from
+  `cc_last_error`), and `trimesh` visualization (STL/PLY/GLB export + offscreen
+  PNG with a headless matplotlib fallback). Backed by a **Homebrew-OCCT**
+  desktop build of the kernel (`scripts/build-macos-dylib.sh` → `build-mac/`
+  `libcybercadkernel.dylib`, CMake `CYBERCAD_MACOS_OCCT=ON`, Metal excluded) so
+  Python drives real geometry (`cc_brep_available() == 1`). Change
+  **`add-python-binding`** — capability `python-binding`. Pure consumer of the
+  ABI; documented in `docs/python.md`. *(implemented + verified on the desktop —
+  `python -m pytest python/tests` = **35 passed, 1 skipped** (offscreen GL
+  render, no GL context; matplotlib PNG fallback + STL round-trip assert real
+  geometry), asserting REAL geometry through Python: box volume 1000 / area 600
+  / centroid (5,5,5), boolean cut 875 / fuse 1875 / common 125, exact bbox,
+  revolved cylinder `πr²h`, watertight tessellation, STEP + IGES round-trip
+  preserve volume, and context-managed handle lifetime.)* **Deferred:** pybind11
+  variant, interactive `pyvista` render, wheel packaging.
+
 ## Change index
 
 Phase → change → capability → status. Update the status column and each phase's
@@ -220,6 +246,7 @@ checkboxes as changes land; flip to ✅ when a change is validated and archived.
 | 4 | `add-native-fillets-offsets` | native-blends | ☐ planned |
 | 4 | `add-native-data-exchange` | native-exchange | ☐ planned |
 | 4 | `drop-occt` | — (retires OCCT adapter) | ☐ planned |
+| Tooling | `add-python-binding` | python-binding | ◐ implemented + verified on desktop (`pytest python/tests` 35 passed / 1 skipped — real geometry: box 1000/area 600, cut 875, fuse 1875, common 125, watertight tessellation, STEP+IGES round-trip; Homebrew-OCCT dylib via `scripts/build-macos-dylib.sh`, `cc_brep_available()==1`); pure ABI consumer, not shipped to iOS; deferred: pybind11, pyvista, wheel |
 
 ## Guiding rules
 - The `cc_*` ABI never breaks; the app is insulated from every phase.

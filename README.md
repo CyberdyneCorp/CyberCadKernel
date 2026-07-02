@@ -129,6 +129,27 @@ bash scripts/run-sim-phase3-suite.sh   #  65/65 (+1 deferred) — native feature
 
 Full toolchain notes are in [docs/build.md](docs/build.md).
 
+### Python (desktop)
+
+A development-only Python package, `cybercadkernel`, drives the kernel through
+the same `cc_*` ABI. It loads a **Homebrew-OCCT** desktop build
+(`scripts/build-macos-dylib.sh` → `build-mac/libcybercadkernel.dylib`) so Python
+exercises the *real* B-rep engine (`cc_brep_available() == 1`) — a low-level 1:1
+`ctypes` binding, a pythonic `Kernel`/`Shape` object model (context-managed
+handle lifetime, NumPy meshes, exceptions from `cc_last_error`), and `trimesh`
+visualization. It is a pure consumer of the ABI and is **not shipped to iOS**.
+
+```sh
+brew install opencascade
+scripts/build-macos-dylib.sh
+pip install -e "python/[test]"
+CYBERCADKERNEL_DYLIB="$PWD/build-mac/libcybercadkernel.dylib" \
+  python -m pytest python/tests -q     # -> 35 passed, 1 skipped (real geometry)
+```
+
+See [docs/python.md](docs/python.md) for install, usage, viz helpers, and the
+verified geometry numbers.
+
 ## Status
 
 | Phase | What | Status |

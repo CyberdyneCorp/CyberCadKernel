@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cybercadkernel"
+version = "0.1.0"
+description = "Desktop Python binding over the CyberCadKernel cc_* C ABI (real geometry via a macOS OCCT build)"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.22"]
+
+# `viz` pulls in trimesh (STL/PLY/GLB export + optional GL render) and
+# matplotlib (headless PNG rasterizer used when no GL context is available).
+[project.optional-dependencies]
+viz = ["trimesh>=4", "matplotlib>=3.5"]
+test = ["pytest>=7", "trimesh>=4", "matplotlib>=3.5"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cybercadkernel*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -ra: summarize skips/xfails at the end (the GL render test skips when headless).
+addopts = "-ra"

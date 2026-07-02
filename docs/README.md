@@ -9,6 +9,7 @@ Start at the project [README](../README.md). This folder holds the detail.
 | [STATUS.md](STATUS.md) | Consolidated, verified status + one-command reproduce for every suite. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Layers, boundaries, seams, and design decisions. |
 | [build.md](build.md) | Toolchain and build/link instructions (host + iOS). |
+| [python.md](python.md) | Desktop Python binding (`cybercadkernel`) — build, usage, viz, and pytest. |
 | STATUS-phase-0-1.md · [-2](STATUS-phase-2.md) · [-3](STATUS-phase-3.md) | Deep per-phase verification detail. |
 
 **Specs live in [`../openspec/`](../openspec/):** the canonical change-level

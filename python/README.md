@@ -1,0 +1,79 @@
+# cybercadkernel (Python binding)
+
+A desktop (macOS arm64) Python binding over the CyberCadKernel **`cc_*` C ABI**.
+It is a pure *consumer* of the ABI in `include/cybercadkernel/cc_kernel.h` — it
+does not change the ABI. It loads a shared library built against **Homebrew
+OpenCASCADE**, so Python drives the *real* geometry engine
+(`cc_brep_available() == 1`), not the host stub.
+
+This is a **development / tooling** artifact: it is for driving, testing, and
+visualizing the kernel on the desktop. It is **not shipped to iOS**.
+
+## Layout
+
+- `cybercadkernel/_cffi.py` — low-level 1:1 ctypes binding (every `cc_*` fn + POD
+  struct) and the shared-library loader.
+- `cybercadkernel/api.py` — pythonic `Kernel` / `Shape` object model (context-
+  managed handle lifetime, exceptions from `cc_last_error`), plus the
+  `Mesh` / `MassProps` / `BoundingBox` / `ReferencePlane` / `ReferenceAxis`
+  dataclasses.
+- `cybercadkernel/viz.py` — optional `trimesh` export (STL/PLY/GLB) + offscreen
+  PNG render (trimesh GL, with a headless matplotlib fallback).
+- `tests/` — pytest suite asserting real geometry.
+- `build_dylib.sh` — codifies the proven macOS build recipe.
+
+## Build the library
+
+```bash
+brew install opencascade          # OCCT 7.9.x
+python/build_dylib.sh             # → build-mac/libcybercadkernel.dylib
+```
+
+The compile step builds every `src/**/*.cpp` **except** `src/compute/metal/*`
+with `-DCYBERCAD_HAS_OCCT` (C++20, arm64) against Homebrew OCCT headers, then
+links a dylib against the `TK*` libraries with an rpath. Metal is excluded on
+macOS (no `-DCYBERCAD_HAS_METAL`); `cc_set_gpu_tessellation` is a safe no-op
+there.
+
+## Use
+
+```python
+from cybercadkernel import Kernel
+
+k = Kernel()                        # raises unless a B-rep engine is linked
+assert k.brep_available             # property, not a call
+
+def box(dx, dy, dz):                # extrude takes (x, y) pairs
+    return k.extrude([(0, 0), (dx, 0), (dx, dy), (0, dy)], dz)
+
+with box(10, 10, 10) as big, box(5, 5, 5) as small:
+    with big.cut(small) as part:
+        print(part.mass_properties().volume)   # 875.0
+        part.step_export("part.step")
+        mesh = part.tessellate(0.1)             # NumPy (N,3) verts + (M,3) tris
+
+# datum plane through 3 points → origin + unit normal (XY plane here)
+plane = k.ref_plane_from_points((0, 0, 0), (1, 0, 0), (0, 1, 0))
+assert plane.normal == (0.0, 0.0, 1.0)
+```
+
+The library is discovered via `$CYBERCADKERNEL_DYLIB` or `build-mac/` relative to
+the repo root.
+
+## Test
+
+```bash
+pip install -e "python/[test]"      # numpy, pytest, trimesh, matplotlib
+python -m pytest python/tests -q
+```
+
+The suite builds/loads the dylib in `conftest.py` and **skips** with an
+actionable message if it cannot (no error). Every test then gates on the real
+engine (`brep_available`) and asserts exact geometry — box volume 1000 / area
+600, boolean cut/fuse/common = 875 / 1875 / 125, watertight tessellation, STEP &
+IGES round-trips, and a reference-plane normal. The offscreen **GL** render test
+skips when no GL context is available; the STL export and the matplotlib PNG
+render are asserted unconditionally (they are headless-safe).
+
+If `trimesh` fails to import (e.g. a NumPy-2 vs SciPy/shapely ABI mismatch),
+the viz tests `importorskip` cleanly rather than failing the run.

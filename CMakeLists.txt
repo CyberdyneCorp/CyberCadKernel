@@ -152,7 +152,8 @@ if(CYBERCAD_BUILD_TESTS)
         test_compute_backend
         test_parallel_policy
         test_parallel_toggle
-        test_abi)
+        test_abi
+        test_native_math)
 
     foreach(test ${CYBERCAD_TESTS})
         add_executable(${test} "${CMAKE_CURRENT_SOURCE_DIR}/tests/${test}.cpp")

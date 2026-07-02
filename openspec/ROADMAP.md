@@ -178,11 +178,20 @@ do them). Each replaces/augments its `cc_*` behind the facade.
 
 ## Phase 4 — Native rewrite (retire OCCT, capability by capability)
 Replace the OCCT adapter with native C++20 implementations, one capability at a
-time, each validated against the OCCT path behind the same facade call, then
-OCCT unlinked for that capability. Dependency order below is the change order.
-- ☐ Math & geometry primitives (points/vectors/transforms, curves/surfaces
+time, each validated against the OCCT path (host unit tests + native-vs-OCCT
+parity on the simulator), then OCCT unlinked at the final step. Committed to full
+drop-OCCT incl. native booleans (research-grade; hardened progressively).
+**Method + verification model + full capability sequence: see the sub-roadmap
+[NATIVE-REWRITE.md](NATIVE-REWRITE.md).** Clean-room from references with OCCT as
+the numeric oracle; native code is host-buildable (OCCT-free).
+- ✅ Math & geometry primitives (points/vectors/transforms, curves/surfaces
   eval). Change **`add-native-math-geometry`** — capability `native-math`.
-  Contract: `occt-usage` §Modeling-data types (`gp_*`, `Geom_*`).
+  Contract: `occt-usage` §Modeling-data types (`gp_*`, `Geom_*`). *(done at the
+  verification bar — first native capability. Host analytic tests (55 asserts, no
+  OCCT) + native-vs-OCCT parity on iOS sim (24 groups, 0 failed, overall max
+  numeric error 1.486e-13, well under tolerance); no regressions (host CTest 8/8,
+  `run-sim-suite.sh` 221/221). OCCT-free math foundation only — not yet
+  engine-wired by design. Detail: `docs/STATUS-phase-4.md`.)*
 - ☐ B-rep topology data model + exploration. Change
   **`add-native-brep-topology`** — capability `native-topology`. Contract:
   `occt-usage` §Modeling-data (`TopoDS`, `TopExp`, sub-shape ids).
@@ -246,7 +255,7 @@ checkboxes as changes land; flip to ✅ when a change is validated and archived.
 | 3 | `add-robust-thread-boolean` | thread-boolean | ✅ complete at acceptance bar (#286) (iOS-sim: FUSE 4.38 s / CUT 4.48 s both < 8 s budget, valid+watertight, correct volume sign, naive path not run; determinism within rel 2e-4, not bit-exact — parallel BOPAlgo); on-device = optional deferred |
 | 3 | `add-robust-wrap-emboss` | wrap-emboss | ✅ complete at acceptance bar (#290) (iOS-sim: emboss+deboss valid+watertight, correct volume sign, reproducible, high-curvature valid; sewn→coarse fallback); on-device + app link-swap = optional deferred |
 | 3 | `add-reference-geometry` | reference-geometry | ✅ complete at acceptance bar (iOS-sim: 21/21 — datum planes/axes within 1e-9, 6/6 faces + 12/12 edges + cyl axis, degenerate guards hold); host stub returns 0 for derived; on-device = optional deferred |
-| 4 | `add-native-math-geometry` | native-math | ☐ planned |
+| 4 | `add-native-math-geometry` | native-math | ✅ done at verification bar (host analytic tests 55 asserts no-OCCT + iOS-sim native-vs-OCCT parity 24 groups/0 failed, overall max err 1.486e-13; host CTest 8/8, `run-sim-suite.sh` 221/221; OCCT-free math foundation, not engine-wired by design); archived to `openspec/specs/native-math` |
 | 4 | `add-native-brep-topology` | native-topology | ☐ planned |
 | 4 | `add-native-tessellation` | native-tessellation | ☐ planned |
 | 4 | `add-native-swept-solids` | native-construction | ☐ planned |

@@ -86,8 +86,24 @@ longest; a native exchange is lower priority than the modelling core.
   ships the OCCT-free math foundation only. See
   [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md); living spec archived to
   `openspec/specs/native-math`.
-- ☐ #2–#8 — planned; proposed (`/opsx:propose`) as each is about to start. Next:
-  **#2 `native-topology`**.
+- ✅ **#2 `native-topology`** — done at the verification bar (second capability).
+  Both gates green: host invariant unit tests (`test_native_topology`, 13 cases,
+  no OCCT — data model, orientation compose, location, sub-shape sharing,
+  geometry attachment, stable ids, deterministic enumeration, explorer/ancestry,
+  `BRep_Tool` accessors, repeat-run equality) + native-vs-OCCT parity on the iOS
+  sim (3 shapes — box / cylinder / filleted-box — × 5 checks = **15 passed, 0
+  failed**; sub-shape counts + `MapShapes` order + edge→faces ancestry +
+  orientation flags match the oracle, accessor max error **0.000e+00** at tol
+  1.0e-09, surface types match). No regressions (host CTest 9/9,
+  `run-sim-suite.sh` 221/221). Header-only under `src/native/topology/`
+  (`shape.h`, `explore.h`, `accessors.h`, `native_topology.h`); not engine-wired —
+  by design. Deferred: non-manifold/degenerate + seam edges, `CompSolid` /
+  `Internal`/`External`, holed-face parity fixture. See
+  [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md); living spec archived to
+  `openspec/specs/native-topology`.
+- ☐ #3–#8 — planned; proposed (`/opsx:propose`) as each is about to start. Next:
+  **#3 `native-tessellation`** (consumes native-math surface eval + native-topology
+  faces; reuses the Phase-2 GPU surface eval).
 
 Progress is reflected in [ROADMAP.md](ROADMAP.md) Phase 4 and per-change
 `tasks.md`; living specs are synced/archived per capability as they pass the

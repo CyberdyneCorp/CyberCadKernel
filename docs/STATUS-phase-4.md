@@ -13,12 +13,18 @@ Date: 2026-07-02 · Branch: `main`.
 - **Capability #1 `native-math` — done at the Phase-4 verification bar.** Both
   independent gates are green: host analytic unit tests (no OCCT, no simulator)
   and native-vs-OCCT numeric parity on the booted iOS simulator.
-- **No regressions.** Host build + CTest **8/8** (7 existing + new
-  `test_native_math`); `scripts/run-sim-suite.sh` stays **221 passed, 0 failed**.
-- **Zero blast radius.** Native math lives entirely under `src/native/math/`,
-  is included only by its own sources and the two test files, and is not
+- **Capability #2 `native-topology` — done at the Phase-4 verification bar.**
+  B-rep data model + exploration (`TopoDS`/`TopExp`/`BRep_Tool` analogues). Host
+  gate green (`test_native_topology`, 13 cases, 0 failed) and native-vs-OCCT
+  parity green on the booted iOS simulator (3 shapes × 5 checks = **15 passed,
+  0 failed**, max accessor error **0.000e+00**).
+- **No regressions.** Host build + CTest **9/9** (8 existing + new
+  `test_native_topology`); `scripts/run-sim-suite.sh` stays **221 passed, 0
+  failed**.
+- **Zero blast radius.** Native math lives entirely under `src/native/math/` and
+  native topology entirely under `src/native/topology/` (header-only). Neither is
   reachable from the `cc_*` facade or the engine — no ABI change, no engine
-  wiring in this capability.
+  wiring in either capability.
 
 ## Method recap — native rewrite (clean-room, OCCT as oracle)
 
@@ -107,24 +113,93 @@ Tests:
 - `tests/sim/native_math_parity.mm` — simulator native-vs-OCCT parity gate
   (own `main()`/runner; explicitly SKIPped by `run-sim-suite.sh`).
 
+## native-topology result table
+
+**Host invariant gate:** `test_native_topology` (compiled with Homebrew clang,
+`-std=c++20`, `CYBERCAD_HAS_OCCT=OFF`, `CYBERCAD_HAS_METAL=OFF`) reports
+**13 cases, 0 failed** — data-model / orientation-compose / location /
+sub-shape-sharing / geometry-attachment / stable-id / deterministic-enumeration /
+explorer-order / ancestry-symmetry / `BRep_Tool`-accessor / repeat-run-equality
+invariants. It is one of **9/9** CTest targets green (with the 8 pre-existing
+tests: test_registry, test_guard, test_scheduler, test_compute_backend,
+test_parallel_policy, test_parallel_toggle, test_abi, test_native_math). The
+test lives under `tests/native/` and is registered with a basename→source
+override (`test_native_topology_SRC` → `tests/native/test_native_topology.cpp`).
+
+**Native-vs-OCCT parity gate** (`tests/sim/native_topology_parity.mm`, booted
+iOS simulator, arm64): a test-only importer loads OCCT `TopoDS_Shape`s into the
+native model and compares against the OCCT oracle (`TopoDS`, `TopAbs`, `TopExp`,
+`TopTools`, `BRep_Tool`, `TopLoc_Location`). **3 shapes × 5 checks = 15 passed,
+0 failed.**
+
+| Shape | Sub-shapes | mapshapes-order | ancestry (edge→faces) | accessors maxErr (tol 1.0e-09) | orientation |
+|---|---|---|---|---|---|
+| box | V8 E12 wire6 F6 shell1 solid1 | PASS | 12 edges match | 0.000e+00, surfType match | 34 sub-shapes match |
+| cylinder | V2 E3 wire3 F3 shell1 solid1 | PASS | 3 edges match | 0.000e+00, surfType match | 13 sub-shapes match |
+| filleted-box | V24 E56 wire26 F26 shell1 solid1 | PASS | 56 edges match | 0.000e+00, surfType match | 134 sub-shapes match |
+
+**Overall max accessor error across all shapes: 0.000e+00** (world points, curve
+ranges, and surface parameters read back bit-identically to the OCCT oracle;
+surface-type classification matches on every face).
+
+### Files
+
+Native library (OCCT-free, header-only, `src/native/topology/`):
+
+- `shape.h` — `ShapeType` / `Orientation` enums, underlying/use split (shared
+  immutable underlying + cheap `(underlying, orientation, location)` use),
+  orientation compose, `Location`, and attached geometry (vertex point+tol,
+  edge curve+range+pcurves, face surface+ordered wires+tol).
+- `explore.h` — deterministic depth-first walk, stable sub-shape ids
+  (`MapShapes` analogue), lazy `Explorer`, and `Ancestors`
+  (`MapShapesAndAncestors` analogue).
+- `accessors.h` — `BRep_Tool`-style free-function accessors (`pnt`, `tolerance`,
+  `curve`, `curve_on_surface`, `surface`) resolving geometry through the use's
+  location.
+- `native_topology.h` — umbrella header.
+
+Tests:
+
+- `tests/native/test_native_topology.cpp` — host invariant gate (no OCCT).
+- `tests/sim/native_topology_parity.mm` — simulator native-vs-OCCT parity gate
+  (own runner; explicitly SKIPped by `run-sim-suite.sh`).
+
+### Deferred (recorded, not blocking the bar)
+
+- **Non-manifold / degenerate edges** and **seam edges** (two pcurves on the same
+  face) are not yet exercised by a fixture — deferred to native-construction,
+  which will generate such edges.
+- **`curve_on_surface` pcurve subtleties** beyond face-keyed selection (pcurve
+  continuity, degenerate edges with no 3D curve) deferred alongside.
+- **`CompSolid` `ShapeType`** and **`Internal`/`External` orientations** are
+  reserved in the enums but not exercised by a fixture.
+- The parity **face-with-a-hole** fixture is deferred (no OCCT holed-face fixture
+  in the importer path yet); inner-wire read-back is covered by a host test.
+
 ## Regression evidence
 
-- Host build + CTest with Homebrew clang 22.1.3, `-DCYBERCAD_HAS_OCCT=OFF
-  -DCYBERCAD_HAS_METAL=OFF`, fresh build dir: configure OK, build OK,
-  **CTest 8/8 passed, 0 failed.**
+- Host build + CTest with Homebrew clang, `-DCYBERCAD_HAS_OCCT=OFF
+  -DCYBERCAD_HAS_METAL=OFF`, fresh build dir: configure OK, build OK (no
+  warnings/errors), **CTest 9/9 passed, 0 failed** (8 existing +
+  `test_native_topology`; the topology test itself reports "13 cases, 0 failed").
 - `scripts/run-sim-suite.sh` (iphonesimulator arm64): still
-  **== 221 passed, 0 failed ==**. The `.mm` parity test is in the script's SKIP
-  list and has its own runner, so the OCCT-only 221-assertion suite is unchanged.
-- Isolation: `grep` across `src/` and `include/` finds no reference to
-  `src/native/math/` headers from `src/facade/cc_kernel.cpp` or `src/engine/*`.
-  The `.cpp` files compile into `libcybercadkernel` via the `src/*.cpp` GLOB but
-  are dead code for every `cc_*` path.
+  **== 221 passed, 0 failed ==**. Both `.mm` parity tests
+  (`native_math_parity.mm`, `native_topology_parity.mm`) are in the script's SKIP
+  list and have their own runners, so the OCCT-only 221-assertion suite is
+  unchanged.
+- Isolation: native math (`src/native/math/`) and native topology
+  (`src/native/topology/`) are not referenced from `src/facade/cc_kernel.cpp` or
+  `src/engine/*`. Native topology is **header-only** (no `.cpp`), so the
+  `src/*.cpp` library GLOB picks up no new sources and `libcybercadkernel` is
+  byte-for-byte unchanged in content; native math `.cpp` files compile into the
+  library but are dead code for every `cc_*` path.
 
 ## Per-capability status
 
 | # | Capability | Status | Notes |
 |---|---|---|---|
 | 1 | `native-math` | **done at the bar** | Both gates green (55 host asserts + 24 parity groups, max err 1.486e-13); no regressions; not yet engine-wired (by design). |
-| 2 | `native-topology` | ☐ planned | B-rep data model + exploration; oracle `TopoDS`/`TopExp`/`BRep_Tool`. Next up. |
-| 3–7 | tessellation → construction → booleans → blends → exchange | ☐ planned | Proposed as each begins. |
+| 2 | `native-topology` | **done at the bar** | Both gates green (13 host cases + 3 shapes × 5 parity checks = 15/15, max accessor err 0.000e+00); no regressions (host CTest 9/9, `run-sim-suite.sh` 221/221); header-only, not engine-wired (by design). Deferred: non-manifold/degenerate + seam edges, `CompSolid`/`Internal`/`External`, holed-face parity fixture. |
+| 3 | `native-tessellation` | ☐ planned | Consumes native-math surface eval + native-topology faces; reuses Phase-2 GPU surface eval. Next up. |
+| 4–7 | construction → booleans → blends → exchange | ☐ planned | Proposed as each begins. |
 | 8 | `drop-occt` | ☐ planned | Unlink OCCT once every capability is native. |

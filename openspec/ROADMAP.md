@@ -192,9 +192,18 @@ the numeric oracle; native code is host-buildable (OCCT-free).
   numeric error 1.486e-13, well under tolerance); no regressions (host CTest 8/8,
   `run-sim-suite.sh` 221/221). OCCT-free math foundation only — not yet
   engine-wired by design. Detail: `docs/STATUS-phase-4.md`.)*
-- ☐ B-rep topology data model + exploration. Change
+- ✅ B-rep topology data model + exploration. Change
   **`add-native-brep-topology`** — capability `native-topology`. Contract:
-  `occt-usage` §Modeling-data (`TopoDS`, `TopExp`, sub-shape ids).
+  `occt-usage` §Modeling-data (`TopoDS`, `TopExp`, sub-shape ids). *(done at the
+  verification bar — second native capability. Host invariant tests
+  (`test_native_topology`, 13 cases, no OCCT) + native-vs-OCCT parity on iOS sim
+  (3 shapes — box/cylinder/filleted-box — × 5 checks = 15 passed, 0 failed;
+  sub-shape counts + `MapShapes` order + edge→faces ancestry + orientation flags
+  match the oracle, accessor max error 0.000e+00 at tol 1.0e-09, surface types
+  match); no regressions (host CTest 9/9, `run-sim-suite.sh` 221/221). Header-only
+  `src/native/topology/`, not engine-wired by design. Deferred: non-manifold /
+  degenerate + seam edges, `CompSolid`/`Internal`/`External`, holed-face parity
+  fixture. Detail: `docs/STATUS-phase-4.md`.)*
 - ☐ Tessellation / meshing (native, GPU-backed via Phase 2). Change
   **`add-native-tessellation`** — capability `native-tessellation`.
 - ☐ Primitive & swept-solid construction (extrude/revolve/loft/sweep). Change
@@ -256,7 +265,7 @@ checkboxes as changes land; flip to ✅ when a change is validated and archived.
 | 3 | `add-robust-wrap-emboss` | wrap-emboss | ✅ complete at acceptance bar (#290) (iOS-sim: emboss+deboss valid+watertight, correct volume sign, reproducible, high-curvature valid; sewn→coarse fallback); on-device + app link-swap = optional deferred |
 | 3 | `add-reference-geometry` | reference-geometry | ✅ complete at acceptance bar (iOS-sim: 21/21 — datum planes/axes within 1e-9, 6/6 faces + 12/12 edges + cyl axis, degenerate guards hold); host stub returns 0 for derived; on-device = optional deferred |
 | 4 | `add-native-math-geometry` | native-math | ✅ done at verification bar (host analytic tests 55 asserts no-OCCT + iOS-sim native-vs-OCCT parity 24 groups/0 failed, overall max err 1.486e-13; host CTest 8/8, `run-sim-suite.sh` 221/221; OCCT-free math foundation, not engine-wired by design); archived to `openspec/specs/native-math` |
-| 4 | `add-native-brep-topology` | native-topology | ☐ planned |
+| 4 | `add-native-brep-topology` | native-topology | ✅ done at verification bar (host invariant tests `test_native_topology` 13 cases no-OCCT + iOS-sim native-vs-OCCT parity 3 shapes × 5 checks = 15/15, accessor max err 0.000e+00; host CTest 9/9, `run-sim-suite.sh` 221/221; header-only, not engine-wired by design; deferred: non-manifold/degenerate+seam edges, `CompSolid`/`Internal`/`External`, holed-face fixture); archived to `openspec/specs/native-topology` |
 | 4 | `add-native-tessellation` | native-tessellation | ☐ planned |
 | 4 | `add-native-swept-solids` | native-construction | ☐ planned |
 | 4 | `add-native-booleans` | native-booleans | ☐ planned |

@@ -153,10 +153,21 @@ if(CYBERCAD_BUILD_TESTS)
         test_parallel_policy
         test_parallel_toggle
         test_abi
-        test_native_math)
+        test_native_math
+        test_native_topology)
+
+    # Most tests live directly under tests/; native-library tests live under
+    # tests/native/. Map the exceptions here (basename → source path).
+    set(test_native_topology_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_topology.cpp")
 
     foreach(test ${CYBERCAD_TESTS})
-        add_executable(${test} "${CMAKE_CURRENT_SOURCE_DIR}/tests/${test}.cpp")
+        if(DEFINED ${test}_SRC)
+            set(test_src "${${test}_SRC}")
+        else()
+            set(test_src "${CMAKE_CURRENT_SOURCE_DIR}/tests/${test}.cpp")
+        endif()
+        add_executable(${test} "${test_src}")
         target_link_libraries(${test} PRIVATE cybercadkernel)
         target_include_directories(${test} PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/src"

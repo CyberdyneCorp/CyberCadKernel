@@ -69,11 +69,42 @@ inline double signedArea(const std::vector<UV>& pts, const std::vector<int>& loo
   return a * 0.5;
 }
 
-// Bridge a hole loop into the outer loop by connecting the hole's max-u vertex to
-// the nearest outer vertex, so the polygon-with-holes becomes one simple polygon.
-// Robust enough for the convex/near-convex holes we mesh (square/round hole in a
-// planar face). The hole is spliced traversed opposite to the outer so the merged
-// loop stays a single simple boundary.
+// Do the OPEN segments p0p1 and q0q1 properly cross (interiors intersect)? Shared
+// endpoints do NOT count as a crossing (a bridge may legitimately touch a vertex).
+inline bool segmentsCross(const UV& p0, const UV& p1, const UV& q0, const UV& q1) noexcept {
+  const double d1 = orient2d(q0, q1, p0);
+  const double d2 = orient2d(q0, q1, p1);
+  const double d3 = orient2d(p0, p1, q0);
+  const double d4 = orient2d(p0, p1, q1);
+  if (((d1 > 0) != (d2 > 0)) && ((d3 > 0) != (d4 > 0)) &&
+      std::fabs(d1) > 0.0 && std::fabs(d2) > 0.0 && std::fabs(d3) > 0.0 && std::fabs(d4) > 0.0)
+    return true;
+  return false;
+}
+
+// Is the segment (a→b) VISIBLE within `loop` — i.e. does it cross NO edge of the
+// loop (excluding edges incident to a or b)? Used to pick a bridge that keeps the
+// merged boundary simple, so multiple holes bridge into the SAME outer loop without
+// the second bridge slicing through the first hole (the sequential-bridging failure
+// mode of the old nearest-vertex heuristic).
+inline bool visible(const std::vector<UV>& pts, const std::vector<int>& loop, int a, int b) {
+  const UV& A = pts[a];
+  const UV& B = pts[b];
+  const std::size_t n = loop.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    const int e0 = loop[i], e1 = loop[(i + 1) % n];
+    if (e0 == a || e0 == b || e1 == a || e1 == b) continue;  // incident edge
+    if (segmentsCross(A, B, pts[e0], pts[e1])) return false;
+  }
+  return true;
+}
+
+// Bridge a hole loop into the current merged loop by a VISIBILITY-checked cut. The
+// hole's max-u vertex is joined to the nearest merged-loop vertex whose connecting
+// segment crosses no current edge, so the polygon-with-holes stays one SIMPLE
+// polygon even for several holes (bridged rightmost-first by triangulatePolygon).
+// Falls back to the nearest vertex if none tests visible (a degenerate config —
+// ear clipping then still terminates via its per-pass guard).
 inline std::vector<int> bridgeHole(const std::vector<UV>& pts, std::vector<int> outer,
                                    std::vector<int> hole) {
   if (hole.size() < 3) return outer;
@@ -82,20 +113,29 @@ inline std::vector<int> bridgeHole(const std::vector<UV>& pts, std::vector<int> 
   std::size_t hMax = 0;
   for (std::size_t i = 1; i < hole.size(); ++i)
     if (pts[hole[i]].u > pts[hole[hMax]].u) hMax = i;
-  const UV& hp = pts[hole[hMax]];
-  std::size_t oClosest = 0;
-  double best = 1e300;
+  const int hVert = hole[hMax];
+  const UV& hp = pts[hVert];
+  // Prefer the nearest VISIBLE merged-loop vertex; fall back to nearest overall.
+  std::size_t oPick = 0, oNearest = 0;
+  double bestVis = 1e300, bestAny = 1e300;
+  bool haveVis = false;
   for (std::size_t i = 0; i < outer.size(); ++i) {
     const double du = pts[outer[i]].u - hp.u, dv = pts[outer[i]].v - hp.v;
     const double d = du * du + dv * dv;
-    if (d < best) { best = d; oClosest = i; }
+    if (d < bestAny) { bestAny = d; oNearest = i; }
+    if (d < bestVis && visible(pts, outer, outer[i], hVert)) {
+      bestVis = d;
+      oPick = i;
+      haveVis = true;
+    }
   }
+  if (!haveVis) oPick = oNearest;
   std::vector<int> merged;
   merged.reserve(outer.size() + hole.size() + 2);
-  for (std::size_t i = 0; i <= oClosest; ++i) merged.push_back(outer[i]);
+  for (std::size_t i = 0; i <= oPick; ++i) merged.push_back(outer[i]);
   const std::size_t hn = hole.size();
   for (std::size_t k = 0; k <= hn; ++k) merged.push_back(hole[(hMax + k) % hn]);
-  for (std::size_t i = oClosest; i < outer.size(); ++i) merged.push_back(outer[i]);
+  for (std::size_t i = oPick; i < outer.size(); ++i) merged.push_back(outer[i]);
   return merged;
 }
 
@@ -154,9 +194,25 @@ inline std::vector<UVTri> triangulatePolygon(const std::vector<UV>& pts,
                                              const std::vector<std::vector<int>>& loops) {
   std::vector<UVTri> tris;
   if (loops.empty() || loops[0].size() < 3) return tris;
-  std::vector<int> outer = loops[0];
+
+  // Collect the hole loops and bridge them RIGHTMOST-first (descending max-u). This
+  // ordering (Eberly, *Triangulation by Ear Clipping* §"Holes") guarantees each
+  // hole's max-u vertex sees an already-exposed boundary vertex to its right, so the
+  // visibility-checked bridge (bridgeHole) keeps the merged polygon simple across
+  // MULTIPLE holes — the single-hole-only limitation of the old heuristic is gone.
+  std::vector<const std::vector<int>*> holes;
   for (std::size_t h = 1; h < loops.size(); ++h)
-    if (loops[h].size() >= 3) outer = detail::bridgeHole(pts, outer, loops[h]);
+    if (loops[h].size() >= 3) holes.push_back(&loops[h]);
+  auto maxU = [&](const std::vector<int>& loop) {
+    double mu = -1e300;
+    for (int idx : loop) mu = std::max(mu, pts[idx].u);
+    return mu;
+  };
+  std::sort(holes.begin(), holes.end(),
+            [&](const std::vector<int>* a, const std::vector<int>* b) { return maxU(*a) > maxU(*b); });
+
+  std::vector<int> outer = loops[0];
+  for (const std::vector<int>* h : holes) outer = detail::bridgeHole(pts, outer, *h);
   detail::earClip(pts, outer, tris);
   return tris;
 }

@@ -170,22 +170,47 @@ CCShapeId cc_tapered_thread(double topRadiusMM, double tipRadiusMM, double pitch
 CCShapeId cc_tapered_shank(double radiusMM, double fullHeightMM,
                            double taperHeightMM, double pointsPerMM);
 
+/* Extrude a closed OUTER polygon (x,y pairs on z=0) by +depth, with `holeCount`
+ * circular THROUGH-HOLES packed as (cx,cy,r) triples in `holesCenterRadius`. Each
+ * hole is a true circular void through the prism (a circle edge + a cylindrical
+ * wall on both caps), not a sampled polygon. Returns 0 on degenerate input. */
 CCShapeId cc_solid_extrude_holes(const double *outerXY, int outerCount,
                                  const double *holesCenterRadius, int holeCount, double depth);
 
+/* As cc_solid_extrude_holes but the holes are POLYGONS: `holesXY` is a flat x,y
+ * stream and `holeCounts[k]` is the vertex count of hole k (consumed in order),
+ * for `holeCount` holes. Each polygon hole is a prismatic void through the solid. */
 CCShapeId cc_solid_extrude_polyholes(const double *outerXY, int outerCount,
                                      const double *holesXY, const int *holeCounts,
                                      int holeCount, double depth);
 
+/* Extrude a TYPED outer profile by +depth. `segs` is a closed loop of CCProfileSeg
+ * (kind 0 line / 1 arc / 2 full circle / 3 spline) so a whole arc or circle becomes
+ * ONE true B-rep edge rather than a sampled polyline; kind-3 spline windows into
+ * `splineXY` (a flat x,y stream; `splineXYCount` is the number of DOUBLES in it, i.e.
+ * 2× the point count — a kind-3 seg reads points [ptOffset, ptOffset+ptCount)).
+ * `holesCenterRadius` are `holeCount` circular through-holes (cx,cy,r).
+ * Returns 0 on degenerate/unsupported input. */
 CCShapeId cc_solid_extrude_profile(const CCProfileSeg *segs, int segCount,
                                    const double *holesCenterRadius, int holeCount,
                                    const double *splineXY, int splineXYCount, double depth);
 
+/* As cc_solid_extrude_profile with BOTH circular holes (`holesCenterRadius`, cx,cy,r
+ * × circleCount) AND polygon holes (`polyXY` flat x,y stream; `polyCounts[k]` the
+ * vertex count of polygon-hole k, for polyCount holes). kind-3 spline outer edges
+ * window into `splineXY` (`splineXYCount` = number of DOUBLES = 2× point count).
+ * Returns 0 on degenerate/unsupported input. */
 CCShapeId cc_solid_extrude_profile_polyholes(const CCProfileSeg *segs, int segCount,
                                              const double *holesCenterRadius, int circleCount,
                                              const double *polyXY, const int *polyCounts, int polyCount,
                                              const double *splineXY, int splineXYCount, double depth);
 
+/* Revolve a TYPED profile `segs` (kinds as above) about the in-plane axis through
+ * point (ax,ay) with in-plane direction (adx,ady), by `angleRadians` (a full 2*pi
+ * closes the solid; a partial angle caps the two open ends). Line segments sweep
+ * plane/cylinder/cone surfaces; an arc whose circle centre lies on the axis sweeps
+ * a sphere. kind-3 spline windows into `splineXY` (`splineXYCount` = number of
+ * DOUBLES = 2× point count). Returns 0 on degenerate input. */
 CCShapeId cc_solid_revolve_profile(const CCProfileSeg *segs, int segCount,
                                    double ax, double ay, double adx, double ady,
                                    const double *splineXY, int splineXYCount,

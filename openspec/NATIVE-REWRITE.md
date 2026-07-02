@@ -154,11 +154,42 @@ longest; a native exchange is lower priority than the modelling core.
   face count differ from OCCT's shared/periodic representation while the SOLID is
   geometrically identical. See [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md);
   living spec archived to `openspec/specs/native-construction`.
-  - **☐ `#4b` follow-up (still OCCT-fallthrough, not faked):** loft, sweep,
-    twisted/guided sweep, threads, holed/typed-profile extrude, arc/spline revolve
-    (and typed-profile revolve). These build ops delegate through `NativeEngine` to
-    the OCCT fallback until a native swept-solid pass lands. Do NOT read #4 as "all of
-    construction is native" — only polygon extrude + line-segment revolve are.
+  - **◐ `#4b` follow-up — Tier A DONE at the verification bar; the rest still
+    OCCT-fallthrough (not faked).** NOW NATIVE (host-verified, engine-wired behind the
+    same `cc_set_engine(1)` toggle): `cc_solid_extrude_holes` (outer polygon +
+    CIRCULAR through-holes kept as TRUE circle edges + cylinder walls),
+    `cc_solid_extrude_polyholes` (outer + POLYGON holes), `cc_solid_extrude_profile` /
+    `_profile_polyholes` (TYPED outer profile — kind 0 line / 1 arc / 2 full circle —
+    with circular + polygon holes; a whole-circle profile keeps one Circle cap edge +
+    one Cylinder wall), and `cc_solid_revolve_profile` (TYPED profile revolve: line →
+    Plane/Cylinder/Cone, an arc whose circle centre lies ON the axis → Sphere band;
+    full 2π closes, partial adds two planar meridian caps). Built in
+    `src/native/construct/profile.h` (OCCT-FREE, host-buildable) + a robustified
+    multi-hole cap triangulator (visibility-checked, rightmost-first hole bridging in
+    `src/native/tessellate/uv_triangulate.h`, replacing the single-hole-only nearest-
+    vertex heuristic). Gate 1 green: host `test_native_profile` (12 cases — circular /
+    polygon / multi-hole / combined holes watertight with exact-or-convergent volume;
+    full-circle extrude → cylinder; on-axis arc revolve → sphere 36π; partial-turn
+    revolve; typed line/arc extrude) + `test_native_engine` (5 new facade cases through
+    `cc_solid_extrude_holes/_polyholes/_profile` + `cc_solid_revolve_profile`); host
+    CTest 13/13, existing suites incl. `test_native_tessellate` unchanged. STILL
+    OCCT-fallthrough (the native builder returns a NULL Shape → `NativeEngine` forwards
+    to OCCT, never fakes): **kind-3 SPLINE profile edges** (extrude AND revolve),
+    **arc-revolve whose circle centre is OFF the axis** (a TORUS surface of revolution
+    — no native Torus surface yet), and loft/sweep/twisted-guided-sweep/threads. A
+    kind-1 ARC extrude edge is a TRUE `Circle` cap edge + a `Cylinder` side wall — one
+    bounded, non-periodic patch per ≤180° span (split threshold is π for the EXTRUDE
+    wall, NOT the revolve's 120°: an extrude wall is never periodic, so a semicircle is
+    ONE patch matching OCCT's single cylindrical face) — not a chord polyline. Gate 2
+    (sim OCCT parity) GREEN: `native_construct_profiles_parity.mm` through the cc_*
+    facade, **22 passed / 0 failed** — the 5 native ops (holed / polyhole / typed
+    line+arc / line-revolve tube / on-axis-arc-revolve sphere) match the OCCT oracle
+    (planar EXACT; curved deflection-bounded vol rel ≤ 5.0e-2, all watertight; native
+    FACE count a k≥1 integer multiple of OCCT's), and the 2 deferred sub-cases (kind-3
+    spline extrude, off-axis-circle → torus revolve) transparently delegate to OCCT
+    (vol rel 0.00e+00). Note: `splineXYCount` on the kind-3 side-channel is the number
+    of DOUBLES (2× the point count), matching the OCCT `addSplineEdge` bounds guard —
+    now documented in `cc_kernel.h`.
 - ☐ **#5 `native-booleans` — NEXT (research-grade).** The hardest and longest-lived
   OCCT dependency. Native robust B-rep booleans require surface-surface intersection
   (the intersection curves between arbitrary analytic + NURBS surfaces), robust

@@ -157,6 +157,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_topology
         test_native_tessellate
         test_native_construct
+        test_native_profile
         test_native_engine)
 
     # Most tests live directly under tests/; native-library tests live under
@@ -167,6 +168,8 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_tessellate.cpp")
     set(test_native_construct_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_construct.cpp")
+    set(test_native_profile_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_profile.cpp")
 
     foreach(test ${CYBERCAD_TESTS})
         if(DEFINED ${test}_SRC)

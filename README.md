@@ -94,8 +94,10 @@ linked until it is complete. Current split:
 | math / geometry primitives | **booleans** (fuse/cut/common) |
 | B-rep topology + traversal | fillets / chamfers / offsets / shell |
 | tessellation (watertight) | features (replace-face, etc.) |
-| construction: extrude, revolve | data exchange (STEP / IGES) |
-| | advanced swept solids (loft / sweep / threads / holed / curved revolve) |
+| construction: extrude, revolve (line-segment) | data exchange (STEP / IGES) |
+| construction: holed extrude (circular + polygon holes) | loft, sweep / twisted / guided / rail |
+| construction: typed-profile extrude (line / arc / full-circle) | threads, wrap-emboss |
+| construction: typed-profile revolve (line, on-axis arc → sphere) | spline-profile edges, off-axis-arc (torus) / spline revolve |
 | | shape healing |
 
 Native code is opt-in (`cc_set_engine(1)`); the **default engine remains OCCT**,

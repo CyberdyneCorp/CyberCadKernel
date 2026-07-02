@@ -29,6 +29,20 @@
 //   build_revolution(profileXY,...)  convenience overload taking a raw closed
 //                                    polygon point loop (the cc_solid_revolve path).
 //
+//   ── Tier-A (#4b, profile.h) ──────────────────────────────────────────────────
+//   ProfileSegment / CircleHole      typed profile segment (kind 0 line / 1 arc /
+//                                    2 full circle / 3 spline) + a circular hole POD.
+//   build_prism_with_holes(...)      extrude an OUTER polygon with circular +
+//                                    polygon HOLES: both caps carry the hole wires
+//                                    and every loop grows its own side ring; circular
+//                                    holes keep a TRUE Circle edge + Cylinder wall.
+//   build_prism_profile(...)         extrude a TYPED profile (line/arc/full-circle)
+//                                    with circular + polygon holes. kind-3 spline →
+//                                    NULL Shape (OCCT fallthrough).
+//   build_revolution_profile(...)    revolve a TYPED profile: line → Plane/Cylinder/
+//                                    Cone, arc centred ON the axis → Sphere band. An
+//                                    arc OFF the axis (Torus) / spline → NULL (OCCT).
+//
 // ── SUPPORTED vs DEFERRED (honest — see openspec/NATIVE-REWRITE.md) ───────────
 //   SUPPORTED natively:
 //     * extrude of a closed polygon profile → prism solid.
@@ -37,9 +51,13 @@
 //   DEFERRED (the builder returns a NULL Shape so the engine falls through to
 //   OCCT — it NEVER fakes a wrong shape):
 //     * loft, sweep, twisted/guided sweep, threads.
-//     * holed / typed-profile extrude variants.
-//     * revolve of ARC or SPLINE profiles (only kind-0 line segments are native).
+//     * kind-3 SPLINE profile edges (extrude and revolve).
+//     * arc-revolve whose circle centre is OFF the axis (a Torus surface of
+//       revolution — no native Torus surface yet).
 //     * degenerate input (< 3 pts / zero area / depth ≤ 0 / angle ≤ 0).
+//   NOW NATIVE (Tier-A #4b, was deferred at #4): holed extrude (circular + polygon
+//   holes), typed line/arc/full-circle profile extrude, and typed-profile revolve
+//   for line segments + on-axis arc (Sphere) — see profile.h.
 //
 // ── VERIFICATION MODEL (two gates, NATIVE-REWRITE.md) ─────────────────────────
 //   Gate 1 (host, no OCCT): analytic properties of known solids via the native
@@ -62,5 +80,6 @@
 #define CYBERCAD_NATIVE_CONSTRUCT_NATIVE_CONSTRUCT_H
 
 #include "native/construct/construct.h"
+#include "native/construct/profile.h"
 
 #endif  // CYBERCAD_NATIVE_CONSTRUCT_NATIVE_CONSTRUCT_H

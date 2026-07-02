@@ -43,10 +43,62 @@ EngineShape wrapNative(ntopo::Shape shape) {
     return std::static_pointer_cast<void>(holder);
 }
 
+namespace ncst = cybercad::native::construct;
+
 // The revolution axis the cc_solid_revolve contract implies: the Y axis through
 // the origin, in the profile plane (z=0). Mirrors the OCCT adapter's solid_revolve
 // (BRepPrimAPI_MakeRevol about gp_Ax1(origin, {0,1,0})).
-constexpr cybercad::native::construct::RevolveAxis kRevolveYAxis{0.0, 0.0, 0.0, 1.0};
+constexpr ncst::RevolveAxis kRevolveYAxis{0.0, 0.0, 0.0, 1.0};
+
+// ── Tier-A (#4b) input marshalling: engine POD → native construct POD ───────────
+// Map the engine's ProfileSeg (mirrored from CCProfileSeg) to the native construct
+// ProfileSegment 1:1 (construct/ stays OCCT-free with its own POD). Both mirror the
+// same CCProfileSeg layout, so this is a field copy.
+std::vector<ncst::ProfileSegment> toNativeSegs(const ProfileSeg* segs, int segCount) {
+    std::vector<ncst::ProfileSegment> out;
+    if (!segs || segCount <= 0) return out;
+    out.reserve(static_cast<std::size_t>(segCount));
+    for (int i = 0; i < segCount; ++i) {
+        const ProfileSeg& s = segs[i];
+        out.push_back(ncst::ProfileSegment{s.kind, s.x0, s.y0, s.x1, s.y1, s.cx, s.cy, s.r, s.a0,
+                                           s.a1, s.ptOffset, s.ptCount});
+    }
+    return out;
+}
+
+// Parse the packed circular-hole array (cx,cy,r triples) into CircleHole PODs.
+std::vector<ncst::CircleHole> toCircleHoles(const double* holesCenterRadius, int holeCount) {
+    std::vector<ncst::CircleHole> out;
+    if (!holesCenterRadius || holeCount <= 0) return out;
+    out.reserve(static_cast<std::size_t>(holeCount));
+    for (int i = 0; i < holeCount; ++i)
+        out.push_back(ncst::CircleHole{holesCenterRadius[i * 3], holesCenterRadius[i * 3 + 1],
+                                       holesCenterRadius[i * 3 + 2]});
+    return out;
+}
+
+// Parse the packed polygon-hole arrays: `polyXY` is a flat x,y stream; `polyCounts`
+// gives the vertex count of each of `polyCount` holes, consumed in order.
+std::vector<std::vector<cybercad::native::math::Point3>> toPolyHoles(const double* polyXY,
+                                                                     const int* polyCounts,
+                                                                     int polyCount) {
+    std::vector<std::vector<cybercad::native::math::Point3>> out;
+    if (!polyXY || !polyCounts || polyCount <= 0) return out;
+    out.reserve(static_cast<std::size_t>(polyCount));
+    int off = 0;
+    for (int h = 0; h < polyCount; ++h) {
+        const int n = polyCounts[h];
+        std::vector<cybercad::native::math::Point3> loop;
+        if (n > 0) {
+            loop.reserve(static_cast<std::size_t>(n));
+            for (int i = 0; i < n; ++i)
+                loop.push_back({polyXY[(off + i) * 2], polyXY[(off + i) * 2 + 1], 0.0});
+        }
+        out.push_back(std::move(loop));
+        off += n > 0 ? n : 0;
+    }
+    return out;
+}
 
 // Default tessellation deflection when a body-consuming op does not carry one
 // (mass_properties / bounding_box derive from a mesh). A tight value keeps the
@@ -315,28 +367,48 @@ ShapeResult NativeEngine::tapered_thread(double tr, double tip, double pi, doubl
 ShapeResult NativeEngine::tapered_shank(double r, double fh, double th, double pp) {
     return fallback().tapered_shank(r, fh, th, pp);
 }
+// ── Tier-A (#4b) NATIVE holed / typed-profile extrude + typed-profile revolve ───
+// Each tries the native builder first; a NULL Shape means the native path defers
+// this sub-case (spline outer edge, off-axis-arc revolve, degenerate input) and we
+// forward the SAME arguments to the fallback engine (honest coexistence, no faking).
+
 ShapeResult NativeEngine::solid_extrude_holes(const double* o, int oc, const double* h, int hc,
                                               double d) {
-    return fallback().solid_extrude_holes(o, oc, h, hc, d);
+    ntopo::Shape solid = ncst::build_prism_with_holes(o, oc, toCircleHoles(h, hc), {}, d);
+    if (solid.isNull()) return fallback().solid_extrude_holes(o, oc, h, hc, d);
+    return track(wrapNative(std::move(solid)));
 }
 ShapeResult NativeEngine::solid_extrude_polyholes(const double* o, int oc, const double* h,
                                                   const int* hcs, int hc, double d) {
-    return fallback().solid_extrude_polyholes(o, oc, h, hcs, hc, d);
+    ntopo::Shape solid = ncst::build_prism_with_holes(o, oc, {}, toPolyHoles(h, hcs, hc), d);
+    if (solid.isNull()) return fallback().solid_extrude_polyholes(o, oc, h, hcs, hc, d);
+    return track(wrapNative(std::move(solid)));
 }
 ShapeResult NativeEngine::solid_extrude_profile(const ProfileSeg* s, int sc, const double* h, int hc,
                                                 const double* sx, int sxc, double d) {
-    return fallback().solid_extrude_profile(s, sc, h, hc, sx, sxc, d);
+    ntopo::Shape solid =
+        ncst::build_prism_profile(toNativeSegs(s, sc), toCircleHoles(h, hc), {}, d);
+    if (solid.isNull()) return fallback().solid_extrude_profile(s, sc, h, hc, sx, sxc, d);
+    return track(wrapNative(std::move(solid)));
 }
 ShapeResult NativeEngine::solid_extrude_profile_polyholes(const ProfileSeg* s, int sc,
                                                           const double* h, int cc, const double* px,
                                                           const int* pcs, int pc, const double* sx,
                                                           int sxc, double d) {
-    return fallback().solid_extrude_profile_polyholes(s, sc, h, cc, px, pcs, pc, sx, sxc, d);
+    ntopo::Shape solid = ncst::build_prism_profile(toNativeSegs(s, sc), toCircleHoles(h, cc),
+                                                   toPolyHoles(px, pcs, pc), d);
+    if (solid.isNull())
+        return fallback().solid_extrude_profile_polyholes(s, sc, h, cc, px, pcs, pc, sx, sxc, d);
+    return track(wrapNative(std::move(solid)));
 }
 ShapeResult NativeEngine::solid_revolve_profile(const ProfileSeg* s, int sc, double ax, double ay,
                                                 double adx, double ady, const double* sx, int sxc,
                                                 double a) {
-    return fallback().solid_revolve_profile(s, sc, ax, ay, adx, ady, sx, sxc, a);
+    const ncst::RevolveAxis axis{ax, ay, adx, ady};
+    ntopo::Shape solid = ncst::build_revolution_profile(toNativeSegs(s, sc), axis, a);
+    if (solid.isNull())
+        return fallback().solid_revolve_profile(s, sc, ax, ay, adx, ady, sx, sxc, a);
+    return track(wrapNative(std::move(solid)));
 }
 
 // ── feature fallthrough ─────────────────────────────────────────────────────────

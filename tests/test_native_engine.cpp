@@ -263,4 +263,124 @@ CC_TEST(native_deferred_falls_through_to_default) {
     CC_CHECK_EQ(loftId, 0);
 }
 
+// ── Tier-A (#4b): native holed / typed-profile extrude + typed-profile revolve ──
+
+// Native cc_solid_extrude_holes: a 10×10 square with one circular through-hole
+// (centre (5,5), r=2), depth 4 → volume (100 − 4π)·4. The hole keeps a true circle
+// edge; the native mesh is watertight and the mass properties are within the
+// deflection bound. Proves the op is served NATIVELY (host stub has no such op, so a
+// non-zero id can only come from the native builder).
+CC_TEST(native_extrude_circular_hole) {
+    EngineGuard g;
+    cc_set_engine(1);
+
+    const double outer[] = {0, 0, 10, 0, 10, 10, 0, 10};
+    const double holes[] = {5.0, 5.0, 2.0};  // cx,cy,r
+    const CCShapeId id = cc_solid_extrude_holes(outer, 4, holes, 1, 4.0);
+    CC_CHECK(id != 0);
+    if (id == 0) { std::printf("  last_error=%s\n", cc_last_error()); return; }
+
+    const CCMassProps mp = cc_mass_properties(id);
+    CC_CHECK(mp.valid != 0);
+    const double expected = (100.0 - kPi * 4.0) * 4.0;
+    CC_CHECK(std::fabs(mp.volume - expected) / expected < 0.02);
+    cc_shape_release(id);
+}
+
+// Native cc_solid_extrude_polyholes: 10×10 square with a 2×2 square hole, depth 3 →
+// volume (100 − 4)·3 = 288, exact (all planar). Watertight.
+CC_TEST(native_extrude_polygon_hole) {
+    EngineGuard g;
+    cc_set_engine(1);
+
+    const double outer[] = {0, 0, 10, 0, 10, 10, 0, 10};
+    const double holeXY[] = {4, 4, 6, 4, 6, 6, 4, 6};
+    const int holeCounts[] = {4};
+    const CCShapeId id = cc_solid_extrude_polyholes(outer, 4, holeXY, holeCounts, 1, 3.0);
+    CC_CHECK(id != 0);
+    if (id == 0) { std::printf("  last_error=%s\n", cc_last_error()); return; }
+
+    const CCMassProps mp = cc_mass_properties(id);
+    CC_CHECK(mp.valid != 0);
+    CC_CHECK(std::fabs(mp.volume - 288.0) < 1e-3);
+    cc_shape_release(id);
+}
+
+// Native cc_solid_extrude_profile: a single full-circle typed segment (kind 2,
+// centre origin, r=3) extruded depth 5 → a solid cylinder, volume πr²h = 45π,
+// meshed from TRUE circle edges. No circular holes.
+CC_TEST(native_extrude_profile_full_circle) {
+    EngineGuard g;
+    cc_set_engine(1);
+
+    CCProfileSeg seg{};
+    seg.kind = 2;
+    seg.cx = 0; seg.cy = 0; seg.r = 3.0;
+    const CCShapeId id = cc_solid_extrude_profile(&seg, 1, nullptr, 0, nullptr, 0, 5.0);
+    CC_CHECK(id != 0);
+    if (id == 0) { std::printf("  last_error=%s\n", cc_last_error()); return; }
+
+    const CCMassProps mp = cc_mass_properties(id);
+    CC_CHECK(mp.valid != 0);
+    const double expected = kPi * 9.0 * 5.0;  // 45π
+    // Facade mass_properties meshes at the fixed kPropertyDeflection (0.05); a
+    // convex curved solid's mesh volume converges from below at that bound, so use
+    // the same few-percent tolerance the existing curved-revolve facade tests use.
+    CC_CHECK(std::fabs(mp.volume - expected) / expected < 0.03);
+    cc_shape_release(id);
+}
+
+// Native cc_solid_revolve_profile: an on-axis half-circle arc (kind 1, r=3) revolved
+// full 2π about the Y axis → a sphere, volume (4/3)πr³ = 36π. Confirms the typed
+// arc-revolve → Sphere native path through the facade.
+CC_TEST(native_revolve_profile_sphere) {
+    EngineGuard g;
+    cc_set_engine(1);
+
+    CCProfileSeg seg{};
+    seg.kind = 1;
+    seg.cx = 0; seg.cy = 0; seg.r = 3.0;
+    seg.x0 = 0; seg.y0 = -3.0; seg.x1 = 0; seg.y1 = 3.0;
+    seg.a0 = -kPi / 2.0; seg.a1 = kPi / 2.0;
+    const CCShapeId id =
+        cc_solid_revolve_profile(&seg, 1, 0.0, 0.0, 0.0, 1.0, nullptr, 0, 2.0 * kPi);
+    CC_CHECK(id != 0);
+    if (id == 0) { std::printf("  last_error=%s\n", cc_last_error()); return; }
+
+    const CCMassProps mp = cc_mass_properties(id);
+    CC_CHECK(mp.valid != 0);
+    const double expected = (4.0 / 3.0) * kPi * 27.0;  // 36π
+    // Sphere at the facade's fixed 0.05 deflection: mesh volume converges from below
+    // (a sphere is doubly curved, so a coarser bound under-fills more than a
+    // cylinder). A finer deflection tightens this (the direct native test at 0.01 is
+    // < 3%); at 0.05 the honest bound is ~5%.
+    CC_CHECK(std::fabs(mp.volume - expected) / expected < 0.06);
+    cc_shape_release(id);
+}
+
+// A DEFERRED typed sub-case (kind-3 spline outer edge) falls through: the native
+// builder returns NULL, the engine forwards to the fallback (stub on host → 0). The
+// native path never fakes an unsupported profile.
+CC_TEST(native_profile_spline_falls_through) {
+    EngineGuard g;
+    cc_set_engine(1);
+
+    CCProfileSeg seg{};
+    seg.kind = 3;
+    seg.ptOffset = 0; seg.ptCount = 3;
+    const double spline[] = {0, 0, 1, 1, 2, 0};  // 3 points = 6 doubles
+    const CCShapeId id = cc_solid_extrude_profile(&seg, 1, nullptr, 0, spline, 6, 2.0);
+    CC_CHECK_EQ(id, 0);  // stub fallback on host
+
+    // An off-axis arc revolve (a Torus) also defers to the fallback.
+    CCProfileSeg arc{};
+    arc.kind = 1;
+    arc.cx = 5.0; arc.cy = 0.0; arc.r = 1.0;
+    arc.x0 = 6.0; arc.y0 = 0.0; arc.x1 = 5.0; arc.y1 = 1.0;
+    arc.a0 = 0.0; arc.a1 = kPi / 2.0;
+    const CCShapeId tid =
+        cc_solid_revolve_profile(&arc, 1, 0.0, 0.0, 0.0, 1.0, nullptr, 0, 2.0 * kPi);
+    CC_CHECK_EQ(tid, 0);
+}
+
 CC_RUN_ALL()

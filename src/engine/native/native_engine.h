@@ -16,12 +16,23 @@
 //                   │        └─ falls through to ↓ for everything else
 //                   └─ fallback (OcctEngine on iOS/macOS, StubEngine on host)
 //
-// NATIVE SCOPE (honest — see construct.h):
-//   * solid_extrude  — closed polygon profile → prism solid (native topology).
-//   * solid_revolve  — LINE-SEGMENT profile → surfaces of revolution (native).
-//   Everything else (loft/sweep/threads/holed-or-typed extrude, arc/spline
-//   revolve, fillet/shell/boolean/transform/exchange/reference-geometry) FALLS
-//   THROUGH to the fallback engine — the native path never fakes them.
+// NATIVE SCOPE (honest — see construct.h / profile.h):
+//   * solid_extrude          — closed polygon profile → prism solid.
+//   * solid_revolve          — LINE-SEGMENT profile → surfaces of revolution.
+//   * solid_extrude_holes    — outer polygon + CIRCULAR through-holes (TRUE circle
+//                              edges + cylinder walls).                    [#4b]
+//   * solid_extrude_polyholes— outer polygon + POLYGON holes.             [#4b]
+//   * solid_extrude_profile / _profile_polyholes — TYPED outer profile (kind 0 line
+//                              / 1 arc / 2 full circle) + circular + polygon holes;
+//                              kind-3 SPLINE outer edge → OCCT fallthrough. [#4b]
+//   * solid_revolve_profile  — TYPED profile revolve: line → Plane/Cylinder/Cone,
+//                              on-axis arc → Sphere. Off-axis arc (Torus) / spline
+//                              → OCCT fallthrough.                          [#4b]
+//   Each Tier-A op tries the native builder and FALLS THROUGH to the fallback engine
+//   when the native path returns a NULL Shape (a deferred sub-case or degenerate
+//   input) — the native path never fakes a shape. Everything else (loft/sweep/
+//   threads, fillet/shell/boolean/transform/exchange/reference-geometry) falls
+//   through unconditionally.
 //
 // SHAPE COEXISTENCE. The facade owns ONE ShapeRegistry mapping CCShapeId ->
 // EngineShape (std::shared_ptr<void>). The OCCT adapter type-erases an OcctShape

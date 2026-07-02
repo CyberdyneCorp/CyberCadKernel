@@ -16,6 +16,7 @@
 #include "core/shape_registry.h"
 #include "cybercadkernel/cc_kernel.h"
 #include "engine/IEngine.h"
+#include "engine/native/native_engine.h"
 
 namespace {
 
@@ -233,6 +234,30 @@ void cc_set_gpu_tessellation(int enabled) {
 int cc_gpu_tessellation_enabled(void) {
     return cyber::guard([]() -> int { return active_engine()->gpu_tessellation_enabled() ? 1 : 0; },
                         0);
+}
+
+// ── active engine selection ───────────────────────────────────────────────────
+
+void cc_set_engine(int native) {
+    cyber::guard_void([&]() {
+        if (native != 0) {
+            // Opt in to the native engine. It falls through to the build's default
+            // engine (OCCT/stub) for capabilities it does not implement natively,
+            // AND inherits the current parallel/GPU toggles so behaviour is
+            // continuous across the swap.
+            auto engine = std::make_shared<cyber::NativeEngine>();
+            engine->set_parallel(active_engine()->parallel_enabled());
+            engine->set_gpu_tessellation(active_engine()->gpu_tessellation_enabled());
+            cyber::set_active_engine(std::move(engine));
+        } else {
+            // Restore the build's DEFAULT engine (OCCT where linked, else stub).
+            cyber::set_active_engine(cyber::create_default_engine());
+        }
+    });
+}
+
+int cc_active_engine(void) {
+    return cyber::guard([]() -> int { return active_engine()->name() == "native" ? 1 : 0; }, 0);
 }
 
 // ── construction ──────────────────────────────────────────────────────────────

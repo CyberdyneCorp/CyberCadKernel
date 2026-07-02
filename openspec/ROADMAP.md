@@ -222,12 +222,30 @@ the numeric oracle; native code is host-buildable (OCCT-free).
   required — no weaker bounded-open pass). Deferred (not watertightness): GPU fp32
   path CPU-verified only, ear-clip trim quality, adaptive refinement. Detail:
   `docs/STATUS-phase-4.md`.)*
-- ☐ Primitive & swept-solid construction (extrude/revolve/loft/sweep). Change
-  **`add-native-swept-solids`** — capability `native-construction`. Contract:
+- ◐ Primitive & swept-solid construction (extrude/revolve/loft/sweep). Change
+  **`add-native-construction`** — capability `native-construction`. Contract:
   `occt-usage` §Primitive & swept-solid, §B-rep construction, §Offsets/sweeps.
-- ☐ Booleans (native robust kernel — the hardest; longest-lived OCCT
-  dependency). Change **`add-native-booleans`** — capability `native-booleans`.
-  Contract: `occt-usage` §Boolean operations.
+  *(CORE done at the verification bar — the first ENGINE-WIRED capability. Native
+  `cc_solid_extrude` (closed polygon → prism) + native `cc_solid_revolve`
+  (LINE-SEGMENT profile → cylinder/plane/cone faces of revolution; full 360° closes,
+  partial adds planar caps), OCCT-free under `src/native/construct/`, wired through a
+  `NativeEngine : IEngine` (`src/engine/native/`) that falls through to OCCT for
+  everything else, behind an additive `cc_set_engine`/`cc_active_engine` toggle
+  (**default stays OCCT**). Both gates green: host `test_native_construct` +
+  `test_native_engine` (CTest 12/12, no OCCT) + native-vs-OCCT parity on the iOS sim
+  through the facade (17/17 — planar prisms EXACT vol/area/centroid rel 0.00e+00,
+  curved revolves within a deflection bound vol rel ≤ 2.36e-2 watertight, plus a
+  fall-through boolean proving no native interception). No regressions (host CTest
+  12/12, `run-sim-suite.sh` 221/221 re-verified against a rebuilt sim slice). Archived
+  to `openspec/specs/native-construction`. Follow-up `#4b` (still OCCT-fallthrough,
+  not faked): loft, sweep, twisted/guided sweep, threads, holed/typed-profile extrude,
+  arc/spline revolve. Detail: `docs/STATUS-phase-4.md`.)*
+- ☐ **NEXT** — Booleans (native robust kernel — the hardest; longest-lived OCCT
+  dependency; **research-grade**). Change **`add-native-booleans`** — capability
+  `native-booleans`. Contract: `occt-usage` §Boolean operations. Requires
+  surface-surface intersection, robust section-edge classification, and shape
+  healing at near-tangent/coincident configs (the BOPAlgo wall); lands progressively
+  hardened and verified against OCCT, not production-robust day one.
 - ☐ Fillets/chamfers/offsets/shell. Change **`add-native-fillets-offsets`** —
   capability `native-blends`. Contract: `occt-usage` §Fillets & chamfers,
   §Offsets/sweeps/lofts/shells.
@@ -283,8 +301,9 @@ checkboxes as changes land; flip to ✅ when a change is validated and archived.
 | 4 | `add-native-math-geometry` | native-math | ✅ done at verification bar (host analytic tests 55 asserts no-OCCT + iOS-sim native-vs-OCCT parity 24 groups/0 failed, overall max err 1.486e-13; host CTest 8/8, `run-sim-suite.sh` 221/221; OCCT-free math foundation, not engine-wired by design); archived to `openspec/specs/native-math` |
 | 4 | `add-native-brep-topology` | native-topology | ✅ done at verification bar (host invariant tests `test_native_topology` 13 cases no-OCCT + iOS-sim native-vs-OCCT parity 3 shapes × 5 checks = 15/15, accessor max err 0.000e+00; host CTest 9/9, `run-sim-suite.sh` 221/221; header-only, not engine-wired by design; deferred: non-manifold/degenerate+seam edges, `CompSolid`/`Internal`/`External`, holed-face fixture); archived to `openspec/specs/native-topology` |
 | 4 | `add-native-tessellation` | native-tessellation | ✅ done at verification bar (host invariant tests `test_native_tessellate` no-OCCT + iOS-sim native-vs-OCCT `BRepMesh` property-parity 4 shapes All 20 checks PASS — ALL four closed solids watertight `boundaryEdges==0`; area/volume relMesh ≤ 6.0e-3, relExact ≤ 1.24e-2, bbox maxCornerΔ ≤ 4.66e-2, on-surface residual ≤ 5.7e-15; host CTest 10/10, `run-sim-suite.sh` 221/221; header-only, not engine-wired by design; RESOLVED curved shared-edge stitch (two-stage shared per-edge discretization); deferred (not watertightness): ear-clip trim re-triangulation quality, adaptive refinement, GPU fp32 CPU-verified only); archived to `openspec/specs/native-tessellation` |
-| 4 | `add-native-swept-solids` | native-construction | ☐ planned |
-| 4 | `add-native-booleans` | native-booleans | ☐ planned |
+| 4 | `add-native-construction` | native-construction | ◐ CORE done at verification bar — first engine-wired capability. Native `cc_solid_extrude` (polygon prism) + `cc_solid_revolve` (line-segment) via `NativeEngine : IEngine` (`src/engine/native/`) falling through to OCCT for the rest, behind additive `cc_set_engine`/`cc_active_engine` (default OCCT). Host `test_native_construct`+`test_native_engine` CTest 12/12 no-OCCT + iOS-sim native-vs-OCCT parity through facade 17/17 (planar prisms EXACT rel 0.00e+00; curved revolves vol rel ≤ 2.36e-2 watertight; fall-through boolean); no regressions (`run-sim-suite.sh` 221/221 re-verified vs rebuilt sim slice); archived to `openspec/specs/native-construction`. Follow-up `#4b` (OCCT-fallthrough, not faked): loft, sweep, twisted/guided sweep, threads, holed/typed-profile extrude, arc/spline revolve |
+| 4b | `add-native-swept-solids` | native-construction (advanced) | ☐ follow-up — loft/sweep/twisted-guided-sweep/threads/holed-typed-profile-extrude/arc-spline-revolve, currently OCCT-fallthrough |
+| 5 | `add-native-booleans` | native-booleans | ☐ NEXT (**research-grade**) — robust B-rep booleans: surface-surface intersection + section-edge classification + shape healing; hardened progressively vs OCCT/BOPAlgo |
 | 4 | `add-native-fillets-offsets` | native-blends | ☐ planned |
 | 4 | `add-native-data-exchange` | native-exchange | ☐ planned |
 | 4 | `drop-occt` | — (retires OCCT adapter) | ☐ planned |

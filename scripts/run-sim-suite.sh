@@ -26,7 +26,11 @@ SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 # harnesses native_tessellate_parity.mm (run-sim-native-tessellate.sh) and
 # native_tessellation_parity.mm (run-sim-native-tessellation.sh — its own main(),
 # links only the meshing-oracle slice of OCCT: BRepMesh + BRepGProp, comparing the
-# native mesh to the OCCT BRepMesh AND the exact B-rep area/volume), and the
+# native mesh to the OCCT BRepMesh AND the exact B-rep area/volume), the Phase-4
+# native-construction parity harness native_construct_parity.mm
+# (run-sim-native-construct.sh — its own main(); unlike the oracle-slice harnesses
+# it drives the cc_* facade under BOTH engines via cc_set_engine and links the whole
+# kernel + full OCCT), and the
 # Phase-3 suite — phase3_suite.cpp
 # (its own main()) plus its checks_*.cpp modules (which record against
 # phase3_checks.h's Ctx, not checks.h's) — has run-sim-phase3-suite.sh. What remains
@@ -35,6 +39,7 @@ SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 # find below; they are listed here to make the intent explicit.)
 SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.mm \
       native_topology_parity.mm native_tessellate_parity.mm native_tessellation_parity.mm \
+      native_construct_parity.mm \
       phase3_suite.cpp checks_reference_geometry.cpp checks_wrap_emboss.cpp \
       checks_thread_boolean.cpp checks_full_round_fillet.cpp checks_g2_fillet.cpp"
 SRCS=()

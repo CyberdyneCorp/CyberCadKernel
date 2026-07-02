@@ -126,10 +126,53 @@ longest; a native exchange is lower priority than the modelling core.
   CPU-verified only in this environment). See
   [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md); living spec archived to
   `openspec/specs/native-tessellation`.
-- ☐ #4–#8 — planned; proposed (`/opsx:propose`) as each is about to start. Next:
-  **#4 `native-construction`** (primitive + swept-solid construction —
-  extrude/revolve/loft/sweep — building native topology + geometry; the first
-  capability that will likely be engine-wired for a `cc_*` comparison).
+- ◐ **#4 `native-construction`** — **CORE done at the verification bar; advanced
+  swept solids are a follow-up (`#4b`).** The first **engine-wired** capability. Two
+  construction ops are native: `cc_solid_extrude` (closed polygon → prism: bottom/top
+  `Plane` caps + one planar quad `Plane` side per profile edge) and `cc_solid_revolve`
+  for **LINE-SEGMENT** profiles (per-segment surface of revolution — parallel→`Cylinder`,
+  perpendicular→`Plane`, oblique→`Cone`; full 360° closes the shell, partial angle adds
+  two `Plane` meridian caps). Built on the #1–#3 foundations under
+  `src/native/construct/construct.h` (OCCT-free, host-buildable). Wired through
+  `NativeEngine : IEngine` (`src/engine/native/`), which serves these ops + native
+  tessellate / mass / bbox / subshape on its own native bodies and **falls through to
+  OCCT** (or the stub on host) for everything else, behind an ADDITIVE facade toggle
+  `cc_set_engine(int)` / `cc_active_engine()` (**default stays OCCT** — existing suites
+  unchanged). Both gates green: host `test_native_construct` + `test_native_engine`
+  (no OCCT — box exact vol/area/6-faces/centroid/bbox/watertight, triangle prism
+  watertight vol=area×depth, L-prism, full-turn tube 9π, quarter-turn tube 9π/4, cone
+  4π; CTest **12/12**) + native-vs-OCCT parity on the iOS sim through the facade
+  (`native_construct_parity.mm`, **17/17** `[NCONS]`): planar prisms EXACT (vol/area/
+  centroid rel 0.00e+00, identical face tiling), curved revolves within a deflection
+  bound (vol rel ≤ 2.36e-2, area rel ≤ 1.24e-2, bbox maxCornerΔ ≤ 4.37e-2, all
+  watertight), plus a fall-through boolean (native→OCCT, fuse vol=14) proving no native
+  interception. No regressions (host CTest 12/12, `run-sim-suite.sh` 221/221 re-verified
+  against a freshly rebuilt SIMULATORARM64 slice). Documented representational difference
+  (not a geometric mismatch): the native builder emits per-face edges / per-patch vertices
+  (edge/vertex SHARING deferred) and tiles a full-turn surface of revolution into < π
+  angular patches (periodic-face construction deferred), so native V/E and the full-turn
+  face count differ from OCCT's shared/periodic representation while the SOLID is
+  geometrically identical. See [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md);
+  living spec archived to `openspec/specs/native-construction`.
+  - **☐ `#4b` follow-up (still OCCT-fallthrough, not faked):** loft, sweep,
+    twisted/guided sweep, threads, holed/typed-profile extrude, arc/spline revolve
+    (and typed-profile revolve). These build ops delegate through `NativeEngine` to
+    the OCCT fallback until a native swept-solid pass lands. Do NOT read #4 as "all of
+    construction is native" — only polygon extrude + line-segment revolve are.
+- ☐ **#5 `native-booleans` — NEXT (research-grade).** The hardest and longest-lived
+  OCCT dependency. Native robust B-rep booleans require surface-surface intersection
+  (the intersection curves between arbitrary analytic + NURBS surfaces), robust
+  section-edge classification (which pieces of each shell survive under
+  fuse/cut/common), and shape healing (sewing/tolerance reconciliation of the result).
+  This is fundamentally harder than #1–#4: those build clean topology from parameters,
+  whereas booleans must reason about the intersection of two arbitrary existing solids
+  with fp64 robustness at near-tangent / coincident configurations — the classic BOPAlgo
+  wall. It will land **progressively hardened and verified against OCCT** (`BRepAlgoAPI`
+  / BOPAlgo as oracle), starting from analytic-surface cases (box∩box, cylinder∩box)
+  and widening, and is NOT expected to be production-robust on day one. Proposed via
+  `/opsx:propose` when it begins.
+- ☐ #6–#8 — planned; proposed as each is about to start (blends → exchange →
+  drop-occt).
 
 Progress is reflected in [ROADMAP.md](ROADMAP.md) Phase 4 and per-change
 `tasks.md`; living specs are synced/archived per capability as they pass the

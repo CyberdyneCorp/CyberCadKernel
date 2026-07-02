@@ -146,7 +146,16 @@ class FaceMesher {
 
     // A full-parametric-rectangle outer loop (no holes) ⇒ structured grid whose
     // boundary rows use the shared edge samples. Otherwise ear-clip the polygon.
-    if (region.holes.empty() && region.isFullRectangle(1e-4))
+    //
+    // For a PLANAR face, require the loop to hit all four box corners: a convex
+    // polygon cap (triangle / hexagon extrude cap) has every vertex on the bbox
+    // border but fills only part of the box, so it must NOT take the full-rectangle
+    // fast path (it would mesh as the whole bbox and break volume / watertightness)
+    // — the corner test routes it to ear-clip. Curved full-parametric faces
+    // (cylinder / sphere / cone), whose degenerate/seam boundaries lack distinct box
+    // corners, are admitted by the border test alone (requireCorners = false).
+    const bool planar = sr->surface->kind == topo::FaceSurface::Kind::Plane;
+    if (region.holes.empty() && region.isFullRectangle(1e-4, /*requireCorners=*/planar))
       return structuredGrid(eval, region, box, flip, /*hasBoundary=*/true);
 
     return earClipMesh(eval, loops, flip);

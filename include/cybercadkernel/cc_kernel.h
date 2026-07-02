@@ -116,6 +116,20 @@ int  cc_parallel_enabled(void);      /* 1 if parallel is currently enabled */
 void cc_set_gpu_tessellation(int enabled);   /* toggle the GPU tessellation path; default off */
 int  cc_gpu_tessellation_enabled(void);      /* 1 iff GPU tessellation is on AND available */
 
+/* ── Active engine selection ─────────────────────────────────────────────── */
+
+/* ADDITIVE (not part of the mirrored KernelBridgeAPI.h ABI): swap the active
+ * geometry engine, so the native C++20 engine (Phase 4 rewrite) can be A/B'd
+ * against the OCCT engine behind the SAME cc_* calls. `native != 0` activates the
+ * NativeEngine (native solid_extrude / solid_revolve + native tessellate / mass /
+ * bbox on native bodies; every other capability falls through to the OCCT engine,
+ * or the stub in a no-OCCT host build). `native == 0` restores the build's DEFAULT
+ * engine (OCCT where linked, else the stub). DEFAULT IS OCCT — this must be called
+ * explicitly to opt in, so all existing behaviour is unchanged until you do. Shape
+ * ids created under one engine should be consumed under the same engine. */
+void cc_set_engine(int native);      /* 1 = NativeEngine, 0 = OCCT/default */
+int  cc_active_engine(void);         /* 1 if the NativeEngine is active, else 0 */
+
 /* ── Construction ────────────────────────────────────────────────────────── */
 
 CCShapeId cc_solid_extrude(const double *profileXY, int pointCount, double depth);

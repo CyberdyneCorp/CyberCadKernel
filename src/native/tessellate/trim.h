@@ -229,18 +229,58 @@ struct UVRegion {
   /// grid — no triangle is dropped and adjacent faces' boundary grid lines coincide
   /// exactly, so welding yields a watertight mesh. A genuinely trimmed face (holes,
   /// or a non-rectangular silhouette) fails this test and goes through inside().
-  bool isFullRectangle(double tol) const noexcept {
+  ///
+  /// True when the outer loop is (within `tol`) the domain bounding rectangle and
+  /// there are no holes — i.e. the face is NOT actually trimmed (its wire is the
+  /// four sides of the parametric box, as for a full primitive: a box planar face,
+  /// a full cylindrical / spherical face). The structured-grid path then keeps the
+  /// whole grid, welding watertight with neighbours whose boundary grid lines
+  /// coincide. A genuinely trimmed face (holes, or a non-rectangular silhouette)
+  /// fails this and goes through the ear-clip path.
+  ///
+  /// Condition 1 (always): every outer-loop vertex lies on the bounding-box border.
+  ///
+  /// Condition 2 (only when `requireCorners`): the loop also visits ALL FOUR box
+  /// CORNERS. This is needed ONLY for a PLANAR face, where condition 1 alone wrongly
+  /// accepts a convex polygon cap (a triangle / hexagon extrude cap) — every such
+  /// vertex sits on the bbox border, but the polygon fills only part of the box, so
+  /// the structured grid would mesh the wrong (rectangular) region and break
+  /// volume / watertightness. A genuine planar rectangle has a vertex at each of the
+  /// four corners; an inscribed triangle reaches at most three (it cannot cover all
+  /// four corners of its own bounding box), so the corner test routes it to
+  /// ear-clip. Corner-hit (a SET test) is used rather than a shoelace-area test
+  /// because the two-stage boundary flattener can emit a rectangle loop with a
+  /// non-simple (backtracking) traversal for some bridged faces — its enclosed area
+  /// is then unreliable, but its vertex set still lands on all four corners.
+  ///
+  /// The corner test is SKIPPED for a curved full-parametric face (cylinder / sphere
+  /// / cone), whose boundary legitimately lacks distinct box corners (a sphere's
+  /// pole edges collapse a whole u-row to one point; a cylinder seam collapses to a
+  /// line) — those faces are admitted by condition 1 alone, exactly as before.
+  bool isFullRectangle(double tol, bool requireCorners) const noexcept {
     if (!holes.empty() || !hasOuter() || !box.valid) return false;
     const double du = box.uMax - box.uMin;
     const double dv = box.vMax - box.vMin;
+    if (du <= 0.0 || dv <= 0.0) return false;  // degenerate box cannot be a rectangle
     const double eu = std::max(du, 1.0) * tol;
     const double ev = std::max(dv, 1.0) * tol;
-    // Every outer-loop vertex must lie on the bounding-box border (within tol).
+    // Condition 1: every outer-loop vertex on the bounding-box border (within tol).
     for (const UV& p : outer) {
       const bool onU = std::fabs(p.u - box.uMin) <= eu || std::fabs(p.u - box.uMax) <= eu;
       const bool onV = std::fabs(p.v - box.vMin) <= ev || std::fabs(p.v - box.vMax) <= ev;
       if (!onU && !onV) return false;  // an interior vertex ⇒ genuinely trimmed
     }
+    if (!requireCorners) return true;
+    // Condition 2 (planar faces): a loop vertex sits at each of the four box corners.
+    const double cU[2] = {box.uMin, box.uMax};
+    const double cV[2] = {box.vMin, box.vMax};
+    for (int a = 0; a < 2; ++a)
+      for (int b = 0; b < 2; ++b) {
+        bool hit = false;
+        for (const UV& p : outer)
+          if (std::fabs(p.u - cU[a]) <= eu && std::fabs(p.v - cV[b]) <= ev) { hit = true; break; }
+        if (!hit) return false;  // a missing corner ⇒ not a full rectangle
+      }
     return true;
   }
 };

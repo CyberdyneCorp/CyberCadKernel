@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// native_construct.h — public aggregate header for the native swept-solid
+// construction library (Phase 4, capability #4 `native-construction`).
+//
+// Clean-room, OCCT-FREE builders that assemble a native B-rep
+// (src/native/topology) with native-math elementary geometry (src/native/math)
+// for the two solid operations the native engine implements today. This header
+// is the AGREED API surface between the construction work and the engine glue
+// (src/engine/native): the engine calls these free functions and wraps the
+// returned topology::Shape into an EngineShape.
+//
+// ── API SURFACE (all in namespace cybercad::native::construct) ────────────────
+//   LineSeg / RevolveAxis            input POD (a straight profile segment;
+//                                    the revolution axis point + direction).
+//   build_prism(profileXY,count,d)   extrude a CLOSED planar polygon profile
+//                                    (x,y pairs on z=0) by +depth into a prism
+//                                    SOLID: bottom + top planar caps + one planar
+//                                    quad side face per profile edge. Full native
+//                                    topology + geometry.
+//   build_revolution(segs,axis,ang)  revolve a LINE-SEGMENT profile about an
+//                                    in-plane axis. classification helper
+//                                    detail::segmentSurface picks the analytic
+//                                    surface per segment: axis-parallel → Cylinder,
+//                                    perpendicular → planar annulus/disk, oblique →
+//                                    Cone. A full turn (≥2π) closes the solid; a
+//                                    partial turn additionally caps the two open
+//                                    ends with planar profile faces.
+//   build_revolution(profileXY,...)  convenience overload taking a raw closed
+//                                    polygon point loop (the cc_solid_revolve path).
+//
+// ── SUPPORTED vs DEFERRED (honest — see openspec/NATIVE-REWRITE.md) ───────────
+//   SUPPORTED natively:
+//     * extrude of a closed polygon profile → prism solid.
+//     * revolve of a LINE-SEGMENT profile (segment → plane / cylinder / cone
+//       face of revolution), full 360° or partial with planar side caps.
+//   DEFERRED (the builder returns a NULL Shape so the engine falls through to
+//   OCCT — it NEVER fakes a wrong shape):
+//     * loft, sweep, twisted/guided sweep, threads.
+//     * holed / typed-profile extrude variants.
+//     * revolve of ARC or SPLINE profiles (only kind-0 line segments are native).
+//     * degenerate input (< 3 pts / zero area / depth ≤ 0 / angle ≤ 0).
+//
+// ── VERIFICATION MODEL (two gates, NATIVE-REWRITE.md) ─────────────────────────
+//   Gate 1 (host, no OCCT): analytic properties of known solids via the native
+//     tessellator — a unit box meshes watertight with volume 2 / area 10; a cone
+//     profile revolved 360° has volume 4π; a rectangle revolved 360° is a tube of
+//     volume 9π; a partial turn is watertight with the fractional volume.
+//     (tests/test_native_engine.cpp)
+//   Gate 2 (sim, OCCT oracle): native solid_extrude / solid_revolve compared
+//     against BRepPrimAPI_MakePrism / BRepPrimAPI_MakeRevol at sampled inputs
+//     (face/edge structure + area/volume within tolerance).
+//
+// REFERENCE ORACLE ONLY: OCCT BRepPrimAPI_MakePrism / BRepPrimAPI_MakeRevol were
+// consulted to confirm the face decomposition and outward-orientation conventions;
+// nothing is copied. Surface/curve parametrizations match src/native/math
+// (ElSLib-aligned) so the native tessellator and the OCCT parity gate agree.
+//
+// OCCT-FREE. Header-only. clang++ -std=c++20.
+//
+#ifndef CYBERCAD_NATIVE_CONSTRUCT_NATIVE_CONSTRUCT_H
+#define CYBERCAD_NATIVE_CONSTRUCT_NATIVE_CONSTRUCT_H
+
+#include "native/construct/construct.h"
+
+#endif  // CYBERCAD_NATIVE_CONSTRUCT_NATIVE_CONSTRUCT_H

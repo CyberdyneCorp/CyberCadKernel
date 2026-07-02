@@ -32,12 +32,13 @@ the facade evolves:
 
 ```mermaid
 flowchart TD
-    App["Host app (Swift / C)"] -->|"cc_* plain-C ABI (72 fns)"| Facade
+    App["Host app (Swift / C) — iOS"] -->|"cc_* plain-C ABI (74 fns)"| Facade
+    Py["Python (desktop) — cybercadkernel<br/>ctypes + pythonic Kernel/Shape + trimesh viz"] -->|"cc_* ABI via .dylib"| Facade
 
     subgraph Kernel["CyberCadKernel (C++20)"]
         Facade["Facade + shape registry + guard/Result"]
         Sched["Operation scheduler<br/>(coroutines, cancel, progress)"]
-        Engine["Engine adapter (IEngine)"]
+        Engine["Engine adapter (IEngine)<br/>active engine · cc_set_engine"]
         Compute["Compute backend (IComputeBackend)"]
 
         Facade --> Sched
@@ -45,16 +46,23 @@ flowchart TD
         Facade --> Compute
     end
 
-    Engine -->|"active engine"| OCCT["OCCT adapter<br/>(exact B-rep, fp64, CPU)"]
-    Engine -.->|"future"| Native["Native C++20<br/>(Phase 4)"]
-    Engine -.->|"no-OCCT build"| Stub["Stub engine"]
+    Engine -->|"default"| OCCT["OCCT adapter<br/>(exact B-rep, fp64, CPU)"]
+    Engine -->|"cc_set_engine(1)"| Native["NativeEngine (C++20)<br/>native: math · topology · tessellation ·<br/>construction (extrude / revolve)"]
+    Engine -.->|"no-OCCT host build"| Stub["Stub engine"]
 
-    Compute --> CPU["CPU backend (fp64)"]
+    Native -.->|"fallthrough (still OCCT):<br/>booleans · fillets/offsets · features ·<br/>STEP/IGES · loft/sweep/threads · healing"| OCCT
+    OCCT ==>|"still required"| OCCTlib[("OCCT libs")]
+
+    Compute --> CPUb["CPU backend (fp64)"]
     Compute --> Metal["Metal backend (fp32, iOS)"]
-
-    OCCT -->|"parallel booleans + meshing"| OCCTlib[("OCCT static libs")]
     Metal --> GPU["GPU: surface eval · LBVH · picking · normals"]
 ```
+
+Both the iOS app and the desktop Python package are pure consumers of the same
+`cc_*` ABI. Inside, the **engine adapter** routes each call to the **OCCT
+adapter** (default) or the **NativeEngine** (opt-in via `cc_set_engine`); the
+native engine handles what has been rewritten and **falls through to OCCT** for
+the rest, so OCCT remains a required dependency until Phase 4 completes.
 
 - **Facade** (`src/facade`) — every `cc_*` entry point is a guarded delegation to
   the active engine; owns the integer-handle shape registry and all buffer
@@ -64,12 +72,35 @@ flowchart TD
   compute-backend interface with an fp64 precision guard.
 - **Engine adapter** (`src/engine`) — `IEngine` grouped by capability
   (construct / boolean / feature / tessellate / query / transform / exchange),
-  with an **OCCT adapter**, a no-op **stub** (for the no-OCCT host build), and a
-  slot for the future native engine.
+  with an **OCCT adapter** (default), a no-op **stub** (no-OCCT host build), and a
+  **`NativeEngine`** (`src/engine/native`, opt-in via `cc_set_engine`) that serves
+  the rewritten capabilities and falls through to OCCT for the rest.
+- **Native core** (`src/native`) — OCCT-free C++20: `math` (vectors/transforms +
+  Bézier/B-spline/NURBS eval), `topology` (B-rep model + traversal), `tessellate`
+  (watertight mesher), `construct` (extrude/revolve). Host-buildable and
+  unit-tested with no OCCT.
 - **Compute backend** (`src/compute`) — default CPU backend + a **Metal** backend
   (iOS) for GPU work behind the same interface.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detail.
+
+### Where OCCT is still required
+
+The native rewrite (Phase 4) is migrating capability-by-capability; OCCT stays
+linked until it is complete. Current split:
+
+| Native (C++20, verified vs OCCT) | Still OCCT-backed (native pending) |
+|---|---|
+| math / geometry primitives | **booleans** (fuse/cut/common) |
+| B-rep topology + traversal | fillets / chamfers / offsets / shell |
+| tessellation (watertight) | features (replace-face, etc.) |
+| construction: extrude, revolve | data exchange (STEP / IGES) |
+| | advanced swept solids (loft / sweep / threads / holed / curved revolve) |
+| | shape healing |
+
+Native code is opt-in (`cc_set_engine(1)`); the **default engine remains OCCT**,
+so shipped behaviour is unchanged. OCCT is unlinked only at the final `drop-occt`
+step. See the sub-roadmap [openspec/NATIVE-REWRITE.md](openspec/NATIVE-REWRITE.md).
 
 ## Example
 
@@ -111,20 +142,26 @@ CPU-only and fully unit-tested on macOS/Linux; the **iOS** config links OCCT (an
 optionally, Metal) and is verified on the iOS simulator.
 
 ```sh
-# Host: CPU-only build + unit tests (stub engine, no OCCT/Metal)
+# Host: CPU-only build + unit tests (stub engine + native core, no OCCT/Metal)
 cmake -S . -B build \
   -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++ \
   -DCYBERCAD_HAS_OCCT=OFF -DCYBERCAD_HAS_METAL=OFF
 cmake --build build
-cd build && ctest --output-on-failure          # -> 7/7 pass
+cd build && ctest --output-on-failure          # -> 12/12 pass (incl. native math/topology/tessellate/construct)
 ```
 
 ```sh
 # iOS simulator: OCCT-backed integrated suites (all 57 cc_* + accel + GPU + Phase 3)
 bash scripts/run-sim-suite.sh          # 221/221 — full cc_* + determinism + benchmark
-bash scripts/run-sim-gpu-suite.sh      #  18/18 — GPU-vs-CPU parity (Metal)
+bash scripts/run-sim-gpu-suite.sh      #  26/26 — GPU-vs-CPU parity (Metal), ray + frustum pick
 bash scripts/run-sim-integ-suite.sh    #  26/26 — GPU tessellation wired into cc_tessellate
-bash scripts/run-sim-phase3-suite.sh   #  65/65 (+1 deferred) — native features
+bash scripts/run-sim-phase3-suite.sh   #  70/70 — native features (all planar full-round dihedrals)
+
+# Phase 4 native-vs-OCCT parity (native core validated against the OCCT oracle)
+bash scripts/run-sim-native-math.sh          # 24/24 — vec/transform + Bézier/B-spline/NURBS eval
+bash scripts/run-sim-native-topology.sh      # 15/15 — counts, ancestry, accessors
+bash scripts/run-sim-native-tessellation.sh  # 20/20 — watertight, area/volume vs OCCT
+bash scripts/run-sim-native-construct.sh     # 17/17 — extrude/revolve vs OCCT through the facade
 ```
 
 Full toolchain notes are in [docs/build.md](docs/build.md).
@@ -156,9 +193,9 @@ verified geometry numbers.
 |---|---|---|
 | **0 — Foundation** | facade, registry, scheduler, compute-backend, OCCT adapter | ✅ complete at the simulator acceptance bar |
 | **1 — Multi-core** | parallel OCCT booleans + meshing, determinism audit | ✅ complete at the simulator acceptance bar |
-| **2 — GPU (Metal)** | Metal backend ✅, GPU tessellation wired into `cc_tessellate` ✅, BVH/pick ◐ | ◐ backend + tessellation done; spatial tail open |
-| **3 — Missing features** | reference geometry, wrap-emboss, thread boolean, full-round + G2 fillets | ◐ 4/5 full; full-round parallel-wall only |
-| **4 — Native rewrite** | replace OCCT capability-by-capability, then drop it | ☐ planned |
+| **2 — GPU (Metal)** | Metal backend, GPU tessellation wired into `cc_tessellate`, BVH + ray/frustum pick | ✅ complete at the simulator acceptance bar |
+| **3 — Missing features** | reference geometry, wrap-emboss, thread boolean, full-round (any planar dihedral) + G2 fillets | ✅ 5/5 (curved-neighbour full-round is the only residual) |
+| **4 — Native rewrite** | replace OCCT capability-by-capability, then drop it | ◐ native math · topology · tessellation · construction done; booleans/fillets/exchange pending |
 
 The **acceptance bar** is the in-repo iOS-simulator suite (correctness verified
 against analytic references, GPU vs CPU, and B-rep validity/watertightness).
@@ -172,7 +209,9 @@ follow-ups. See [docs/STATUS.md](docs/STATUS.md) and
 - **[docs/FEATURES.md](docs/FEATURES.md)** — capability catalogue (the `cc_*` surface).
 - **[docs/STATUS.md](docs/STATUS.md)** — what is verified, and how to reproduce it.
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — layers, seams, and design decisions.
+- **[docs/python.md](docs/python.md)** — the desktop Python binding (`cybercadkernel`).
 - **[docs/build.md](docs/build.md)** — toolchain and build instructions.
+- **[openspec/NATIVE-REWRITE.md](openspec/NATIVE-REWRITE.md)** — Phase 4 native-rewrite sub-roadmap.
 - **[openspec/](openspec/)** — spec-driven development: the canonical roadmap,
   per-capability specs, and change proposals.
 

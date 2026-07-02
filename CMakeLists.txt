@@ -14,6 +14,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(CYBERCAD_HAS_OCCT "Build the OCCT engine adapter" OFF)
 option(CYBERCAD_BUILD_TESTS "Build the CTest unit tests" ON)
 
+# OFF => no GPU backend (host build stays CPU-only). ON => compile the Metal
+# compute backend under src/compute/metal/*.mm (iOS only; needs -framework Metal
+# -framework Foundation and an Objective-C++ toolchain). Never enabled for the
+# host CPU-only build.
+option(CYBERCAD_HAS_METAL "Build the Metal compute backend (iOS only)" OFF)
+
 # Include dir for the trimmed arm64-iOS OCCT the adapter compiles against. Only
 # used when CYBERCAD_HAS_OCCT=ON (iOS cross-compile); override for a different
 # OCCT install. See docs/occt-build.md in the app repo.
@@ -44,6 +50,23 @@ if(CYBERCAD_HAS_OCCT)
     target_include_directories(cybercadkernel PRIVATE "${CYBERCAD_OCCT_INCLUDE_DIR}")
     # OCCT link libs are supplied by the iOS toolchain (see docs/occt-build.md in
     # the app repo); not resolved for the host build.
+endif()
+
+# ── Metal compute backend (iOS only) ──────────────────────────────────────────
+# Compile the Objective-C++ Metal backend ONLY when CYBERCAD_HAS_METAL=ON. The
+# host build (OFF) never sees these .mm files and stays CPU-only. GPU modules are
+# self-contained numeric code and MUST NOT link OCCT.
+if(CYBERCAD_HAS_METAL)
+    enable_language(OBJCXX)
+    file(GLOB CYBERCAD_METAL_SOURCES CONFIGURE_DEPENDS
+         "${CMAKE_CURRENT_SOURCE_DIR}/src/compute/metal/*.mm")
+    target_sources(cybercadkernel PRIVATE ${CYBERCAD_METAL_SOURCES})
+    target_compile_definitions(cybercadkernel PRIVATE CYBERCAD_HAS_METAL=1)
+    set_source_files_properties(${CYBERCAD_METAL_SOURCES} PROPERTIES
+        LANGUAGE OBJCXX
+        COMPILE_OPTIONS "-fobjc-arc")
+    target_link_libraries(cybercadkernel PUBLIC
+        "-framework Metal" "-framework Foundation")
 endif()
 
 # ── tests ─────────────────────────────────────────────────────────────────────

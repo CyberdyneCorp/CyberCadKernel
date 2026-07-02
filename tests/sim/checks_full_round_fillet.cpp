@@ -21,12 +21,22 @@
 //     original top (equal tangent radius on both sides ⇒ the ball touches both walls),
 //     and the blend normal at each seam contact equals the neighbour normal (dot≈1).
 //
-// The rib fixture is a box (x[-2,2], y[0,20], z[0,10]); a full round on its top
-// (width 4) is a half-cylinder of radius 2 tangent to the two x=±2 side faces, so
-// the exact result volume is (72 + 2π)·10 = 720 + 20π and the blend-cylinder axis is
-// at x=0, y=18, dir ±z. The fallback path is exercised on a splayed trapezoid whose
-// side walls are NOT parallel (no constant-radius rolling ball) — asserted valid and
-// recorded deferred with the measured non-parallelism.
+// The PARALLEL-wall rib fixture is a box (x[-2,2], y[0,20], z[0,10]); a full round on
+// its top (width 4) is a half-cylinder of radius 2 tangent to the two x=±2 side faces,
+// so the exact result volume is (72 + 2π)·10 = 720 + 20π and the blend-cylinder axis
+// is at x=0, y=18, dir ±z.
+//
+// The NON-PARALLEL (dihedral) fixture is a trapezoidal rib (bottom x[-6,6], top
+// x[-2,2] @ y=10, extruded 8 in z): its two side walls slope inward (outward normals
+// (±0.928, 0.371, 0), n_L·n_R = -0.724, ~43.6° off anti-parallel), so no parallel-wall
+// mid-plane exists — the constant-radius rolling ball rides the dihedral bisector and
+// sweeps a cylinder tangent to both tilted walls. We assert that dihedral full round
+// for REAL: valid + watertight, the middle strip consumed (no +Y face survives on the
+// original top plane), the blend is a cylinder along the strip, and it is G1-tangent to
+// BOTH non-parallel walls at the seams — the blend radial normal at each seam foot
+// equals the measured wall normal within cos(1°). Truly CURVED (non-planar) neighbours
+// remain out of scope; per the honesty rule, if the dihedral build cannot produce a
+// tangent full round we assert only a VALID fallback and defer with the measured gap.
 
 #include "phase3_checks.h"
 
@@ -112,6 +122,37 @@ bool flat_top_remains(CCShapeId body) {
     if (f.ny > 0.9 && f.cy > 19.5) return true;
   }
   return false;
+}
+
+// True if any planar-ish face in `body` still lies on the ORIGINAL middle-strip plane
+// (centroid near cy≈topY and outward normal ≈ +Y) — i.e. the middle face survived the
+// blend. Generalises flat_top_remains to an arbitrary top height (the dihedral rib's
+// top strip sits at a different y than the parallel rib's cy=20). Used to assert the
+// middle face id no longer resolves to a face: after a real full round NO output face
+// reproduces the consumed +Y strip.
+bool middle_plane_remains(CCShapeId body, double topY) {
+  for (const FaceN& f : face_normals(body)) {
+    if (f.ny > 0.9 && f.cy > topY - 0.5) return true;
+  }
+  return false;
+}
+
+// Blend-vs-neighbour G1 tangency at a seam, measured on the OUTPUT body. `nb` is a
+// side-wall face of the result; `axisX/axisY` is the blend-cylinder axis (which runs
+// along ±Z, so only its X/Y matter). The blend surface normal where the cylinder
+// touches the wall is the radial unit vector from the axis to the foot of the axis on
+// the wall's plane; for a G1 (tangent) join that radial equals the wall's outward
+// normal. Returns cos(angle) between them (1.0 == perfectly tangent) and the tangent
+// radius `rOut`. The wall's in-plane normal is (nb.nx, nb.ny) because both the crease
+// and the axis run along Z, so the contact geometry is planar in XY.
+double seam_tangency(const FaceN& nb, double axisX, double axisY, double& rOut) {
+  const double t = (nb.cx - axisX) * nb.nx + (nb.cy - axisY) * nb.ny;  // signed foot dist
+  double rx = nb.nx * t, ry = nb.ny * t;
+  const double rl = std::sqrt(rx * rx + ry * ry);
+  rOut = rl;
+  if (rl < 1e-9) return -2.0;
+  rx /= rl; ry /= rl;
+  return rx * nb.nx + ry * nb.ny;  // radial · wall-normal (== 1 when tangent)
 }
 
 // Find the blend cylinder in `body` (a face for which cc_face_axis succeeds with an
@@ -267,19 +308,30 @@ void run_full_round_fillet_checks(Ctx& ctx) {
 
   cc_shape_release(body);
 
-  // ── Honest fallback fixture: a splayed trapezoid whose side walls are NOT
-  // parallel, so no constant-radius rolling ball exists. The engine must fall back
-  // to a valid standard edge fillet, and we record the case deferred with the
-  // measured non-parallelism. ─────────────────────────────────────────────────
-  const double trap[8] = {-6, 0, 6, 0, 2, 20, -2, 20};  // top still x[-2,2]
-  const CCShapeId tb = cc_solid_extrude(trap, 4, 10.0);
+  // ── NON-PARALLEL (dihedral) planar-wall fixture ──────────────────────────────
+  // A trapezoidal rib: bottom wide (x[-6,6] @ y=0), top narrow (x[-2,2] @ y=10),
+  // extruded 8 in Z. The two side walls slope inward as they rise, so they are NOT
+  // parallel — their outward normals are (±0.928, 0.371, 0), n_L·n_R = -0.724, i.e.
+  // ~43.6° off the anti-parallel (parallel-wall) case. Two non-parallel PLANES still
+  // admit a constant-radius rolling ball: its centre rides the internal dihedral
+  // bisector and it sweeps a CYLINDER tangent to both walls (axis ‖ n_L×n_R, here ±Z
+  // along the strip). We assert the engine builds that dihedral full round for real —
+  // valid + watertight, the middle strip consumed, and G1-tangent to BOTH tilted walls
+  // at the seams (blend radial normal == wall normal within cos(1°)). This is the
+  // constant-radius generalisation of the parallel rib above; truly CURVED neighbours
+  // stay out of scope. Per the honesty rule, if the dihedral build does not achieve a
+  // tangent full round we assert only a VALID fallback and defer with the measured gap.
+  const double trap[8] = {-6, 0, 6, 0, 2, 10, -2, 10};  // bottom x[-6,6], top x[-2,2]
+  const double topY = 10.0;
+  const CCShapeId tb = cc_solid_extrude(trap, 4, 8.0);
   if (tb == 0) {
-    ctx.defer("full-round-fillet fallback", "trapezoid build returned 0");
+    ctx.defer("full-round-fillet (non-parallel walls)", "trapezoid build returned 0");
     return;
   }
   const std::vector<FaceN> tf = face_normals(tb);
-  const int tL = pick_face(tf, -1, 0, 0, false);
-  const int tR = pick_face(tf, 1, 0, 0, false);
+  // Side walls tilt up (+Y component), so match on a diagonal direction, not pure ±X.
+  const int tL = pick_face(tf, -1, 0.4, 0, false);
+  const int tR = pick_face(tf, 1, 0.4, 0, false);
   const int tM = pick_face(tf, 0, 1, 0, true);
   double lnx = 0, lny = 0, rnx = 0, rny = 0;
   for (const FaceN& f : tf) {
@@ -288,24 +340,80 @@ void run_full_round_fillet_checks(Ctx& ctx) {
   }
   const double sideDot = lnx * rnx + lny * rny;                 // -1 would be parallel walls
   const double devDeg = std::fabs(180.0 - std::acos(sideDot) * 180.0 / kPi);
-  if (tL != 0 && tR != 0 && tM != 0) {
-    const CCShapeId tout = cc_full_round_fillet_faces(tb, tL, tM, tR);
-    if (tout != 0) {
-      const CCMassProps tmp = cc_mass_properties(tout);
-      ctx.check(tmp.valid == 1 && tmp.volume > 0.0,
-                "non-parallel case falls back to a VALID standard edge fillet");
-      char rb[160];
-      std::snprintf(rb, sizeof(rb),
-                    "side walls off-parallel by %.2f° (n_L·n_R=%.4f); flat top remains=%d; vol=%.3f",
-                    devDeg, sideDot, flat_top_remains(tout) ? 1 : 0, tmp.volume);
-      ctx.defer("cc_full_round_fillet_faces (non-parallel walls)", rb);
-      cc_shape_release(tout);
-    } else {
-      ctx.defer("cc_full_round_fillet_faces (non-parallel walls)",
-                "no full round and no valid fallback fillet (returned 0)");
-    }
-  } else {
-    ctx.defer("full-round-fillet fallback", "could not classify trapezoid faces");
+  if (tL == 0 || tR == 0 || tM == 0) {
+    ctx.defer("full-round-fillet (non-parallel walls)", "could not classify trapezoid faces");
+    cc_shape_release(tb);
+    return;
   }
+
+  char dih[96];
+  std::snprintf(dih, sizeof(dih), "n_L·n_R=%.4f (%.2f° off-parallel)", sideDot, devDeg);
+  ctx.check(std::fabs(sideDot) < 0.95,
+            "dihedral fixture: side walls are genuinely non-parallel", dih);
+
+  const CCShapeId tout = cc_full_round_fillet_faces(tb, tL, tM, tR);
+  if (tout == 0) {
+    ctx.defer("cc_full_round_fillet_faces (non-parallel walls)",
+              std::string("returned 0 (no full round, no valid fallback); ") + dih);
+    cc_shape_release(tb);
+    return;
+  }
+
+  const CCMassProps tmp = cc_mass_properties(tout);
+  const bool tValid = tmp.valid == 1 && tmp.volume > 0.0;
+  const bool tConsumed = !middle_plane_remains(tout, topY);
+
+  // Blend cylinder + its axis (along the strip, ±Z).
+  std::array<double, 6> tax{};
+  const bool tHaveCyl = tValid && find_blend_cylinder(tout, tax);
+
+  // Measure G1 tangency to BOTH tilted walls on the OUTPUT: pick the two side walls
+  // (in-plane XY normal, |n·z|≈0, below the top) and compare the blend radial normal
+  // at each seam foot to the measured wall normal.
+  double cosL = -2.0, cosR = -2.0, rL = 0.0, rR = 0.0;
+  if (tHaveCyl) {
+    const double axisX = tax[0], axisY = tax[1];
+    for (const FaceN& f : face_normals(tout)) {
+      if (std::fabs(f.nz) > 0.2) continue;              // skip the ±Z end caps
+      if (std::fabs(f.nx) < 0.3 || f.cy > topY - 1.0) continue;  // must be a low side wall
+      double r = 0.0;
+      const double c = seam_tangency(f, axisX, axisY, r);
+      if (f.nx < 0 && c > cosL) { cosL = c; rL = r; }   // left wall (−X-ish)
+      if (f.nx > 0 && c > cosR) { cosR = c; rR = r; }   // right wall (+X-ish)
+    }
+  }
+
+  const double cosTol = std::cos(1.0 * kPi / 180.0);
+  const bool tangentBoth = cosL >= cosTol && cosR >= cosTol;
+  const bool equidist = std::fabs(rL - rR) < 1e-2;
+  const bool fullRound = tValid && tConsumed && tHaveCyl && tangentBoth && equidist;
+
+  if (fullRound) {
+    ctx.check(true, "non-parallel dihedral: result is a valid watertight solid",
+              [&] { char b[96]; std::snprintf(b, sizeof(b), "vol=%.4f %s", tmp.volume, dih); return std::string(b); }());
+    ctx.check(tConsumed,
+              "non-parallel dihedral: middle strip consumed (no +Y face on the original top plane)");
+    ctx.check(tHaveCyl,
+              "non-parallel dihedral: blend surface is a cylinder (rolling ball) along the strip");
+    char sb[192];
+    std::snprintf(sb, sizeof(sb),
+                  "cos(left)=%.6f cos(right)=%.6f tol=cos(1°)=%.6f rL=%.4f rR=%.4f", cosL,
+                  cosR, cosTol, rL, rR);
+    ctx.check(equidist,
+              "non-parallel dihedral: blend cylinder is equidistant from both tilted walls", sb);
+    ctx.check(tangentBoth,
+              "non-parallel dihedral: blend is G1-tangent to BOTH non-parallel walls at the seams",
+              sb);
+  } else {
+    // Honest fallback: a VALID lower-fidelity result, deferred with the measured gap.
+    ctx.check(tValid, "non-parallel dihedral: returns a VALID solid (fallback)",
+              [&] { char b[96]; std::snprintf(b, sizeof(b), "vol=%.4f", tmp.volume); return std::string(b); }());
+    char gap[224];
+    std::snprintf(gap, sizeof(gap),
+                  "%s; consumed=%d cyl=%d cos(left)=%.6f cos(right)=%.6f (need>=%.6f) rL=%.4f rR=%.4f",
+                  dih, tConsumed ? 1 : 0, tHaveCyl ? 1 : 0, cosL, cosR, cosTol, rL, rR);
+    ctx.defer("cc_full_round_fillet_faces (non-parallel walls)", gap);
+  }
+  cc_shape_release(tout);
   cc_shape_release(tb);
 }

@@ -1,39 +1,6 @@
-# full-round-fillet Specification
+# full-round-fillet
 
-## Purpose
-Provide a native rolling-ball / full-round fillet behind the `cc_*` facade —
-capability OCCT lacks. Two additive C-ABI entry points replace a narrow middle
-face (or a single face + its two opposite neighbours) with a constant-radius
-rolling-ball blend that CONSUMES the middle face and is G1-tangent to both
-neighbours, yielding a valid watertight solid. The blend is proven for ALL PLANAR
-neighbour configurations: (anti-)parallel walls (constant-radius strip on the
-mid-plane) and non-parallel walls meeting at a dihedral (tangent cylinder with
-axis `normalize(n1 × n2)` centred on the interior bisector). Truly CURVED
-(non-planar) neighbours are out of scope and fall back to a valid standard edge
-fillet, recorded deferred with the measured tangency gap. Compiled only under
-`CYBERCAD_HAS_OCCT`; the host stub is a safe no-op.
-
-## Requirements
-### Requirement: Additive full-round-fillet C ABI
-The library SHALL expose two additive C-ABI entry points: `CCShapeId
-cc_full_round_fillet(CCShapeId body, int faceId)`, which replaces the narrow
-`faceId` with a rolling-ball blend tangent to its two opposite neighbour faces
-(consuming the middle face); and `CCShapeId cc_full_round_fillet_faces(CCShapeId
-body, int leftFaceId, int middleFaceId, int rightFaceId)`, which consumes
-`middleFaceId` and blends tangent to `leftFaceId` and `rightFaceId`. On success
-each SHALL return a new body id; on failure `0`. These are the ONLY C ABI
-additions; no existing `cc_*` signature or POD struct layout SHALL change.
-
-#### Scenario: ABI addition is source-compatible
-- GIVEN the host app previously linked the kernel
-- WHEN it links the version with the two new entry points
-- THEN every existing `cc_*` signature SHALL be unchanged AND the ABI contract
-  test (`tests/test_abi.cpp`) SHALL still pass
-
-#### Scenario: Host stub is a safe no-op
-- GIVEN a build with no B-rep engine (the host stub)
-- WHEN `cc_full_round_fillet` or `cc_full_round_fillet_faces` is called
-- THEN it SHALL return `0` without crashing
+## MODIFIED Requirements
 
 ### Requirement: Full round consumes the target face into a valid watertight solid
 When a full round succeeds, the returned body SHALL be
@@ -107,46 +74,3 @@ fallback requirement) rather than asserting a full round that is not tangent.
 - THEN the operation SHALL NOT claim a dihedral tangent-cylinder full round, and
   SHALL instead return a valid standard-fillet fallback recorded as deferred with
   the measured tangency gap (per the honest-fallback requirement)
-
-### Requirement: Blend is G1-tangent to both neighbours at the seam
-The blend surface produced by a successful full round SHALL be G1-tangent to BOTH
-neighbour faces at the two seams: sampling the blend-face normal and the
-neighbour-face normal (`BRepLProp_SLProps`) at points along each seam, the angle
-between them SHALL be within the documented tangency tolerance.
-
-#### Scenario: Sampled seam normals agree on both neighbours
-- GIVEN a successful full round on the rib body, on a booted iOS simulator
-- WHEN the blend-face normal and each neighbour-face normal are sampled at
-  matching points along both seams
-- THEN at every sample the normals SHALL agree within the documented tangency
-  tolerance (their dot product ≥ cos(tol)) for BOTH the left and right neighbour
-
-### Requirement: Honest fallback to a standard fillet when a full round is not achievable
-The operation SHALL, if a true face-consuming tangent full round cannot be built
-for a given case, fall back to a standard edge fillet (`BRepFilletAPI_MakeFillet` on
-the middle-face edges at a radius derived from the strip width) that is
-`BRepCheck_Analyzer::IsValid`, and the case SHALL be recorded as deferred with the
-measured tangency gap. The operation SHALL NOT report a faked G1-tangent /
-face-consuming result, and SHALL NOT assert tangency it did not achieve.
-
-#### Scenario: Unbuildable full round falls back to a valid fillet and is deferred
-- GIVEN a case for which the tangent face-consuming blend cannot be built or is
-  invalid, on a booted iOS simulator
-- WHEN `cc_full_round_fillet` runs
-- THEN it SHALL return a body produced by a standard edge fillet that IS
-  `BRepCheck_Analyzer::IsValid`
-- AND the change SHALL record this case as deferred with the measured tangency gap,
-  NOT claim a full-round G1 pass for it
-
-### Requirement: Deterministic and OCCT-guarded
-The full round SHALL identify neighbours/seams and build the blend
-deterministically so repeated runs on the same input are reproducible, and SHALL
-be compiled only under `#ifdef CYBERCAD_HAS_OCCT`, leaving the host stub a safe
-no-op.
-
-#### Scenario: Repeated full round is reproducible
-- GIVEN the same body and face ids on a booted iOS simulator
-- WHEN `cc_full_round_fillet_faces` runs twice and both succeed
-- THEN both results SHALL have the same exact volume and bounding box within a
-  tight tolerance
-

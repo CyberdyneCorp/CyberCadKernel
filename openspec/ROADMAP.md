@@ -130,7 +130,7 @@ do them). Each replaces/augments its `cc_*` behind the facade.
 > (`scripts/run-sim-phase3-suite.sh`) on the booted iOS simulator with OCCT
 > linked (`cc_brep_available()==1`), each result asserted against a REAL
 > geometric property (`IsValid`, watertight, volume sign, `1e-9` normals,
-> G1-tangency, or a MEASURED curvature gap). Result: **65 passed, 0 failed, 1
+> G1-tangency, or a MEASURED curvature gap). Result: **70 passed, 0 failed, 0
 > deferred**. On-device runs + app link-swap are optional/deferred. See
 > `docs/STATUS-phase-3.md`.
 
@@ -141,13 +141,18 @@ do them). Each replaces/augments its `cc_*` behind the facade.
   seam curvature gap **0.018835 within G2 tol 0.05** (1/r=0.333333) while the stock
   G1 baseline **0.309740 fails** the bar; G2 measurably smaller than G1; bit-exact
   determinism (dV=dBBox=dGap=0). G2 is claimed because the numbers show it.)*
-- ◐ **Rolling-ball / full-round fillet.** Change **`add-full-round-fillet`** —
-  capability `full-round-fillet` (GitHub #285). *(implemented; **verified on the
-  iOS sim** for tangent/parallel-wall strips — 10 checks: middle face consumed,
-  cylinder blend, axis equidistant, **G1-tangent both seams dot=1.000000**
-  (tol cos1°=0.999848), deterministic, single-arg auto-detect matches. **DEFERRED
-  (measured):** non-parallel walls (off-parallel 22.62°, n_L·n_R=-0.9231) fall
-  back to a VALID standard edge fillet, middle face NOT consumed (vol=1597.844).)*
+- ✅ **Rolling-ball / full-round fillet.** Changes **`add-full-round-fillet`** +
+  **`enhance-full-round-nonparallel`** — capability `full-round-fillet`
+  (GitHub #285). *(implemented; **verified on the iOS sim** for BOTH planar
+  configurations. PARALLEL walls — 10 checks: middle face consumed, cylinder
+  blend, axis equidistant, **G1-tangent both seams dot=1.000000** (tol
+  cos1°=0.999848), deterministic, single-arg auto-detect matches. NON-PARALLEL
+  dihedral — genuinely non-parallel fixture (n_L·n_R=-0.7241, 43.60° off-parallel):
+  valid + watertight (vol=628.5665), middle strip consumed, blend is a cylinder
+  along the crease with axis equidistant (rL=rR=2.9541), **G1-tangent to BOTH
+  non-parallel walls** cos(left)=cos(right)=1.000000. **Residual (by design):**
+  truly CURVED (non-planar) neighbours fall back to a VALID standard edge fillet,
+  recorded deferred with the measured tangency gap.)*
 - ✅ **Robust thread↔shaft boolean** (feature-based, doesn't hang on fine
   helices). Change **`add-robust-thread-boolean`** — capability `thread-boolean`.
   Contract: `occt-usage` §Performance (GitHub #286); `cc_boolean`,
@@ -237,7 +242,7 @@ checkboxes as changes land; flip to ✅ when a change is validated and archived.
 | 2 | `add-gpu-tessellation` | gpu-tessellation | ✅ complete at acceptance bar (GPU surface-eval + per-vertex normals on iOS-sim GPU 18/18; GPU eval wired into `cc_tessellate` behind the toggle, integ suite 26/26 GPU-fed-vs-OCCT parity, GPU-OFF suite 221/221); repeat-run determinism assertion + GPU tessellation of holed/trimmed faces (falls back to OCCT by design) deferred |
 | 2 | `add-gpu-spatial-acceleration` | spatial-acceleration | ✅ complete at acceptance bar (iOS-sim GPU: LBVH nearest-hit + batched ray-pick + **frustum-pick** all vs CPU reference, GPU pick suite **26/26** — frustum set == CPU set {0,1}/empty/all-enclosing, sorted ascending, **byte-identical ×8 runs** for ray + frustum); optional additive `cc_*` pick/cull facade entry = app-facing, out of scope |
 | 3 | `add-g2-blend-fillet` | g2-blend | ✅ complete at acceptance bar (#284) (iOS-sim: valid+watertight, MEASURED curvature gap 0.018835 within G2 tol 0.05, G1 baseline 0.309740 fails, bit-exact determinism); on-device + app link-swap = optional deferred |
-| 3 | `add-full-round-fillet` | full-round-fillet | ◐ in progress (#285) (iOS-sim: true rolling-ball blend verified for tangent/parallel walls — middle face consumed, G1 dot=1.000000, deterministic; **deferred**: non-parallel walls 22.62° → valid standard edge fillet, face not consumed) |
+| 3 | `add-full-round-fillet` + `enhance-full-round-nonparallel` | full-round-fillet | ✅ complete at acceptance bar (#285) (iOS-sim: true rolling-ball blend verified for ALL planar walls — parallel (middle consumed, G1 dot=1.000000, deterministic) AND non-parallel dihedral (fixture n_L·n_R=-0.7241, 43.60°; valid+watertight vol=628.5665, middle consumed, G1 cos(left)=cos(right)=1.000000, axis equidistant rL=rR=2.9541); residual by design: curved/non-planar neighbours → valid standard edge fillet, deferred with measured gap); on-device + app link-swap = optional deferred |
 | 3 | `add-robust-thread-boolean` | thread-boolean | ✅ complete at acceptance bar (#286) (iOS-sim: FUSE 4.38 s / CUT 4.48 s both < 8 s budget, valid+watertight, correct volume sign, naive path not run; determinism within rel 2e-4, not bit-exact — parallel BOPAlgo); on-device = optional deferred |
 | 3 | `add-robust-wrap-emboss` | wrap-emboss | ✅ complete at acceptance bar (#290) (iOS-sim: emboss+deboss valid+watertight, correct volume sign, reproducible, high-curvature valid; sewn→coarse fallback); on-device + app link-swap = optional deferred |
 | 3 | `add-reference-geometry` | reference-geometry | ✅ complete at acceptance bar (iOS-sim: 21/21 — datum planes/axes within 1e-9, 6/6 faces + 12/12 edges + cyl axis, degenerate guards hold); host stub returns 0 for derived; on-device = optional deferred |

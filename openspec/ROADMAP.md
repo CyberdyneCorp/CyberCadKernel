@@ -18,8 +18,8 @@ Legend: ☐ not started · ◐ in progress · ✅ done.
 Stand up the library and move CyberCad's OCCT bridge into it, unchanged in
 behaviour. Establishes the seams everything else plugs into.
 Change: **`add-kernel-foundation`** *(in progress — implemented; host build+tests
-pass, OCCT adapter compiles for iOS-sim; OCCT runtime parity + app link-swap
-deferred to a simulator/app follow-up)*.
+pass, OCCT adapter runs on the iOS simulator with all 57 `cc_*` runtime-verified
+(221-check suite); only the app link-swap remains, deferred to an app follow-up)*.
 - ✅ **Stable C ABI facade** (`cc_*`, shape registry, error/guard model) —
   capability `kernel-facade`. Contract: `occt-usage` §Foundation-classes
   exception safety, §Modeling-data types. *(implemented; host CTest green,
@@ -27,9 +27,10 @@ deferred to a simulator/app follow-up)*.
 - ◐ **Engine adapter** abstraction with an **OCCT adapter** as the first
   implementation — capability `engine-adapter`. Contract: the full `occt-usage`
   surface (construction, boolean, fillet, tessellate, query, transform,
-  exchange). *(implemented; device+sim xcframework built; core ops run correctly
-  on the iOS simulator — 16/16 checks, exact boolean/STEP results. Full per-`cc_*`
-  parity vs the app bridge still pending.)*
+  exchange). *(implemented; device+sim xcframework built; **all 57 `cc_*` entry
+  points now run correctly on the iOS simulator** — full suite 221/221 against
+  analytic/round-trip references. Only the app **link-swap** + a direct byte-diff
+  vs the app's inline `KernelBridge.mm` remain (need the CyberCad app project).)*
 - ✅ **Operation scheduler**: coroutine-based, cancellable, progress-reporting
   execution off the UI thread — capability `operation-scheduler`. Addresses the
   non-cancellable `Build` (`occt-usage` §Performance & acceleration targets).
@@ -41,26 +42,30 @@ deferred to a simulator/app follow-up)*.
 ## Phase 1 — Multi-core acceleration (still on OCCT)
 Highest leverage, lowest risk — attacks the known bottlenecks with no new
 geometry code, by enabling OCCT's *existing* parallel paths behind the facade.
-Change: **`accelerate-multicore-occt`** *(in progress — parallel paths implemented
-and compile for iOS-sim; policy layer host-tested; determinism audit + on-device
-benchmark + runtime parity deferred to a simulator/device follow-up)* — capability
-`parallel-acceleration`.
+Change: **`accelerate-multicore-occt`** *(in progress — parallel paths implemented,
+run on the iOS simulator, and the determinism audit + serial-vs-parallel benchmark
+are complete on the sim (221-check suite, `cc_set_parallel` A/B); only on-device
+core scaling remains)* — capability `parallel-acceleration`.
 - ◐ Enable OCCT parallel booleans (`BOPAlgo_Options::SetRunParallel`) + tuned
   `SetFuzzyValue` behind `cc_boolean` — targets the fine-thread fuse/cut that
   pegs OCCT for minutes. Contract: `occt-usage` §Boolean operations, §Performance
-  (GitHub #286). *(implemented; runs on the iOS simulator with correct results;
-  ≈5.9 ms/op on a box fuse. On-device + fine-thread benchmark pending.)*
+  (GitHub #286). *(implemented; runs on the iOS simulator; **serial-vs-parallel
+  A/B verified bit-identical** for box-box fuse (1875) + cut (875) via
+  `cc_set_parallel`. Fine-thread + on-device benchmark pending.)*
 - ◐ Enable parallel meshing (`BRepMesh_IncrementalMesh` `isInParallel`) behind
   `cc_tessellate` / `cc_face_meshes`. Contract: `occt-usage` §Meshing.
-  *(implemented; runs on the simulator, output byte-identical across 16 runs.)*
+  *(implemented; runs on the simulator; **parallel mesh is bit-identical to the
+  serial mesh** on all audited bodies (fuse/cut/revolve/fillet), stable ×8.)*
 - ◐ Make long ops cancellable via the scheduler and gate fine-thread booleans
   until accelerated (fixes non-cancellable `Build`; `occt-usage` §Performance
   scenario). *(scheduler routing + fine-thread gate implemented; gate host-tested
   via `test_parallel_policy`.)*
 - ◐ Determinism audit: parallel results must be bit-reproducible before parallel
-  becomes the default. *(partial — parallel run-to-run reproducibility confirmed
-  on the simulator for box cases; serial-vs-parallel A/B needs an additive `cc_*`
-  toggle + more bodies.)*
+  becomes the default. *(**complete on the simulator** — `cc_set_parallel(0/1)`
+  A/B over box-box fuse, box-box cut, revolve tube, and a multi-face fillet solid
+  all report `serial == parallel: YES` (bit-identical mesh hash + exact volume +
+  tri count), stable across 8 parallel runs; parallel-by-default is justified for
+  exactly these paths.)*
 
 ## Phase 2 — GPU acceleration (Metal first)
 fp32-tolerant, data-parallel work through the compute backend. CPU stays the
@@ -131,8 +136,8 @@ checkboxes as changes land; flip to ✅ when a change is validated and archived.
 
 | Phase | Change | Capability(ies) | Status |
 |---|---|---|---|
-| 0 | `add-kernel-foundation` | kernel-facade, engine-adapter, operation-scheduler, compute-backend | ◐ in progress (implemented; host tests pass, iOS-sim compiles; OCCT runtime parity + app link-swap deferred) |
-| 1 | `accelerate-multicore-occt` | parallel-acceleration | ◐ in progress (parallel paths implemented + iOS-sim compile; determinism audit + device benchmark deferred) |
+| 0 | `add-kernel-foundation` | kernel-facade, engine-adapter, operation-scheduler, compute-backend | ◐ in progress (implemented; host tests pass; all 57 `cc_*` runtime-verified on iOS-sim (221/221); only app link-swap deferred) |
+| 1 | `accelerate-multicore-occt` | parallel-acceleration | ◐ in progress (parallel paths run on iOS-sim; determinism audit + serial-vs-parallel benchmark complete; only on-device core scaling deferred) |
 | 2 | `add-metal-compute-backend` | metal-backend | ☐ planned |
 | 2 | `add-gpu-tessellation` | gpu-tessellation | ☐ planned |
 | 2 | `add-gpu-spatial-acceleration` | spatial-acceleration | ☐ planned |

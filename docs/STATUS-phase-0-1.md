@@ -13,13 +13,15 @@ Date: 2026-07-01 · Branch: `main`.
 - **VERIFIED here:** the host (no-OCCT) library builds and all 6 unit tests pass;
   the full OCCT engine adapter **compiles, archives, and link-checks** for the
   iOS **simulator and device** (arm64) against the real trimmed OCCT static libs
-  (packaged as `CyberCadKernel.xcframework`); and the adapter **runs on the iOS
-  simulator** — 16 OCCT-backed correctness checks pass, the parallel paths are
-  **run-to-run deterministic**, and a boolean/mesh benchmark is captured.
-- **NOT verified here:** **full** per-`cc_*` parity across all 57 functions and
-  vs the app's `KernelBridge.mm`, **on-device runtime**, serial-vs-parallel A/B
-  timing, and the **app link-swap** (xcframework is built; the CyberCad project
-  edit + app build still need Xcode).
+  (packaged as `CyberCadKernel.xcframework`); and the **full OCCT runtime suite
+  runs on the iOS simulator** — **221 checks pass across all 57 `cc_*` entry
+  points**, the parallel paths are **bit-identical to serial** (`serial ==
+  parallel: YES` on every audited body) and stable across 8 runs, and a
+  **serial-vs-parallel wall-clock benchmark** is captured.
+- **NOT verified here:** **on-device runtime + core scaling** (the device slice
+  compiles/links but was not run on hardware) and the **app link-swap** (the
+  xcframework is built; the CyberCad `project.yml` edit + app build still need
+  Xcode, which also gates a byte-diff vs the app's inline `KernelBridge.mm`).
 
 ## What was implemented
 
@@ -106,8 +108,49 @@ simulator** (`xcrun simctl spawn`). Result: **16 / 16 checks pass**.
   parallel box mesh are **byte-identical across 16 runs** (FNV-1a over the mesh) —
   parallel meshing/booleans are run-to-run reproducible for these bodies.
 - **Benchmark:** boolean fuse ≈ **5.9 ms/op** (avg of 50); fine mesh
-  (deflection 0.01) ≈ **1.1 ms**. Absolute only — serial-vs-parallel A/B needs an
-  additive `cc_*` parallel toggle (follow-up).
+  (deflection 0.01) ≈ **1.1 ms**. The serial-vs-parallel A/B is now done via the
+  additive `cc_set_parallel` toggle — see **Full runtime suite** below.
+
+### Full runtime suite (all 57 `cc_*`, determinism A/B + benchmark)
+
+`scripts/run-sim-suite.sh` compiles the full suite (`tests/sim/full_suite.cpp` +
+`checks_{construct,feature,booltransform,tessellate,query,exchange,accel}.cpp`),
+links it against the simulator slice + the real OCCT libs, and runs it in a booted
+simulator. Result: **221 passed, 0 failed, exit 0.**
+
+- **Functions covered (all 57 `cc_*`):** construct (extrude / revolve / loft /
+  sweep / helical thread + legacy extrude), features (fillet / chamfer / shell /
+  offset-face / replace-face / split-plane), boolean + transforms (fuse / cut /
+  common, scale / rotate / mirror / translate / place-on-frame), tessellate
+  (`cc_tessellate` / `cc_face_meshes` / `cc_edge_polylines`), query (mass-props /
+  principal-moments / bounding-box / face-axis / subshape-ids / chains /
+  offset-face-boundary), and data exchange (STEP + IGES export/import).
+- **Determinism A/B (`cc_set_parallel(0)` vs `(1)`) — `serial == parallel: YES`
+  for every body, parallel stable across 8 runs:**
+
+  | Body | serial==parallel | 8× stable | volume | tris |
+  |---|---|---|---|---|
+  | box-box fuse | YES | YES | 1875.0000 | 36 |
+  | box-box cut  | YES | YES | 875.0000  | 24 |
+  | revolve tube | YES | YES | 659.7345  | 328 |
+  | fillet solid | YES | YES | 946.5774  | 964 |
+
+  Bit-identical means same FNV-1a mesh hash, same exact B-rep volume, and same
+  triangle count under parallel vs serial — so parallel-by-default perturbs zero
+  bytes for these paths.
+- **Measured speedups (serial vs parallel, N=20, boolean/revolve/fillet + mesh):**
+
+  | Body | serial | parallel | speedup | tris |
+  |---|---|---|---|---|
+  | box-box fuse | 6.608 ms | 7.558 ms | 0.87× | 36 |
+  | box-box cut  | 5.560 ms | 6.329 ms | 0.88× | 24 |
+  | revolve tube | 1.870 ms | 1.242 ms | 1.51× | 328 |
+  | fillet solid | 16.574 ms | 16.337 ms | 1.01× | 964 |
+
+  Parallelism pays off once the tri-count is large enough to amortize thread
+  setup (revolve 1.51×); tiny booleans are dominated by pool overhead **on the
+  simulator**. True core scaling (thread-count sweep) requires physical Apple
+  hardware — the one remaining Phase-1 gap.
 
 **Bug found + fixed (regression covered by this harness):** the process
 segfaulted on **exit** after running OCCT algorithms. Root cause: the facade's
@@ -152,6 +195,16 @@ bash scripts/build-xcframework.sh         # -> build-ios/CyberCadKernel.xcframew
 bash scripts/run-sim-harness.sh           # expect: "== 16 passed, 0 failed ==", exit 0
 ```
 
+Full OCCT runtime suite (all 57 `cc_*` + determinism A/B + benchmark) in a booted
+simulator:
+
+```sh
+cd /Users/leonardoaraujo/work/CyberCadKernel
+bash scripts/run-sim-suite.sh             # expect: "== 221 passed, 0 failed ==", exit 0
+                                          #   [DET]  ... serial==parallel: YES (all bodies)
+                                          #   [BENCH] ... serial vs parallel speedups
+```
+
 OpenSpec validation:
 
 ```sh
@@ -171,6 +224,9 @@ openspec validate --all --strict          # expect: 2 passed, 0 failed
 | OCCT adapter compiles for arm64 iOS-**simulator** + **device** | `verify-ios-compile.sh` (sim) + `build-xcframework.sh` (both slices) |
 | Adapter objects archive + link against real trimmed OCCT | archive built, link check `LINK OK`; `CyberCadKernel.xcframework` produced |
 | OCCT adapter **runs** on the iOS simulator: 16/16 correctness checks | `run-sim-harness.sh` → exact box/boolean volumes, STEP round-trip |
+| **Full runtime coverage of all 57 `cc_*`** on the simulator | `run-sim-suite.sh` → **221 passed, 0 failed**, every facade entry point exercised |
+| **Serial-vs-parallel determinism A/B**: parallel is **bit-identical to serial** | `checks_accel.cpp` via `cc_set_parallel` → `serial == parallel: YES` on fuse/cut/revolve/fillet, stable ×8 |
+| **Serial-vs-parallel wall-clock benchmark** captured (sim) | `[BENCH]` lines: revolve 1.51×, fillet 1.01×, small booleans 0.87–0.88× (pool overhead) |
 | Parallel booleans + meshing are **run-to-run deterministic** (tested bodies) | same harness → mesh byte-identical across 16 runs |
 | `openspec validate --all --strict` is green | 2 passed, 0 failed |
 
@@ -178,14 +234,14 @@ openspec validate --all --strict          # expect: 2 passed, 0 failed
 
 | Follow-up | Why it is not done here | Blocks |
 |---|---|---|
-| **Full per-`cc_*` parity** — all 57 functions, and vs the in-app `KernelBridge.mm` output | the harness covers core ops (extrude/translate/boolean/fillet/mass-props/bbox/subshape/tessellate/STEP), not every function or a bridge-vs-library diff | needs a broader sim harness / app test target | `add-kernel-foundation` 3.4, 6.2; `accelerate` 6.2 |
-| **Comprehensive determinism audit + serial-vs-parallel A/B** | harness proves parallel run-to-run reproducibility on box cases; a serial baseline needs an additive `cc_*` parallel toggle, and more representative bodies | needs the toggle hook + more cases | `accelerate` 5.1–5.2 |
-| **On-device runtime + benchmark** | the device **slice compiles/links** (xcframework), but was not **run** on hardware | needs a physical device | `accelerate` 6.1 |
-| **App link-swap** — point CyberCad at `CyberCadKernel.xcframework` behind its OCCT flag, keep PreviewKernel fallback | the xcframework is built; the `project.yml` edit + app build need Xcode | needs the CyberCad **app** project | `add-kernel-foundation` 6.1, 6.2 |
+| **On-device runtime + core scaling** | the device **slice compiles/links** (xcframework), and the full suite runs on the **simulator**, but nothing was **run on hardware**; the serial-vs-parallel benchmark needs a real thread-count sweep on Apple silicon for true core scaling | needs a physical device | `accelerate` 6.1 |
+| **App link-swap** — point CyberCad at `CyberCadKernel.xcframework` behind its OCCT flag, keep PreviewKernel fallback; and the byte-diff vs the app's inline `KernelBridge.mm` | the xcframework is built and all 57 `cc_*` are runtime-verified against analytic references, but the `project.yml` edit + app build (and a direct bridge-vs-library diff) need Xcode + the CyberCad **app** project | needs the CyberCad **app** project | `add-kernel-foundation` 6.1, 6.2 |
 
-Core OCCT runtime is now verified on the simulator, but full parity, the app
-link-swap, and on-device runs remain open, so **Phase 0 and Phase 1 stay ◐
-(in progress)** in `ROADMAP.md` — Phase 0 is NOT flipped to ✅ (see
+The full OCCT runtime is now verified on the simulator — all 57 `cc_*` pass, the
+determinism audit is complete (parallel == serial, bit-identical), and the
+serial-vs-parallel benchmark is captured. What remains is the **app link-swap**
+(Phase 0) and **on-device core scaling** (Phase 1), so both phases stay ◐
+(in progress) in `ROADMAP.md` — Phase 0 is NOT flipped to ✅ (see
 `add-kernel-foundation` task 6.4).
 
 ## Notes / deviations

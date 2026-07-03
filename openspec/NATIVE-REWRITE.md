@@ -613,6 +613,47 @@ longest; a native exchange is lower priority than the modelling core.
   reconstructor — the #7 slice was EXPORT only). Until BOTH exist, OCCT stays linked
   and Phase 4 stands COMPLETE AT ITS ACHIEVABLE NATIVE CEILING, not fully drop-OCCT.
 
+## Remaining work to drop OCCT — ordered by difficulty (+ effort)
+
+As of the geometry-completion batch, **every tractable/analytic capability is
+native**; what remains is the SSI-gated hard core + the exchange/healing track.
+Ordered easiest → hardest by *marginal* effort (deps flagged; a cheap item gated
+on a hard prereq is not reachable early). Effort is **order-of-magnitude,
+robustness-dominated, human-expert-equivalent** — `w` = weeks, `py` = person-years.
+LOC are OCCT's (the port/reference size).
+
+| # | Remaining item | OCCT LOC | Dep | Analytic slice | Production-robust |
+|---|---|---|---|---|---|
+| 1 | Twist/scale sweep, guided/rail sweep+loft, mismatched loft (self-verify-clean cases) | ~48k (TKOffset/BRepFill) | frame math | ~1–2 w | 0.5–1.5 py |
+| 2 | **Numeric foundations** — `math_` solvers (Newton/FunctionSetRoot/BFGS) + `Extrema` (45k) + `Adaptor3d` (7k) | ~55k | — | n/a | **0.5–1 py** — *highest leverage; on-ramp to everything below* |
+| 3 | STEP/IGES **import** (full AP203/214/242 + IGES parse + reconstruct) | ~300–600k | needs #4 | narrow (own export): ~w | 2–4 py |
+| 4 | **Shape healing** (`ShapeFix`/`ShapeUpgrade`/`ShapeAnalysis`) | 87,647 | — | n/a | 2–4 py |
+| 5 | **SSI + general curved booleans** (`IntPatch`/`IntWalk` 89k + BOPAlgo 76k) | ~165k | #2 | ~w/case | **3–6 py** (clean-room) / ~1.5–3 py (port from OCCT) — *the moat* |
+| 6 | Curved / variable-radius / fillet-face / concave **blends** (`ChFi3d`) | 95,710 | #5 | ~w/case | 2–4 py |
+| 7 | Curved **wrap-emboss** | (composition) | #5 + curved offset | ~days | 0.2–0.5 py |
+| 8 | `drop-occt` — unlink + full regression | — | 1–7 | — | small, last |
+
+Critical path: **#2 numeric foundations → #5 SSI → curved booleans → #6 blends →
+#7 wrap-emboss**, with **#3 import ← #4 healing** as a parallel track. Both gate
+**#8**. Total to genuinely drop OCCT ≈ **10–20 py** (a small team, several years);
+matching OCCT means re-earning its person-decades of hardening on real CAD data.
+
+### Effort banked so far (human-expert-equivalent)
+
+The native rewrite delivered the entire analytic/tractable surface, verified vs
+OCCT: math, topology, watertight tessellation, construction (extrude/revolve/
+holed+typed profiles/spline+torus/N-loft/planar+non-planar sweep/threads/shank),
+planar + axis-aligned box∩cylinder booleans, planar blends, STEP export.
+Cumulative ≈ **0.6–0.9 py** of skilled kernel work.
+
+- **Last batch (geometry-completion) gained ≈ 3–5 person-weeks** — spline edges,
+  torus revolve (+ native `Torus`), N-section loft, non-planar RMF sweep — and
+  proved the boundary (declines/fallbacks correctly identified, not faked).
+- It did **not** shorten the ~10–20 py drop-OCCT tail: that tail is the SSI +
+  healing + import hard core, orthogonal to this construction work. By *effort*
+  we are ~5–8% of the way to full drop-OCCT; by *tractable-capability breadth*,
+  ~complete. The remaining 90%+ is the research-grade core.
+
 Progress is reflected in [ROADMAP.md](ROADMAP.md) Phase 4 and per-change
 `tasks.md`; living specs are synced/archived per capability as they pass the
 verification gates.

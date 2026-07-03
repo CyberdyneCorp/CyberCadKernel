@@ -44,10 +44,23 @@ Date: 2026-07-03 · Branch: `main`.
   parity 22/22). Still OCCT-fallthrough (not faked): kind-3 SPLINE profile edges,
   off-axis-arc (torus) / spline surface-of-revolution, and the remaining swept
   solids — loft, sweep, twisted/guided sweep, threads, wrap-emboss (Tiers B–E).
-- **No regressions.** Host build + CTest **12/12** (10 existing + new
-  `test_native_construct` + `test_native_engine`); `scripts/run-sim-suite.sh` stays
-  **221 passed, 0 failed** (re-verified against a freshly rebuilt SIMULATORARM64
-  slice carrying the facade + NativeEngine changes).
+- **Capability #5 `native-booleans` — PLANAR-polyhedron slice done at the
+  verification bar; curved / general still OCCT-fallthrough (honest).** Native
+  `cc_boolean` (fuse / cut / common) for planar-faced solids (axis-aligned boxes,
+  prisms) via a BSP-tree CSG (`src/native/boolean/`), guarded by a MANDATORY
+  self-verify (`robustlyWatertight` + set-algebra volume) that discards any invalid
+  candidate and falls through to OCCT. Both gates green: host `test_native_boolean` +
+  `test_native_engine` (CTest **17/17**, no OCCT) and native-vs-OCCT parity on the iOS
+  sim (`native_boolean_parity.mm`, **25/25**) — box fuse rel **1.27e-16** / cut
+  **2.96e-16** / common **2.22e-16**, contained fuse **0.00e+00** / common **2.22e-16**
+  all EXACT + watertight; the self-verify correctly rejects a native∩native disjoint
+  out-of-domain result; curved (cyl-box, rel 0.00e+00), near-coincident (0.00e+00) and
+  disjoint (0.00e+00) cases fall through to OCCT (delegated, no native interception).
+  Booleans remain the longest-lived OCCT dependency for curved / general.
+- **No regressions.** Host build + CTest **17/17** (incl. `test_native_tessellate`,
+  `test_native_boolean`); `scripts/run-sim-suite.sh` stays **221 passed, 0 failed**
+  (the OCCT default engine and `cc_boolean` under it are unchanged; only change is
+  `native_boolean_parity.mm` on the SKIP list).
 - **Contained blast radius.** Native math lives under `src/native/math/`, native
   topology under `src/native/topology/`, native tessellation under
   `src/native/tessellate/` (all header-only, unreachable from the facade by design).
@@ -707,6 +720,98 @@ Tests:
 - `tests/sim/native_construct_parity.mm` — simulator native-vs-OCCT parity gate
   through the facade (own runner; SKIPped by `run-sim-suite.sh`).
 
+## native-booleans result table (#5)
+
+**Honest analytic-planar-first slice.** `cc_boolean` (fuse / cut / common) is NATIVE
+for **PLANAR-faced solids** (polyhedra — axis-aligned boxes, prisms) via a BSP-tree CSG
+(Naylor-Amanatides-Thibault 1990) over the solids' planar polygons, guarded by a
+MANDATORY self-verify (`robustlyWatertight` + set-algebra volume `Vr ≈ Va±Vb−Vab`) that
+DISCARDS any candidate that is not a valid watertight solid with the correct volume and
+falls through to OCCT. Curved-face operands (cylinder/sphere/cone), near-coincident /
+tangent / degenerate configurations, non-native / foreign operands, and disjoint pairs
+FALL THROUGH to OCCT (`BRepAlgoAPI_Fuse`/`_Cut`/`_Common` — labelled, verified, never
+faked). Built OCCT-free under `src/native/boolean/` (`polygon.h`, `bsp.h`, `assemble.h`,
+`native_boolean.h`); entry point `boolean_solid(a, b, op)`. Engine-wired behind the same
+`cc_set_engine(1)` toggle (default stays OCCT).
+
+### What is native vs what falls through to OCCT
+
+| `cc_boolean` case | Engine | Reason |
+|---|---|---|
+| axis-aligned box / planar-polyhedron **fuse** (overlapping OR contained) | **NATIVE** | BSP-CSG over planar polygons, self-verified watertight + exact set-algebra volume |
+| axis-aligned box / planar-polyhedron **cut** (`A−B`, overlapping) | **NATIVE** | same |
+| axis-aligned box / planar-polyhedron **common** (`A∩B`, overlapping OR contained) | **NATIVE** | same |
+| curved-face operand (cylinder ∪/− /∩ box, sphere, cone, NURBS) | OCCT-fallthrough | `isAllPlanar` guard → NULL; no native surface-surface intersection yet |
+| near-coincident / tangent / degenerate configuration | OCCT-fallthrough | preflight guard / self-verify reject → NULL |
+| disjoint operands (no overlap) | OCCT-fallthrough | self-verify rejects out-of-domain result → NULL |
+| foreign (OCCT-built) / non-native operand | OCCT-fallthrough | `!isNative(a) || !isNative(b)` → delegate |
+| general / concave-general / mixed operands | OCCT-fallthrough | out of the verified planar domain |
+
+**Host gate (Gate 1) GREEN:** `test_native_boolean` + `test_native_engine` (Homebrew
+clang 22.1.8, `-std=c++20`, `CYBERCAD_HAS_OCCT=OFF`, `CYBERCAD_HAS_METAL=OFF`) assert
+native box fuse/cut/common watertight with EXACT set-algebra volume, a prism/simple-concave
+case, self-verify rejecting a deliberately open / wrong-volume candidate, and fall-through
+triggers (curved operand, coincident config, foreign body → NULL). Host CTest **17/17**
+green (16 pre-existing + `test_native_boolean`), including `test_native_tessellate`
+(test #10) — all 13 cases with every watertight assertion green
+(`box_solid_is_watertight_exact_volume`, `sphere_watertight_and_converges`,
+`cylinder_solid_watertight_curved_seam`, `cylinder_solid_watertight_converges`,
+`mesh_open_patch_is_manifold_not_watertight`).
+
+**Native-vs-OCCT parity gate (Gate 2) GREEN** — `tests/sim/native_boolean_parity.mm` +
+`scripts/run-sim-native-boolean.sh` through the `cc_*` facade under `cc_set_engine(0/1)`
+(OCCT default restored in teardown), booted sim `2B90AEDB`. **25 assertions passed, 0
+failed.** Per-case native (n) vs OCCT (o) deltas:
+
+| Case | Op / path | Engine | vol (o / n) · relVol | bbox Δ | tessellate |
+|---|---|---|---|---|---|
+| overlap-fuse | `cc_boolean(0)` | **NATIVE** | 14 / 14 · **1.27e-16** | 0 | watertight, 40 tris, meshVolRel 0 |
+| overlap-cut | `cc_boolean(1)` | **NATIVE** | 6 / 6 · **2.96e-16** | 0 | watertight, 24 tris, meshVolRel 0 |
+| overlap-common | `cc_boolean(2)` | **NATIVE** | 2 / 2 · **2.22e-16** | 0 | watertight, 12 tris, meshVolRel 0 |
+| contained-fuse | `cc_boolean(0)` | **NATIVE** | 64 / 64 · **0.00e+00** | 0 | watertight, 36 tris, meshVolRel 0 |
+| contained-common | `cc_boolean(2)` | **NATIVE** | 1 / 1 · **2.22e-16** | 0 | watertight, 12 tris, meshVolRel 0 |
+| self-verify-guard | native∩native disjoint | **NATIVE reject** | id=0 | — | self-verify correctly rejected out-of-domain operands (native active=1) |
+| cyl-box-fuse (curved) | `cc_boolean(0)` | OCCT-fallthrough | 55.8087 / 55.8087 · **0.00e+00** | 0 | watertight=0, 164 tris, meshVolRel 5.11e-03 (curved fallback: volume-bound only) |
+| near-coincident-fuse | `cc_boolean(0)` | OCCT-fallthrough | 16 / 16 · **0.00e+00** | 0 | watertight, 20 tris, meshVolRel 1.67e-10 |
+| disjoint-fuse | `cc_boolean(0)` | OCCT-fallthrough | 2 / 2 · **0.00e+00** | 0 | watertight, 24 tris, meshVolRel 2.22e-16 |
+
+**Native-vs-OCCT volume deltas:** all NATIVE cases match OCCT to ~1e-16 (machine epsilon,
+EXACT); all fallback cases rel 0.00e+00 (OCCT-forwarded, identical). The box fuse / cut /
+common results are EXACT (`|A|+|B|−|A∩B|` / `|A|−|A∩B|` / `|A∩B|` to machine epsilon). The
+curved cyl-box fallback is the ONLY non-watertight tessellation (a curved fallback bounded
+by volume only, `watertight=0` — an OCCT-mesh property, not a native-boolean defect).
+
+**No regressions.** Host CTest **17/17** (incl. `test_native_tessellate`);
+`scripts/run-sim-suite.sh` **== 221 passed, 0 failed ==** on the OCCT-only facade suite
+(8 sources compiled + linked, iOS sim `2B90AEDB`) — the default engine stays OCCT and
+`cc_boolean` under it is unchanged. The only `run-sim-suite.sh` change is adding
+`native_boolean_parity.mm` to the SKIP list (a `.mm` already excluded by the `*.cpp` find,
+so the 221 count is unperturbed). #5 changes are confined to the NativeEngine path
+(`src/native/boolean/*`, `native_engine`, the facade native branch) and gated behind
+`cc_set_engine(1)`; native intercepts axis-aligned box fuse/cut/common EXACT and falls
+through to OCCT (self-verified, never faked) for everything else. Note: the sim boolean
+parity link emits pre-existing `ld` warnings (OCCT libs built for iOS-simulator 18.0 vs
+linked 14.0), unrelated to #5.
+
+**Booleans remain the longest-lived OCCT dependency for curved/general.** Only the
+verified planar-polyhedron domain is native; surface-surface intersection (curved),
+robust near-tangent/coincident handling, and full shape healing are future work.
+
+### Files (#5)
+
+- `src/native/boolean/polygon.h` — planar polygon + plane predicates (OCCT-free).
+- `src/native/boolean/bsp.h` — BSP-tree CSG (plane-clip / invert, coplanar-coincident
+  face handling) over the solids' planar polygons.
+- `src/native/boolean/assemble.h` — B-rep-level T-junction repair + triangulation of the
+  surviving polygons (closes coplanar seams a naive per-fragment mesher would leave open).
+- `src/native/boolean/native_boolean.h` — umbrella; entry point `boolean_solid(a, b, op)`
+  (isAllPlanar guard, fuse/cut/common, preflight guards → NULL fall-through).
+- `src/engine/native/native_engine.cpp` — `boolean_op` native branch (both operands native
+  → `build_boolean`; NULL or failed `booleanSelfVerify` → OCCT fall-through).
+- `tests/test_native_boolean.cpp` — host Gate-1 (no OCCT).
+- `tests/sim/native_boolean_parity.mm` + `scripts/run-sim-native-boolean.sh` — sim Gate-2
+  native-vs-OCCT parity (own `main()`; SKIPped by `run-sim-suite.sh`).
+
 ## Regression evidence
 
 - Host build + CTest with Homebrew clang, `-DCYBERCAD_HAS_OCCT=OFF
@@ -749,6 +854,6 @@ Tests:
 | 3 | `native-tessellation` | **done at the bar** | Both gates green (host `test_native_tessellate` + sim native-vs-OCCT `BRepMesh` parity, All 20 checks PASS across 4 shapes; ALL four closed solids watertight `boundaryEdges==0`; area/volume relMesh ≤ 6.0e-3, relExact ≤ 1.24e-2, bbox maxCornerΔ ≤ 4.66e-2, on-surface residual ≤ 5.7e-15); no regressions (host CTest 10/10, `run-sim-suite.sh` 221/221); header-only `src/native/tessellate/`, not engine-wired by design. RESOLVED: curved shared-edge stitch (two-stage shared per-edge discretization) — cylinder/filleted-box now watertight. Deferred (genuinely minor, not watertightness): ear-clip trim re-triangulation quality, adaptive per-cell refinement, GPU fp32 path CPU-verified only. |
 | 4 | `native-construction` | **done at the bar** | Native `cc_solid_extrude` (closed polygon → prism: bottom/top planar caps + one planar quad per profile edge) and native `cc_solid_revolve` for **LINE-SEGMENT** profiles (segments → plane / cylinder / cone faces of revolution; full 360° closes, partial adds planar caps) — full native topology + geometry under `src/native/construct/construct.h`, OCCT-free/host-buildable. Wired through a new `NativeEngine : IEngine` (`src/engine/native/`) that serves these ops + native tessellate / mass / bbox / **subshape_ids** on its own native bodies and FALLS THROUGH to the OCCT engine (or the stub on host) for every other capability. Facade toggle `cc_set_engine(int)` / `cc_active_engine()` (additive, like `cc_set_parallel`; **default stays OCCT** so existing suites are unchanged). **Both gates green.** Host: `test_native_engine` + `test_native_construct` assert native builds with NO OCCT — boxes (exact vol/area/6-faces/centroid/bbox/watertight), a **triangle prism** (now watertight, exact vol = area×depth, via the tessellator cap-fill fix below), an L-prism, a full-turn tube (9π), a quarter-turn tube (9π/4) and a cone (4π), within the deflection bound; CTest **12/12**. Sim native-vs-OCCT parity (`native_construct_parity.mm`, driven through the `cc_*` facade under `cc_set_engine(0/1)`): **17/17** across box / triangle-prism / cylinder-tube / partial-revolve — mass (vol/area/centroid), bbox, face count, watertight tessellation, plus the fallthrough boolean (native→OCCT) all match. No regressions (`run-sim-suite.sh` **221/221**, `native_tessellation_parity.mm` **20/20**). Three fixes landed here: (a) the tessellator `isFullRectangle` fast-path now, for a PLANAR face, also requires the loop to hit all four box corners, so a convex polygon cap (triangle/hexagon) is ear-clipped instead of filled as its bbox — native extrude of ANY simple polygon now meshes watertight with the exact volume (`trim.h`); (b) `NativeEngine::bounding_box` derives from the tessellated mesh (a revolved solid's B-rep vertices sit only at angular stations, so a vertex-only AABB missed the circular extremes); (c) `NativeEngine::subshape_ids` is native for native bodies (Vertex/Edge/Face counts via the native Explorer). EXPLICITLY DEFERRED to OCCT (not faked, falls through): loft, sweep, twisted/guided sweep, threads, holed/typed-profile extrude variants, revolve of ARC/SPLINE profiles. DOCUMENTED REPRESENTATIONAL DIFFERENCE (not a geometric mismatch): the native builder emits per-face edges / per-patch vertices (proper edge/vertex SHARING deferred) and tiles a full-turn surface of revolution into <π angular patches (periodic-face construction deferred), so native V/E and the full-turn face count differ from OCCT's shared/periodic representation while the SOLID is geometrically identical (volume/area/bbox/watertight all match) — the parity gate asserts face-count where the tiling matches (prisms, partial revolve) and an integer-multiple relation for the full-turn revolve. |
 | 4b | `native-construction` (advanced swept solids) | ◐ Tiers A + B + C + D(shank) done at the bar; threads OCCT-fallthrough, E follow-up | **Tier A (`add-native-construction-profiles`) done at the verification bar:** `cc_solid_extrude_holes` (circular holes → TRUE `Circle` edge + `Cylinder` wall), `cc_solid_extrude_polyholes` (polygon holes), `cc_solid_extrude_profile` / `_profile_polyholes` (typed line/arc/full-circle outer + holes), `cc_solid_revolve_profile` (line → Plane/Cylinder/Cone, on-axis arc → Sphere) are NATIVE (`src/native/construct/profile.h`). Both gates green: host `test_native_profile` + `test_native_engine` CTest **13/13** (no OCCT); sim native-vs-OCCT parity `native_construct_profiles_parity.mm` **22/22** — 5 native families (polyhole EXACT rel 1.97e-16; curved vol rel ≤ 4.97e-2, all watertight) + 2 fall-through families (kind-3 spline extrude, off-axis-arc torus revolve, vol rel 0.00e+00). **Tier B (`add-native-loft`) done at the verification bar:** `cc_solid_loft` / `cc_solid_loft_wires` for TWO PLANAR sections with EQUAL vertex counts (≥3) are NATIVE — one BILINEAR (degree-1 Bézier) ruled side face per corresponding edge pair + two planar caps → watertight solid, mirroring ruled `BRepOffsetAPI_ThruSections` (`src/native/construct/loft.h`, all functions cognitive complexity ≤ 7). Both gates green: host `test_native_loft` (9 cases) + `test_native_engine` (2 new facade cases) CTest **14/14** (no OCCT); sim native-vs-OCCT parity `native_loft_parity.mm` **17/17** — 3 EXACT families (square-frustum rel 2.54e-16, hex-prism rel 0.00e+00, tri-prism loft_wires rel 0.00e+00) + rotated-square TWIST deflection-bounded (vol rel 5.33e-3, watertight) + a mismatched-count fall-through delegating to OCCT (vol rel 0.00e+00). No regressions (`test_native_tessellate` green — box/cylinder/sphere/filleted-box watertight `boundaryEdges==0`, 13/13 cases; `run-sim-suite.sh` 221/221). **Tier C (`add-native-sweep`) done at the verification bar:** `cc_solid_sweep` for a STRAIGHT spine (EXACT directional prism, vol = profileArea×\|d\|) and a SMOOTH CURVED but PLANAR spine (CONSTANT-frame ruled tube — the section is TRANSLATED with a fixed orientation, matching OCCT MakePipe's planar `GeomFill_CorrectedFrenet` → `Law_Constant`, NOT a perpendicular/Pappus sweep) are NATIVE (`src/native/construct/sweep.h`, reuses `loft.h` `ruledSideFace` + `construct.h` `planarFace`; `build_sweep` cognitive complexity 14). `cc_twisted_sweep` is native only when it reduces to the plain sweep (twist ≈ 0 AND scale ≈ 1). An earlier RMF/double-reflection revision was REMOVED — it produced the Pappus volume, a real oracle mismatch. Both gates green: host `test_native_sweep` (11 cases) + `test_native_engine` (3 sweep cases) CTest **15/15** (no OCCT); sim native-vs-OCCT parity `native_sweep_parity.mm` **11/11** (8 native + 3 fallback) — straight EXACT vol rel 7.11e-16 and smooth-arc EXACT vol o=330.299 n=330.299 rel 1.72e-16 (native F = OCCT F = 98, watertight), plus real-twist / guided / loft-rail fall-through delegating to OCCT (vol rel 0.00e+00, native active). STILL OCCT-fallthrough (not faked): kind-3 SPLINE edges, off-axis-arc (torus) / spline surface-of-revolution; loft with MISMATCHED counts / a NON-PLANAR section / a point-collapse section / 3+ sections / guided / rail; a NON-PLANAR / TIGHT-CURVATURE / self-intersecting sweep spine, a REAL twist/scale sweep, `cc_guided_sweep` / `cc_loft_along_rail`; and E wrap-emboss. **Tier D (`add-native-threads`): `cc_tapered_shank` done at the verification bar (NATIVE); threads honestly OCCT-fallthrough.** `cc_tapered_shank` is a pointed-shank silhouette (cone tip → full-radius cylinder → head disk) revolved 360° about the WORLD Z axis by reusing the native `build_revolution` (`src/native/construct/thread.h`, all functions cognitive complexity ≤ 5) — reproducing the OCCT `BRepPrimAPI_MakeRevol` oracle (mass/centroid/bbox), tip a TRUE on-axis apex, robustly watertight at every deflection. `cc_helical_thread` / `cc_tapered_thread` build the full radial-V axis-aux-spine helical tiling (correct volume + V geometry) but their per-turn seams do not weld robustly watertight on the current two-stage mesher, so the engine `robustlyWatertight` self-verify REJECTS the native thread and FALLS THROUGH to OCCT `MakePipeShell` (labelled, verified, never faked). Both gates green: host `test_native_thread` (8 cases) + `test_native_engine` (3 facade cases) CTest **16/16** (no OCCT; one TEST-ONLY fix — stale in-plane-Y bbox/axis assertions in `tapered_shank_is_watertight_revolve` corrected to the shipped Z-axial convention, implementation unchanged); sim native-vs-OCCT parity `native_thread_parity.mm` — `cc_tapered_shank` NATIVE r5/fh20/th10 vol o=1837.94 n=1830.27 rel 4.17e-03 / area rel 3.64e-03 / centroidΔ 3.85e-02 / bbox maxCornerΔ 1.00e-07 / F 4→9 (k=3 tiling) / watertight 144 tris meshVolRel 3.81e-03, plus the two thread ops as OCCT fall-through (native active=1, self-verify defers → delegated, vol rel 0.00e+00). No regressions (`run-sim-suite.sh` 221/221, `test_native_tessellate` green). |
-| 5 | `native-booleans` | ☐ next (**research-grade**) | Native robust B-rep booleans — the hardest, longest-lived OCCT dependency (surface-surface intersection, robust classification, shape healing). Will land progressively hardened and verified against OCCT (BOPAlgo oracle), not production-robust day one. |
+| 5 | `native-booleans` | ◐ PLANAR-polyhedron slice done at the bar; curved/general OCCT-fallthrough | Native `cc_boolean` (fuse/cut/common) for PLANAR-faced solids (axis-aligned boxes, prisms) via a BSP-tree CSG (`src/native/boolean/`), guarded by a MANDATORY self-verify (`robustlyWatertight` + set-algebra volume) that discards + falls through to OCCT otherwise. Both gates green: host `test_native_boolean` + `test_native_engine` CTest **17/17** (no OCCT); sim native-vs-OCCT parity `native_boolean_parity.mm` **25/25** — box fuse (rel 1.27e-16) / cut (2.96e-16) / common (2.22e-16), contained fuse (0.00e+00) / common (2.22e-16) all EXACT + watertight, self-verify rejects native∩native disjoint, plus curved (cyl-box, rel 0.00e+00) / near-coincident (rel 0.00e+00) / disjoint (rel 0.00e+00) OCCT-fallthrough (delegated, no interception). No regressions (`run-sim-suite.sh` 221/221, `test_native_tessellate` green). STILL OCCT: curved-face booleans (surface-surface intersection), near-tangent/coincident, general/concave-general, foreign operands, shape healing — booleans remain the longest-lived OCCT dependency for curved/general. |
 | 6–7 | blends → exchange | ☐ planned | Proposed as each begins. |
 | 8 | `drop-occt` | ☐ planned | Unlink OCCT once every capability is native. |

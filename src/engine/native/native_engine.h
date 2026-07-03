@@ -46,6 +46,18 @@
 //   * twisted_sweep           — NATIVE only when it reduces to the straight no-twist
 //                              prism (twist ≈ 0, scale ≈ 1); any real twist/scale →
 //                              OCCT fallthrough.                             [#4b Tier C]
+//   * boolean_op              — NATIVE fuse/cut/common for two PLANAR-FACED solids
+//                              (polyhedra — boxes/prisms/convex or simple-concave): a
+//                              clean-room BSP-CSG (src/native/boolean) splits + classifies
+//                              + welds the fragments into a watertight solid, then a
+//                              mandatory SELF-VERIFY (watertight + set-algebra volume
+//                              fuse=A+B−∩ / cut=A−∩ / common=∩) accepts it or DISCARDS it.
+//                              A CURVED-face operand / near-tangent-degenerate config is
+//                              outside the planar domain → the native builder yields no
+//                              verified result; since both operands are native voids OCCT
+//                              cannot read, that returns a clean error (never faked). Mixed
+//                              native/OCCT operands are rejected; all-OCCT operands forward
+//                              to the OCCT BRepAlgoAPI oracle.               [#5]
 //   Each native op tries the native builder and FALLS THROUGH to the fallback engine
 //   when the native path returns a NULL Shape (a deferred sub-case or degenerate
 //   input) — the native path never fakes a shape. Everything else (guided sweep /
@@ -214,17 +226,18 @@ private:
     // Lazily create and return the fallback engine.
     IEngine& fallback() const;
 
-    // True iff `handle` wraps a NativeShape this engine built (tracked pointer set).
+    // True iff `handle` wraps a NativeShape. Identity is a PROCESS-WIDE fact (a live-
+    // NativeShape registry keyed by the holder address), NOT this instance's state, so
+    // a body built under an earlier cc_set_engine(1) NativeEngine is still recognised
+    // here and never misclassified as an OCCT body (which would crash OCCT's unwrap).
     bool isNative(const EngineShape& handle) const;
 
-    // Register a freshly built native EngineShape so isNative() recognises it.
+    // Pass-through kept for call-site symmetry: NativeShape self-registers in its
+    // constructor, so there is nothing per-instance to record.
     EngineShape track(EngineShape handle) const;
 
     mutable std::mutex mutex_;
     mutable std::shared_ptr<IEngine> fallback_;
-    // Raw pointers of NativeShape holders this engine created. Membership test
-    // only — the shared_ptr keeping each alive lives in the facade's registry.
-    mutable std::unordered_set<const void*> nativeShapes_;
 };
 
 }  // namespace cyber

@@ -161,6 +161,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_loft
         test_native_sweep
         test_native_thread
+        test_native_boolean
         test_native_engine)
 
     # Most tests live directly under tests/; native-library tests live under
@@ -179,6 +180,8 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_sweep.cpp")
     set(test_native_thread_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_thread.cpp")
+    set(test_native_boolean_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_boolean.cpp")
 
     foreach(test ${CYBERCAD_TESTS})
         if(DEFINED ${test}_SRC)

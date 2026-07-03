@@ -570,4 +570,68 @@ CC_TEST(native_thread_falls_through_to_default) {
     CC_CHECK_EQ(cc_tapered_thread(6.0, 4.0, 2.0, 3.0, 1.0, 60.0, 1.0, 16), 0);
 }
 
+// ── NATIVE boolean (Phase 4 #5) through the cc_boolean facade ────────────────────
+// Two native prisms (planar polyhedra) fused / cut / commoned NATIVELY, self-verified
+// watertight with the exact set-algebra volume. Two 10-cubes overlapping by 5 on x+y:
+// overlap = 5×5×10 = 250 ⇒ fuse 1750, cut 750, common 250.
+CC_TEST(native_boolean_fuse_cut_common_exact) {
+    EngineGuard g;
+    cc_set_engine(1);
+    CC_CHECK_EQ(cc_active_engine(), 1);
+
+    const double a[] = {0, 0, 10, 0, 10, 10, 0, 10};
+    const double b[] = {5, 5, 15, 5, 15, 15, 5, 15};
+    const CCShapeId A = cc_solid_extrude(a, 4, 10.0);
+    const CCShapeId B = cc_solid_extrude(b, 4, 10.0);
+    CC_CHECK(A != 0 && B != 0);
+
+    const CCShapeId fuse = cc_boolean(A, B, 0);
+    CC_CHECK(fuse != 0);
+    if (fuse == 0) std::printf("  last_error=%s\n", cc_last_error());
+    const CCMassProps mf = cc_mass_properties(fuse);
+    CC_CHECK(mf.valid != 0);
+    CC_CHECK(std::fabs(mf.volume - 1750.0) < 1e-3);
+
+    const CCShapeId cut = cc_boolean(A, B, 1);
+    CC_CHECK(cut != 0);
+    const CCMassProps mc = cc_mass_properties(cut);
+    CC_CHECK(mc.valid != 0);
+    CC_CHECK(std::fabs(mc.volume - 750.0) < 1e-3);
+
+    const CCShapeId common = cc_boolean(A, B, 2);
+    CC_CHECK(common != 0);
+    const CCMassProps mm = cc_mass_properties(common);
+    CC_CHECK(mm.valid != 0);
+    CC_CHECK(std::fabs(mm.volume - 250.0) < 1e-3);
+
+    cc_shape_release(A);
+    cc_shape_release(B);
+    cc_shape_release(fuse);
+    cc_shape_release(cut);
+    cc_shape_release(common);
+}
+
+// A boolean whose operands have a CURVED face is outside the native planar domain.
+// Both operands are native voids OCCT cannot read, so the engine returns 0 with a
+// clean error (never a faked/leaky solid). On the sim (OCCT linked) the SAME cc_*
+// call would build both bodies under OCCT and the OCCT boolean would run — this host
+// assertion is specifically the native-void honest-error path.
+CC_TEST(native_boolean_curved_operand_errors_not_faked) {
+    EngineGuard g;
+    cc_set_engine(1);
+
+    const double box[] = {0, 0, 10, 0, 10, 10, 0, 10};
+    const CCShapeId A = cc_solid_extrude(box, 4, 10.0);
+    // A line-segment profile revolved 2π → a cylinder (curved faces), built native.
+    const double rect[] = {0, 0, 3, 0, 3, 5, 0, 5};
+    const CCShapeId cyl = cc_solid_revolve(rect, 4, 2.0 * kPi);
+    CC_CHECK(A != 0 && cyl != 0);
+
+    CC_CHECK_EQ(cc_boolean(A, cyl, 0), 0);  // curved → no verified native result → 0
+    CC_CHECK(std::strlen(cc_last_error()) > 0);
+
+    cc_shape_release(A);
+    cc_shape_release(cyl);
+}
+
 CC_RUN_ALL()

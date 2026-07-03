@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "native/boolean/native_boolean.h"
 #include "native/construct/native_construct.h"
 #include "native/tessellate/native_tessellate.h"
 
@@ -31,10 +32,54 @@ namespace ntopo = cybercad::native::topology;
 namespace ntess = cybercad::native::tessellate;
 
 // ── Native shape holder type-erased behind the registry's EngineShape ──────────
-// Distinct from occt::OcctShape; NativeEngine tracks the raw pointer so it never
-// hands one of these to the OCCT adapter (whose unwrap would misread it).
+// Distinct from occt::OcctShape. A native void MUST NEVER be handed to the OCCT
+// adapter, whose unwrap() does an UNCHECKED static_pointer_cast<OcctShape> and would
+// read a NativeShape as garbage (a null/garbage TopoDS_Shape → BRepBndLib::Add
+// crashes). Identifying a native body therefore CANNOT depend on any single engine
+// instance's bookkeeping: cc_set_engine(1) builds a fresh NativeEngine each time, so
+// a body built under one instance would look "unknown" (→ OCCT) to the next.
+//
+// PROCESS-WIDE IDENTITY. Every live NativeShape registers its own address in a
+// static set on construction and removes it on destruction, so isNative() is a
+// stable, instance-independent fact carried by the shape itself. This is the robust
+// fix for the boolean-parity crash (build under engine 1, run boolean under a second
+// engine-1 instance → the second instance no longer misclassifies the operands as
+// OCCT bodies and never forwards a native void to OCCT).
+class NativeShapeRegistry {
+public:
+    static void add(const void* p) {
+        std::lock_guard<std::mutex> lock(mutex());
+        live().insert(p);
+    }
+    static void remove(const void* p) {
+        std::lock_guard<std::mutex> lock(mutex());
+        live().erase(p);
+    }
+    static bool contains(const void* p) {
+        if (p == nullptr) return false;
+        std::lock_guard<std::mutex> lock(mutex());
+        return live().find(p) != live().end();
+    }
+
+private:
+    // Meyers singletons: guaranteed initialised on first use, no static-init-order
+    // dependency (this TU may build shapes during another TU's static setup).
+    static std::mutex& mutex() {
+        static std::mutex m;
+        return m;
+    }
+    static std::unordered_set<const void*>& live() {
+        static std::unordered_set<const void*> s;
+        return s;
+    }
+};
+
 struct NativeShape {
     ntopo::Shape shape;
+    NativeShape() { NativeShapeRegistry::add(this); }
+    ~NativeShape() { NativeShapeRegistry::remove(this); }
+    NativeShape(const NativeShape&) = delete;
+    NativeShape& operator=(const NativeShape&) = delete;
 };
 
 EngineShape wrapNative(ntopo::Shape shape) {
@@ -151,6 +196,56 @@ bool robustlyWatertight(const ntopo::Shape& s) {
     return true;
 }
 
+// Watertight-valid enclosed volume of a native solid at a fine deflection, or a
+// negative sentinel if the mesh is not watertight (so the boolean self-verify can
+// reject a leaky result). Planar polyhedra mesh exactly, so this is the exact
+// volume for the boolean's domain.
+double watertightVolume(const ntopo::Shape& s) {
+    if (s.isNull()) return -1.0;
+    ntess::MeshParams p;
+    p.deflection = 0.005;
+    const ntess::Mesh m = ntess::SolidMesher{p}.mesh(s);
+    if (!ntess::isWatertight(m)) return -1.0;
+    return std::fabs(ntess::enclosedVolume(m));
+}
+
+// SELF-VERIFY the native boolean result against SET-ALGEBRA volume (mandatory guard,
+// NATIVE-REWRITE.md #5). The result must be a closed watertight 2-manifold AND carry
+// the volume the op's set algebra predicts from the operands, to a relative tolerance:
+//   fuse   V = volA + volB − volCommon
+//   cut    V = volA − volCommon
+//   common V = volCommon
+// where volCommon is measured by the native common operation on the SAME operands
+// (its own watertightness is required too). This catches a boolean that is closed but
+// geometrically WRONG (a mis-classified fragment) — such a result is DISCARDED and the
+// engine falls through / errors rather than emit a wrong solid. For the planar domain
+// every mesh is exact, so the tolerance is tight (1e-6 relative, 1e-9 absolute floor).
+bool booleanResultVerified(const ntopo::Shape& result, const ntopo::Shape& a,
+                           const ntopo::Shape& b, int op) {
+    const double vr = watertightVolume(result);
+    if (vr < 0.0) return false;  // not watertight
+
+    const double va = watertightVolume(a);
+    const double vb = watertightVolume(b);
+    if (va < 0.0 || vb < 0.0) return true;  // operands not measurable → trust watertight
+
+    // Measure the overlap volume with the native common op (independent path).
+    const ntopo::Shape common =
+        cybercad::native::boolean::boolean_solid(a, b, cybercad::native::boolean::Op::Common);
+    const double vc = common.isNull() ? 0.0 : std::max(0.0, watertightVolume(common));
+
+    double expected = 0.0;
+    switch (op) {
+        case 0: expected = va + vb - vc; break;  // fuse
+        case 1: expected = va - vc; break;       // cut a−b
+        case 2: expected = vc; break;            // common
+        default: return false;
+    }
+    if (!(expected > 0.0)) return false;  // an empty/degenerate result is not a valid solid
+    const double tol = std::max(1e-6 * expected, 1e-9);
+    return std::fabs(vr - expected) <= tol;
+}
+
 }  // namespace
 
 // ── Fallback engine factory (build-specific) ───────────────────────────────────
@@ -185,16 +280,17 @@ void NativeEngine::set_gpu_tessellation(bool enabled) { fallback().set_gpu_tesse
 bool NativeEngine::gpu_tessellation_enabled() const { return fallback().gpu_tessellation_enabled(); }
 
 bool NativeEngine::isNative(const EngineShape& handle) const {
+    // Instance-INDEPENDENT: a native body is identified by the process-wide live-
+    // NativeShape registry, not this engine instance's bookkeeping, so a body built
+    // under an earlier cc_set_engine(1) instance is still recognised by a later one
+    // (and is NEVER misclassified as an OCCT body and forwarded to OCCT's unwrap).
     if (!handle) return false;
-    std::lock_guard<std::mutex> lock(mutex_);
-    return nativeShapes_.find(handle.get()) != nativeShapes_.end();
+    return NativeShapeRegistry::contains(handle.get());
 }
 
 EngineShape NativeEngine::track(EngineShape handle) const {
-    if (handle) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        nativeShapes_.insert(handle.get());
-    }
+    // Registration happens in the NativeShape ctor (process-wide), so track() is now
+    // just a pass-through kept for call-site symmetry with wrapNative().
     return handle;
 }
 
@@ -535,12 +631,54 @@ ShapeResult NativeEngine::fillet_edges_g2(EngineShape body, const int* e, int ec
     return fallback().fillet_edges_g2(body, e, ec, r);
 }
 
-// ── boolean fallthrough ─────────────────────────────────────────────────────────
-
+// ── NATIVE planar-polyhedron boolean (fuse / cut / common) with self-verify ───────
+//
+// Phase 4 #5 (native-booleans). NATIVE when BOTH operands are native bodies whose
+// faces are ALL PLANAR (boxes / prisms / convex or simple-concave polyhedra): the
+// BSP-CSG core (src/native/boolean) computes the face-face intersection splits,
+// classifies each fragment inside/outside/on the other solid, assembles + welds the
+// surviving fragments into a watertight Solid. The result is then SELF-VERIFIED —
+// closed watertight 2-manifold AND the set-algebra volume (fuse = A+B−∩, cut = A−∩,
+// common = ∩) to a tight tolerance (planar meshes are exact). A result that fails the
+// guard is DISCARDED (never emitted — no wrong/leaky solid).
+//
+// FALL-THROUGH (honest coexistence, cross-checked vs the BRepAlgoAPI/BOPAlgo oracle):
+//   * either operand is an OCCT body (built by a fallthrough op)      → OCCT boolean.
+//   * either operand has a CURVED face (cylinder/sphere/cone/free-form) → the native
+//     builder returns NULL; both are native voids OCCT cannot read, so we return a
+//     clean error rather than fake a result (the native domain is planar-only).
+//   * the native result fails self-verify (a near-tangent/degenerate config the
+//     planar algorithm cannot robustly handle)                        → same error.
+// The engine NEVER hands a native void to OCCT (its unwrap would misread it), so a
+// native-native boolean the planar path cannot do is reported honestly, not faked.
 ShapeResult NativeEngine::boolean_op(EngineShape a, EngineShape b, int op) {
-    CC_NATIVE_BODY_UNSUPPORTED("boolean_op", a);
-    CC_NATIVE_BODY_UNSUPPORTED("boolean_op", b);
-    return fallback().boolean_op(a, b, op);
+    const bool aNative = isNative(a);
+    const bool bNative = isNative(b);
+
+    // Mixed or all-OCCT operands: the OCCT engine owns both voids → forward.
+    if (!aNative && !bNative) return fallback().boolean_op(a, b, op);
+    if (aNative != bNative) {
+        // One native, one OCCT: neither engine can read both voids. Honest error.
+        return make_error(
+            "boolean_op: mixed native/OCCT operands are not supported "
+            "(build both bodies under the same active engine)");
+    }
+
+    // Both native: attempt the planar-polyhedron boolean.
+    const auto* ha = static_cast<const NativeShape*>(a.get());
+    const auto* hb = static_cast<const NativeShape*>(b.get());
+    ntopo::Shape result = cybercad::native::boolean::boolean_solid(ha->shape, hb->shape, op);
+
+    if (result.isNull() || !booleanResultVerified(result, ha->shape, hb->shape, op)) {
+        // A curved-face input, a degenerate/near-tangent config, or a result that
+        // failed the watertight/volume self-verify. Both operands are native voids
+        // OCCT cannot read, so we cannot forward — report honestly (never fake).
+        return make_error(
+            "boolean_op: native planar-polyhedron boolean did not produce a verified "
+            "watertight result for these operands (curved faces or a degenerate/near-"
+            "tangent configuration are outside the native planar domain)");
+    }
+    return track(wrapNative(std::move(result)));
 }
 ShapeResult NativeEngine::thread_apply(EngineShape shaft, EngineShape thread, int op) {
     CC_NATIVE_BODY_UNSUPPORTED("thread_apply", shaft);

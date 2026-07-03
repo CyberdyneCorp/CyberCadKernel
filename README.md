@@ -47,10 +47,10 @@ flowchart TD
     end
 
     Engine -->|"default"| OCCT["OCCT adapter<br/>(exact B-rep, fp64, CPU)"]
-    Engine -->|"cc_set_engine(1)"| Native["NativeEngine (C++20)<br/>native: math · topology · tessellation ·<br/>construction (extrude / revolve / 2-section loft / sweep / tapered-shank)"]
+    Engine -->|"cc_set_engine(1)"| Native["NativeEngine (C++20)<br/>native: math · topology · tessellation ·<br/>construction (extrude / revolve / 2-section loft / sweep / tapered-shank) ·<br/>booleans (planar-polyhedron fuse/cut/common)"]
     Engine -.->|"no-OCCT host build"| Stub["Stub engine"]
 
-    Native -.->|"fallthrough (still OCCT):<br/>booleans · fillets/offsets · features ·<br/>STEP/IGES · helical/tapered thread · wrap-emboss ·<br/>non-planar-sweep · healing"| OCCT
+    Native -.->|"fallthrough (still OCCT):<br/>curved/general booleans · fillets/offsets · features ·<br/>STEP/IGES · helical/tapered thread · wrap-emboss ·<br/>non-planar-sweep · healing"| OCCT
     OCCT ==>|"still required"| OCCTlib[("OCCT libs")]
 
     Compute --> CPUb["CPU backend (fp64)"]
@@ -78,7 +78,8 @@ the rest, so OCCT remains a required dependency until Phase 4 completes.
 - **Native core** (`src/native`) — OCCT-free C++20: `math` (vectors/transforms +
   Bézier/B-spline/NURBS eval), `topology` (B-rep model + traversal), `tessellate`
   (watertight mesher), `construct` (extrude/revolve/2-section ruled loft/sweep/
-  tapered-shank). Host-buildable and unit-tested with no OCCT.
+  tapered-shank), `boolean` (planar-polyhedron fuse/cut/common via BSP-CSG,
+  self-verified). Host-buildable and unit-tested with no OCCT.
 - **Compute backend** (`src/compute`) — default CPU backend + a **Metal** backend
   (iOS) for GPU work behind the same interface.
 
@@ -91,16 +92,17 @@ linked until it is complete. Current split:
 
 | Native (C++20, verified vs OCCT) | Still OCCT-backed (native pending) |
 |---|---|
-| math / geometry primitives | **booleans** (fuse/cut/common) |
-| B-rep topology + traversal | fillets / chamfers / offsets / shell |
-| tessellation (watertight) | features (replace-face, etc.) |
+| math / geometry primitives | **booleans**: curved-face (surface-surface intersection) |
+| B-rep topology + traversal | booleans: near-tangent / coincident / general / concave-general |
+| tessellation (watertight) | fillets / chamfers / offsets / shell |
+| **booleans: PLANAR-polyhedron fuse / cut / common** (axis-aligned boxes, prisms — BSP-CSG, self-verified EXACT vs OCCT) | features (replace-face, etc.) |
 | construction: extrude, revolve (line-segment) | data exchange (STEP / IGES) |
 | construction: holed extrude (circular + polygon holes) | sweep: non-planar / tight-curvature / real-twist / guided / rail |
 | construction: typed-profile extrude (line / arc / full-circle) | 3+-section / guided / rail loft |
-| construction: typed-profile revolve (line, on-axis arc → sphere) | `cc_helical_thread` / `cc_tapered_thread` (native tiling built; self-verify defers to OCCT `MakePipeShell`), wrap-emboss |
-| construction: 2-section ruled loft (equal-count planar sections) | spline-profile edges, off-axis-arc (torus) / spline revolve |
-| construction: sweep (straight spine, or smooth curved but planar spine) | shape healing |
-| construction: `cc_tapered_shank` (silhouette revolved 360° about Z) | |
+| construction: typed-profile revolve (line, on-axis arc → sphere) | `cc_helical_thread` / `cc_tapered_thread` (native tiling built; self-verify defers to OCCT `MakePipeShell`) |
+| construction: 2-section ruled loft (equal-count planar sections) | wrap-emboss: curved-surface (planar-polyhedron emboss/deboss now unblocked by native planar booleans) |
+| construction: sweep (straight spine, or smooth curved but planar spine) | spline-profile edges, off-axis-arc (torus) / spline revolve |
+| construction: `cc_tapered_shank` (silhouette revolved 360° about Z) | shape healing |
 
 Native code is opt-in (`cc_set_engine(1)`); the **default engine remains OCCT**,
 so shipped behaviour is unchanged. OCCT is unlinked only at the final `drop-occt`
@@ -151,7 +153,7 @@ cmake -S . -B build \
   -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++ \
   -DCYBERCAD_HAS_OCCT=OFF -DCYBERCAD_HAS_METAL=OFF
 cmake --build build
-cd build && ctest --output-on-failure          # -> 12/12 pass (incl. native math/topology/tessellate/construct)
+cd build && ctest --output-on-failure          # -> 17/17 pass (incl. native math/topology/tessellate/construct/loft/sweep/thread/boolean)
 ```
 
 ```sh
@@ -169,6 +171,7 @@ bash scripts/run-sim-native-construct.sh     # 17/17 — extrude/revolve vs OCCT
 bash scripts/run-sim-native-construct-profiles.sh  # 22/22 — holed / typed-profile extrude + revolve
 bash scripts/run-sim-native-loft.sh          # 17/17 — 2-section ruled loft vs OCCT ThruSections
 bash scripts/run-sim-native-sweep.sh         # 11/11 — sweep (straight + smooth-planar) vs OCCT MakePipe
+bash scripts/run-sim-native-boolean.sh       # 25/25 — planar-polyhedron fuse/cut/common vs OCCT BOPAlgo
 ```
 
 Full toolchain notes are in [docs/build.md](docs/build.md).
@@ -202,7 +205,7 @@ verified geometry numbers.
 | **1 — Multi-core** | parallel OCCT booleans + meshing, determinism audit | ✅ complete at the simulator acceptance bar |
 | **2 — GPU (Metal)** | Metal backend, GPU tessellation wired into `cc_tessellate`, BVH + ray/frustum pick | ✅ complete at the simulator acceptance bar |
 | **3 — Missing features** | reference geometry, wrap-emboss, thread boolean, full-round (any planar dihedral) + G2 fillets | ✅ 5/5 (curved-neighbour full-round is the only residual) |
-| **4 — Native rewrite** | replace OCCT capability-by-capability, then drop it | ◐ native math · topology · tessellation · construction done; booleans/fillets/exchange pending |
+| **4 — Native rewrite** | replace OCCT capability-by-capability, then drop it | ◐ native math · topology · tessellation · construction done; booleans planar-polyhedron slice done (curved/general OCCT); fillets/exchange pending |
 
 The **acceptance bar** is the in-repo iOS-simulator suite (correctness verified
 against analytic references, GPU vs CPU, and B-rep validity/watertightness).

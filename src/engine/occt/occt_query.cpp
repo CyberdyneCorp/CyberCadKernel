@@ -186,7 +186,18 @@ Result<std::vector<double>> OcctEngine::bounding_box(EngineShape body) {
             return make_error("bounding_box: unknown body");
         }
         Bnd_Box box;
-        BRepBndLib::Add(*shape, box);  // exact B-rep extents (not the tessellation)
+        // AddOptimal(useTriangulation=false, useShapeTolerance=false) → the TIGHT
+        // geometric bounding box. Plain BRepBndLib::Add inflates every face/edge box
+        // by a sampling/deflection gap (~deflection·√3 per corner) — and uses a shape's
+        // attached triangulation when present — so a boolean result (BRepAlgoAPI
+        // attaches a mesh) reported a LOOSE box (e.g. a [0,3]³ fuse came back as
+        // [-0.0087, 3.0087]) while the exact-modelling contract — and the native engine
+        // — give the exact extents. AddOptimal builds precise geometric boxes that differ
+        // from the true boundary only by shape tolerances; with useShapeTolerance=false
+        // those collapse to Precision::Confusion, so this matches the native bounding_box
+        // exactly for planar solids and is tighter (more correct) for every shape.
+        BRepBndLib::AddOptimal(*shape, box, /*useTriangulation=*/Standard_False,
+                               /*useShapeTolerance=*/Standard_False);
         if (box.IsVoid()) {
             return make_error("bounding_box: empty box");
         }

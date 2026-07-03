@@ -73,7 +73,9 @@ Dependency order. Each row is one OpenSpec change (`add-native-*`).
 | 8 | `drop-occt` | — | — | unlink OCCT; kernel fully native |
 
 Booleans (#5) are the hardest and longest-lived OCCT dependency — sequenced late
-and expected to iterate. #7 (STEP/IGES) may stay a thin external dependency
+and expected to iterate. The PLANAR-polyhedron slice is now native (BSP-CSG,
+self-verified EXACT vs OCCT on axis-aligned boxes); curved / general booleans remain
+OCCT-backed. #7 (STEP/IGES) may stay a thin external dependency
 longest; a native exchange is lower priority than the modelling core.
 
 ## Status
@@ -305,18 +307,37 @@ longest; a native exchange is lower priority than the modelling core.
     `run-sim-suite.sh`'s SKIP list (own `main()`, `.mm`), so the 221-assertion OCCT-only
     count is unchanged; `run-sim-suite.sh` **221/221** re-verified. Living change (archived):
     `openspec/changes/add-native-threads` → `openspec/specs/native-construction`.
-- ☐ **#5 `native-booleans` — NEXT (research-grade).** The hardest and longest-lived
-  OCCT dependency. Native robust B-rep booleans require surface-surface intersection
-  (the intersection curves between arbitrary analytic + NURBS surfaces), robust
-  section-edge classification (which pieces of each shell survive under
-  fuse/cut/common), and shape healing (sewing/tolerance reconciliation of the result).
-  This is fundamentally harder than #1–#4: those build clean topology from parameters,
-  whereas booleans must reason about the intersection of two arbitrary existing solids
-  with fp64 robustness at near-tangent / coincident configurations — the classic BOPAlgo
-  wall. It will land **progressively hardened and verified against OCCT** (`BRepAlgoAPI`
-  / BOPAlgo as oracle), starting from analytic-surface cases (box∩box, cylinder∩box)
-  and widening, and is NOT expected to be production-robust on day one. Proposed via
-  `/opsx:propose` when it begins.
+- ◐ **#5 `native-booleans` — PLANAR-polyhedron slice DONE at the verification bar;
+  curved / general still OCCT-fallthrough (not faked).** `cc_boolean` (fuse / cut /
+  common) is NATIVE for **PLANAR-faced solids** (polyhedra — axis-aligned boxes, prisms)
+  via a **BSP-tree CSG** (Naylor-Amanatides-Thibault 1990) over the solids' planar
+  polygons — which IS face-face intersection + fragment split + inside/outside
+  classification expressed as recursive plane-clip / invert, and handles
+  coplanar-coincident faces (two boxes sharing a wall) robustly, with a B-rep-level
+  T-junction repair + triangulation (`assemble.h`) closing the coplanar seams. Guarded by
+  a MANDATORY self-verify (`robustlyWatertight` + set-algebra volume `Vr ≈ Va±Vb−Vab`) that
+  DISCARDS any candidate that is not a valid watertight solid with the correct volume →
+  falls through to OCCT. Built OCCT-free under `src/native/boolean/` (`polygon.h`, `bsp.h`,
+  `assemble.h`, `native_boolean.h`, entry `boolean_solid(a, b, op)`), engine-wired behind
+  the same `cc_set_engine(1)` toggle (default stays OCCT). Both gates green: host
+  `test_native_boolean` + `test_native_engine` (no OCCT — box fuse/cut/common watertight
+  EXACT set-algebra volume, prism/simple-concave, self-verify rejecting an open/wrong-volume
+  candidate, curved/coincident/foreign fall-through → NULL; CTest **17/17**) + native-vs-OCCT
+  parity on the iOS sim through the facade (`native_boolean_parity.mm`, **25/25**): box
+  overlap fuse (rel 1.27e-16) / cut (2.96e-16) / common (2.22e-16), contained fuse
+  (0.00e+00) / common (2.22e-16) all EXACT + watertight, the self-verify correctly rejecting
+  a native∩native DISJOINT out-of-domain result, plus curved (cyl-box fuse rel 0.00e+00),
+  near-coincident (rel 0.00e+00) and disjoint (rel 0.00e+00) OCCT-fallthrough — all
+  delegated, no native interception. No regressions (host CTest 17/17,
+  `run-sim-suite.sh` 221/221 — only change is `native_boolean_parity.mm` on the SKIP list).
+  STILL OCCT-fallthrough (native builder returns NULL / self-verify discards → forwarded,
+  never faked): **curved-face booleans** (surface-surface intersection of cylinder / sphere
+  / cone / NURBS), **near-tangent / coincident / degenerate** configurations, **disjoint**
+  operands, **foreign** (OCCT-built) operands, and **general / concave-general / mixed**
+  cases. **Booleans remain the longest-lived OCCT dependency for curved / general** —
+  surface-surface intersection, robust near-tangent handling, and full shape healing are
+  future work. See [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md); living change
+  `openspec/changes/add-native-booleans` → archived to `openspec/specs/native-booleans`.
 - ☐ #6–#8 — planned; proposed as each is about to start (blends → exchange →
   drop-occt).
 

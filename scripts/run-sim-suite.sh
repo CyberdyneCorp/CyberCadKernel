@@ -30,7 +30,11 @@ SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 # native-construction parity harnesses native_construct_parity.mm
 # (run-sim-native-construct.sh), native_loft_parity.mm (run-sim-native-loft.sh, Tier B)
 # native_sweep_parity.mm (run-sim-native-sweep.sh, Tier C — sweep / pipe-shell) and
-# native_thread_parity.mm (run-sim-native-thread.sh, Tier D — threads / tapered shank;
+# native_thread_parity.mm (run-sim-native-thread.sh, Tier D — threads / tapered shank),
+# the Phase-4 native-BOOLEANS (#5) parity harness native_boolean_parity.mm
+# (run-sim-native-boolean.sh — its own main(); drives cc_boolean under both engines via
+# cc_set_engine, asserting native box fuse/cut/common EXACT vs OCCT + curved/near-
+# coincident/disjoint OCCT fall-through, links the whole kernel + full OCCT);
 # its own main(); unlike the oracle-slice harnesses it drives the cc_* facade under
 # BOTH engines via cc_set_engine and links the whole kernel + full OCCT), and the
 # Phase-3 suite — phase3_suite.cpp
@@ -42,7 +46,7 @@ SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.mm \
       native_topology_parity.mm native_tessellate_parity.mm native_tessellation_parity.mm \
       native_construct_parity.mm native_construct_profiles_parity.mm native_loft_parity.mm \
-      native_sweep_parity.mm native_thread_parity.mm \
+      native_sweep_parity.mm native_thread_parity.mm native_boolean_parity.mm \
       phase3_suite.cpp checks_reference_geometry.cpp checks_wrap_emboss.cpp \
       checks_thread_boolean.cpp checks_full_round_fillet.cpp checks_g2_fillet.cpp"
 SRCS=()

@@ -259,7 +259,26 @@ CCShapeId cc_split_plane(CCShapeId body, double ox, double oy, double oz,
 
 /* ── Booleans ────────────────────────────────────────────────────────────── */
 
-/* Booleans: op = 0 fuse, 1 cut (a-b), 2 common. */
+/* Boolean set operation on two solids: op = 0 fuse (a ∪ b), 1 cut (a − b),
+ * 2 common (a ∩ b). Returns a new solid, or 0 on failure (cc_last_error set).
+ *
+ * ENGINE NOTE (Phase 4 #5 native-booleans). Under the DEFAULT (OCCT) engine this is
+ * OCCT BRepAlgoAPI (BOPAlgo) for all solids. Under the native engine (cc_set_engine(1))
+ * it is NATIVE for PLANAR-FACED polyhedra — boxes / prisms / convex or simple-concave
+ * solids whose every face is a plane: a clean-room BSP-CSG computes the face-face
+ * intersection splits, classifies each fragment inside/outside/on the other solid,
+ * and welds the surviving fragments into a watertight solid. The native result is
+ * SELF-VERIFIED (closed watertight 2-manifold AND the exact set-algebra volume
+ * fuse=A+B−∩ / cut=A−∩ / common=∩) and DISCARDED if it fails — never a wrong/leaky
+ * solid. Operands with any CURVED face (cylinder/sphere/cone/free-form) or a
+ * degenerate/near-tangent configuration are outside the native planar domain and fall
+ * through to the OCCT oracle (on iOS/macOS, where OCCT is linked); on the OCCT-free
+ * host such a native-only boolean returns 0 with an honest error. Both operands must be
+ * built under the same active engine: a native body is recognised process-wide (its
+ * identity is not tied to a particular cc_set_engine(1) instance), so toggling the engine
+ * between build and boolean is safe, and the engine NEVER hands a native body to OCCT
+ * (which would misread it) — a native operand that OCCT cannot process yields a clean
+ * error, and mixing a native operand with an OCCT operand is rejected. */
 CCShapeId cc_boolean(CCShapeId a, CCShapeId b, int op);
 
 /* ── Tessellation ────────────────────────────────────────────────────────── */

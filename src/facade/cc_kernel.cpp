@@ -241,6 +241,11 @@ int cc_gpu_tessellation_enabled(void) {
 void cc_set_engine(int native) {
     cyber::guard_void([&]() {
         if (native != 0) {
+            // Idempotent: already native → keep the SAME NativeEngine. Rebuilding it
+            // would be needless churn and, historically, discarded per-instance shape
+            // bookkeeping (now process-wide, but keeping the instance is still the
+            // correct no-op for a redundant toggle).
+            if (active_engine()->name() == "native") return;
             // Opt in to the native engine. It falls through to the build's default
             // engine (OCCT/stub) for capabilities it does not implement natively,
             // AND inherits the current parallel/GPU toggles so behaviour is

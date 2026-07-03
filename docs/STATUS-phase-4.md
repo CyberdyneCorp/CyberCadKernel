@@ -6,7 +6,7 @@ verification model, and the full capability sequence live in the sub-roadmap
 [`openspec/NATIVE-REWRITE.md`](../openspec/NATIVE-REWRITE.md). Nothing below is
 claimed unless it was actually built and run in this environment.
 
-Date: 2026-07-02 · Branch: `main`.
+Date: 2026-07-03 · Branch: `main`.
 
 ## TL;DR
 
@@ -339,7 +339,9 @@ changes unless a caller explicitly opts in.
 | `cc_solid_revolve_profile` off-axis arc (TORUS) / any spline-revolve | OCCT-fallthrough (#4b) | no native `Torus` surface / spline surface-of-revolution yet; fall-through verified (torus vol rel 0.00e+00) |
 | `cc_solid_loft`, `cc_solid_loft_wires` (TWO sections, EQUAL vertex count, PLANAR) | **NATIVE** (#4b Tier B) | ruled skin: one BILINEAR (degree-1 Bézier) side face per corresponding edge pair + two planar caps → watertight solid; mirrors ruled `BRepOffsetAPI_ThruSections` |
 | `cc_solid_loft` / `_wires` MISMATCHED vertex counts / a NON-PLANAR section / a point-collapse section / 3+/guided/rail | OCCT-fallthrough (#4b Tier B→C) | native builder returns NULL; forwards to OCCT ThruSections (delegated, not faked) |
-| `cc_solid_sweep`, `cc_twisted_sweep`, `cc_guided_sweep`, `cc_loft_along_rail` | OCCT-fallthrough (#4b Tier C) | deferred (pipe/sweep surfacing) |
+| `cc_solid_sweep` (STRAIGHT spine, or SMOOTH CURVED but PLANAR spine) | **NATIVE** (#4b Tier C) | constant-frame ruled tube (matches OCCT MakePipe's planar corrected-Frenet law): straight → EXACT directional prism; smooth-planar → bilinear ruled bands + planar caps, watertight |
+| `cc_twisted_sweep` (twist ≈ 0 AND scale ≈ 1) | **NATIVE** (#4b Tier C) | reduces to `build_sweep` (no real twist) |
+| `cc_solid_sweep` NON-PLANAR spine / TIGHT-CURVATURE / self-intersecting; `cc_twisted_sweep` REAL twist/scale; `cc_guided_sweep`, `cc_loft_along_rail` | OCCT-fallthrough (#4b Tier C) | native builder returns NULL (guarded / genuine non-constant law / pipe-shell guide-rail); delegated to OCCT, not faked |
 | `cc_helical_thread`, `cc_tapered_thread`, `cc_tapered_shank` | OCCT-fallthrough (#4b Tier D) | deferred (helical swept solids) |
 | `cc_wrap_emboss` | OCCT-fallthrough (#4b Tier E) | deferred |
 | every feature / boolean / query / transform / exchange op | OCCT-fallthrough | out of the construction capability; delegated |
@@ -394,8 +396,14 @@ capability. **`#4b` Tier A (holed + typed-profile extrude + typed-profile revolv
 is now done at the bar** — see below. **`#4b` Tier B (2-section ruled loft) is now
 done at the bar** — BOTH gates green: Gate 1 (host `test_native_loft` +
 `test_native_engine`, CTest **14/14**) and Gate 2 (sim OCCT parity
-`native_loft_parity.mm`, **17 passed / 0 failed**) — see below. Tiers C (sweep) /
-D (threads) / E (wrap-emboss) remain OCCT-fallthrough.
+`native_loft_parity.mm`, **17 passed / 0 failed**) — see below. **`#4b` Tier C
+(native sweep) is now also done at the bar** — `cc_solid_sweep` for a straight spine
+(EXACT prism) and a smooth-planar spine (constant-frame ruled tube) is NATIVE; both
+gates green (host `test_native_sweep` + `test_native_engine` CTest **15/15**; sim
+`native_sweep_parity.mm` **11 passed / 0 failed**, both native cases EXACT vs OCCT
+MakePipe rel ~1e-16) — see below. Tiers D (threads) / E (wrap-emboss), plus the
+non-planar / tight-curvature / real-twist / guided / rail sweep cases, remain
+OCCT-fallthrough.
 
 ### `#4b` Tier B — native 2-section RULED loft (`cc_solid_loft` / `cc_solid_loft_wires`)
 
@@ -450,6 +458,94 @@ ambiguous — Tier C) delegates transparently to OCCT with native active
 simulator (OCCT linked); on `run-sim-suite.sh`'s SKIP list (own `main()`), so the
 221-assertion OCCT-only suite count is unperturbed.
 
+### `#4b` Tier C — native sweep (`cc_solid_sweep`, `cc_twisted_sweep`)
+
+Built in `src/native/construct/sweep.h` (OCCT-FREE, host-buildable), wired through
+`NativeEngine::solid_sweep` / `twisted_sweep` behind the same `cc_set_engine(1)`
+toggle. NOW NATIVE: `cc_solid_sweep` of a closed profile along (a) a STRAIGHT spine
+(an EXACT directional prism, always watertight, vol = profileArea × |d|) and (b) a
+SMOOTH CURVED but PLANAR spine (a CONSTANT-frame ruled-band tube, capped at both ends,
+watertight).
+
+**The frame law is the crux.** The OCCT oracle `BRepOffsetAPI_MakePipe` uses
+`GeomFill_CorrectedFrenet`, which for a PLANAR spine collapses to a CONSTANT rotation
+(`GeomFill_CorrectedFrenet.cxx`, `isPlanar` → `Law_Constant`): it TRANSLATES the
+section with a FIXED orientation, it does NOT keep the section perpendicular to the
+tangent. So `detail::constantFrames` freezes the start trihedron's x/y axes across
+every station (only the origin advances), builds one BILINEAR (degree-1 Bézier) ruled
+band per (profile edge × spine segment) reusing `loft.h`'s `detail::ruledSideFace` with
+SHARED per-station vertex rings, and caps both ends with `detail::planarFace` in the
+fixed section plane. The enclosed volume is therefore `profileArea × |Δspine · n̂|`
+(spine displacement projected onto the FIXED section normal), NOT the Pappus arc-length
+volume. (An earlier RMF / double-reflection revision kept the section perpendicular and
+produced the Pappus volume — geometrically "nicer" but a REAL mismatch vs the oracle,
+correctly rejected by the parity gate; it was removed in favour of the constant frame
+that matches the oracle. No `doubleReflectionRMF` / `SweptSurface` / `build_prism_dir`
+helper shipped.) `cc_twisted_sweep` is native ONLY when it reduces to the plain sweep
+(twist ≈ 0 AND scale ≈ 1 → forwards to `build_sweep`).
+
+STILL OCCT-fallthrough (native builder returns NULL → `NativeEngine` forwards the SAME
+arguments to OCCT, never faked): a NON-PLANAR curved spine (OCCT's genuine non-constant
+corrected-Frenet law), a TIGHT-CURVATURE / self-intersecting spine (guarded by
+`detail::spineTooSharp` — turning radius < profile circumradius or a per-vertex turn
+> ~34°), a REAL twist/scale `cc_twisted_sweep`, and the pipe-shell/guide cases
+`cc_guided_sweep` / `cc_loft_along_rail`.
+
+**Gate 1 (host, no OCCT) GREEN:** `test_native_sweep` (11 cases — straight prism vol
+160 exact / collinear-collapse vol 320 / arbitrary-3D-direction vol 16·L / pentagon
+vol area·12 / zero-twist prism vol 160 / smooth-planar-arc watertight + constant-frame
+volume `A·|Δspine·n̂|` / constant-frame invariance / degenerate + real-twist +
+tight-curvature deferrals all NULL) + `test_native_engine` (`native_sweep_straight_prism`
+vol 160, `native_sweep_smooth_arc` vol ≈ 82.57 = the oracle value,
+`native_sweep_tight_and_twisted_defer`). Host CTest **15/15** green; `test_native_tessellate`,
+`test_native_construct`, `test_native_loft` unchanged. `build_sweep` is a linear assembler
+(cognitive complexity 14, Acceptable band); `constantFrames` ~4.
+
+**Gate 2 (sim native-vs-OCCT parity) GREEN:** `tests/sim/native_sweep_parity.mm` +
+`scripts/run-sim-native-sweep.sh` drive the `cc_*` facade under both engines
+(`cc_set_engine(0/1)`, OCCT default restored in teardown) and compare native vs
+`BRepOffsetAPI_MakePipe`. **`[NSWEEP]` == 8 native + 3 fallback = 11 passed, 0 failed ==**
+Because native and OCCT now share the SAME constant-frame law + polyline, BOTH native
+cases are EXACT (not merely deflection-bounded):
+
+| Shape | Op / path | Engine | mass vol (o / n) · relVol | area rel | centroidΔ | bbox maxCornerΔ (tol) | faces (o / n) | tessellate |
+|---|---|---|---|---|---|---|---|---|
+| straight-path | `cc_solid_sweep` | **NATIVE** | 160 / 160 · **7.11e-16** | 1.48e-16 | 1.33e-15 (tol v=1e-6 c=1e-6) | 1.00e-07 (1e-6) | 6 / 6 | watertight, 12 tris, meshVolRel 0.00e+00 |
+| smooth-arc-path | `cc_solid_sweep` | **NATIVE** | 330.299 / 330.299 · **1.72e-16** | 1.27e-15 | 7.11e-15 (tol v=5e-2 c=2e-1) | 1.00e-07 (2e-1) | 98 / 98 | watertight, 196 tris, meshVolRel 0.00e+00 |
+| twisted_sweep real-twist | `cc_twisted_sweep` | OCCT-fallthrough | 93.3333 / 93.3333 · **0.00e+00** | — | — | — | — | native active=1, real twist/scale delegated to OCCT `ThruSections` |
+| guided_sweep | `cc_guided_sweep` | OCCT-fallthrough | 290.37 / 290.37 · **0.00e+00** | — | — | — | — | native active=1, pipe-shell guide delegated to OCCT |
+| loft_along_rail | `cc_loft_along_rail` | OCCT-fallthrough | 93.3333 / 93.3333 · **0.00e+00** | — | — | — | — | native active=1, pipe-shell rail delegated to OCCT |
+
+Tolerances: both native sweeps are EXACT vs the oracle (vol/area/centroid rel at
+machine epsilon ~1e-16, native F = OCCT F). The three deferred cases (real-twist,
+guided, loft-rail) delegate transparently to OCCT with native active
+(`cc_active_engine()==1`, vol rel 0.00e+00) — a fall-through proof, no native
+interception. Runs on the simulator (OCCT linked); `native_sweep_parity.mm` is a `.mm`
+already excluded by `run-sim-suite.sh`'s `*.cpp` find (also on the explicit SKIP list),
+so the 221-assertion OCCT-only suite count is unperturbed (confirmed still 221).
+
+**No regressions.** Host CTest **15/15** (incl. `test_native_tessellate` green —
+box/cylinder/sphere/filleted-box watertight `boundaryEdges==0`, 13/13 cases);
+`scripts/run-sim-suite.sh` **== 221 passed, 0 failed ==** against a freshly rebuilt
+SIMULATORARM64 slice carrying the Tier-C sweep sources (24 TUs, determinism +
+benchmark PASS). Zero source fixes required during verification — both gates passed
+as-is.
+
+### Files (Tier C)
+
+- `src/native/construct/sweep.h` — OCCT-free `build_sweep` / `build_twisted_sweep`
+  (constant-frame transport, straight-spine collapse, `spineTooSharp` guard) returning
+  native `topology::Shape` (NULL ⇒ fall through). Reuses `loft.h` `ruledSideFace` +
+  `construct.h` `planarFace`.
+- `src/native/construct/native_construct.h` — exposes `build_sweep` /
+  `build_twisted_sweep`; doc-comment moves sweep from DEFERRED to SUPPORTED (tractable
+  cases), keeps guided/rail/tight-curvature/non-planar/real-twist DEFERRED.
+- `src/engine/native/native_engine.{cpp,h}` — `solid_sweep` / `twisted_sweep` →
+  native builder, NULL ⇒ fallback; `guided_sweep` / `loft_along_rail` pure fall-through.
+- `tests/native/test_native_sweep.cpp` — host Gate-1 (11 cases, no OCCT).
+- `tests/sim/native_sweep_parity.mm` + `scripts/run-sim-native-sweep.sh` — sim Gate-2
+  native-vs-OCCT parity (own `main()`; SKIPped by `run-sim-suite.sh`).
+
 ### `#4b` Tier A result table — holed / typed-profile extrude + typed-profile revolve
 
 **Change:** `add-native-construction-profiles`. Built in `src/native/construct/profile.h`
@@ -494,12 +590,17 @@ polyline.
 SIMULATORARM64 slice (determinism + IGES/STEP round-trips PASS). Zero source fixes
 required during verification.
 
-**Where OCCT is STILL required after Tier A (reality):** booleans (fuse/cut/common),
-fillets/chamfers/offsets/shell, features, data exchange (STEP/IGES), shape healing, and
-the remaining swept solids — loft (Tier B), sweep + twisted/guided/rail variants (Tier C),
-threads (Tier D), wrap-emboss (Tier E) — plus kind-3 SPLINE profile edges, off-axis-arc
-(torus) revolve, and any spline surface-of-revolution. All of these fall through to OCCT
-via `NativeEngine` (native builder returns NULL → OCCT), not faked.
+**Where OCCT is STILL required after Tiers A–C (reality):** booleans (fuse/cut/common),
+fillets/chamfers/offsets/shell, features, data exchange (STEP/IGES), shape healing;
+threads (Tier D), wrap-emboss (Tier E); the remaining sweep cases — a NON-PLANAR curved
+spine, a TIGHT-CURVATURE / self-intersecting spine, a REAL twist/scale
+`cc_twisted_sweep`, and `cc_guided_sweep` / `cc_loft_along_rail` (Tier C pipe-shell/guide);
+loft with MISMATCHED counts / a NON-PLANAR / point-collapse section / 3+ sections / guided
+/ rail; plus kind-3 SPLINE profile edges, off-axis-arc (torus) revolve, and any spline
+surface-of-revolution. All of these fall through to OCCT via `NativeEngine` (native builder
+returns NULL → OCCT), not faked. NOW NATIVE (Tiers A–C): holed / typed-profile extrude,
+typed-profile revolve, 2-section ruled loft, and sweep along a straight or smooth-planar
+spine.
 
 ### Files
 
@@ -565,7 +666,7 @@ Tests:
 | 2 | `native-topology` | **done at the bar** | Both gates green (13 host cases + 3 shapes × 5 parity checks = 15/15, max accessor err 0.000e+00); no regressions (host CTest 9/9, `run-sim-suite.sh` 221/221); header-only, not engine-wired (by design). Deferred: non-manifold/degenerate + seam edges, `CompSolid`/`Internal`/`External`, holed-face parity fixture. |
 | 3 | `native-tessellation` | **done at the bar** | Both gates green (host `test_native_tessellate` + sim native-vs-OCCT `BRepMesh` parity, All 20 checks PASS across 4 shapes; ALL four closed solids watertight `boundaryEdges==0`; area/volume relMesh ≤ 6.0e-3, relExact ≤ 1.24e-2, bbox maxCornerΔ ≤ 4.66e-2, on-surface residual ≤ 5.7e-15); no regressions (host CTest 10/10, `run-sim-suite.sh` 221/221); header-only `src/native/tessellate/`, not engine-wired by design. RESOLVED: curved shared-edge stitch (two-stage shared per-edge discretization) — cylinder/filleted-box now watertight. Deferred (genuinely minor, not watertightness): ear-clip trim re-triangulation quality, adaptive per-cell refinement, GPU fp32 path CPU-verified only. |
 | 4 | `native-construction` | **done at the bar** | Native `cc_solid_extrude` (closed polygon → prism: bottom/top planar caps + one planar quad per profile edge) and native `cc_solid_revolve` for **LINE-SEGMENT** profiles (segments → plane / cylinder / cone faces of revolution; full 360° closes, partial adds planar caps) — full native topology + geometry under `src/native/construct/construct.h`, OCCT-free/host-buildable. Wired through a new `NativeEngine : IEngine` (`src/engine/native/`) that serves these ops + native tessellate / mass / bbox / **subshape_ids** on its own native bodies and FALLS THROUGH to the OCCT engine (or the stub on host) for every other capability. Facade toggle `cc_set_engine(int)` / `cc_active_engine()` (additive, like `cc_set_parallel`; **default stays OCCT** so existing suites are unchanged). **Both gates green.** Host: `test_native_engine` + `test_native_construct` assert native builds with NO OCCT — boxes (exact vol/area/6-faces/centroid/bbox/watertight), a **triangle prism** (now watertight, exact vol = area×depth, via the tessellator cap-fill fix below), an L-prism, a full-turn tube (9π), a quarter-turn tube (9π/4) and a cone (4π), within the deflection bound; CTest **12/12**. Sim native-vs-OCCT parity (`native_construct_parity.mm`, driven through the `cc_*` facade under `cc_set_engine(0/1)`): **17/17** across box / triangle-prism / cylinder-tube / partial-revolve — mass (vol/area/centroid), bbox, face count, watertight tessellation, plus the fallthrough boolean (native→OCCT) all match. No regressions (`run-sim-suite.sh` **221/221**, `native_tessellation_parity.mm` **20/20**). Three fixes landed here: (a) the tessellator `isFullRectangle` fast-path now, for a PLANAR face, also requires the loop to hit all four box corners, so a convex polygon cap (triangle/hexagon) is ear-clipped instead of filled as its bbox — native extrude of ANY simple polygon now meshes watertight with the exact volume (`trim.h`); (b) `NativeEngine::bounding_box` derives from the tessellated mesh (a revolved solid's B-rep vertices sit only at angular stations, so a vertex-only AABB missed the circular extremes); (c) `NativeEngine::subshape_ids` is native for native bodies (Vertex/Edge/Face counts via the native Explorer). EXPLICITLY DEFERRED to OCCT (not faked, falls through): loft, sweep, twisted/guided sweep, threads, holed/typed-profile extrude variants, revolve of ARC/SPLINE profiles. DOCUMENTED REPRESENTATIONAL DIFFERENCE (not a geometric mismatch): the native builder emits per-face edges / per-patch vertices (proper edge/vertex SHARING deferred) and tiles a full-turn surface of revolution into <π angular patches (periodic-face construction deferred), so native V/E and the full-turn face count differ from OCCT's shared/periodic representation while the SOLID is geometrically identical (volume/area/bbox/watertight all match) — the parity gate asserts face-count where the tiling matches (prisms, partial revolve) and an integer-multiple relation for the full-turn revolve. |
-| 4b | `native-construction` (advanced swept solids) | ◐ Tiers A + B done at the bar; C–E follow-up | **Tier A (`add-native-construction-profiles`) done at the verification bar:** `cc_solid_extrude_holes` (circular holes → TRUE `Circle` edge + `Cylinder` wall), `cc_solid_extrude_polyholes` (polygon holes), `cc_solid_extrude_profile` / `_profile_polyholes` (typed line/arc/full-circle outer + holes), `cc_solid_revolve_profile` (line → Plane/Cylinder/Cone, on-axis arc → Sphere) are NATIVE (`src/native/construct/profile.h`). Both gates green: host `test_native_profile` + `test_native_engine` CTest **13/13** (no OCCT); sim native-vs-OCCT parity `native_construct_profiles_parity.mm` **22/22** — 5 native families (polyhole EXACT rel 1.97e-16; curved vol rel ≤ 4.97e-2, all watertight) + 2 fall-through families (kind-3 spline extrude, off-axis-arc torus revolve, vol rel 0.00e+00). **Tier B (`add-native-loft`) done at the verification bar:** `cc_solid_loft` / `cc_solid_loft_wires` for TWO PLANAR sections with EQUAL vertex counts (≥3) are NATIVE — one BILINEAR (degree-1 Bézier) ruled side face per corresponding edge pair + two planar caps → watertight solid, mirroring ruled `BRepOffsetAPI_ThruSections` (`src/native/construct/loft.h`, all functions cognitive complexity ≤ 7). Both gates green: host `test_native_loft` (9 cases) + `test_native_engine` (2 new facade cases) CTest **14/14** (no OCCT); sim native-vs-OCCT parity `native_loft_parity.mm` **17/17** — 3 EXACT families (square-frustum rel 2.54e-16, hex-prism rel 0.00e+00, tri-prism loft_wires rel 0.00e+00) + rotated-square TWIST deflection-bounded (vol rel 5.33e-3, watertight) + a mismatched-count fall-through delegating to OCCT (vol rel 0.00e+00). No regressions (`test_native_tessellate` green — box/cylinder/sphere/filleted-box watertight `boundaryEdges==0`, 13/13 cases; `run-sim-suite.sh` 221/221). STILL OCCT-fallthrough (not faked): kind-3 SPLINE edges, off-axis-arc (torus) / spline surface-of-revolution; loft with MISMATCHED counts / a NON-PLANAR section / a point-collapse section / 3+ sections / guided / rail (Tier C); and Tier C sweep+variants / D threads / E wrap-emboss. |
+| 4b | `native-construction` (advanced swept solids) | ◐ Tiers A + B + C done at the bar; D–E follow-up | **Tier A (`add-native-construction-profiles`) done at the verification bar:** `cc_solid_extrude_holes` (circular holes → TRUE `Circle` edge + `Cylinder` wall), `cc_solid_extrude_polyholes` (polygon holes), `cc_solid_extrude_profile` / `_profile_polyholes` (typed line/arc/full-circle outer + holes), `cc_solid_revolve_profile` (line → Plane/Cylinder/Cone, on-axis arc → Sphere) are NATIVE (`src/native/construct/profile.h`). Both gates green: host `test_native_profile` + `test_native_engine` CTest **13/13** (no OCCT); sim native-vs-OCCT parity `native_construct_profiles_parity.mm` **22/22** — 5 native families (polyhole EXACT rel 1.97e-16; curved vol rel ≤ 4.97e-2, all watertight) + 2 fall-through families (kind-3 spline extrude, off-axis-arc torus revolve, vol rel 0.00e+00). **Tier B (`add-native-loft`) done at the verification bar:** `cc_solid_loft` / `cc_solid_loft_wires` for TWO PLANAR sections with EQUAL vertex counts (≥3) are NATIVE — one BILINEAR (degree-1 Bézier) ruled side face per corresponding edge pair + two planar caps → watertight solid, mirroring ruled `BRepOffsetAPI_ThruSections` (`src/native/construct/loft.h`, all functions cognitive complexity ≤ 7). Both gates green: host `test_native_loft` (9 cases) + `test_native_engine` (2 new facade cases) CTest **14/14** (no OCCT); sim native-vs-OCCT parity `native_loft_parity.mm` **17/17** — 3 EXACT families (square-frustum rel 2.54e-16, hex-prism rel 0.00e+00, tri-prism loft_wires rel 0.00e+00) + rotated-square TWIST deflection-bounded (vol rel 5.33e-3, watertight) + a mismatched-count fall-through delegating to OCCT (vol rel 0.00e+00). No regressions (`test_native_tessellate` green — box/cylinder/sphere/filleted-box watertight `boundaryEdges==0`, 13/13 cases; `run-sim-suite.sh` 221/221). **Tier C (`add-native-sweep`) done at the verification bar:** `cc_solid_sweep` for a STRAIGHT spine (EXACT directional prism, vol = profileArea×\|d\|) and a SMOOTH CURVED but PLANAR spine (CONSTANT-frame ruled tube — the section is TRANSLATED with a fixed orientation, matching OCCT MakePipe's planar `GeomFill_CorrectedFrenet` → `Law_Constant`, NOT a perpendicular/Pappus sweep) are NATIVE (`src/native/construct/sweep.h`, reuses `loft.h` `ruledSideFace` + `construct.h` `planarFace`; `build_sweep` cognitive complexity 14). `cc_twisted_sweep` is native only when it reduces to the plain sweep (twist ≈ 0 AND scale ≈ 1). An earlier RMF/double-reflection revision was REMOVED — it produced the Pappus volume, a real oracle mismatch. Both gates green: host `test_native_sweep` (11 cases) + `test_native_engine` (3 sweep cases) CTest **15/15** (no OCCT); sim native-vs-OCCT parity `native_sweep_parity.mm` **11/11** (8 native + 3 fallback) — straight EXACT vol rel 7.11e-16 and smooth-arc EXACT vol o=330.299 n=330.299 rel 1.72e-16 (native F = OCCT F = 98, watertight), plus real-twist / guided / loft-rail fall-through delegating to OCCT (vol rel 0.00e+00, native active). STILL OCCT-fallthrough (not faked): kind-3 SPLINE edges, off-axis-arc (torus) / spline surface-of-revolution; loft with MISMATCHED counts / a NON-PLANAR section / a point-collapse section / 3+ sections / guided / rail; a NON-PLANAR / TIGHT-CURVATURE / self-intersecting sweep spine, a REAL twist/scale sweep, `cc_guided_sweep` / `cc_loft_along_rail`; and D threads / E wrap-emboss. |
 | 5 | `native-booleans` | ☐ next (**research-grade**) | Native robust B-rep booleans — the hardest, longest-lived OCCT dependency (surface-surface intersection, robust classification, shape healing). Will land progressively hardened and verified against OCCT (BOPAlgo oracle), not production-robust day one. |
 | 6–7 | blends → exchange | ☐ planned | Proposed as each begins. |
 | 8 | `drop-occt` | ☐ planned | Unlink OCCT once every capability is native. |

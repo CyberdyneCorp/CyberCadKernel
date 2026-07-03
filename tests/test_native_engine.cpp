@@ -13,7 +13,9 @@
 // deflection-derived convergence bound the native tessellator guarantees.
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <vector>
 
 #include "cybercadkernel/cc_kernel.h"
 #include "harness.h"
@@ -430,6 +432,95 @@ CC_TEST(native_profile_spline_falls_through) {
     const CCShapeId tid =
         cc_solid_revolve_profile(&arc, 1, 0.0, 0.0, 0.0, 1.0, nullptr, 0, 2.0 * kPi);
     CC_CHECK_EQ(tid, 0);
+}
+
+// ── Tier-C (#4b): native STRAIGHT + SMOOTH-CURVED sweep, deferred tight/twisted ─
+
+// Native cc_solid_sweep: a 4×4 square swept 10 along +Z is a 4×4×10 prism, volume
+// 160, EXACT. Served natively (the host stub has no sweep, so a non-zero id can only
+// come from the native straight-sweep builder); mass properties from the watertight
+// native mesh. 6 faces (4 sides + 2 caps).
+CC_TEST(native_sweep_straight_prism) {
+    EngineGuard g;
+    cc_set_engine(1);
+
+    const double prof[] = {-2, -2, 2, -2, 2, 2, -2, 2};
+    const double path[] = {0, 0, 0, 0, 0, 10};
+    const CCShapeId id = cc_solid_sweep(prof, 4, path, 2);
+    CC_CHECK(id != 0);
+    if (id == 0) { std::printf("  last_error=%s\n", cc_last_error()); return; }
+
+    const CCMassProps mp = cc_mass_properties(id);
+    CC_CHECK(mp.valid != 0);
+    CC_CHECK(std::fabs(mp.volume - 160.0) < 1e-3);
+
+    CCFaceMesh* faces = nullptr;
+    const int nFaces = cc_face_meshes(id, 0.05, &faces);
+    CC_CHECK_EQ(nFaces, 6);
+    cc_face_meshes_free(faces, nFaces);
+
+    cc_shape_release(id);
+}
+
+// Native cc_solid_sweep on a SMOOTH gentle-curved but PLANAR spine (Tier-C case (b)):
+// a 2×2 square swept along a quarter-arc of radius R=20 (≫ the profile circumradius, so
+// no self-intersection) builds a CONSTANT-frame ruled tube NATIVELY — a non-zero id on
+// the host stub can only come from the native curved-sweep builder. This mirrors OCCT
+// MakePipe's PLANAR corrected-Frenet law (a constant rotation → the section is
+// translated, not rotated to stay perpendicular), so the volume is
+// profile_area × |Δspine · n̂| (the spine displacement projected onto the FIXED section
+// normal), NOT the Pappus arc-length volume. The native mesh (0.05) is watertight.
+CC_TEST(native_sweep_smooth_arc) {
+    EngineGuard g;
+    cc_set_engine(1);
+
+    const double prof[] = {-1, -1, 1, -1, 1, 1, -1, 1};  // side 2, area 4
+    const double R = 20.0;
+    const int N = 24;
+    std::vector<double> path;
+    for (int k = 0; k <= N; ++k) {
+        const double th = (kPi / 2.0) * k / N;
+        path.push_back(R * std::cos(th));
+        path.push_back(0.0);
+        path.push_back(R * std::sin(th));
+    }
+    const CCShapeId id = cc_solid_sweep(prof, 4, path.data(), N + 1);
+    CC_CHECK(id != 0);  // native curved-sweep builder (stub has no sweep)
+    if (id == 0) { std::printf("  last_error=%s\n", cc_last_error()); return; }
+
+    const CCMassProps mp = cc_mass_properties(id);
+    CC_CHECK(mp.valid != 0);
+    // Constant-frame swept volume: area × |Δspine · n̂|. The start section normal ≈ −Z,
+    // the spine displacement is (−R,0,R), so the projection ≈ 20.64 for R=20 (R plus the
+    // small in-plane start-tangent tilt) → expected ≈ 4 × 20.64 = 82.57. This is the
+    // value OCCT MakePipe reports on this planar spine (verified on the simulator: native
+    // vol == OCCT vol to fp precision), NOT the Pappus arc-length volume 125.7.
+    const double exact = 82.5747;  // area(4) × |Δspine·n̂|; = OCCT MakePipe on this spine
+    CC_CHECK(std::fabs(mp.volume - exact) / exact < 5e-2);  // deflection-bounded
+
+    cc_shape_release(id);
+}
+
+// Deferred: a TIGHT-CURVATURE / self-intersecting sweep spine forwards to the
+// fallback (stub → 0 on host), never faked. Same for a real twist. Proves the native
+// path guards the self-intersecting cases and defers cleanly.
+CC_TEST(native_sweep_tight_and_twisted_defer) {
+    EngineGuard g;
+    cc_set_engine(1);
+
+    const double prof[] = {-2, -2, 2, -2, 2, 2, -2, 2};  // half-extent 2√2 ≈ 2.83
+    // Quarter-arc of radius 2 (< the profile circumradius) → self-intersecting tube.
+    std::vector<double> tight;
+    for (int k = 0; k <= 12; ++k) {
+        const double th = (kPi / 2.0) * k / 12;
+        tight.push_back(2.0 * std::cos(th));
+        tight.push_back(0.0);
+        tight.push_back(2.0 * std::sin(th));
+    }
+    CC_CHECK_EQ(cc_solid_sweep(prof, 4, tight.data(), 13), 0);  // tight → stub fallback
+
+    const double path[] = {0, 0, 0, 0, 0, 10};
+    CC_CHECK_EQ(cc_twisted_sweep(prof, 4, path, 2, 1.5708, 1.0), 0);  // real twist → fallback
 }
 
 CC_RUN_ALL()

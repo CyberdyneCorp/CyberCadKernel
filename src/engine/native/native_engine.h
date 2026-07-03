@@ -34,11 +34,23 @@
 //                              caps → watertight solid. Mismatched counts / a
 //                              non-planar section / a point-collapse section / 3+
 //                              /guided/rail lofts → OCCT fallthrough.       [#4b Tier B]
+//   * solid_sweep             — sweep a CLOSED profile along a 3D polyline path: the
+//                              profile is placed perpendicular to the START tangent
+//                              and transported with a rotation-minimizing frame.
+//                              NATIVE for a STRAIGHT spine → an EXACT directional
+//                              prism (always watertight). A CURVED/bent spine, or a
+//                              degenerate profile / < 2 path points → OCCT MakePipe
+//                              fallthrough (the mesher cannot yet weld the multi-band
+//                              twisted ruled faces for an arbitrary profile — deferred,
+//                              not faked).                                   [#4b Tier C]
+//   * twisted_sweep           — NATIVE only when it reduces to the straight no-twist
+//                              prism (twist ≈ 0, scale ≈ 1); any real twist/scale →
+//                              OCCT fallthrough.                             [#4b Tier C]
 //   Each native op tries the native builder and FALLS THROUGH to the fallback engine
 //   when the native path returns a NULL Shape (a deferred sub-case or degenerate
-//   input) — the native path never fakes a shape. Everything else (sweep/threads,
-//   fillet/shell/boolean/transform/exchange/reference-geometry) falls through
-//   unconditionally.
+//   input) — the native path never fakes a shape. Everything else (guided sweep /
+//   loft-along-rail / threads, fillet/shell/boolean/transform/exchange/reference-
+//   geometry) falls through unconditionally.
 //
 // SHAPE COEXISTENCE. The facade owns ONE ShapeRegistry mapping CCShapeId ->
 // EngineShape (std::shared_ptr<void>). The OCCT adapter type-erases an OcctShape

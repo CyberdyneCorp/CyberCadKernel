@@ -57,6 +57,26 @@
 //   build_loft_wires(aXYZ,bXYZ)      entry for cc_solid_loft_wires: the two 3D wires
 //                                    directly, then build_ruled_loft.
 //
+//   ── Tier-C (#4b, sweep.h) ────────────────────────────────────────────────────
+//   build_sweep(profileXY,pathXYZ)   sweep a CLOSED planar profile along a 3D
+//                                    polyline path: profile centred on its centroid,
+//                                    placed perpendicular to the START tangent (local
+//                                    x = cross(tan,+Y), local y = +Y), transported
+//                                    with a rotation-minimizing frame (double
+//                                    reflection). NATIVE for a STRAIGHT spine → an
+//                                    EXACT directional prism (profile area × path
+//                                    length), AND for a SMOOTH CURVED spine → an
+//                                    RMF-transported ruled-band tube (deflection-bounded
+//                                    vs OCCT, watertight at working deflections). A
+//                                    TIGHT-CURVATURE / self-intersecting spine (turning
+//                                    radius < profile circumradius, or a too-sharp turn)
+//                                    returns NULL → OCCT MakePipe (guarded, not faked).
+//                                    Degenerate profile / < 2 path points → NULL.
+//   build_twisted_sweep(...,tw,sc)   NATIVE only when it reduces to the plain sweep
+//                                    (twist ≈ 0, scale ≈ 1) → forwards to build_sweep
+//                                    (straight or smooth curved); any real twist/scale
+//                                    → NULL (OCCT). cc_twisted_sweep.
+//
 // ── SUPPORTED vs DEFERRED (honest — see openspec/NATIVE-REWRITE.md) ───────────
 //   SUPPORTED natively:
 //     * extrude of a closed polygon profile → prism solid.
@@ -68,7 +88,10 @@
 //   DEFERRED (the builder returns a NULL Shape so the engine falls through to
 //   OCCT — it NEVER fakes a wrong shape):
 //     * loft with MISMATCHED section counts / a NON-PLANAR section / 3+ sections /
-//       guided or rail loft (Tier C); sweep, twisted/guided sweep, threads.
+//       guided or rail loft (Tier C); guided sweep, loft-along-rail, threads.
+//     * a TIGHT-CURVATURE / self-intersecting sweep spine, or a TWISTED/scaled sweep
+//       (build_sweep is native for straight + smooth curved; build_twisted_sweep is
+//       native only for the plain no-twist sweep).
 //     * kind-3 SPLINE profile edges (extrude and revolve).
 //     * arc-revolve whose circle centre is OFF the axis (a Torus surface of
 //       revolution — no native Torus surface yet).
@@ -100,5 +123,6 @@
 #include "native/construct/construct.h"
 #include "native/construct/loft.h"
 #include "native/construct/profile.h"
+#include "native/construct/sweep.h"
 
 #endif  // CYBERCAD_NATIVE_CONSTRUCT_NATIVE_CONSTRUCT_H

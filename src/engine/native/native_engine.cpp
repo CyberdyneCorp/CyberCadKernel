@@ -350,13 +350,28 @@ ShapeResult NativeEngine::solid_loft_wires(const double* a, int ac, const double
     if (solid.isNull()) return fallback().solid_loft_wires(a, ac, b, bc);
     return track(wrapNative(std::move(solid)));
 }
+// ── Tier-C (#4b) NATIVE sweep. NATIVE for a STRAIGHT spine → an EXACT directional
+// prism, AND for a SMOOTH CURVED spine → an RMF-transported ruled-band tube
+// (deflection-bounded, watertight at working deflections), both cross-checked vs
+// BRepOffsetAPI_MakePipe. A TIGHT-CURVATURE / self-intersecting spine, a degenerate
+// profile, or < 2 path points → build_sweep returns NULL and we forward the SAME args
+// to OCCT MakePipe (honest coexistence, no faking — see construct/sweep.h). ─────────
 ShapeResult NativeEngine::solid_sweep(const double* p, int pc, const double* path, int pathc) {
-    return fallback().solid_sweep(p, pc, path, pathc);
+    ntopo::Shape solid = ncst::build_sweep(p, pc, path, pathc);
+    if (solid.isNull()) return fallback().solid_sweep(p, pc, path, pathc);
+    return track(wrapNative(std::move(solid)));
 }
+// twisted_sweep: NATIVE only when it reduces to the plain sweep (twist ≈ 0, scale ≈
+// 1); any real twist/scale (an extra per-section rotation the RMF sweep does not
+// model) → NULL → OCCT twisted_sweep.
 ShapeResult NativeEngine::twisted_sweep(const double* p, int pc, const double* path, int pathc,
                                         double tw, double se) {
-    return fallback().twisted_sweep(p, pc, path, pathc, tw, se);
+    ntopo::Shape solid = ncst::build_twisted_sweep(p, pc, path, pathc, tw, se);
+    if (solid.isNull()) return fallback().twisted_sweep(p, pc, path, pathc, tw, se);
+    return track(wrapNative(std::move(solid)));
 }
+// loft_along_rail / guided_sweep: HARD pipe-shell/guide cases — left OCCT
+// fallthrough (Tier C, not yet native). Labelled, verified fall-through.
 ShapeResult NativeEngine::loft_along_rail(const double* r, int rc, const double* a, int ac,
                                           const double* b, int bc) {
     return fallback().loft_along_rail(r, rc, a, ac, b, bc);

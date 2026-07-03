@@ -154,9 +154,19 @@ CCShapeId cc_solid_loft(const double *bottomXY, int bottomCount,
 CCShapeId cc_solid_loft_wires(const double *aXYZ, int aCount,
                               const double *bXYZ, int bCount);
 
+/* Sweep a CLOSED profile (x,y pairs, ≥3 points) along a 3D polyline path
+ * (x,y,z triples, ≥2 points). The profile is centred on its CENTROID and placed
+ * PERPENDICULAR to the path tangent at the START: in the start frame the profile's
+ * local x = normalize(cross(startTangent, +Y)) and local y = +Y (a near-vertical
+ * start tangent uses +X as the reference instead so the frame never collapses). The
+ * section is then transported along the spine and the swept solid is capped at both
+ * ends. Returns 0 on degenerate input (< 3 profile points / < 2 path points). */
 CCShapeId cc_solid_sweep(const double *profileXY, int profileCount,
                          const double *pathXYZ, int pathCount);
 
+/* As cc_solid_sweep, but the section additionally ROTATES about the path tangent by
+ * a total of `twistRadians` (accumulated linearly from 0 at the start to twistRadians
+ * at the end) and SCALES linearly from 1 at the start to `scaleEnd` at the end. */
 CCShapeId cc_twisted_sweep(const double *profileXY, int profileCount,
                            const double *pathXYZ, int pathCount,
                            double twistRadians, double scaleEnd);

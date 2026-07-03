@@ -184,7 +184,9 @@ longest; a native exchange is lower priority than the modelling core.
     **arc-revolve whose circle centre is OFF the axis** (a TORUS surface of revolution
     — no native Torus surface yet), a loft with MISMATCHED section counts / a
     NON-PLANAR section / 3+ sections / guided or rail loft (Tier C), and
-    sweep/twisted-guided-sweep/threads (Tiers C–E). A
+    twisted-with-real-twist / guided-sweep / loft-along-rail / threads (Tiers C–E).
+    (`cc_solid_sweep` itself is NOW native for straight + smooth-planar spines — see the
+    Tier-C entry below.) A
     kind-1 ARC extrude edge is a TRUE `Circle` cap edge + a `Cylinder` side wall — one
     bounded, non-periodic patch per ≤180° span (split threshold is π for the EXTRUDE
     wall, NOT the revolve's 120°: an extrude wall is never periodic, so a semicircle is
@@ -214,6 +216,43 @@ longest; a native exchange is lower priority than the modelling core.
     on the sim (OCCT linked); on `run-sim-suite.sh`'s SKIP list (own `main()`), so
     the 221-assertion suite count is unchanged. No regressions (`test_native_tessellate`
     green, `run-sim-suite.sh` 221/221).
+  - **◐ `#4b` Tier C (sweep / pipe-shell) — `cc_solid_sweep` DONE at the verification
+    bar; the guided/rail/real-twist pipe-shell cases stay OCCT-fallthrough (not faked).**
+    NOW NATIVE (engine-wired behind the same `cc_set_engine(1)` toggle):
+    `cc_solid_sweep` for (a) a **STRAIGHT** spine (exact directional prism, vol =
+    profileArea × |d|) and (b) a **SMOOTH CURVED but PLANAR** spine. The crux — and the
+    fix that made Gate 2 pass — is the FRAME LAW: the OCCT oracle
+    `BRepOffsetAPI_MakePipe` uses `GeomFill_CorrectedFrenet`, which for a **planar** spine
+    collapses to a **constant rotation** (`GeomFill_CorrectedFrenet.cxx`, `isPlanar` →
+    `Law_Constant`), i.e. it TRANSLATES the section with a FIXED orientation, NOT a
+    perpendicular-tracking sweep. So `src/native/construct/sweep.h` holds the start frame
+    CONSTANT across stations (`detail::constantFrames`), builds one bilinear ruled band
+    per (profile edge × spine segment) with shared per-station rings, and caps both ends
+    in the fixed section plane → a watertight solid. (An earlier RMF / parallel-transport
+    revision kept the section perpendicular and produced the Pappus arc-length volume —
+    geometrically "nicer" but a REAL mismatch vs the oracle, correctly rejected by the
+    parity gate; we match the oracle.) `cc_twisted_sweep` is native ONLY when it reduces
+    to the plain sweep (twist ≈ 0, scale ≈ 1 → forwards to `build_sweep`). Gate 1 green:
+    host `test_native_sweep` (11 cases — straight prism / collinear-collapse / arbitrary-
+    3D-direction / pentagon / zero-twist prism / smooth-planar-arc watertight + constant-
+    frame volume `A·|Δspine·n̂|` / constant-frame invariance / degenerate + real-twist +
+    tight-curvature deferrals) + `test_native_engine` (`native_sweep_smooth_arc` vol
+    82.57 = the oracle value, `native_sweep_tight_and_twisted_defer`); host CTest 15/15,
+    existing suites unchanged. STILL OCCT-fallthrough (native builder returns NULL →
+    `NativeEngine` forwards, never fakes): a **NON-PLANAR** curved spine (OCCT's genuine
+    non-constant corrected-Frenet law), a **TIGHT-CURVATURE / self-intersecting** spine
+    (guarded by `spineTooSharp`), a **real-twist/scale** `cc_twisted_sweep` (OCCT
+    `ThruSections`), and the pipe-shell/guide cases **`cc_guided_sweep`** /
+    **`cc_loft_along_rail`** (engine-glue fall-through). Gate 2 (sim OCCT parity) GREEN:
+    `tests/sim/native_sweep_parity.mm` + `scripts/run-sim-native-sweep.sh` through the
+    `cc_*` facade under `cc_set_engine(0/1)` — **`[NSWEEP]` 11 passed / 0 failed**: the
+    straight sweep EXACT (vol rel 7e-16) and — because native and OCCT now share the same
+    constant-frame law and polyline — the **smooth-arc sweep EXACT too** (vol o=330.299
+    n=330.299 **rel 1.7e-16**, bbox maxCornerΔ 1.0e-7, native F = OCCT F = 98, watertight),
+    plus the three deferred cases (real-twist / guided / loft-rail) delegating to OCCT
+    (vol rel 0.00e+00, native active — fall-through proof). On `run-sim-suite.sh`'s SKIP
+    list (own `main()`), 221-assertion count unchanged. No regressions (host CTest 15/15,
+    `run-sim-suite.sh` 221/221). Living change: `openspec/changes/add-native-sweep`.
 - ☐ **#5 `native-booleans` — NEXT (research-grade).** The hardest and longest-lived
   OCCT dependency. Native robust B-rep booleans require surface-surface intersection
   (the intersection curves between arbitrary analytic + NURBS surfaces), robust

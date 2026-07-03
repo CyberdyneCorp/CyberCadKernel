@@ -47,7 +47,15 @@ SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 # its own main(); drives cc_fillet_edges / cc_chamfer_edges / cc_offset_face / cc_shell
 # under both engines via cc_set_engine, asserting native planar chamfer/offset/shell
 # EXACT + constant-radius fillet deflection-bounded vs OCCT + a curved-edge fillet OCCT
-# fall-through, links the whole kernel + full OCCT), and the
+# fall-through, links the whole kernel + full OCCT), the Phase-4
+# native-DATA-EXCHANGE (#7) STEP-EXPORT parity harness native_step_parity.mm
+# (run-sim-native-step.sh — its own main(); drives cc_step_export under both engines via
+# cc_set_engine, asserting the NATIVE ISO-10303-21 STEP file re-reads through OCCT
+# STEPControl_Reader to the SAME solid vs the source (vol/area/centroid + bbox + face/
+# edge counts), that the native-written and OCCT-written files re-read to EQUIVALENT
+# solids (writer parity), and that a FOREIGN OCCT-built body exported under native FALLS
+# BACK to STEPControl_Writer; links the whole kernel + full OCCT and calls OCCT directly
+# to re-read the files), and the
 # Phase-3 suite — phase3_suite.cpp
 # (its own main()) plus its checks_*.cpp modules (which record against
 # phase3_checks.h's Ctx, not checks.h's) — has run-sim-phase3-suite.sh. What remains
@@ -59,7 +67,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_construct_parity.mm native_construct_profiles_parity.mm native_loft_parity.mm \
       native_sweep_parity.mm native_thread_parity.mm native_boolean_parity.mm \
       native_curved_boolean_parity.mm \
-      native_blend_parity.mm \
+      native_blend_parity.mm native_step_parity.mm \
       phase3_suite.cpp checks_reference_geometry.cpp checks_wrap_emboss.cpp \
       checks_thread_boolean.cpp checks_full_round_fillet.cpp checks_g2_fillet.cpp"
 SRCS=()

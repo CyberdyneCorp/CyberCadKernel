@@ -124,10 +124,24 @@ Date: 2026-07-03 · Branch: `main`.
   rel 8.96e-05, watertight); a curved-rim fillet forwarded to OCCT (`[fallback]` rel
   0.00e+00); and the self-verify guard rejecting a thickness-6 shell on a 10³ box
   (id 0, honest error). See the native-blend result table below.
-- **No regressions.** Host build + CTest **18/18** (incl. `test_native_tessellate`,
-  `test_native_boolean`, `test_native_blend`); `scripts/run-sim-suite.sh` stays **221 passed, 0 failed**
-  (the OCCT default engine and `cc_boolean` under it are unchanged; only change is
-  `native_boolean_parity.mm` on the SKIP list).
+- **Capability #7 `native-exchange` — native STEP EXPORT slice done at the
+  verification bar; STEP import + IGES stay OCCT (honest, out of scope).** Native
+  `cc_step_export` (engine-wired behind `cc_set_engine(1)`) walks an in-scope native
+  B-rep and emits a valid ISO-10303-21 STEP **AP203** file in true millimetres, OCCT-free
+  under `src/native/exchange/`. Both gates green: host `test_native_step_writer` (#19) +
+  `test_native_step` (#20) + `test_native_engine` (#21) — CTest **21/21**, no OCCT; and the
+  sim OCCT re-read round-trip (source → native-written STEP → OCCT re-read) — box relV
+  2.27e-16 (6→6 faces, 24→24 edges), cylinder relV 1.27e-03 (9→9 faces), holed-plate relV
+  2.90e-04 (7→7 faces, 28→30 edges within tol); writer parity native-vs-OCCT relV ≤ 4.70e-15.
+  Native writer active (box 5363 B / cylinder 6893 B / holed-plate 6457 B); a foreign
+  OCCT-built body falls through to OCCT `STEPControl_Writer` (re-read relV 0.00e+00). **STEP
+  import, IGES export/import, and out-of-scope geometry stay OCCT (never faked).**
+- **No regressions.** Host build + CTest **21/21** (incl. `test_native_tessellate`,
+  `test_native_boolean`, `test_native_blend`, `test_native_step_writer`, `test_native_step`);
+  `scripts/run-sim-suite.sh` stays **221 passed, 0 failed** (re-run against a freshly rebuilt
+  SIMULATORARM64 slice carrying the current native STEP-export sources; the OCCT default
+  engine and `cc_step_export` under it are unchanged; only change is `native_step_parity.mm`
+  on the SKIP list).
 - **Contained blast radius.** Native math lives under `src/native/math/`, native
   topology under `src/native/topology/`, native tessellation under
   `src/native/tessellate/` (all header-only, unreachable from the facade by design).
@@ -785,8 +799,9 @@ polyline.
 SIMULATORARM64 slice (determinism + IGES/STEP round-trips PASS). Zero source fixes
 required during verification.
 
-**Where OCCT is STILL required after Tiers A–D (reality):** booleans (fuse/cut/common),
-fillets/chamfers/offsets/shell, features, data exchange (STEP/IGES), shape healing;
+**Where OCCT is STILL required after Tiers A–D (reality):** GENERAL curved booleans,
+curved/concave/variable blends, features, STEP IMPORT + IGES export/import (STEP EXPORT
+for in-scope native solids is now NATIVE, #7), shape healing;
 a FINE-PITCH / self-intersecting `cc_helical_thread` / `cc_tapered_thread` (non-manifold
 regardless of weld → self-verify defers to OCCT `MakePipeShell`), wrap-emboss (Tier E);
 the remaining sweep cases — a NON-PLANAR curved spine, a TIGHT-CURVATURE / self-intersecting
@@ -1075,16 +1090,134 @@ native-body edges are pickable exactly as OCCT-body edges are (covered by a
 - `tests/sim/native_blend_parity.mm` + `scripts/run-sim-native-blend.sh` — sim Gate-2
   native-vs-OCCT parity (own `main()`; SKIPped by `run-sim-suite.sh`).
 
+## native-exchange result table (#7 — native STEP EXPORT slice)
+
+**Honest scope.** ONLY `cc_step_export` is native, and only for a native solid whose
+every face surface is `Plane`/`Cylinder`/`Cone`/`Sphere`/`BSpline` and every edge curve
+is `Line`/`Circle`/(non-rational)`BSpline` — the `canSerialize` gate DECLINES anything
+else. The writer walks the native B-rep and emits a valid ISO-10303-21 STEP **AP203**
+file in true MILLIMETRES (HEADER + Part-42 DATA graph + mm `SI_UNIT` context + AP203
+product spine + `ADVANCED_BREP_SHAPE_REPRESENTATION`), built OCCT-FREE under
+`src/native/exchange/` (`step_writer.h/.cpp`, `native_exchange.h`). Because the native
+builders emit per-face edges (edge/vertex sharing deferred, #4), the writer DEDUPLICATES
+geometrically — coincident points → one `VERTEX_POINT`, the two adjacent faces of a
+physical edge share ONE `EDGE_CURVE` (forward on one, reversed on the other) → a properly
+sewn manifold `CLOSED_SHELL`. **`cc_step_import`, `cc_iges_export`, `cc_iges_import` stay
+OCCT — intentionally out of scope** (parsing/writing arbitrary STEP/IGES is not part of
+this slice; the honest end state, keeping #8 blocked).
+
+**Native-vs-fallback split (engine wiring).** `NativeEngine::step_export`: an in-scope
+native body → NATIVE writer; an out-of-scope native body → clean error (never a native
+void handed to OCCT, never a faked file); a foreign (OCCT-built) body → OCCT
+`STEPControl_Writer`.
+
+| Path | Body | Result |
+|---|---|---|
+| **NATIVE** (native ISO-10303-21 emitted) | box | 5363 bytes written |
+| **NATIVE** | cylinder | 6893 bytes written |
+| **NATIVE** | holed-plate | 6457 bytes written |
+| **FALLBACK → OCCT `STEPControl_Writer`** | foreign-box (OCCT-built body under native engine) | 15394 bytes; re-read relV 0.00e+00 / area rel 0.00e+00 / bbox 1.00e-07, faces 6→6 |
+
+**Gate 1 (host, no OCCT) GREEN.** `test_native_step_writer` (#19, 6 cases: `canSerialize`
+scope; box AP203 header+wrapper+mm `SI_UNIT`; box 6 `PLANE` / 12 shared `EDGE_CURVE` / 8
+`VERTEX_POINT`; cylinder `CYLINDRICAL_SURFACE`+`CIRCLE`; well-formed contiguous
+`#n=ENTITY(...);`; coords as REALs) + `test_native_step` (#20) +
+`test_native_engine::native_step_export_writes_valid_ap203_file` (#21, facade
+`cc_step_export` runs native, returns 1, valid file). Host CTest **21/21** (Homebrew clang,
+`-DCYBERCAD_HAS_OCCT=OFF -DCYBERCAD_HAS_METAL=OFF`, clean, no warnings), all native suites
+green. All writer functions 🟢 Excellent (≤7 cognitive complexity), no systems-band fn.
+
+**Gate 2 (sim OCCT re-read round-trip) GREEN.** The native-written file is re-read through
+OCCT `STEPControl_Reader` and compared to the SOURCE native solid (source → native-written
+STEP → OCCT re-read):
+
+| Shape (native writer) | vol src / reread · relV | area rel | centroidΔ | bbox maxCornerΔ | topology faces | topology edges |
+|---|---|---|---|---|---|---|
+| box | 1000 / 1000 · **2.27e-16** | 1.89e-16 | 0.00e+00 | 1.00e-07 | 6 → 6 | 24 → 24 |
+| cylinder | 941.282 / 942.478 · **1.27e-03** | 5.97e-04 | 8.88e-16 | 1.00e-07 | 9 → 9 | 30 → 30 |
+| holed-plate | 847.149 / 846.903 · **2.90e-04** | 1.09e-04 | 1.95e-14 | 1.00e-07 | 7 → 7 | 28 → 30 (within tol) |
+
+The holed-plate's sewn periodic wall gains one seam edge the deferred-sharing native source
+omits (28 → 30) — this MATCHES OCCT's own writer and is accepted as a bounded superset.
+**Writer parity (native-written vs OCCT-written, both re-read):** box relV 0.00e+00 / relA
+0.00e+00 / bboxΔ 0.00e+00; cylinder relV 0.00e+00 / relA 4.64e-14 / bboxΔ 0.00e+00;
+holed-plate relV 4.70e-15 / relA 6.48e-15 / bboxΔ 0.00e+00 — the native writer produces a
+solid geometrically identical to OCCT's writer for the same body.
+
+STILL OCCT (never faked): STEP import, IGES export/import, and an out-of-scope geometry
+kind (Ellipse/Bezier curve, rational spline, Bezier surface) → `canSerialize` DECLINEs,
+returns a clean error.
+
+### Files (#7)
+
+- `src/native/exchange/step_writer.h` / `step_writer.cpp` — OCCT-free ISO-10303-21 text
+  formatting + Part-42 emitters (with geometric dedup) + representability gate
+  (`canSerialize` / `geometrySupported`) + bottom-up topology walk assigning contiguous
+  `#n` ids + AP203 header/units/context wrapper. `writeStepString(solid)` /
+  `step_export_native(solid, path)` / `step_can_export_native(solid)`.
+- `src/native/exchange/native_exchange.h` — umbrella header (OCCT-free).
+- `src/engine/native/native_engine.cpp` — `step_export`: in-scope native body → native
+  writer; out-of-scope native body → clean error; foreign body → OCCT `STEPControl_Writer`.
+  `step_import` / `iges_export` / `iges_import` unchanged (pure OCCT fall-through).
+- `tests/native/test_native_step_writer.cpp` (#19) + `tests/native/test_native_step.cpp`
+  (#20) — host Gate-1 structural unit tests (no OCCT).
+- `tests/sim/native_step_parity.mm` + `scripts/run-sim-native-step.sh` — sim Gate-2 native-
+  write / OCCT-read round-trip (own `main()`; SKIPped by `run-sim-suite.sh`).
+
+## Phase 4 ceiling — native set vs OCCT-retained set
+
+Phase 4 is **COMPLETE AT ITS ACHIEVABLE NATIVE CEILING**, NOT fully drop-OCCT. The tractable
+native slice of every planned capability now runs native at the verification bar; what
+remains is research-grade (a general robust curved kernel + native STEP/IGES import) and is
+NOT reachable in this program's horizon.
+
+**NATIVE at the bar (both gates green):**
+math / geometry (Bézier / B-spline / NURBS curves + surfaces, elementary surfaces,
+transforms); B-rep topology + traversal; watertight tessellation (curved shared-edge stitch);
+construction — extrude, line-segment revolve, holed extrude (circular + polygon), typed-profile
+extrude (line / arc / full-circle), typed-profile revolve (line, on-axis-arc → sphere),
+2-section ruled loft, sweep along a straight or smooth-planar spine, `cc_tapered_shank`,
+well-formed `cc_helical_thread` / `cc_tapered_thread`; PLANAR-polyhedron booleans (fuse / cut /
+common via BSP-CSG) and the AXIS-ALIGNED box ⟷ axis-parallel-cylinder curved analytic boolean
+slice (closed-form through-hole cut / boss fuse / clipped-segment common); PLANAR blends —
+`cc_chamfer_edges`, constant-radius `cc_fillet_edges`, `cc_offset_face`, `cc_shell`; and **STEP
+EXPORT** (`cc_step_export` for in-scope native solids). Every native op is guarded by a
+self-verify (watertight + volume / set-algebra / analytic checks) that DISCARDS a bad candidate
+and falls through to OCCT — never a faked result.
+
+**STAYS OCCT (native pending — the ceiling):**
+GENERAL curved / concave booleans (surface-surface intersection: sphere / cone / NURBS /
+non-axis-aligned / cyl-cyl / blind-hole / non-through cut, near-tangent / coincident-curved);
+curved / concave / variable-radius blends, `cc_fillet_face`, general robust blend/offset over
+arbitrary NURBS; shape healing; non-planar / tight-curvature / real-twist / guided / rail sweep,
+3+-section / guided / rail loft, kind-3 SPLINE profile edges, off-axis-arc (torus) / spline
+surface-of-revolution, fine-pitch / self-intersecting threads; wrap-emboss over a general curved
+target; and **STEP import + IGES export/import** (parsing / writing arbitrary exchange formats).
+All of these fall through to OCCT via `NativeEngine` (native builder returns NULL, or the
+self-verify / `canSerialize` gate defers), never faked.
+
+**Why #8 `drop-occt` is BLOCKED.** Unlinking OCCT requires EVERY `cc_*` path to have a native
+implementation. Two hard dependencies remain, and both are research-grade multi-year efforts,
+not incremental slices: (1) a **general robust curved boolean / blend kernel** (arbitrary
+surface-surface intersection with exact tolerance handling — the single hardest problem in solid
+modelling, plus the healing that goes with it), and (2) **native STEP/IGES IMPORT** (a full
+AP203/AP214 + IGES parser and B-rep reconstructor — the native slice deliberately did EXPORT
+only). Until both exist, OCCT stays linked. Phase 4 therefore stops HONESTLY at its native
+ceiling: the tractable analytic / planar / export slices are native and verified; the
+general-curved and import frontier is explicitly deferred and remains OCCT-backed.
+
 ## Regression evidence
 
-- Host build + CTest with Homebrew clang 22.1.8, `-DCYBERCAD_HAS_OCCT=OFF
+- Host build + CTest with Homebrew clang, `-DCYBERCAD_HAS_OCCT=OFF
   -DCYBERCAD_HAS_METAL=OFF`, fresh build dir: configure OK, build OK (no
-  warnings/errors), **CTest 18/18 passed, 0 failed** (through #6) — the 7 pre-existing
+  warnings/errors), **CTest 21/21 passed, 0 failed** (through #7) — the 7 pre-existing
   targets (registry / guard / scheduler / compute_backend / parallel_policy /
   parallel_toggle / abi) + `test_native_math` / `_topology` / `_tessellate` /
   `_construct` / `_profile` / `_loft` / `_sweep` / `_thread` / `_boolean` / `_blend` /
-  `_engine`. `test_native_tessellate` stays 13/13 (box/cylinder/sphere/filleted-box
-  watertight `boundaryEdges==0`) — unperturbed by the #6 blend changes.
+  `_engine` + the #7 additions `test_native_step_writer` (#19) / `test_native_step` (#20),
+  with `test_native_engine` (#21) now including `native_step_export_writes_valid_ap203_file`.
+  `test_native_tessellate` stays 13/13 (box/cylinder/sphere/filleted-box watertight
+  `boundaryEdges==0`) — unperturbed by the #7 exchange changes.
 - `scripts/run-sim-suite.sh` (iphonesimulator arm64): still
   **== 221 passed, 0 failed ==** (verified twice). To confirm HONESTLY against the
   facade+NativeEngine changes (the prebuilt sim lib predated them), the
@@ -1100,6 +1233,15 @@ native-body edges are pickable exactly as OCCT-body edges are (covered by a
   `native_blend_parity.mm` (own `main()`, its own `run-sim-native-blend.sh`) is
   likewise on the SKIP list — the only uncommitted change to `run-sim-suite.sh` — so
   the 221 count is preserved; `run-sim-suite.sh` **221/221** re-verified (twice).
+- For #7 (native STEP export) the SIMULATORARM64 slice was REBUILT AGAIN from current
+  sources (25 TUs, 0 compile failures) before re-running the suite, because the prebuilt
+  `.a` predated the modified `src/engine/native/native_engine.cpp` and the new
+  `src/native/exchange/step_writer.cpp` — so the **221/221** reflects the current native
+  STEP-export code, not stale objects. Under the default OCCT engine `cc_step_export` is
+  unchanged (routes through OCCT `STEPControl_Writer`, round-trips vol=1000/area=600/bbox
+  exactly), and `cc_step_import` + `cc_iges_export`/`_import` remain OCCT (IGES 52 entities,
+  round-trip preserved). `native_step_parity.mm` is on the SKIP list (own `main()`). No
+  source fixes were required — the diff builds and passes as-is.
 - Isolation / blast radius: capabilities #1–#3 (native math `src/native/math/`,
   native topology `src/native/topology/`, native tessellation
   `src/native/tessellate/`) remain unreachable from the `cc_*` facade by design.
@@ -1126,5 +1268,5 @@ native-body edges are pickable exactly as OCCT-body edges are (covered by a
 | 4b | `native-construction` (advanced swept solids) | ◐ Tiers A + B + C + D done at the bar (shank + well-formed threads NATIVE); fine-pitch thread OCCT-fallthrough, E follow-up | **Tier A (`add-native-construction-profiles`) done at the verification bar:** `cc_solid_extrude_holes` (circular holes → TRUE `Circle` edge + `Cylinder` wall), `cc_solid_extrude_polyholes` (polygon holes), `cc_solid_extrude_profile` / `_profile_polyholes` (typed line/arc/full-circle outer + holes), `cc_solid_revolve_profile` (line → Plane/Cylinder/Cone, on-axis arc → Sphere) are NATIVE (`src/native/construct/profile.h`). Both gates green: host `test_native_profile` + `test_native_engine` CTest **13/13** (no OCCT); sim native-vs-OCCT parity `native_construct_profiles_parity.mm` **22/22** — 5 native families (polyhole EXACT rel 1.97e-16; curved vol rel ≤ 4.97e-2, all watertight) + 2 fall-through families (kind-3 spline extrude, off-axis-arc torus revolve, vol rel 0.00e+00). **Tier B (`add-native-loft`) done at the verification bar:** `cc_solid_loft` / `cc_solid_loft_wires` for TWO PLANAR sections with EQUAL vertex counts (≥3) are NATIVE — one BILINEAR (degree-1 Bézier) ruled side face per corresponding edge pair + two planar caps → watertight solid, mirroring ruled `BRepOffsetAPI_ThruSections` (`src/native/construct/loft.h`, all functions cognitive complexity ≤ 7). Both gates green: host `test_native_loft` (9 cases) + `test_native_engine` (2 new facade cases) CTest **14/14** (no OCCT); sim native-vs-OCCT parity `native_loft_parity.mm` **17/17** — 3 EXACT families (square-frustum rel 2.54e-16, hex-prism rel 0.00e+00, tri-prism loft_wires rel 0.00e+00) + rotated-square TWIST deflection-bounded (vol rel 5.33e-3, watertight) + a mismatched-count fall-through delegating to OCCT (vol rel 0.00e+00). No regressions (`test_native_tessellate` green — box/cylinder/sphere/filleted-box watertight `boundaryEdges==0`, 13/13 cases; `run-sim-suite.sh` 221/221). **Tier C (`add-native-sweep`) done at the verification bar:** `cc_solid_sweep` for a STRAIGHT spine (EXACT directional prism, vol = profileArea×\|d\|) and a SMOOTH CURVED but PLANAR spine (CONSTANT-frame ruled tube — the section is TRANSLATED with a fixed orientation, matching OCCT MakePipe's planar `GeomFill_CorrectedFrenet` → `Law_Constant`, NOT a perpendicular/Pappus sweep) are NATIVE (`src/native/construct/sweep.h`, reuses `loft.h` `ruledSideFace` + `construct.h` `planarFace`; `build_sweep` cognitive complexity 14). `cc_twisted_sweep` is native only when it reduces to the plain sweep (twist ≈ 0 AND scale ≈ 1). An earlier RMF/double-reflection revision was REMOVED — it produced the Pappus volume, a real oracle mismatch. Both gates green: host `test_native_sweep` (11 cases) + `test_native_engine` (3 sweep cases) CTest **15/15** (no OCCT); sim native-vs-OCCT parity `native_sweep_parity.mm` **11/11** (8 native + 3 fallback) — straight EXACT vol rel 7.11e-16 and smooth-arc EXACT vol o=330.299 n=330.299 rel 1.72e-16 (native F = OCCT F = 98, watertight), plus real-twist / guided / loft-rail fall-through delegating to OCCT (vol rel 0.00e+00, native active). STILL OCCT-fallthrough (not faked): kind-3 SPLINE edges, off-axis-arc (torus) / spline surface-of-revolution; loft with MISMATCHED counts / a NON-PLANAR section / a point-collapse section / 3+ sections / guided / rail; a NON-PLANAR / TIGHT-CURVATURE / self-intersecting sweep spine, a REAL twist/scale sweep, `cc_guided_sweep` / `cc_loft_along_rail`; and E wrap-emboss. **Tier D (`add-native-threads`): `cc_tapered_shank` + well-formed `cc_helical_thread` / `cc_tapered_thread` done at the verification bar (all NATIVE); fine-pitch / self-intersecting thread honestly OCCT-fallthrough.** `cc_tapered_shank` is a pointed-shank silhouette (cone tip → full-radius cylinder → head disk) revolved 360° about the WORLD Z axis by reusing the native `build_revolution` (`src/native/construct/thread.h`, all functions cognitive complexity ≤ 5) — reproducing the OCCT `BRepPrimAPI_MakeRevol` oracle (mass/centroid/bbox), tip a TRUE on-axis apex, robustly watertight at every deflection. `cc_helical_thread` / `cc_tapered_thread` build the full radial-V axis-aux-spine helical tiling (three bilinear ruled bands per span + two planar V caps); **the per-turn seam weld — the last blocker — is now fixed at the mesher level** (canonical seam-point snap, `edge_mesher.h` `CanonicalEndpoints` / `face_mesher.h` `BoundaryAnchors`), so a well-formed thread meshes `boundaryEdges==0` at EVERY deflection across the full parameter sweep (432/432 helical + 96/96 tapered → native), passing the engine `robustlyWatertight` self-verify and running NATIVE. Only a FINE-PITCH / self-intersecting thread (non-manifold regardless of weld) still FALLS THROUGH to OCCT `MakePipeShell` (labelled, verified, never faked). Both gates green: host `test_native_thread` (9 cases — including the multi-deflection watertight ladder for helical + tapered, and the fine-pitch guard) + `test_native_engine` (`native_thread_runs_native_watertight` + `native_fine_pitch_thread_falls_through_to_default`) CTest **18/18** (no OCCT; no fixes needed, green on first run); sim native-vs-OCCT parity `native_thread_parity.mm` — `cc_tapered_shank` NATIVE r5/fh20/th10 vol o=1837.94 n=1830.27 rel 4.17e-03 / watertight 144 tris; **`cc_helical_thread` NATIVE** mr5/p2/t4/d1 vol o=70.2841 n=68.3767 rel 2.71e-02 / area rel 1.73e-02 / bbox maxCornerΔ 1.44e-03 / F 5→194 / watertight 1286 tris meshVolRel 1.40e-03; **`cc_tapered_thread` NATIVE** top6/tip4/p2/t4 vol o=70.2677 n=68.3767 rel 2.69e-02 / watertight 1286 tris (the ~2.7% native-vs-OCCT volume gap is chord-vs-arc at spt=16, tightening to ~1.3% at spt=24; native mesh-vs-B-rep volume matches to meshVolRel ≤ 1.40e-3), plus the fine-pitch thread as OCCT fall-through (native active=1, vol rel 0.00e+00). No regressions (`run-sim-suite.sh` 221/221, `test_native_tessellate` green). |
 | 5 | `native-booleans` | ◐ PLANAR-polyhedron slice + AXIS-ALIGNED box-cylinder curved analytic slice done at the bar (both archived); general curved OCCT-fallthrough | Native `cc_boolean` (fuse/cut/common) for PLANAR-faced solids (axis-aligned boxes, prisms) via a BSP-tree CSG (`src/native/boolean/`), guarded by a MANDATORY self-verify (`robustlyWatertight` + set-algebra volume) that discards + falls through to OCCT otherwise. Both gates green: host `test_native_boolean` + `test_native_engine` CTest **17/17** (no OCCT); sim native-vs-OCCT parity `native_boolean_parity.mm` **25/25** — box fuse (rel 1.27e-16) / cut (2.96e-16) / common (2.22e-16), contained fuse (0.00e+00) / common (2.22e-16) all EXACT + watertight, self-verify rejects native∩native disjoint, plus curved (cyl-box, rel 0.00e+00) / near-coincident (rel 0.00e+00) / disjoint (rel 0.00e+00) OCCT-fallthrough (delegated, no interception). No regressions (`run-sim-suite.sh` 221/221, `test_native_tessellate` green). **Curved analytic slice (`add-native-curved-booleans`, archived) — AXIS-ALIGNED box ⟷ axis-parallel cylinder cut/fuse/common NOW NATIVE** (closed-form `Cylinder`+`Circle`+`Plane` B-rep, analytic-volume self-verify, `src/native/boolean/curved.h`): both gates green — host CTest **18/18**; sim `[NCURVBOOL]` **18 checks (6×3), 0 failed** — 3 NATIVE (through-hole-cut rel 3.19e-04, boss-fuse rel 6.10e-05, common rel 1.30e-03, all watertight) + 3 OCCT-fallback (blind-hole-cut / oblique-cyl-cut / sphere-box-cut, rel 0 forwarded). STILL OCCT: general curved-face booleans (surface-surface intersection: sphere/cone/NURBS/non-axis-aligned/cyl-cyl/blind-hole/non-through cut), near-tangent/coincident, general/concave-general, foreign operands, shape healing — booleans remain the longest-lived OCCT dependency for general curved. |
 | 6 | `native-blends` | ◐ tractable planar slice done at the bar (BOTH gates green); curved/concave/variable/fillet_face OCCT-fallthrough | Native `cc_chamfer_edges` / `cc_fillet_edges` (constant radius) / `cc_offset_face` / `cc_shell` for the tractable PLANAR cases (`src/native/blend/`), each editing the solid's oriented-planar-polygon soup (`boolean/extractPolygons`) and re-welding a watertight solid via `boolean/assembleSolid`, then a MANDATORY engine self-verify (`blendResultVerified` — watertight + sane volume sign: chamfer/fillet/shell shrink, offset grows/shrinks) that DISCARDS a bad candidate (never faked). Native: **chamfer** = slice the convex corner off with the plane through the two setback lines (EXACT for a box); **fillet** = rolling-ball tangent cylinder on a convex planar dihedral (Phase-3 dihedral construction: axis ∥ crease, radius r, tangent to both planes), deflection-bounded facets, blend face a `Cylinder` of radius r, watertight; **offset_face** = slide a planar face along its normal dragging the side faces (EXACT slab); **shell** = inset kept walls inward by thickness + native BSP-cut the cavity (open-top box t=1 → wall vol 424). Both gates green: host `test_native_blend` (10 cases incl. 2-edge chamfer exact + concave-L-prism fallthrough) + 5 new `test_native_engine` facade cases (incl. a native `cc_edge_polylines` regression), host CTest **18/18** (no OCCT); sim native-vs-OCCT parity `native_blend_parity.mm` **[NBLEND] 16/16** — chamfer (vol o=995 n=995 rel 2.29e-16) / offset (1500, rel 4.55e-16) / shell (424, rel 4.02e-16) EXACT + watertight, constant-radius fillet deflection-bounded (o=997.854 n=997.765 rel 8.96e-05, watertight), a curved-rim fillet forwarded to OCCT (rel 0.00e+00), the self-verify rejecting a thickness-6 shell (id 0, honest error). No regressions (`run-sim-suite.sh` 221/221, `test_native_tessellate` 13/13 green). STILL OCCT-fallthrough (builder NULL / self-verify discards → forwarded, never faked): CURVED-face inputs, CONCAVE edges, variable-radius `cc_fillet_edges_variable`, `cc_fillet_face`, ≠2-face edges, multi-edge fillet interference, non-convex shell, oversized thickness. Blend fns 🟢 Excellent (≤10) except drivers `fillet_edges` (13) / `chamfer_edges` (11) 🟡 Acceptable. |
-| 7 | `native-exchange` | ☐ planned | Proposed when it begins. |
-| 8 | `drop-occt` | ☐ planned | Unlink OCCT once every capability is native. |
+| 7 | `native-exchange` | ◐ native STEP EXPORT slice done at BOTH gates (host + sim OCCT re-read round-trip); STEP import + IGES stay OCCT (honest, out of scope) | Native `cc_step_export` (engine-wired behind `cc_set_engine(1)`) for a native solid whose every face surface + edge curve is in scope: walks the native B-rep and emits a valid ISO-10303-21 STEP AP203 file in true MILLIMETRES — HEADER (FILE_DESCRIPTION/FILE_NAME/FILE_SCHEMA 'CONFIG_CONTROL_DESIGN') + Part-42 DATA graph (CARTESIAN_POINT/DIRECTION/AXIS2_PLACEMENT_3D, VERTEX_POINT, LINE/CIRCLE/B_SPLINE_CURVE_WITH_KNOTS + EDGE_CURVE, ORIENTED_EDGE→EDGE_LOOP, FACE_OUTER_BOUND/FACE_BOUND, PLANE/CYLINDRICAL/CONICAL/SPHERICAL/B_SPLINE_SURFACE_WITH_KNOTS, ADVANCED_FACE→CLOSED_SHELL→MANIFOLD_SOLID_BREP, ADVANCED_BREP_SHAPE_REPRESENTATION + mm SI_UNIT context + PRODUCT/PRODUCT_DEFINITION/APPLICATION_CONTEXT). Built OCCT-FREE under `src/native/exchange/` (`step_writer.h/.cpp`, `native_exchange.h`). The native builders emit per-face edges (sharing deferred, #4), so the writer DEDUPLICATES geometrically — coincident vertices → one VERTEX_POINT, both faces of a physical edge share ONE EDGE_CURVE (forward on one, reversed on the other via ORIENTED_EDGE) → a properly-sewn manifold CLOSED_SHELL. Native-else-OCCT wiring: `NativeEngine::step_export` runs native for an in-scope native body; an out-of-scope native body → clean error (never a native void to OCCT); an OCCT body → `STEPControl_Writer`. **`cc_step_import` STAYS OCCT** (parsing arbitrary STEP out of scope) and **`cc_iges_export/import` STAY OCCT** — the honest end state (#8 stays blocked). No cc_* ABI change; default engine stays OCCT. Entity arg orders cross-checked against OCCT `RWStep*` writers (EDGE_CURVE/ADVANCED_FACE/CIRCLE/LINE/VECTOR/ORIENTED_EDGE/B_SPLINE_CURVE_WITH_KNOTS all match) so the file parses through `STEPControl_Reader`. Gate 1 (host, no OCCT) GREEN — `test_native_step_writer` (6 cases: canSerialize scope; box AP203 header+wrapper+mm SI_UNIT; box 6 PLANE / 12 shared EDGE_CURVE / 8 VERTEX_POINT; cylinder CYLINDRICAL_SURFACE+CIRCLE; well-formed contiguous `#n=ENTITY(...);`; coords as REALs) + `test_native_engine::native_step_export_writes_valid_ap203_file` (facade `cc_step_export` runs native, returns 1, valid file); host CTest **20/20**, all native suites green. All writer functions 🟢 Excellent (≤7), no systems-band fn. **Gate 2 (sim OCCT re-read round-trip) GREEN** — the native-written file re-reads through `STEPControl_Reader` to the SAME solid within volume/bbox/topology tolerance: box relV 2.27e-16 / area rel 1.89e-16 / centroidΔ 0 / bbox 1.00e-07 (faces 6→6, edges 24→24); cylinder relV 1.27e-03 / area rel 5.97e-04 (faces 9→9, edges 30→30); holed-plate relV 2.90e-04 / area rel 1.09e-04 (faces 7→7, edges 28→30 within tol). Writer parity (native-written vs OCCT-written, both re-read): box/cylinder/holed-plate relV ≤ 4.70e-15, relA ≤ 6.48e-15, bboxΔ 0. Native writer active (native ISO-10303-21 emitted): box 5363 B, cylinder 6893 B, holed-plate 6457 B; a foreign (OCCT-built) body falls through to OCCT `STEPControl_Writer` (15394 B → re-read relV 0.00e+00, faces 6→6). No regressions (host CTest 21/21 incl. `test_native_step_writer` #19 + `test_native_step` #20; `run-sim-suite.sh` 221/221 against a freshly rebuilt SIMULATORARM64 slice carrying the current native STEP sources). STILL OCCT (never faked): STEP import, IGES export/import, and an out-of-scope geometry kind (Ellipse/Bezier curve, rational spline, Bezier surface). Living change: `openspec/changes/add-native-data-exchange` (archived). |
+| 8 | `drop-occt` | ☐ planned (blocked) | Unlink OCCT once every capability is native — blocked while STEP import + IGES + curved/general booleans remain OCCT-backed. |

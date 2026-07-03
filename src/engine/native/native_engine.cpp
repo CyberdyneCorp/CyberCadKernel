@@ -19,6 +19,7 @@
 #include "native/blend/native_blend.h"
 #include "native/boolean/native_boolean.h"
 #include "native/construct/native_construct.h"
+#include "native/exchange/native_exchange.h"
 #include "native/tessellate/native_tessellate.h"
 
 #ifdef CYBERCAD_HAS_OCCT
@@ -920,10 +921,31 @@ ShapeResult NativeEngine::place_on_frame(EngineShape body, double ox, double oy,
     return fallback().place_on_frame(body, ox, oy, oz, ux, uy, uz, vx, vy, vz);
 }
 
-// ── exchange fallthrough ────────────────────────────────────────────────────────
-
+// ── exchange: NATIVE STEP export for a native-representable body, else OCCT ──────
+//
+// step_export is NATIVE (Phase 4 #7) for a native body whose every face surface +
+// edge curve is a kind the writer serialises (plane/cylinder/cone/sphere/bspline
+// surfaces; line/circle/bspline curves): src/native/exchange emits a valid
+// ISO-10303-21 AP203 file in true mm. The honesty gate (NATIVE-REWRITE.md #7): the
+// file must re-read through OCCT STEPControl_Reader to the SAME solid.
+//   * A native body OUT of the writer's scope (an unsupported geometry kind) has no
+//     native serialisation AND must not be handed to OCCT (which cannot read a
+//     native void) → clean honest error, never a wrong/invalid file.
+//   * A NON-native (OCCT-built) body forwards to the OCCT STEPControl_Writer.
+// step_import + iges_* stay OCCT (parsing arbitrary STEP/IGES is out of scope).
 Result<void> NativeEngine::step_export(EngineShape body, const char* path) {
-    CC_NATIVE_BODY_UNSUPPORTED("step_export", body);
+    if (isNative(body)) {
+        const auto* holder = static_cast<const NativeShape*>(body.get());
+        if (cybercad::native::exchange::step_can_export_native(holder->shape)) {
+            const std::string p = path ? path : "";
+            if (cybercad::native::exchange::step_export_native(holder->shape, p))
+                return Result<void>{};
+            return make_error("native STEP export failed to write file: " + p);
+        }
+        return make_error(
+            "native STEP export unsupported for this body's geometry "
+            "(scope: plane/cylinder/cone/sphere/bspline faces, line/circle/bspline edges)");
+    }
     return fallback().step_export(body, path);
 }
 ShapeResult NativeEngine::step_import(const char* path) { return fallback().step_import(path); }

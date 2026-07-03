@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "cybercadkernel/cc_kernel.h"
@@ -875,6 +876,41 @@ CC_TEST(native_variable_fillet_defers) {
     const int edges[] = {1};
     CC_CHECK_EQ(cc_fillet_edges_variable(box, edges, 1, 1.0, 3.0), 0);
     CC_CHECK(std::strlen(cc_last_error()) > 0);
+    cc_shape_release(box);
+}
+
+// ── Native STEP export (Phase 4 #7) through the facade ──────────────────────────
+// A native-built solid whose geometry is in the writer's scope (a box → planar
+// faces + line edges) exports NATIVELY: cc_step_export returns 1 and writes a valid
+// ISO-10303-21 AP203 file (magic header + MANIFOLD_SOLID_BREP + mm SI_UNIT). The
+// true correctness gate (re-read through OCCT to the same solid) runs on the sim;
+// here we assert the wired native path produces a structurally-valid file, no OCCT.
+CC_TEST(native_step_export_writes_valid_ap203_file) {
+    EngineGuard g;
+    cc_set_engine(1);
+    const double sq[] = {0, 0, 10, 0, 10, 10, 0, 10};
+    const CCShapeId box = cc_solid_extrude(sq, 4, 10.0);
+    CC_CHECK(box != 0);
+
+    const char* path = "/tmp/cybercad_native_step_export_test.step";
+    std::remove(path);
+    CC_CHECK_EQ(cc_step_export(box, path), 1);  // native success
+
+    // Read it back as text and confirm the AP203 framing + key entities.
+    std::FILE* f = std::fopen(path, "rb");
+    CC_CHECK(f != nullptr);
+    std::string content;
+    if (f) {
+        char buf[4096];
+        std::size_t n;
+        while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) content.append(buf, n);
+        std::fclose(f);
+    }
+    CC_CHECK(content.rfind("ISO-10303-21;", 0) == 0);
+    CC_CHECK(content.find("MANIFOLD_SOLID_BREP(") != std::string::npos);
+    CC_CHECK(content.find("SI_UNIT(.MILLI.,.METRE.)") != std::string::npos);
+    CC_CHECK(content.find("END-ISO-10303-21;") != std::string::npos);
+    std::remove(path);
     cc_shape_release(box);
 }
 

@@ -9,6 +9,15 @@ robust B-rep booleans and shape healing are research-grade — they will land
 *progressively hardened and verified against OCCT*, not production-robust on day
 one. Difficulty is flagged per capability below.
 
+**Where this stands now (honest ceiling).** The tractable native slice of every
+capability #1–#7 is DONE at the verification bar — including the native STEP EXPORT
+slice (#7). Phase 4 is therefore **COMPLETE AT ITS ACHIEVABLE NATIVE CEILING, not
+fully drop-OCCT**: #8 `drop-occt` is BLOCKED because two hard dependencies remain
+research-grade multi-year efforts — (1) a general robust curved boolean / blend
+kernel (arbitrary surface-surface intersection + shape healing) and (2) native
+STEP/IGES IMPORT (the #7 slice delivered EXPORT only). Until both exist, OCCT stays
+linked.
+
 ## Method (locked)
 
 - **Clean-room from references.** Implement from math/first-principles, public
@@ -486,7 +495,80 @@ longest; a native exchange is lower priority than the modelling core.
   ops' edge lookup) via the shared `EdgeCache`, so native-body edges are pickable exactly
   as OCCT-body edges are. On `run-sim-suite.sh`'s SKIP list (own `main()`); 221/221
   re-verified.
-- ☐ #7–#8 — planned; proposed as each is about to start (exchange → drop-occt).
+- ◐ **#7 `native-exchange` — native STEP EXPORT slice DONE at BOTH gates (host +
+  sim OCCT re-read round-trip); STEP import + IGES stay OCCT (honest end state, out
+  of scope).** `cc_step_export` is NATIVE
+  (engine-wired behind the same `cc_set_engine(1)` toggle) for a native-built solid
+  whose every face surface + edge curve is in the writer's scope: it walks the
+  native B-rep (src/native/topology) and emits a valid ISO-10303-21 STEP AP203 file
+  in true MILLIMETRES — the HEADER (FILE_DESCRIPTION / FILE_NAME /
+  FILE_SCHEMA 'CONFIG_CONTROL_DESIGN') + the Part-42 DATA graph (CARTESIAN_POINT /
+  DIRECTION / AXIS2_PLACEMENT_3D, VERTEX_POINT, LINE / CIRCLE /
+  B_SPLINE_CURVE_WITH_KNOTS + EDGE_CURVE, ORIENTED_EDGE → EDGE_LOOP,
+  FACE_OUTER_BOUND / FACE_BOUND, PLANE / CYLINDRICAL_SURFACE / CONICAL_SURFACE /
+  SPHERICAL_SURFACE / B_SPLINE_SURFACE_WITH_KNOTS, ADVANCED_FACE → CLOSED_SHELL →
+  MANIFOLD_SOLID_BREP, wrapped in ADVANCED_BREP_SHAPE_REPRESENTATION + the mm
+  SI_UNIT geometric context + PRODUCT / PRODUCT_DEFINITION / APPLICATION_CONTEXT
+  boilerplate). Built OCCT-FREE under `src/native/exchange/` (`step_writer.h/.cpp`,
+  aggregate `native_exchange.h`, entry `step_export_native(solid, path)`) on the
+  #1–#6 topology/math foundation. The native builders emit PER-FACE edges (edge-node
+  sharing deferred, NATIVE-REWRITE.md #4), so the writer DEDUPLICATES geometrically —
+  coincident vertices collapse to one VERTEX_POINT and the two faces meeting at a
+  physical edge share ONE EDGE_CURVE (used forward on one face, reversed on the
+  other via ORIENTED_EDGE) — producing a properly-sewn manifold CLOSED_SHELL that
+  re-reads as a solid, not a heap of coincident faces. **Native-else-OCCT wiring
+  (honest):** `NativeEngine::step_export` runs native for a native body IN SCOPE;
+  a native body OUT of scope (an unsupported geometry kind) returns a clean error
+  (never a native void handed to OCCT); a NON-native (OCCT-built) body forwards to
+  `STEPControl_Writer`. **`cc_step_import` STAYS OCCT** (parsing arbitrary STEP is
+  the huge part, out of scope) and **`cc_iges_export/import` STAY OCCT** — that is
+  the honest end state (#8 drop-occt stays blocked on import + IGES + curved/general
+  booleans). No cc_* ABI change; default engine stays OCCT. Entity arg orders were
+  cross-checked against the OCCT `RWStep*` writer modules (EDGE_CURVE / ADVANCED_FACE
+  / CIRCLE / LINE / VECTOR / ORIENTED_EDGE / B_SPLINE_CURVE_WITH_KNOTS all match) so
+  the file parses through `STEPControl_Reader`. Gate 1 (host, no OCCT) GREEN — host
+  `test_native_step_writer` (6 cases: canSerialize scope boundary; box → valid
+  AP203 header + wrapper + mm SI_UNIT; box geometry 6 PLANE / 12 shared EDGE_CURVE /
+  8 VERTEX_POINT; cylinder → CYLINDRICAL_SURFACE + CIRCLE rims; every DATA line a
+  well-formed contiguous `#n = ENTITY(...);`; coordinates emitted as STEP REALs) +
+  `test_native_engine::native_step_export_writes_valid_ap203_file` (the facade
+  `cc_step_export` runs native on a native box, returns 1, writes a file with the
+  ISO magic + MANIFOLD_SOLID_BREP + mm SI_UNIT); host CTest **21/21**, all native
+  suites green. All writer functions 🟢 Excellent (≤ 7 cognitive complexity), no
+  systems-band function. **Gate 2 (sim OCCT re-read parity) GREEN** —
+  `tests/sim/native_step_parity.mm` + `scripts/run-sim-native-step.sh` through the
+  `cc_*` facade: **`[NSTEP]` 28 passed / 0 failed** — each native STEP file re-reads
+  through `STEPControl_Reader` to the SAME solid as its source (box EXACT vol 1000 /
+  6 faces / 24 edges; cylinder vol rel 1.27e-3, 9 faces; holed-plate vol rel 2.90e-4,
+  7 faces, valid), the native-written and OCCT-written files re-read to EQUIVALENT
+  solids (writer-parity rel ≤ 4.7e-15), and a FOREIGN (OCCT-built) body forwards to
+  `STEPControl_Writer` (fall-through, active native). **Two writer bugs fixed to reach
+  this gate:** (1) EDGE_LOOP / ADVANCED_FACE emitted a stray extra empty string
+  (`'',''`), giving EDGE_LOOP 3 args (schema 2) and ADVANCED_FACE 5 (schema 4) — OCCT
+  rejected both and transferred an EMPTY solid (0 faces, vol 0); (2) a full-turn
+  periodic wall (a cylindrical hole wall) was emitted as a periodic surface trimmed to
+  its full period with NO seam edge, which OCCT reads back with zero wall area (a
+  leaky, invalid solid) — the writer now synthesises the required SEAM edge (a straight
+  LINE used forward at u=period and reversed at u=0, mirroring `STEPControl_Writer`'s
+  cylindrical-hole-wall representation) for any Cylinder/Cone/Sphere face whose loop is
+  closed full-circle rim edges. Both are pinned by host regression tests
+  (`edge_loop_and_advanced_face_have_schema_arg_counts`,
+  `cylindrical_hole_wall_emits_seam_edge`). The sewn re-read solid legitimately gains
+  one seam edge per periodic wall the native deferred-edge-sharing source omits
+  (native src 28 → re-read 30 for the holed plate, matching OCCT's own writer), which
+  the harness edge-count check now accepts as a bounded superset. STILL OCCT (never
+  faked): STEP IMPORT, IGES import/export, and a
+  native solid with an out-of-scope geometry kind (Ellipse/Bezier curve, rational
+  spline, Bezier surface) → OCCT fallback for an OCCT body / honest error for a
+  native void. Living change `add-native-data-exchange` **archived** (validate
+  --strict green). This is the native EXPORT slice only — import + IGES stay OCCT by
+  design.
+- ☐ #8 `drop-occt` — planned; **NOT reachable** at the current native ceiling. Two
+  hard, research-grade multi-year dependencies remain: (1) a general robust curved
+  boolean / blend kernel (arbitrary surface-surface intersection + shape healing) and
+  (2) native STEP/IGES IMPORT (a full AP203/AP214 + IGES parser and B-rep
+  reconstructor — the #7 slice was EXPORT only). Until BOTH exist, OCCT stays linked
+  and Phase 4 stands COMPLETE AT ITS ACHIEVABLE NATIVE CEILING, not fully drop-OCCT.
 
 Progress is reflected in [ROADMAP.md](ROADMAP.md) Phase 4 and per-change
 `tasks.md`; living specs are synced/archived per capability as they pass the

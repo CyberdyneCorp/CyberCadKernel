@@ -164,6 +164,8 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_boolean
         test_native_curved_boolean
         test_native_blend
+        test_native_step_writer
+        test_native_step
         test_native_engine)
 
     # Most tests live directly under tests/; native-library tests live under
@@ -188,6 +190,10 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_curved_boolean.cpp")
     set(test_native_blend_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_blend.cpp")
+    set(test_native_step_writer_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step_writer.cpp")
+    set(test_native_step_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step.cpp")
 
     foreach(test ${CYBERCAD_TESTS})
         if(DEFINED ${test}_SRC)

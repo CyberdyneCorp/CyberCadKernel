@@ -47,10 +47,10 @@ flowchart TD
     end
 
     Engine -->|"default"| OCCT["OCCT adapter<br/>(exact B-rep, fp64, CPU)"]
-    Engine -->|"cc_set_engine(1)"| Native["NativeEngine (C++20)<br/>native: math · topology · tessellation ·<br/>construction (extrude / revolve / 2-section loft / sweep / tapered-shank / helical+tapered thread) ·<br/>booleans (planar-polyhedron + axis-aligned box-cylinder fuse/cut/common)"]
+    Engine -->|"cc_set_engine(1)"| Native["NativeEngine (C++20)<br/>native: math · topology · tessellation ·<br/>construction (extrude / revolve / 2-section loft / sweep / tapered-shank / helical+tapered thread) ·<br/>booleans (planar-polyhedron + axis-aligned box-cylinder fuse/cut/common) ·<br/>STEP export (in-scope native solids)"]
     Engine -.->|"no-OCCT host build"| Stub["Stub engine"]
 
-    Native -.->|"fallthrough (still OCCT):<br/>general curved booleans · curved/concave/variable blends · features ·<br/>STEP/IGES · fine-pitch (self-intersecting) thread · wrap-emboss ·<br/>non-planar-sweep · healing"| OCCT
+    Native -.->|"fallthrough (still OCCT):<br/>general curved booleans · curved/concave/variable blends · features ·<br/>STEP import · IGES export/import · fine-pitch (self-intersecting) thread · wrap-emboss ·<br/>non-planar-sweep · healing"| OCCT
     OCCT ==>|"still required"| OCCTlib[("OCCT libs")]
 
     Compute --> CPUb["CPU backend (fp64)"]
@@ -79,8 +79,9 @@ the rest, so OCCT remains a required dependency until Phase 4 completes.
   Bézier/B-spline/NURBS eval), `topology` (B-rep model + traversal), `tessellate`
   (watertight mesher), `construct` (extrude/revolve/2-section ruled loft/sweep/
   tapered-shank/helical+tapered thread), `boolean` (planar-polyhedron fuse/cut/common
-  via BSP-CSG + axis-aligned box-cylinder curved analytic fuse/cut/common, self-verified).
-  Host-buildable and unit-tested with no OCCT.
+  via BSP-CSG + axis-aligned box-cylinder curved analytic fuse/cut/common, self-verified),
+  `exchange` (native STEP AP203 EXPORT for in-scope native solids). Host-buildable and
+  unit-tested with no OCCT.
 - **Compute backend** (`src/compute`) — default CPU backend + a **Metal** backend
   (iOS) for GPU work behind the same interface.
 
@@ -100,7 +101,8 @@ linked until it is complete. Current split:
 | **booleans: AXIS-ALIGNED box ⟷ axis-parallel cylinder** cut (round through-hole) / fuse (boss) / common — closed-form `Cylinder`+`Circle`+`Plane` B-rep, analytic-volume self-verified vs OCCT | booleans: blind-hole / non-through cut / cyl−box, near-tangent / coincident-curved |
 | **blends: `cc_chamfer_edges`** (convex planar-planar edge — EXACT vs OCCT) | blends: non-convex / oversized-thickness shell |
 | **blends: `cc_offset_face`** (planar face along its normal — EXACT slab) | features (replace-face, etc.) |
-| **blends: `cc_shell`** (uniform thickness, box-like planar solid — EXACT wall) | data exchange (STEP / IGES) |
+| **blends: `cc_shell`** (uniform thickness, box-like planar solid — EXACT wall) | data exchange: **STEP IMPORT** + **IGES export/import** (parsing/writing arbitrary exchange formats) |
+| **exchange: `cc_step_export`** (native ISO-10303-21 STEP AP203 for in-scope native solids — sewn manifold `MANIFOLD_SOLID_BREP`, OCCT re-read round-trip verified) | exchange: out-of-scope geometry kinds (Ellipse/Bezier curve, rational spline, Bezier surface) |
 | **blends: `cc_fillet_edges`** (CONSTANT radius, convex planar-dihedral edge — rolling-ball cylinder, deflection-bounded) | booleans: near-tangent / coincident |
 | construction: extrude, revolve (line-segment) | full general robust blend / offset over arbitrary NURBS solids |
 | construction: holed extrude (circular + polygon holes) | sweep: non-planar / tight-curvature / real-twist / guided / rail |
@@ -214,7 +216,7 @@ verified geometry numbers.
 | **1 — Multi-core** | parallel OCCT booleans + meshing, determinism audit | ✅ complete at the simulator acceptance bar |
 | **2 — GPU (Metal)** | Metal backend, GPU tessellation wired into `cc_tessellate`, BVH + ray/frustum pick | ✅ complete at the simulator acceptance bar |
 | **3 — Missing features** | reference geometry, wrap-emboss, thread boolean, full-round (any planar dihedral) + G2 fillets | ✅ 5/5 (curved-neighbour full-round is the only residual) |
-| **4 — Native rewrite** | replace OCCT capability-by-capability, then drop it | ◐ native math · topology · tessellation · construction done; booleans + blends planar slices done (curved/general OCCT); exchange (#7) + drop-occt (#8) pending |
+| **4 — Native rewrite** | replace OCCT capability-by-capability, then drop it | ◐ **complete at its achievable native ceiling** — native math · topology · tessellation · construction · STEP export (#7) done; booleans + blends planar/analytic slices done (general curved OCCT); STEP import + IGES stay OCCT; drop-occt (#8) BLOCKED on a general curved kernel + native import (research-grade) |
 
 The **acceptance bar** is the in-repo iOS-simulator suite (correctness verified
 against analytic references, GPU vs CPU, and B-rep validity/watertightness).

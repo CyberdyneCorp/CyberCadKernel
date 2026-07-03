@@ -295,11 +295,30 @@ the numeric oracle; native code is host-buildable (OCCT-free).
   (not faked): CURVED-face inputs, CONCAVE edges, variable-radius `cc_fillet_edges_variable`,
   `cc_fillet_face`, multi-edge interference, non-convex/oversized shell — general blending
   is future work.
-- ☐ Data exchange (STEP/IGES) — may remain a thin external dependency longest.
-  Change **`add-native-data-exchange`** — capability `native-exchange`.
-  Contract: `occt-usage` §Data exchange.
-- ☐ **Drop OCCT**: kernel is fully native C++20, MIT, no LGPL obligation. Change
-  **`drop-occt`** — retires the OCCT adapter (no new capability).
+- ◐ Data exchange — **native STEP EXPORT slice done at the verification bar (both
+  gates green); STEP import + IGES stay OCCT (honest, out of scope).** Change
+  **`add-native-data-exchange`** — capability `native-exchange`. Contract: `occt-usage`
+  §Data exchange. NATIVE: `cc_step_export` (engine-wired behind `cc_set_engine(1)`) walks
+  an in-scope native B-rep and emits a valid ISO-10303-21 STEP **AP203** file in true
+  millimetres, OCCT-free under `src/native/exchange/` (geometric dedup → one shared
+  `EDGE_CURVE` per physical edge → a sewn manifold `CLOSED_SHELL`). Both gates green: host
+  `test_native_step_writer` + `test_native_step` + `test_native_engine` CTest **21/21**
+  no-OCCT + iOS-sim OCCT re-read round-trip (source → native-written STEP → OCCT re-read) —
+  box relV 2.27e-16 (6→6 faces, 24→24 edges), cylinder relV 1.27e-03 (9→9 faces),
+  holed-plate relV 2.90e-04 (7→7 faces, 28→30 edges within tol); writer parity
+  native-vs-OCCT relV ≤ 4.70e-15. Native writer active (box 5363 B / cylinder 6893 B /
+  holed-plate 6457 B); a foreign OCCT-built body falls through to OCCT `STEPControl_Writer`
+  (re-read relV 0.00e+00). No regressions (`run-sim-suite.sh` 221/221 against a rebuilt sim
+  slice, `test_native_tessellate` green); archived to `openspec/specs/native-exchange`.
+  STILL OCCT (never faked, out of scope): **STEP import**, **IGES export/import**, and an
+  out-of-scope geometry kind (Ellipse/Bezier curve, rational spline, Bezier surface).
+- ☐ **Drop OCCT** — **NOT reachable at the native ceiling; BLOCKED.** Change
+  **`drop-occt`** would retire the OCCT adapter, but it requires EVERY `cc_*` path to be
+  native. Two hard dependencies remain research-grade multi-year efforts: (1) a general
+  robust curved boolean / blend kernel (arbitrary surface-surface intersection + shape
+  healing) and (2) native STEP/IGES IMPORT (the #7 slice delivered EXPORT only). Until
+  both exist, OCCT stays linked and **Phase 4 stands COMPLETE AT ITS ACHIEVABLE NATIVE
+  CEILING, not fully drop-OCCT.**
 
 ## Tooling & bindings
 

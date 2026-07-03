@@ -55,7 +55,14 @@ SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 # edge counts), that the native-written and OCCT-written files re-read to EQUIVALENT
 # solids (writer parity), and that a FOREIGN OCCT-built body exported under native FALLS
 # BACK to STEPControl_Writer; links the whole kernel + full OCCT and calls OCCT directly
-# to re-read the files), and the
+# to re-read the files), the
+# native GEOMETRY-COMPLETION (Tier 1 + Tier 2#4) parity harness
+# native_geomcompletion_parity.mm (run-sim-native-geomcompletion.sh — its own main();
+# drives the four residual construction areas under both engines via cc_set_engine:
+# NATIVE spline extrude / torus revolve / ruled loft / smooth+twisted sweep vs the OCCT
+# oracle for mass vol/area/centroid + bbox + watertight tessellate, PLUS one honest OCCT
+# fall-through per area — self-crossing spline, spindle torus, mismatched/curved-rail
+# loft, self-intersecting sweep + fine-pitch thread), and the
 # Phase-3 suite — phase3_suite.cpp
 # (its own main()) plus its checks_*.cpp modules (which record against
 # phase3_checks.h's Ctx, not checks.h's) — has run-sim-phase3-suite.sh. What remains
@@ -68,6 +75,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_sweep_parity.mm native_thread_parity.mm native_boolean_parity.mm \
       native_curved_boolean_parity.mm \
       native_blend_parity.mm native_step_parity.mm \
+      native_geomcompletion_parity.mm \
       phase3_suite.cpp checks_reference_geometry.cpp checks_wrap_emboss.cpp \
       checks_thread_boolean.cpp checks_full_round_fillet.cpp checks_g2_fillet.cpp"
 SRCS=()

@@ -11,10 +11,17 @@
 // (an exact directional prism, always watertight) AND for a SMOOTH CURVED but PLANAR
 // spine (a CONSTANT-frame ruled-band tube matching OCCT MakePipe's planar corrected-
 // Frenet law, deflection-bounded, watertight). A NON-PLANAR curved spine, a TIGHT-
-// CURVATURE / self-intersecting spine, a real twist/scale, or a degenerate profile
-// defer to OCCT (NULL). The straight case is the exact analogue of
-// BRepOffsetAPI_MakePipe on a straight polyline spine; the smooth curved case mirrors
-// MakePipe on a bent PLANAR spine.
+// CURVATURE / self-intersecting spine, or a degenerate profile defer to OCCT (NULL).
+// The straight case is the exact analogue of BRepOffsetAPI_MakePipe on a straight
+// polyline spine; the smooth curved case mirrors MakePipe on a bent PLANAR spine.
+//
+// The RESIDUAL sweep ops are now also native (different oracle — ruled ThruSections /
+// straight-rail pipe-shell, a SIMPLE reproducible per-station frame): cc_twisted_sweep
+// (real twist/scale) builds the per-station Frenet-framed ruled tube (native when it
+// welds watertight and does not self-fold — a self-folding tube defers), cc_guided_sweep
+// builds the guide-scaled ruled tube, and cc_loft_along_rail is native for a STRAIGHT
+// rail (perpendicular-framed ruled loft) and defers for a curved/kinked rail. See the
+// per-case tests below and sweep.h for the honest native/fallback split.
 //
 // THE CURVED MACHINERY IS NATIVE AND TESTED HERE end-to-end. The CONSTANT-frame
 // transport in detail::constantFrames is genuine native code exercised on a smooth
@@ -211,12 +218,95 @@ CC_TEST(sweep_curved_arc_native_watertight) {
   CC_CHECK(std::fabs(vol - exactVol) / exactVol < 5e-3);
 }
 
-// ── DEFERRED: a real TWIST (or scale) returns NULL (→ OCCT twisted_sweep) ──────---
-CC_TEST(twisted_sweep_real_twist_deferred) {
+// ── DEFERRED: a real TWIST cc_twisted_sweep falls through to OCCT ─────────────────
+// A REAL twist needs a finely-sampled loft to match OCCT's smoothly-twisted
+// ThruSections (a single ruled segment across a large twist under-fills the true swept
+// solid — the corner chords cut inside the rotating section). Densifying converges the
+// volume, but the resulting many-band TWISTED (saddle) ruled tube does NOT weld robustly
+// watertight at every deflection (the interior structured-grid rows of two adjacent
+// twisted bands do not align across their shared horizontal ring seam). Rather than ship
+// a leaky or volume-wrong native solid, a real twist DEFERS (NULL) → the NativeEngine
+// forwards to the OCCT twisted_sweep (ThruSections) oracle — the honest fall-through
+// stated in native_sweep_parity.mm D1 and native_geomcompletion_parity. A pure SCALE
+// (guided sweep, ~zero twist) stays native (see guided_sweep_native_watertight).
+CC_TEST(twisted_sweep_real_twist_defers_to_occt) {
+  const double prof[] = {-2, -2, 2, -2, 2, 2, -2, 2};  // 4×4 square, area 16
+  const double path[] = {0, 0, 0, 0, 0, 10};
+  CC_CHECK(cst::build_twisted_sweep(prof, 4, path, 2, 1.5708, 0.5).isNull());
+  CC_CHECK(cst::build_twisted_sweep(prof, 4, path, 2, 1.5708, 1.0).isNull());
+}
+
+// ── DEFERRED: a SELF-FOLDING twist (wide section, large twist, short path) → NULL ──
+// A big twist of a wide section over a short path folds the section rim past its
+// neighbour station (self-intersection). The sectionSweepUnsafe guard detects the rim
+// arc exceeds the axial advance and returns NULL → OCCT twisted_sweep (never a
+// self-overlapping solid).
+CC_TEST(twisted_sweep_self_folding_deferred) {
+  const double wide[] = {-8, -8, 8, -8, 8, 8, -8, 8};  // half-extent 8
+  const double path[] = {0, 0, 0, 0, 0, 1};            // advance only 1
+  CC_CHECK(cst::build_twisted_sweep(wide, 4, path, 2, 3.14159, 1.0).isNull());
+}
+
+// ── NATIVE: guided_sweep scales the section by the guide splay → watertight tube ──
+// cc_guided_sweep places the section through the same per-station Frenet frame, scaled
+// by dist(path,guide)/dist(path0,guide0) at each station (matching the OCCT guided_sweep
+// oracle). A 4×4 square swept straight 10 up, guided by a rail splaying from distance 3
+// to 5, scales the section 1→(5/3) and welds WATERTIGHT. NULL only on degenerate input.
+CC_TEST(guided_sweep_native_watertight) {
   const double prof[] = {-2, -2, 2, -2, 2, 2, -2, 2};
   const double path[] = {0, 0, 0, 0, 0, 10};
-  CC_CHECK(cst::build_twisted_sweep(prof, 4, path, 2, 1.5708, 1.0).isNull());  // twist
-  CC_CHECK(cst::build_twisted_sweep(prof, 4, path, 2, 0.0, 2.0).isNull());     // scale
+  const double guide[] = {3, 0, 0, 5, 0, 10};
+  const topo::Shape s = cst::build_guided_sweep(prof, 4, path, 2, guide, 2);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+  CC_CHECK_EQ(countSub(s, topo::ShapeType::Face), 6);
+  double vol = 0.0;
+  CC_CHECK(watertightAllDeflections(s, vol));
+  CC_CHECK(vol > 160.0);  // guide-splayed section is larger than the plain 160 prism
+}
+
+// ── DEFERRED: guided_sweep with a coincident guide start / degenerate input → NULL ─
+CC_TEST(guided_sweep_degenerate_deferred) {
+  const double prof[] = {-2, -2, 2, -2, 2, 2, -2, 2};
+  const double path[] = {0, 0, 0, 0, 0, 10};
+  const double coincident[] = {0, 0, 0, 0, 0, 10};  // guide ON the path start
+  CC_CHECK(cst::build_guided_sweep(prof, 4, path, 2, coincident, 2).isNull());
+  CC_CHECK(cst::build_guided_sweep(nullptr, 4, path, 2, coincident, 2).isNull());
+  const double guide[] = {3, 0, 0, 5, 0, 10};
+  CC_CHECK(cst::build_guided_sweep(prof, 2, path, 2, guide, 2).isNull());  // <3 profile
+}
+
+// ── NATIVE: loft_along_rail on a STRAIGHT rail is a perpendicular-framed ruled loft ─
+// cc_loft_along_rail morphs section A (4×4 square) into section B (2×2 square) along a
+// straight rail. For a straight rail the OCCT MakePipeShell reduces EXACTLY to a ruled
+// loft between the two sections placed perpendicular to the rail tangent, so it is
+// NATIVE (reuses build_ruled_loft) → a watertight frustum of volume
+// (A₁ + A₂ + √(A₁A₂))/3 · h = (16+4+8)/3·10 = 93.333 EXACT.
+CC_TEST(loft_along_rail_straight_native_frustum) {
+  const double rail[] = {0, 0, 0, 0, 0, 10};
+  const double a[] = {-2, -2, 2, -2, 2, 2, -2, 2};  // 4×4
+  const double b[] = {-1, -1, 1, -1, 1, 1, -1, 1};  // 2×2
+  const topo::Shape s = cst::build_loft_along_rail(rail, 2, a, 4, b, 4);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+  CC_CHECK_EQ(countSub(s, topo::ShapeType::Face), 6);
+  double vol = 0.0;
+  CC_CHECK(watertightAllDeflections(s, vol));
+  CC_CHECK(std::fabs(vol - 93.33333333) < 1e-4);  // exact frustum
+}
+
+// ── DEFERRED: loft_along_rail on a CURVED/kinked rail → NULL (OCCT pipe-shell) ─────
+// A bent rail is a genuine MakePipeShell morph (interior transitions, non-constant
+// frame) the ruled loft does not model, so it defers. Also NULL on mismatched section
+// counts (the ruled loft pairs vertex k→k → equal counts only).
+CC_TEST(loft_along_rail_curved_and_mismatch_deferred) {
+  const double bentRail[] = {0, 0, 0, 5, 0, 3, 10, 0, 0};  // non-collinear rail
+  const double a[] = {-2, -2, 2, -2, 2, 2, -2, 2};
+  const double b[] = {-1, -1, 1, -1, 1, 1, -1, 1};
+  CC_CHECK(cst::build_loft_along_rail(bentRail, 3, a, 4, b, 4).isNull());  // curved rail
+  const double straight[] = {0, 0, 0, 0, 0, 10};
+  const double tri[] = {0, 0, 2, 0, 1, 2};                                   // 3 pts
+  CC_CHECK(cst::build_loft_along_rail(straight, 2, a, 4, tri, 3).isNull());  // count mismatch
 }
 
 // ── DEFERRED: degenerate input returns NULL ─────────────────────────────────---
@@ -328,6 +418,82 @@ CC_TEST(sweep_tight_curvature_returns_not_supported) {
   CC_CHECK(!cst::build_sweep(prof, 4, straight, 2).isNull());
   const std::vector<double> gentle = quarterArcPath(40.0, 24);  // r=40 >> circumR≈5.66
   CC_CHECK(!cst::build_sweep(prof, 4, gentle.data(), 25).isNull());
+}
+
+// ── NON-PLANAR / L-BENT spine sweep → the NOT-SUPPORTED signal (OCCT fallback) ────
+// The task's "non-planar (helix-ish or L-bent 3D path) sweep". build_sweep is native
+// ONLY for a STRAIGHT spine or a SMOOTH CURVED but PLANAR spine (OCCT MakePipe's planar
+// constant-frame corrected-Frenet law). A genuinely NON-PLANAR spine needs OCCT's real
+// (non-constant) corrected-Frenet transport — Tier-4 territory not attempted natively —
+// and a KINKED (L-bent) spine is a sharp corner the smooth-frame law does not model.
+// Both must return the not-supported signal (NULL) so the engine falls through to OCCT,
+// NEVER a bogus/leaky solid. This is the honest native/fallback split per
+// openspec/NATIVE-REWRITE.md (a non-planar/guided pipe-shell rail is OCCT-backed).
+CC_TEST(sweep_nonplanar_and_Lbent_spine_return_not_supported) {
+  const double prof[] = {-1, -1, 1, -1, 1, 1, -1, 1};  // 2×2 square, area 4
+
+  // (a) An L-BENT (kinked) but still-planar (XZ) path: up +Z then across +X. The sharp
+  //     90° corner is not a smooth planar spine → NULL.
+  const double lPathXZ[] = {0, 0, 0, 0, 0, 10, 10, 0, 10};
+  CC_CHECK(cst::build_sweep(prof, 4, lPathXZ, 3).isNull());
+
+  // (b) A genuinely NON-PLANAR 3D L path: +Z, +X, then +Y (spans all three axes).
+  const double path3D[] = {0, 0, 0, 0, 0, 10, 10, 0, 10, 10, 10, 10};
+  CC_CHECK(cst::build_sweep(prof, 4, path3D, 4).isNull());
+
+  // (c) A HELIX (non-planar smooth curve): rises in Z while turning in XY.
+  const double PI = 3.14159265358979323846;
+  std::vector<double> helix;
+  const int N = 40;
+  const double rad = 8.0, pitch = 3.0;
+  for (int k = 0; k <= N; ++k) {
+    const double t = 2.0 * PI * k / N;
+    helix.push_back(rad * std::cos(t));
+    helix.push_back(rad * std::sin(t));
+    helix.push_back(pitch * k / N);
+  }
+  CC_CHECK(cst::build_sweep(prof, 4, helix.data(), N + 1).isNull());
+
+  // Sanity: the SMOOTH PLANAR analogue of the helix radius IS built natively (this is a
+  // planarity/kink guard, not a blanket curved rejection).
+  std::vector<double> planarArc;
+  for (int k = 0; k <= N; ++k) {
+    const double t = (PI / 2.0) * k / N;
+    planarArc.push_back(rad * std::cos(t));
+    planarArc.push_back(0.0);
+    planarArc.push_back(rad * std::sin(t));
+  }
+  CC_CHECK(!cst::build_sweep(prof, 4, planarArc.data(), N + 1).isNull());
+}
+
+// ── NATIVE: a SMOOTH-PLANAR-spine sweep's volume == profileArea × spine span ──────
+// The task's "volume ~= profileArea × pathLength within a bound" for the case native
+// actually models. On a PLANAR spine OCCT MakePipe holds the section orientation FIXED
+// (constant frame), so the swept volume is profileArea × (spine displacement projected
+// onto the FIXED section normal) — NOT the Pappus arc-length volume. We build the exact
+// oracle quantity from the native constant-frame transport and assert the meshed volume
+// matches it, watertight. A 3×3 square (area 9) swept along a gentle quarter-arc.
+CC_TEST(sweep_smooth_planar_volume_is_profilearea_times_span) {
+  const double prof[] = {-1.5, -1.5, 1.5, -1.5, 1.5, 1.5, -1.5, 1.5};  // 3×3, area 9
+  const double R = 20.0;  // large radius ⇒ well clear of self-intersection
+  const int N = 32;
+  const std::vector<double> path = quarterArcPath(R, N);
+  const topo::Shape s = cst::build_sweep(prof, 4, path.data(), N + 1);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+
+  double vol = 0.0;
+  CC_CHECK(watertightAt(s, {0.05, 0.02}, vol));
+
+  // Oracle quantity: profileArea × |Δspine · n̂|, n̂ the FIXED section normal (x×y).
+  const std::vector<math::Point3> spine = det::cleanPath(path.data(), N + 1);
+  const std::vector<math::Vec3> tan = det::stationTangents(spine);
+  const std::vector<det::SweepFrame> fr = det::constantFrames(spine, tan);
+  const math::Vec3 n = math::cross(fr.front().x, fr.front().y);
+  const math::Vec3 disp = fr.back().origin - fr.front().origin;
+  const double span = std::fabs(math::dot(disp, n) / math::norm(n));
+  const double expected = 9.0 * span;  // profileArea × span
+  CC_CHECK(std::fabs(vol - expected) / expected < 5e-3);
 }
 
 int main() { return cctest::run_all(); }

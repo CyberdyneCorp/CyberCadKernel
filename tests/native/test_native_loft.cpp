@@ -219,4 +219,191 @@ CC_TEST(loft_bad_input_deferred) {
   CC_CHECK(cst::build_loft(two, 2, sq, 4, 3.0).isNull());  // < 3 bottom points
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// N-SECTION loft (3+ sections) — the cc_solid_loft chain extension. Each result is
+// validated with the native tessellator (watertight + enclosed volume) and the
+// Explorer (face structure). Deferred cases return a NULL Shape (OCCT fallthrough).
+// ═════════════════════════════════════════════════════════════════════════════
+
+namespace {
+// Pack `sectionCount` flat (x,y,z) section loops into one buffer + a counts array,
+// then call build_loft_sections. All sections here share the same vertex count.
+topo::Shape loftSections(const std::vector<std::vector<double>>& sections) {
+  std::vector<double> xyz;
+  std::vector<int> counts;
+  for (const auto& s : sections) {
+    counts.push_back(static_cast<int>(s.size() / 3));
+    xyz.insert(xyz.end(), s.begin(), s.end());
+  }
+  return cst::build_loft_sections(xyz.data(), counts.data(), static_cast<int>(counts.size()));
+}
+}  // namespace
+
+// ── 3 sections: stacked equal squares → a straight box (two bands, exact) ────────
+// Three 4×4 squares at z=0, z=5, z=10 (all identical XY). The two ruled bands
+// degenerate to vertical quads; the solid is a 4×4×10 box, volume 160, EXACT. Faces
+// = 8 side (4 per band) + 2 caps = 10; internal ring is NOT capped.
+CC_TEST(loft3_stacked_equal_squares_is_box) {
+  const std::vector<double> s0 = {0, 0, 0, 4, 0, 0, 4, 4, 0, 0, 4, 0};
+  const std::vector<double> s1 = {0, 0, 5, 4, 0, 5, 4, 4, 5, 0, 4, 5};
+  const std::vector<double> s2 = {0, 0, 10, 4, 0, 10, 4, 4, 10, 0, 4, 10};
+  const topo::Shape solid = loftSections({s0, s1, s2});
+  CC_CHECK(!solid.isNull());
+  if (solid.isNull()) return;
+
+  CC_CHECK_EQ(countSub(solid, topo::ShapeType::Face), 10);  // 8 sides + 2 end caps
+  tess::MeshParams p;
+  p.deflection = 0.05;
+  const tess::Mesh mesh = tess::SolidMesher{p}.mesh(solid);
+  CC_CHECK(tess::isWatertight(mesh));
+  CC_CHECK(std::fabs(std::fabs(tess::enclosedVolume(mesh)) - 160.0) < 1e-6);
+}
+
+// ── 3 sections: wide → narrow → wide (a spool / bowtie prismatoid) ───────────────
+// Squares centred on the axis: 10×10 at z=0, 4×4 at z=6, 10×10 at z=12. Two stacked
+// square frustums; total volume = 2 × prismatoid(10×10 ↔ 4×4 over h=6). Each frustum
+// = 6/3·(100 + 16 + √1600) = 2·(116 + 40) = 312 → total 624 (exact ruled bands).
+CC_TEST(loft3_spool_two_frustums_volume) {
+  const std::vector<double> s0 = {-5, -5, 0, 5, -5, 0, 5, 5, 0, -5, 5, 0};
+  const std::vector<double> s1 = {-2, -2, 6, 2, -2, 6, 2, 2, 6, -2, 2, 6};
+  const std::vector<double> s2 = {-5, -5, 12, 5, -5, 12, 5, 5, 12, -5, 5, 12};
+  const topo::Shape solid = loftSections({s0, s1, s2});
+  CC_CHECK(!solid.isNull());
+  if (solid.isNull()) return;
+
+  CC_CHECK_EQ(countSub(solid, topo::ShapeType::Face), 10);  // 8 sides + 2 caps
+  tess::MeshParams p;
+  p.deflection = 0.01;
+  const tess::Mesh mesh = tess::SolidMesher{p}.mesh(solid);
+  CC_CHECK(tess::isWatertight(mesh));
+  const double frustum = 6.0 / 3.0 * (100.0 + 16.0 + std::sqrt(100.0 * 16.0));  // 312
+  const double expected = 2.0 * frustum;                                       // 624
+  CC_CHECK(std::fabs(std::fabs(tess::enclosedVolume(mesh)) - expected) / expected < 0.02);
+}
+
+// ── 4 sections: rotating square chain (twist propagates along the chain) ─────────
+// Four 2×2 squares, each rotated +45° from the previous about z, at z = 0,3,6,9.
+// The predecessor-alignment must keep each section paired to its nearest neighbour
+// so the four ruled bands do NOT self-intersect. We assert watertight + a positive,
+// bounded volume (the twisted-band closed form is fiddly; the point is the chain
+// closes and encloses a sensible solid). Faces = 4·3 sides + 2 caps = 14.
+CC_TEST(loft4_rotating_square_chain_watertight) {
+  auto sq = [](double z, double ang) {
+    std::vector<double> out;
+    const double r = std::sqrt(2.0);  // circumradius of a 2×2 square
+    for (int i = 0; i < 4; ++i) {
+      const double t = ang + i * (M_PI / 2.0) + M_PI / 4.0;  // corner angles
+      out.push_back(r * std::cos(t));
+      out.push_back(r * std::sin(t));
+      out.push_back(z);
+    }
+    return out;
+  };
+  const topo::Shape solid =
+      loftSections({sq(0, 0), sq(3, M_PI / 4), sq(6, M_PI / 2), sq(9, 3 * M_PI / 4)});
+  CC_CHECK(!solid.isNull());
+  if (solid.isNull()) return;
+
+  CC_CHECK_EQ(countSub(solid, topo::ShapeType::Face), 14);  // 12 sides + 2 caps
+  tess::MeshParams p;
+  p.deflection = 0.02;
+  const tess::Mesh mesh = tess::SolidMesher{p}.mesh(solid);
+  CC_CHECK(tess::isWatertight(mesh));
+  const double vol = std::fabs(tess::enclosedVolume(mesh));
+  CC_CHECK(vol > 10.0);   // clearly a nonzero solid (~4·9 = 36 order)
+  CC_CHECK(vol < 60.0);   // bounded well under bbox·height
+}
+
+// ── 3 sections: triangles in arbitrary parallel planes → stacked prism ───────────
+// Same triangle at z=0, z=2, z=5. Two triangular-prism bands. Triangle area
+// (0,0)(4,0)(2,3) = 6; total volume = 6·5 = 30 (exact). Faces = 2·3 + 2 = 8.
+CC_TEST(loft3_triangles_stacked_prism_volume) {
+  const std::vector<double> s0 = {0, 0, 0, 4, 0, 0, 2, 3, 0};
+  const std::vector<double> s1 = {0, 0, 2, 4, 0, 2, 2, 3, 2};
+  const std::vector<double> s2 = {0, 0, 5, 4, 0, 5, 2, 3, 5};
+  const topo::Shape solid = loftSections({s0, s1, s2});
+  CC_CHECK(!solid.isNull());
+  if (solid.isNull()) return;
+
+  CC_CHECK_EQ(countSub(solid, topo::ShapeType::Face), 8);  // 6 sides + 2 caps
+  tess::MeshParams p;
+  p.deflection = 0.05;
+  const tess::Mesh mesh = tess::SolidMesher{p}.mesh(solid);
+  CC_CHECK(tess::isWatertight(mesh));
+  CC_CHECK(std::fabs(std::fabs(tess::enclosedVolume(mesh)) - 30.0) < 1e-6);
+}
+
+// ── 3 sections: narrow → WIDE → narrow OCTAGON spool (equal-count section chain) ─
+// The task's "square → octagon → square" shape family. The N-section ruled loft pairs
+// vertex k→k, so all sections must share a vertex count; we model the family as an
+// EQUAL-count octagon chain: an octagon of circumradius 3 at z=0, a WIDE octagon of
+// circumradius 5 at z=6, back to circumradius 3 at z=12 (all sharing the π/8 rotation
+// so corners align 1:1). Two ruled bands, no self-intersection. We assert:
+//   * watertight;
+//   * the face structure — 2 bands × 8 side faces + 2 end caps = 18 (an 8-gon spool);
+//   * MONOTONIC / EXPECTED volume — strictly greater than a straight r=3 octagon prism
+//     over the full height (the middle bulges OUT) and strictly less than a straight
+//     r=5 octagon prism (the ends are narrower), i.e. bracketed by its own extremes.
+CC_TEST(loft3_octagon_spool_narrow_wide_narrow_watertight) {
+  auto octagon = [](double z, double rad) {
+    std::vector<double> o;
+    const double rot = M_PI / 8.0;  // flat-top octagon, corners aligned across sections
+    for (int i = 0; i < 8; ++i) {
+      const double a = rot + 2.0 * M_PI * i / 8.0;
+      o.push_back(rad * std::cos(a));
+      o.push_back(rad * std::sin(a));
+      o.push_back(z);
+    }
+    return o;
+  };
+  const topo::Shape solid = loftSections({octagon(0, 3.0), octagon(6, 5.0), octagon(12, 3.0)});
+  CC_CHECK(!solid.isNull());
+  if (solid.isNull()) return;
+
+  CC_CHECK_EQ(countSub(solid, topo::ShapeType::Face), 2 * 8 + 2);  // 2 bands·8 + 2 caps
+  tess::MeshParams p;
+  p.deflection = 0.02;
+  const tess::Mesh mesh = tess::SolidMesher{p}.mesh(solid);
+  CC_CHECK(tess::isWatertight(mesh));
+
+  // A regular octagon of circumradius R has area 2√2·R². The spool volume is bracketed
+  // by the two straight-octagon prisms of the same total height (12): r=3 (narrow, the
+  // ends) below, r=5 (wide, the bulge) above.
+  auto octArea = [](double R) { return 2.0 * std::sqrt(2.0) * R * R; };
+  const double vNarrowPrism = octArea(3.0) * 12.0;
+  const double vWidePrism = octArea(5.0) * 12.0;
+  const double vol = std::fabs(tess::enclosedVolume(mesh));
+  CC_CHECK(vol > vNarrowPrism);  // the bulge adds volume over the narrow prism
+  CC_CHECK(vol < vWidePrism);    // the narrow ends remove volume vs the wide prism
+}
+
+// ── DEFERRED (N-section): mismatched counts among the sections → NULL ────────────
+// Section 1 is a pentagon while 0 and 2 are squares — the chain correspondence is
+// ambiguous, so the native builder defers to OCCT.
+CC_TEST(loft_sections_mismatched_counts_deferred) {
+  const std::vector<double> sq0 = {0, 0, 0, 4, 0, 0, 4, 4, 0, 0, 4, 0};
+  const std::vector<double> pent = {0, 0, 3, 4, 0, 3, 4, 4, 3, 2, 5, 3, 0, 4, 3};  // 5-gon
+  const std::vector<double> sq2 = {0, 0, 6, 4, 0, 6, 4, 4, 6, 0, 4, 6};
+  CC_CHECK(loftSections({sq0, pent, sq2}).isNull());
+}
+
+// ── DEFERRED (N-section): a non-planar internal section → NULL ───────────────────
+// The middle section's four points do not lie on a common plane (one corner lifted),
+// so the well-posed in-plane alignment is not guaranteed → OCCT fallthrough.
+CC_TEST(loft_sections_non_planar_middle_deferred) {
+  const std::vector<double> s0 = {0, 0, 0, 4, 0, 0, 4, 4, 0, 0, 4, 0};
+  const std::vector<double> s1 = {0, 0, 3, 4, 0, 3, 4, 4, 5, 0, 4, 3};  // skew (corner lifted)
+  const std::vector<double> s2 = {0, 0, 6, 4, 0, 6, 4, 4, 6, 0, 4, 6};
+  CC_CHECK(loftSections({s0, s1, s2}).isNull());
+}
+
+// ── DEFERRED (N-section): a degenerate section + too-few sections → NULL ─────────
+CC_TEST(loft_sections_degenerate_and_single_deferred) {
+  const std::vector<double> s0 = {0, 0, 0, 4, 0, 0, 4, 4, 0, 0, 4, 0};
+  const std::vector<double> collinear = {0, 0, 3, 1, 0, 3, 2, 0, 3, 3, 0, 3};  // 4 collinear
+  const std::vector<double> s2 = {0, 0, 6, 4, 0, 6, 4, 4, 6, 0, 4, 6};
+  CC_CHECK(loftSections({s0, collinear, s2}).isNull());  // degenerate middle
+  CC_CHECK(loftSections({s0}).isNull());                 // only one section
+}
+
 CC_RUN_ALL()

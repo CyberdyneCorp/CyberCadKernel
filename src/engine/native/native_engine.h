@@ -23,11 +23,20 @@
 //                              edges + cylinder walls).                    [#4b]
 //   * solid_extrude_polyholes— outer polygon + POLYGON holes.             [#4b]
 //   * solid_extrude_profile / _profile_polyholes — TYPED outer profile (kind 0 line
-//                              / 1 arc / 2 full circle) + circular + polygon holes;
-//                              kind-3 SPLINE outer edge → OCCT fallthrough. [#4b]
+//                              / 1 arc / 2 full circle / 3 SPLINE) + circular + polygon
+//                              holes. A kind-3 SPLINE outer edge is NATIVE (Tier-1
+//                              residual, residuals.h build_prism_profile_spline: the
+//                              fitted NURBS is expanded to a dense polyline and routed
+//                              through the watertight typed-extrude), self-verified
+//                              watertight before being kept native. [#4b + Tier-1]
 //   * solid_revolve_profile  — TYPED profile revolve: line → Plane/Cylinder/Cone,
-//                              on-axis arc → Sphere. Off-axis arc (Torus) / spline
-//                              → OCCT fallthrough.                          [#4b]
+//                              on-axis arc → Sphere, and now (Tier-1 residual,
+//                              build_revolution_profile_spline) a kind-3 SPLINE meridian
+//                              or an OFF-AXIS arc → a TORUS / rational surface-of-
+//                              revolution (native Torus, src/native/math/torus.h),
+//                              self-verified watertight. A spindle torus / axis-crossing
+//                              generatrix (self-intersecting — Tier-4 SSI) or a partial-
+//                              turn residual revolve → OCCT fallthrough. [#4b + Tier-1]
 //   * solid_loft / solid_loft_wires — 2-SECTION RULED loft with EQUAL vertex counts
 //                              and PLANAR sections: one bilinear (degree-1 Bézier)
 //                              side face per corresponding edge pair + two planar
@@ -43,9 +52,20 @@
 //                              fallthrough (the mesher cannot yet weld the multi-band
 //                              twisted ruled faces for an arbitrary profile — deferred,
 //                              not faked).                                   [#4b Tier C]
-//   * twisted_sweep           — NATIVE only when it reduces to the straight no-twist
-//                              prism (twist ≈ 0, scale ≈ 1); any real twist/scale →
-//                              OCCT fallthrough.                             [#4b Tier C]
+//   * twisted_sweep           — NATIVE: plain (twist ≈ 0, scale ≈ 1) reduces to
+//                              build_sweep; a REAL twist/scale builds the per-station
+//                              Frenet ThruSections tube (widened envelope), self-verified
+//                              watertight, else OCCT.                        [#4b Tier C]
+//   * guided_sweep            — NATIVE (widened envelope): the profile is scaled per
+//                              station by the guide splay dist(path,guide)/d0 into a
+//                              Frenet ThruSections tube, self-verified watertight; a
+//                              coincident-guide-start / degenerate / self-folding tube
+//                              (needs SSI — Tier 4) → OCCT.                  [#4b Tier C]
+//   * loft_along_rail         — NATIVE for a STRAIGHT rail (a ruled loft between the two
+//                              equal-count sections placed perpendicular to the rail
+//                              tangent, matching MakePipeShell on a straight rail),
+//                              self-verified watertight; a CURVED/kinked rail (genuine
+//                              pipe-shell morph) or mismatched counts → OCCT. [#4b Tier C]
 //   * boolean_op              — NATIVE fuse/cut/common for two PLANAR-FACED solids
 //                              (polyhedra — boxes/prisms/convex or simple-concave): a
 //                              clean-room BSP-CSG (src/native/boolean) splits + classifies
@@ -75,9 +95,10 @@
 //                              fillet_edges_variable / fillet_face stay OCCT-only. [#6]
 //   Each native op tries the native builder and FALLS THROUGH to the fallback engine
 //   when the native path returns a NULL Shape (a deferred sub-case or degenerate
-//   input) — the native path never fakes a shape. Everything else (guided sweep /
-//   loft-along-rail / threads, transform / exchange / reference-geometry) falls
-//   through unconditionally.
+//   input) OR when the mandatory self-verify (robustlyWatertight across a deflection
+//   ladder for the curved/swept ops) rejects the candidate — the native path never
+//   fakes a shape. Everything else (transform / exchange import / reference-geometry)
+//   falls through unconditionally.
 //
 // SHAPE COEXISTENCE. The facade owns ONE ShapeRegistry mapping CCShapeId ->
 // EngineShape (std::shared_ptr<void>). The OCCT adapter type-erases an OcctShape

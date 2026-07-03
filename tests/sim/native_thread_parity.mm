@@ -376,15 +376,21 @@ CCShapeId buildTaperedThread() {
                              /*pointsPerMM=*/1.0, /*samplesPerTurn=*/16);
 }
 
-// F1) FINE-PITCH HELICAL THREAD (genuine OCCT fallthrough): major radius 5, pitch 0.3,
-//     8 turns, depth 1, 60° flank, pointsPerMM 1, samplesPerTurn 16. The pitch (0.3) is
-//     far smaller than the V depth (1) — adjacent turns fold through one another, so the
-//     swept ridge SELF-INTERSECTS (a non-manifold mesh no matter how vertices weld).
-//     robustlyWatertight rejects it across the deflection ladder and NativeEngine
-//     delegates to the OCCT MakePipeShell oracle — labelled, verified, never faked.
+// F1) STEEP-LEAD SELF-INTERSECTING HELICAL THREAD (genuine OCCT fallthrough): major
+//     radius 1, pitch 3, 3 turns, depth 0.4, 60° flank, pointsPerMM 1, samplesPerTurn 16.
+//     The pitch (3) is large relative to the pitch-line circumference (2π·pitchR =
+//     2π·0.8 ≈ 5.0), a helix LEAD of ~31° — the radial-V flanks of adjacent turns cross
+//     in 3D, a GENUINE self-intersecting sweep (surface-surface intersection, Tier 4).
+//     thread.h's lead-ratio guard (pitch/(2π·pitchR) > kMaxLeadRatio) returns a NULL
+//     Shape, so NativeEngine delegates to the OCCT MakePipeShell oracle — labelled,
+//     verified, never faked.
+//     NOTE: the former probe major5/pitch0.3/depth1 is NO LONGER a fall-through — its
+//     lead is ~0.6° (fine pitch ≠ steep lead), so the fine-pitch resolver welds it NATIVE
+//     (a thin-pitch ISO-like thread with a root land). A root flat cannot un-fold a true
+//     self-intersection, which is why the steep-lead case above is the genuine defer.
 CCShapeId buildFinePitchHelicalThread() {
-    return cc_helical_thread(/*majorRadiusMM=*/5.0, /*pitchMM=*/0.3, /*turns=*/8.0,
-                             /*depthMM=*/1.0, /*flankAngleDeg=*/60.0, /*pointsPerMM=*/1.0,
+    return cc_helical_thread(/*majorRadiusMM=*/1.0, /*pitchMM=*/3.0, /*turns=*/3.0,
+                             /*depthMM=*/0.4, /*flankAngleDeg=*/60.0, /*pointsPerMM=*/1.0,
                              /*samplesPerTurn=*/16);
 }
 

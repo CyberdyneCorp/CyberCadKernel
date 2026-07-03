@@ -410,10 +410,15 @@ CC_TEST(native_revolve_profile_sphere) {
     cc_shape_release(id);
 }
 
-// A DEFERRED typed sub-case (kind-3 spline outer edge) falls through: the native
-// builder returns NULL, the engine forwards to the fallback (stub on host → 0). The
-// native path never fakes an unsupported profile.
-CC_TEST(native_profile_spline_falls_through) {
+// Tier-1 residual: a kind-3 SPLINE outer profile edge is now NATIVE (residuals.h
+// build_prism_profile_spline expands the fitted NURBS to a dense polyline and routes
+// it through the watertight typed-extrude). The closed spline loop (0,0)→(1,1)→(2,0)
+// extrudes to a watertight prism; the engine keeps it native (a non-zero id — the host
+// stub has no extrude) with valid mass properties. Meanwhile a SINGLE off-axis quarter
+// arc is NOT a closed generatrix, so its revolve does not mesh watertight and the
+// engine's robustlyWatertight self-verify correctly DISCARDS it → fallback (stub → 0),
+// never a leaky/faked solid.
+CC_TEST(native_profile_spline_runs_native) {
     EngineGuard g;
     cc_set_engine(1);
 
@@ -422,9 +427,14 @@ CC_TEST(native_profile_spline_falls_through) {
     seg.ptOffset = 0; seg.ptCount = 3;
     const double spline[] = {0, 0, 1, 1, 2, 0};  // 3 points = 6 doubles
     const CCShapeId id = cc_solid_extrude_profile(&seg, 1, nullptr, 0, spline, 6, 2.0);
-    CC_CHECK_EQ(id, 0);  // stub fallback on host
+    CC_CHECK(id != 0);  // native spline extrude on host (stub has none)
+    const CCMassProps mp = cc_mass_properties(id);
+    CC_CHECK(mp.valid != 0);
+    CC_CHECK(mp.volume > 0.0);
+    cc_shape_release(id);
 
-    // An off-axis arc revolve (a Torus) also defers to the fallback.
+    // A single off-axis quarter arc does not close into a watertight torus solid, so
+    // the self-verify discards the native candidate and the op falls through (stub → 0).
     CCProfileSeg arc{};
     arc.kind = 1;
     arc.cx = 5.0; arc.cy = 0.0; arc.r = 1.0;
@@ -502,10 +512,14 @@ CC_TEST(native_sweep_smooth_arc) {
     cc_shape_release(id);
 }
 
-// Deferred: a TIGHT-CURVATURE / self-intersecting sweep spine forwards to the
-// fallback (stub → 0 on host), never faked. Same for a real twist. Proves the native
-// path guards the self-intersecting cases and defers cleanly.
-CC_TEST(native_sweep_tight_and_twisted_defer) {
+// A TIGHT-CURVATURE / self-intersecting sweep spine forwards to the fallback (stub → 0
+// on host), never faked — it needs surface-surface intersection (Tier 4). A REAL twist
+// ALSO defers: the native ruled tube cannot robustly match OCCT's smoothly-twisted
+// ThruSections loft (a densified twisted saddle-band tube does not weld watertight at
+// every deflection), so build_twisted_sweep returns NULL and the engine forwards to the
+// OCCT twisted_sweep oracle (stub → 0 on host). Proves the native path both guards the
+// self-intersecting case AND honestly defers the real twist (never a faked/leaky solid).
+CC_TEST(native_sweep_tight_and_twist_defer) {
     EngineGuard g;
     cc_set_engine(1);
 
@@ -520,8 +534,57 @@ CC_TEST(native_sweep_tight_and_twisted_defer) {
     }
     CC_CHECK_EQ(cc_solid_sweep(prof, 4, tight.data(), 13), 0);  // tight → stub fallback
 
+    // A real 90° twist along a straight spine defers to OCCT (stub → 0 on host).
     const double path[] = {0, 0, 0, 0, 0, 10};
-    CC_CHECK_EQ(cc_twisted_sweep(prof, 4, path, 2, 1.5708, 1.0), 0);  // real twist → fallback
+    CC_CHECK_EQ(cc_twisted_sweep(prof, 4, path, 2, 1.5708, 1.0), 0);
+}
+
+// Tier-2#4 (widened envelope): a GUIDED sweep now runs NATIVE — the profile is scaled
+// per station by the guide splay dist(path,guide)/d0 into a Frenet ThruSections tube
+// that welds watertight (build_guided_sweep). A 4×4 square swept up +Z 10 with a guide
+// splaying the section from ×3 to ×6 produces a positive-volume watertight solid the
+// engine keeps native (the host stub has no guided sweep). A degenerate/self-folding
+// guide would fail the self-verify and fall through (stub → 0), never faked.
+CC_TEST(native_guided_sweep_runs_native) {
+    EngineGuard g;
+    cc_set_engine(1);
+
+    const double prof[] = {-2, -2, 2, -2, 2, 2, -2, 2};
+    const double path[] = {0, 0, 0, 0, 0, 10};
+    const double guide[] = {3, 0, 0, 6, 0, 10};  // splays the section along the sweep
+    const CCShapeId id = cc_guided_sweep(prof, 4, path, 2, guide, 2);
+    CC_CHECK(id != 0);
+    if (id == 0) { std::printf("  last_error=%s\n", cc_last_error()); return; }
+    const CCMassProps mp = cc_mass_properties(id);
+    CC_CHECK(mp.valid != 0);
+    CC_CHECK(mp.volume > 0.0);
+    cc_shape_release(id);
+}
+
+// Tier-2#4 (widened envelope): loft-along-a-STRAIGHT-rail now runs NATIVE — a ruled
+// loft between the two equal-count sections placed perpendicular to the rail tangent
+// (build_loft_along_rail, matching MakePipeShell on a straight rail). A 4×4 → 2×2
+// square morph along a +Z rail is a watertight frustum-like solid the engine keeps
+// native. A CURVED/kinked rail (genuine pipe-shell morph) or mismatched section
+// counts → NULL → fallback (stub → 0), verified below.
+CC_TEST(native_loft_along_straight_rail_runs_native) {
+    EngineGuard g;
+    cc_set_engine(1);
+
+    const double rail[] = {0, 0, 0, 0, 0, 10};
+    const double a[] = {-2, -2, 2, -2, 2, 2, -2, 2};
+    const double b[] = {-1, -1, 1, -1, 1, 1, -1, 1};
+    const CCShapeId id = cc_loft_along_rail(rail, 2, a, 4, b, 4);
+    CC_CHECK(id != 0);
+    if (id == 0) { std::printf("  last_error=%s\n", cc_last_error()); return; }
+    const CCMassProps mp = cc_mass_properties(id);
+    CC_CHECK(mp.valid != 0);
+    CC_CHECK(mp.volume > 0.0);
+    cc_shape_release(id);
+
+    // A curved rail is a genuine pipe-shell morph → not native → stub fallback (0).
+    const double bentRail[] = {0, 0, 0, 3, 0, 5, 0, 0, 10};
+    CC_CHECK_EQ(cc_loft_along_rail(bentRail, 3, a, 4, b, 4), 0);
 }
 
 // ── Tier-D (#4b): native tapered shank + thread fall-through ───────────────────
@@ -592,18 +655,27 @@ CC_TEST(native_thread_runs_native_watertight) {
     }
 }
 
-// A FINE-PITCH / self-intersecting thread still fails robustlyWatertight (a self-
-// overlapping mesh is non-manifold no matter how vertices weld), so the engine defers it
-// to the fallback (stub on host → 0). This is the unchanged honest guard — no faked or
-// leaky native thread ships. On the iOS sim (OCCT linked) the same call returns the OCCT
-// MakePipeShell thread.
+// A GENUINELY self-intersecting thread (radial-V flanks that cross in 3D at a STEEP
+// helix lead) still fails the native build: the fine-pitch resolver's root flat cannot
+// un-fold a true self-intersection, and thread.h's lead-ratio guard returns a NULL Shape
+// (pitch/(2π·pitchR) > kMaxLeadRatio → Tier-4 surface-surface territory), so the engine
+// forwards to the fallback (stub on host → 0). This is the unchanged honest guard — no
+// faked or leaky native thread ships. On the iOS sim (OCCT linked) the same call returns
+// the OCCT MakePipeShell thread.
+//
+// NOTE: a DEEP-SPIKE fine-pitch thread (major2/pitch0.2/depth3, depth/pitch = 15) also
+// defers — its native pure-radial V volume diverges from OCCT's MakePipeShell swept solid
+// by ~11% (a real native-vs-oracle mismatch the watertight self-verify cannot see), so
+// thread.h's depth/pitch guard (depth > kMaxDepthOverPitch·pitch) returns NULL (see
+// test_native_thread deep_spike_fine_pitch_thread_deferred). The genuine steep-lead fold
+// used here is a large pitch on a small pitch radius:
+//   major1/pitch3/depth0.4 ⇒ pitchR 0.8, lead ~31° → the flanks self-intersect → NULL.
 CC_TEST(native_fine_pitch_thread_falls_through_to_default) {
     EngineGuard g;
     cc_set_engine(1);
     CC_CHECK_EQ(cc_active_engine(), 1);
-    // major2 / pitch0.2 / depth3: turns fold through each other → not robustly watertight
-    // → forwards to the stub (0 on host).
-    CC_CHECK_EQ(cc_helical_thread(2.0, 0.2, 4.0, 3.0, 60.0, 1.0, 16), 0);
+    // Steep-lead fold → thread.h defers (NULL) → engine forwards to the stub (0 on host).
+    CC_CHECK_EQ(cc_helical_thread(1.0, 3.0, 3.0, 0.4, 60.0, 1.0, 16), 0);
 }
 
 // ── NATIVE boolean (Phase 4 #5) through the cc_boolean facade ────────────────────

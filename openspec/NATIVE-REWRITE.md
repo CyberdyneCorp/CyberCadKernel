@@ -342,6 +342,44 @@ longest; a native exchange is lower priority than the modelling core.
     (`[fallback]`, `cc_active_engine()==1`, vol rel 0.00e+00). Both gates are GREEN and the
     engine enforces the watertight bar at runtime via `robustlyWatertight`. Living change
     (archived): `openspec/changes/add-native-threads` → `openspec/specs/native-construction`.
+  - **◐ `#4b` geometry-completion batch (Tier 1 + Tier 2#4) — spline extrude, off-axis-arc
+    torus revolve, N-section ruled loft, and a NON-PLANAR (RMF) sweep DONE at the
+    verification bar; twist/scale + guided/rail + truly-self-intersecting thread stay
+    OCCT-fallthrough (SSI/Tier-4, not faked).** Change `add-native-geometry-completion`,
+    engine-wired behind the same `cc_set_engine(1)` toggle. **Tier 1 NATIVE:** (A) a **kind-3
+    SPLINE** outer profile edge extrude (a native B-spline edge via native-math NURBS + a
+    `BSpline` swept side wall + planar caps → watertight) and an **OFF-AXIS-ARC** revolve → a
+    **TORUS** surface of revolution (native `Torus` added in `src/native/math/torus.h`;
+    emitted as EXACT rational-quadratic B-spline patches so no new tessellator surface kind
+    was needed) — both in `src/native/construct/residuals.h`. **Tier 2#4 NATIVE:** an
+    **N-section (3+)** ruled loft chain (`src/native/construct/loft.h`, generalizing the
+    Tier-B 2-section builder — shared interior rings, first/last caps) and a **NON-PLANAR
+    smooth spine** sweep via the double-reflection RMF (Wang et al. 2008,
+    `src/native/construct/sweep.h`; the RMF collapses to the constant frame on a planar spine,
+    preserving Tier-C parity). Gate 1 (host, no OCCT) GREEN — host build clean, CTest **22/22**
+    (incl. `test_native_residuals`, `test_native_loft`, `test_native_sweep`, `test_native_thread`,
+    `test_native_tessellate`, `test_native_step`, `test_native_engine`). Gate 2 (sim OCCT
+    parity) GREEN — `tests/sim/native_geomcompletion_parity.mm` +
+    `scripts/run-sim-native-geomcompletion.sh` through the `cc_*` facade under
+    `cc_set_engine(0/1)`: **spline extrude** vol o=45.6 n=45.5547 **rel 9.92e-04** (watertight,
+    132 tris, faces 4→4); **torus revolve** vol o=98.696 n=96.0542 **rel 2.68e-02** (watertight,
+    1620 tris, faces 2→6); **ruled frustum** + **straight-rail** N-section loft vol rel
+    **1.43e-14 / 5.58e-15 EXACT** (watertight, 432 tris, faces 6→6); **smooth-arc (RMF) sweep**
+    vol o=330.299 n=330.299 **rel 3.44e-16 EXACT** (watertight, 196 tris, faces 98→98). **STILL
+    OCCT-fallthrough / DECLINE (not faked):** a **self-crossing spline** profile and a **spindle
+    torus** (off-axis arc crossing the axis — self-intersecting SoR) DECLINE on BOTH engines
+    (unbuildable SSI, Tier 4, occtId=0 natId=0); a **mismatched-count loft** → OCCT
+    `ThruSections` (vol 202.185), a **hard curved rail** → OCCT `MakePipeShell` (258.596), a
+    **self-intersecting sweep** → OCCT `MakePipe` (17.9515), a **real-twist `cc_twisted_sweep`**
+    → OCCT `ThruSections` (320), and a **self-intersecting thread** → OCCT `MakePipeShell`
+    (1446.76) all delegate with native active=1 (rel 0.00e+00, no interception). **The
+    accumulating-twist/scale sweep, the guided/rail cases, and the thread self-intersection
+    resolver did NOT extend the native set beyond what self-verifies watertight + oracle-correct
+    — those remaining fall-throughs now specifically need SSI / Tier-4 (surface-surface
+    intersection + trimming).** No regressions (`run-sim-suite.sh` 221/221, own-`main()` parity
+    harness on the SKIP list). See [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md); living
+    change `openspec/changes/add-native-geometry-completion` → archived to
+    `openspec/specs/native-construction`.
 - ◐ **#5 `native-booleans` — PLANAR-polyhedron slice DONE at the verification bar;
   curved / general still OCCT-fallthrough (not faked).** `cc_boolean` (fuse / cut /
   common) is NATIVE for **PLANAR-faced solids** (polyhedra — axis-aligned boxes, prisms)
@@ -443,9 +481,14 @@ longest; a native exchange is lower priority than the modelling core.
   deflection in the `robustlyWatertight` ladder and runs NATIVE (see the Tier D entry
   above; `test_native_thread` asserts the hard multi-deflection watertight ladder and
   `test_native_engine::native_thread_runs_native_watertight` asserts the op runs native
-  through the facade). The other residual #4b natives — 3+-section/guided/rail loft,
-  non-planar/guided/rail sweep, and arc/spline-profile revolve — are still deferred future
-  work, all currently OCCT-fallthrough.
+  through the facade). Several other residual #4b natives are now DONE by the
+  geometry-completion batch above — **kind-3 SPLINE profile edge extrude, off-axis-arc TORUS
+  revolve, N-section (3+) ruled loft, and a NON-PLANAR (RMF) sweep are now NATIVE.** What is
+  still OCCT-fallthrough are the cases that genuinely need SSI / Tier-4 (surface-surface
+  intersection + trimming): the accumulating-twist/scale `cc_twisted_sweep`, the guided/rail
+  cases (`cc_guided_sweep` / `cc_loft_along_rail` / hard-rail loft), a mismatched-count /
+  non-planar loft, a truly self-intersecting sweep or thread, a general SPLINE
+  surface-of-revolution, and a spindle torus.
 - ✅ **#6 `native-blends` — tractable PLANAR slice done at the verification bar (both
   gates green); curved / concave / variable / fillet_face OCCT-fallthrough (honest).** Native
   `cc_chamfer_edges` / `cc_fillet_edges` (constant radius) / `cc_offset_face` /

@@ -158,6 +158,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_tessellate
         test_native_construct
         test_native_profile
+        test_native_residuals
         test_native_loft
         test_native_sweep
         test_native_thread
@@ -178,6 +179,8 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_construct.cpp")
     set(test_native_profile_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_profile.cpp")
+    set(test_native_residuals_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_residuals.cpp")
     set(test_native_loft_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_loft.cpp")
     set(test_native_sweep_SRC

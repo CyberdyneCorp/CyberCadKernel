@@ -310,32 +310,45 @@ class FaceMesher {
       if (!pc) continue;
       const EdgeDiscretization& d = cache.discretize(edge);
       appendEdgeSamplesAtFracs(poly, edge, *pc, d.fracs);
-      recordEdgeAnchors(anchors, edge, d.fracs);
+      recordEdgeAnchors(anchors, edge, d);
     }
     return poly;
   }
 
-  // For a STRAIGHT boundary edge, record the canonical world point at every shared
-  // sample. The samples are generated at the canonical INDICES i/n (n = segment
-  // count) in the fixed a→b endpoint order — NOT at the edge's own wire-traversal
-  // fractions. Two coincident edges built with opposite vertex order sample the
-  // ridge at COMPLEMENTARY fractions (i/n vs (n−i)/n); mapping one onto the other
-  // as `1−f` reintroduces a 1-ULP difference (1−1/3 ≠ 2/3 in fp), which was the
-  // residual per-turn split. Generating both edges' anchors from the SAME i/n
-  // sequence over the SAME canonical endpoints makes the two anchor SETS
-  // bit-identical, so the seam-lying vertices of both faces snap to the same
-  // points. Non-line edges are skipped (curved seams share their edge node and
-  // already agree bit-for-bit).
+  // Record the canonical world point at every shared sample of a boundary edge, so a
+  // seam-lying vertex of EITHER adjacent face snaps to the same point and the spatial
+  // weld cannot split the two across a cell boundary.
+  //
+  //   * STRAIGHT edge — the samples are generated at the canonical INDICES i/n in the
+  //     fixed a→b endpoint order (NOT the edge's wire-traversal fractions). Two
+  //     coincident straight edges built with opposite vertex order sample at
+  //     COMPLEMENTARY fractions (i/n vs (n−i)/n); mapping one as `1−f` reintroduces a
+  //     1-ULP difference. Generating both from the SAME i/n sequence over the SAME
+  //     canonical endpoints makes the anchor SETS bit-identical.
+  //   * CURVED edge (Circle/BSpline/…) — the shared EdgeDiscretization already holds the
+  //     canonical 3D sample POINTS (`d.points`), computed once from the curve itself
+  //     (deterministic, build-order-independent as a SET). When two faces share a curved
+  //     seam through the SAME edge node these already agree; but when a builder gives the
+  //     two faces SEPARATE edge nodes carrying the SAME curve (e.g. a spline extrude cap
+  //     ↔ its B-spline side wall, evaluated through DIFFERENT surface types), the two
+  //     faces' surface evaluations of the boundary differ by ~1 ULP and the seam splits.
+  //     Recording d.points as anchors makes both faces snap their curved-seam vertices to
+  //     the identical shared points ⇒ watertight (the curved-edge analogue of the
+  //     straight-edge canonical anchor).
   static void recordEdgeAnchors(BoundaryAnchors& anchors, const topo::Shape& edge,
-                                const std::vector<double>& fracs) {
+                                const EdgeDiscretization& d) {
     const CanonicalEndpoints ce = detail::canonicalLineEndpoints(edge);
-    if (!ce.valid || fracs.size() < 2) return;
-    const int n = static_cast<int>(fracs.size()) - 1;  // segment count (endpoint-shared)
-    const math::Vec3 d = ce.b - ce.a;
-    for (int i = 0; i <= n; ++i) {
-      const double g = static_cast<double>(i) / static_cast<double>(n);
-      anchors.add(math::Point3{ce.a.x + d.x * g, ce.a.y + d.y * g, ce.a.z + d.z * g});
+    if (ce.valid && d.fracs.size() >= 2) {
+      const int n = static_cast<int>(d.fracs.size()) - 1;  // segment count (endpoint-shared)
+      const math::Vec3 dir = ce.b - ce.a;
+      for (int i = 0; i <= n; ++i) {
+        const double g = static_cast<double>(i) / static_cast<double>(n);
+        anchors.add(math::Point3{ce.a.x + dir.x * g, ce.a.y + dir.y * g, ce.a.z + dir.z * g});
+      }
+      return;
     }
+    // Curved edge: the shared discretization's 3D points are the canonical seam anchors.
+    for (const math::Point3& p : d.points) anchors.add(p);
   }
 
   static UVRegion regionFromLoops(const std::vector<UVPolygon>& loops) {

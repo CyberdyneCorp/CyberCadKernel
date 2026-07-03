@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// loft.h — native 2-section RULED loft (Phase 4 #4b, Tier B `native-construction`).
+// loft.h — native RULED loft (Phase 4 #4b, Tier B + the 3+-section extension of
+// `native-construction`).
 //
-// Clean-room, OCCT-FREE builder that skins TWO closed section wires with EQUAL
-// vertex/edge counts into a watertight ruled SOLID, mirroring OCCT's
-// BRepOffsetAPI_ThruSections in its ruled=Standard_True mode used by the cc_*
-// facade (see src/engine/occt/occt_construct.cpp solid_loft / solid_loft_wires):
-// each polygon section is a straight-edge loop, corresponding vertices are paired
-// 1:1, and each corresponding EDGE pair spans a RULED side face.
+// Clean-room, OCCT-FREE builder that skins 2..N closed section wires — each with
+// the SAME EQUAL vertex/edge count — into a watertight ruled SOLID, mirroring
+// OCCT's BRepOffsetAPI_ThruSections in its ruled=Standard_True mode used by the
+// cc_* facade (see src/engine/occt/occt_construct.cpp solid_loft / solid_loft_wires
+// and the cc_solid_loft chain): each polygon section is a straight-edge loop,
+// corresponding vertices are paired 1:1 across the whole section chain, and each
+// corresponding EDGE pair between two CONSECUTIVE sections spans a RULED side face.
+// For N sections this yields (N−1) ruled bands stacked end to end + two planar end
+// caps (first section, last section); the internal sections are NOT capped — they
+// are shared vertex rings welding the adjacent bands.
 //
 //   * build_ruled_loft(sectionA, sectionB) → Solid. Requires the two sections to
 //     have the SAME vertex count n (≥3). Vertex A[i] is paired with B[i]; edge
@@ -19,23 +24,42 @@
 //     always is for solid_loft; solid_loft_wires is honestly rejected when a wire
 //     is non-planar, see below). Shell → Solid, oriented outward.
 //
+//   * build_ruled_loft_sections(sections) → Solid. The N-section generalisation
+//     (N ≥ 2). All sections must share the SAME vertex count n (≥3), all be PLANAR
+//     and non-degenerate. Section k is aligned to its PREDECESSOR (k−1) with the
+//     same rotational/flip correspondence rule the 2-section path uses, so the
+//     pairing propagates consistently down the chain. Emits (N−1) ruled bands +
+//     the first and last planar cap. Internal sections are shared vertex rings
+//     (no cap). build_ruled_loft(A,B) is the N=2 special case (kept intact).
+//
 //   * build_loft(bottomXY, topXY, depth) — entry point for cc_solid_loft: build the
 //     two profiles at z=0 (bottom XY) and z=depth (top XY), then build_ruled_loft.
 //   * build_loft_wires(aXYZ, bXYZ) — entry point for cc_solid_loft_wires: use the
 //     two 3D wires directly.
+//   * build_loft_sections(sectionsXYZ, counts, sectionCount) — entry point for the
+//     cc_solid_loft chain / a section list: each section is a flat (x,y,z) triple
+//     loop; build every Section then build_ruled_loft_sections. The wiring step
+//     (native_engine) calls this for a 3+-section loft request.
 //
 // ── SUPPORTED vs DEFERRED (honest — the builder returns a NULL Shape so the engine
 //    falls through to OCCT; it NEVER fakes a wrong shape) ──────────────────────
-//   SUPPORTED natively (Tier B):
-//     * TWO sections, EQUAL vertex count n ≥ 3, both sections PLANAR, neither
-//       degenerate to a point → ruled skin + two planar caps → watertight solid.
+//   SUPPORTED natively (Tier B + the 3+-section extension):
+//     * 2..N sections, ALL with the SAME vertex count n ≥ 3, ALL PLANAR, none
+//       degenerate to a point → (N−1) ruled bands + two planar end caps →
+//       watertight solid. The internal sections are shared vertex rings.
 //   DEFERRED to OCCT (NULL → NativeEngine forwards the same arguments):
-//     * MISMATCHED vertex counts (n_A ≠ n_B) — pairing is ambiguous; OCCT's
-//       ThruSections re-parametrizes/​resamples, which is Tier C.
+//     * MISMATCHED vertex counts (any two sections differ in n) — pairing is
+//       ambiguous; OCCT's ThruSections re-parametrizes/resamples, which is Tier C.
 //     * a NON-PLANAR section wire (the ruled skin can still be built, but a planar
-//       cap cannot close it; a non-planar cap is Tier C).
+//       cap cannot close a non-planar END section; a non-planar cap is Tier C).
+//       (An internal section is not capped, but is still required planar here so
+//       the correspondence/alignment stays a well-posed in-plane match; a
+//       non-planar internal section is deferred.)
 //     * a section that DEGENERATES to a point (zero area / all points coincident).
-//     * 3+ sections, guided / rail lofts — Tier C.
+//     * guided / rail lofts, and a loft whose stacked ruled skin SELF-INTERSECTS
+//       (a section chain that folds back on itself) — that needs surface-surface
+//       intersection (Tier 4), so it is deferred, NOT attempted here. The mesh-level
+//       self-verify (engine watertight + volume) DISCARDS any such candidate.
 //
 // The RULED side face welds watertight to its neighbours and to the caps because
 // its boundary edges are the SAME straight-line edges the caps and adjacent side
@@ -244,93 +268,148 @@ inline topo::Shape ruledSideFace(const topo::Shape& ai, const topo::Shape& aj,
   return topo::ShapeBuilder::makeFace(surf, wire, {}, orient);
 }
 
+// Loft centroid of a point loop (shared by the alignment + orientation code).
+inline math::Point3 loopCentroid(const std::vector<math::Point3>& p) {
+  math::Vec3 c{0, 0, 0};
+  for (const auto& q : p) c += q.asVec();
+  return math::Point3{c / static_cast<double>(p.size())};
+}
+
+// The material-outward Orientation for one ruled side face of the band between
+// two consecutive rings `a` (v=0) and `b` (v=1), edge i→j. Compares the bilinear
+// patch's natural normal at its centre against an outward radial reference (the
+// patch centre pushed off the local band axis line ca→cb) and reverses the face
+// when they oppose — the SAME rule the 2-section path uses, factored out so every
+// band in an N-section chain orients consistently.
+inline topo::Orientation sideFaceOrientation(const std::vector<math::Point3>& a,
+                                             const std::vector<math::Point3>& b, std::size_t i,
+                                             std::size_t j, const math::Point3& ca,
+                                             const math::Vec3& axis) {
+  const math::Point3 mid{(a[i].asVec() + a[j].asVec() + b[i].asVec() + b[j].asVec()) / 4.0};
+  const math::Vec3 du = 0.5 * ((a[j] - a[i]) + (b[j] - b[i]));  // ∂u at v=.5
+  const math::Vec3 dv = 0.5 * ((b[i] - a[i]) + (b[j] - a[j]));  // ∂v at u=.5
+  const math::Vec3 nat = math::cross(du, dv);
+  const double al = math::norm(axis);
+  const math::Vec3 axisDir = al > kProfileTol ? axis / al : math::Vec3{0, 0, 1};
+  const math::Vec3 rel = mid - ca;
+  const math::Vec3 radial = rel - axisDir * math::dot(rel, axisDir);
+  return math::dot(nat, radial) < 0.0 ? topo::Orientation::Reversed : topo::Orientation::Forward;
+}
+
+// Append the (n) ruled side faces of ONE band between consecutive shared vertex
+// rings `av` (v=0) and `bv` (v=1), whose 3D points are `ap`/`bp`. The band's local
+// axis ca→cb orients each face outward. Rings are SHARED across adjacent bands
+// (an internal ring is the top of one band and the bottom of the next), so the
+// bands weld watertight with no duplicate seam vertices.
+inline void appendRuledBand(std::vector<topo::Shape>& faces,
+                            const std::vector<topo::Shape>& av,
+                            const std::vector<topo::Shape>& bv,
+                            const std::vector<math::Point3>& ap,
+                            const std::vector<math::Point3>& bp) {
+  const std::size_t n = av.size();
+  const math::Point3 ca = loopCentroid(ap), cb = loopCentroid(bp);
+  const math::Vec3 axis = cb - ca;
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::size_t j = (i + 1) % n;
+    const topo::Orientation o = sideFaceOrientation(ap, bp, i, j, ca, axis);
+    faces.push_back(ruledSideFace(av[i], av[j], bv[i], bv[j], o));
+  }
+}
+
 }  // namespace detail
 
 // ─────────────────────────────────────────────────────────────────────────────
-// build_ruled_loft — skin two equal-count planar section loops into a solid.
+// build_ruled_loft_sections — skin 2..N equal-count planar section loops into one
+// watertight ruled solid. This is the N-section generalisation of the Tier-B
+// 2-section loft; build_ruled_loft(A,B) below is the N=2 special case.
 //
-// Returns a NULL Shape (→ OCCT fallthrough) when the sections are not both usable
-// (mismatched counts, degenerate, or non-planar). Otherwise:
-//   * pair A[i]↔B[i], A-edge i ↔ B-edge i;
-//   * one bilinear ruled side face per edge pair;
-//   * two planar caps (bottom = section A, top = section B), wound so their
-//     outward normals point AWAY from the other section (a convex-agnostic choice:
-//     the A-cap normal points along −(B_centroid − A_centroid), the B-cap along +);
-//   * side-face orientation chosen so its natural (bilinear) normal points OUTWARD
-//     (away from the loft's central axis), consistent with the caps.
+// Returns a NULL Shape (→ OCCT fallthrough) when the sections are not ALL usable
+// (fewer than 2 sections, any section degenerate, non-planar, or a count that
+// differs from the first section's). Otherwise:
+//   * ALIGN each section k (k≥1) to its predecessor k−1 with alignSectionB, so the
+//     1:1 vertex correspondence propagates consistently along the whole chain (a
+//     twisted / rotated section stays paired to its nearest neighbour corners).
+//   * BUILD one shared vertex ring per section; an INTERNAL ring is used by the
+//     band below AND the band above it (same TShape nodes → watertight weld).
+//   * EMIT (N−1) ruled bands (one bilinear side face per corresponding edge pair
+//     per consecutive section pair, oriented outward via the LOCAL band axis).
+//   * CAP only the first + last section (planar caps whose outward normals point
+//     away from the adjacent section). Internal sections are NOT capped.
 //
-// Cognitive complexity: linear assembler (~13, flagged).
+// The caller (build_loft / build_loft_wires / build_loft_sections and, above all,
+// the engine wiring) runs a MANDATORY self-verify (watertight + sane enclosed
+// volume) on the result and DISCARDS it → OCCT if the stacked skin self-intersects
+// or fails to close; this builder never fakes such a case.
+//
+// Cognitive complexity: a linear assembler (~10) that leans on the detail helpers.
 // ─────────────────────────────────────────────────────────────────────────────
-inline topo::Shape build_ruled_loft(const std::vector<math::Point3>& sectionA,
-                                    const std::vector<math::Point3>& sectionB) {
-  const detail::Section A = detail::analyzeSection(sectionA);
-  const detail::Section B = detail::analyzeSection(sectionB);
-  if (A.degenerate || B.degenerate) return {};             // a section is a point/line
-  if (A.pts.size() != B.pts.size()) return {};             // mismatched counts → Tier C
-  if (!A.planar || !B.planar) return {};                   // non-planar cap → Tier C
+inline topo::Shape build_ruled_loft_sections(const std::vector<std::vector<math::Point3>>& raw) {
+  if (raw.size() < 2) return {};  // need at least two sections to skin
 
-  const std::size_t n = A.pts.size();
+  // Analyse + validate every section: non-degenerate, planar, equal vertex count.
+  std::vector<detail::Section> secs;
+  secs.reserve(raw.size());
+  for (const auto& r : raw) {
+    detail::Section s = detail::analyzeSection(r);
+    if (s.degenerate || !s.planar) return {};  // point/line/skew → OCCT (Tier C/4)
+    secs.push_back(std::move(s));
+  }
+  const std::size_t n = secs.front().pts.size();
+  for (const auto& s : secs)
+    if (s.pts.size() != n) return {};  // mismatched counts → OCCT (Tier C)
 
-  // Align B's vertex correspondence to A (rotate/flip B's start so paired
-  // vertices are nearest — see alignSectionB). Skipping this makes twisted
-  // sections pair the wrong corners and the ruled skin self-intersects.
-  const std::vector<math::Point3> bpts = detail::alignSectionB(A, B);
+  const std::size_t sc = secs.size();
 
-  // Shared vertex rings (one node per corresponding vertex, shared by the two
-  // adjacent side faces AND the cap that uses it → watertight welds).
-  std::vector<topo::Shape> av(n), bv(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    av[i] = topo::ShapeBuilder::makeVertex(A.pts[i]);
-    bv[i] = topo::ShapeBuilder::makeVertex(bpts[i]);
+  // Propagate the vertex correspondence down the chain: section 0 keeps its own
+  // order; section k≥1 is re-indexed to pair nearest to the ALREADY-aligned
+  // section k−1. `aligned[k]` holds the reordered 3D points of section k.
+  std::vector<std::vector<math::Point3>> aligned(sc);
+  aligned[0] = secs[0].pts;
+  for (std::size_t k = 1; k < sc; ++k) {
+    detail::Section prev = secs[k - 1];
+    prev.pts = aligned[k - 1];  // align against the already-fixed predecessor
+    aligned[k] = detail::alignSectionB(prev, secs[k]);
   }
 
-  // Loft axis: from A's centroid toward B's centroid. Used to orient every face's
-  // effective normal outward (side faces away from the axis, caps away from the
-  // opposite section).
-  auto centroid = [](const std::vector<math::Point3>& p) {
-    math::Vec3 c{0, 0, 0};
-    for (const auto& q : p) c += q.asVec();
-    return math::Point3{c / static_cast<double>(p.size())};
-  };
-  const math::Point3 ca = centroid(A.pts), cb = centroid(bpts);
-  const math::Vec3 axis = cb - ca;  // A → B
+  // One shared vertex ring per section (rings are shared between adjacent bands).
+  std::vector<std::vector<topo::Shape>> ring(sc, std::vector<topo::Shape>(n));
+  for (std::size_t k = 0; k < sc; ++k)
+    for (std::size_t i = 0; i < n; ++i)
+      ring[k][i] = topo::ShapeBuilder::makeVertex(aligned[k][i]);
 
   std::vector<topo::Shape> faces;
-  faces.reserve(n + 2);
+  faces.reserve(n * (sc - 1) + 2);
 
-  // Ruled side faces. For each edge pair, the bilinear patch's natural normal at
-  // the patch centre (u=v=0.5) is compared against an outward reference (the patch
-  // centre pushed away from the loft axis line): flip the face when they oppose.
-  for (std::size_t i = 0; i < n; ++i) {
-    const std::size_t j = (i + 1) % n;
-    // Bilinear patch centre and a natural normal there (∂u × ∂v of the bilinear).
-    const math::Point3 mid{(A.pts[i].asVec() + A.pts[j].asVec() + bpts[i].asVec() +
-                            bpts[j].asVec()) /
-                           4.0};
-    const math::Vec3 du = 0.5 * ((A.pts[j] - A.pts[i]) + (bpts[j] - bpts[i]));  // ∂u at v=.5
-    const math::Vec3 dv = 0.5 * ((bpts[i] - A.pts[i]) + (bpts[j] - A.pts[j]));  // ∂v at u=.5
-    const math::Vec3 nat = math::cross(du, dv);
-    // Outward reference: radial component of the patch centre from the axis line
-    // (mid − ca projected off the axis direction) points away from the interior.
-    const math::Vec3 axisDir =
-        math::norm(axis) > kProfileTol ? axis / math::norm(axis) : math::Vec3{0, 0, 1};
-    const math::Vec3 rel = mid - ca;
-    const math::Vec3 radial = rel - axisDir * math::dot(rel, axisDir);
-    const topo::Orientation o =
-        math::dot(nat, radial) < 0.0 ? topo::Orientation::Reversed : topo::Orientation::Forward;
-    faces.push_back(detail::ruledSideFace(av[i], av[j], bv[i], bv[j], o));
-  }
+  // (N−1) ruled bands, each welded to its neighbour through the shared ring.
+  for (std::size_t k = 0; k + 1 < sc; ++k)
+    detail::appendRuledBand(faces, ring[k], ring[k + 1], aligned[k], aligned[k + 1]);
 
-  // Planar caps. The A-cap's outward normal points AWAY from B (−axis side); the
-  // B-cap points +axis. planarFace winds the loop to match the supplied normal.
+  // Planar end caps only. The first cap's outward normal points away from section 1
+  // (−axis0); the last cap's outward points along the last band's axis. planarFace
+  // winds the loop to match the supplied normal.
   auto capNormal = [](const detail::Section& sec, const math::Vec3& outward) -> math::Dir3 {
     return math::dot(sec.normal.vec(), outward) < 0.0 ? sec.normal.reversed() : sec.normal;
   };
-  faces.push_back(detail::planarFace(av, capNormal(A, -axis), topo::Orientation::Forward));
-  faces.push_back(detail::planarFace(bv, capNormal(B, axis), topo::Orientation::Forward));
+  const math::Vec3 axis0 = detail::loopCentroid(aligned[1]) - detail::loopCentroid(aligned[0]);
+  const math::Vec3 axisN =
+      detail::loopCentroid(aligned[sc - 1]) - detail::loopCentroid(aligned[sc - 2]);
+  faces.push_back(
+      detail::planarFace(ring.front(), capNormal(secs.front(), -axis0), topo::Orientation::Forward));
+  faces.push_back(
+      detail::planarFace(ring.back(), capNormal(secs.back(), axisN), topo::Orientation::Forward));
 
   const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
   return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// build_ruled_loft — the 2-section entry (Tier B). Kept as the public 2-section
+// API; delegates to build_ruled_loft_sections with {A, B}. Returns NULL (→ OCCT)
+// for mismatched counts / degenerate / non-planar exactly as before.
+// ─────────────────────────────────────────────────────────────────────────────
+inline topo::Shape build_ruled_loft(const std::vector<math::Point3>& sectionA,
+                                    const std::vector<math::Point3>& sectionB) {
+  return build_ruled_loft_sections({sectionA, sectionB});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -366,6 +445,37 @@ inline topo::Shape build_loft_wires(const double* aXYZ, int aCount, const double
   for (int i = 0; i < aCount; ++i) a.push_back({aXYZ[i * 3], aXYZ[i * 3 + 1], aXYZ[i * 3 + 2]});
   for (int i = 0; i < bCount; ++i) b.push_back({bXYZ[i * 3], bXYZ[i * 3 + 1], bXYZ[i * 3 + 2]});
   return build_ruled_loft(a, b);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// build_loft_sections — entry point for the cc_solid_loft CHAIN / a section list
+// (3+ sections). Each section is a flat (x,y,z) triple loop; `sectionsXYZ` holds
+// the sections back to back, `counts[k]` is the vertex count of section k, and
+// `sectionCount` is the number of sections (≥2). Builds every Section from its
+// slice of the buffer, then build_ruled_loft_sections. NULL → OCCT fallthrough
+// (fewer than 2 sections, any section < 3 pts, mismatched counts, non-planar, or
+// degenerate — see build_ruled_loft_sections). The wiring step (native_engine)
+// calls this for a multi-section loft request; the 2-section facade paths keep
+// using build_loft / build_loft_wires unchanged.
+// ─────────────────────────────────────────────────────────────────────────────
+inline topo::Shape build_loft_sections(const double* sectionsXYZ, const int* counts,
+                                       int sectionCount) {
+  if (sectionsXYZ == nullptr || counts == nullptr || sectionCount < 2) return {};
+  std::vector<std::vector<math::Point3>> secs;
+  secs.reserve(static_cast<std::size_t>(sectionCount));
+  std::size_t off = 0;  // running offset into the flat (x,y,z) buffer, in doubles
+  for (int k = 0; k < sectionCount; ++k) {
+    const int cnt = counts[k];
+    if (cnt < 3) return {};  // a section with < 3 vertices → OCCT
+    std::vector<math::Point3> pts;
+    pts.reserve(static_cast<std::size_t>(cnt));
+    for (int i = 0; i < cnt; ++i)
+      pts.push_back({sectionsXYZ[off + i * 3], sectionsXYZ[off + i * 3 + 1],
+                     sectionsXYZ[off + i * 3 + 2]});
+    off += static_cast<std::size_t>(cnt) * 3;
+    secs.push_back(std::move(pts));
+  }
+  return build_ruled_loft_sections(secs);
 }
 
 }  // namespace cybercad::native::construct

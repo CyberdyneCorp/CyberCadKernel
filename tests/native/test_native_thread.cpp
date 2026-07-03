@@ -44,6 +44,7 @@
 #include "harness.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -296,21 +297,109 @@ CC_TEST(tapered_thread_tip_below_axis_deferred) {
   CC_CHECK(cst::build_tapered_thread(6.0, 1.0, 2.0, 3.0, 3.0, 60.0, 1.0, 16).isNull());
 }
 
-// ── GUARD: a deliberately self-intersecting FINE-PITCH thread yields the not-supported
-// signal (no self-intersecting solid ships native) ──────────────────────────────
-// A very fine pitch (0.2) with a DEEP V (depth 3) on a thin thread (major 2): the axial
-// V half-base is capped at pitch/2 = 0.1, so adjacent turns are only 0.2 apart while the
-// radial V sweeps 3 units — the turns fold through each other (a self-intersecting body).
-// The cheap parameter guard alone cannot detect this fold, so the builder may return a
-// non-null CANDIDATE; the honest not-supported signal is the ENGINE self-verify
-// (robustlyWatertight — closed at EVERY deflection). This asserts that self-verify FAILS
-// on the fold, so the op falls through to OCCT rather than emitting a self-intersecting
-// solid. `watertightAt` runs the exact same deflection ladder native_engine.cpp uses.
-CC_TEST(fine_pitch_self_intersecting_thread_not_supported) {
-  const topo::Shape s = cst::build_helical_thread(2.0, 0.2, 4.0, 3.0, 60.0, 1.0, 16);
-  double vol = 0.0;
-  const bool robust = watertightAt(s, {0.05, 0.02, 0.01, 0.005}, vol);
-  CC_CHECK(!robust);  // NOT robustly watertight ⇒ engine defers to OCCT (not faked)
+// ── NATIVE (RESOLVER, widened envelope): near-touching turns weld watertight ──────
+// The FINE-PITCH RESOLVER (thread.h detail::resolveHalfBase) opens a small root flat
+// where adjacent turns' V bases would otherwise MEET (2·halfBase ≈ pitch), so a thread
+// whose turns nearly touch — but do NOT geometrically fold — now welds ROBUSTLY
+// watertight instead of falling back. These configurations previously produced a
+// non-manifold seam (the coincident root rings shared a root edge among four faces) and
+// were rejected by the engine self-verify; they are now native.
+//
+//   * major5/pitch0.5/depth1 — a FINE pitch at the reference depth; the natural
+//     60°-flank half-base (0.577) exceeds pitch/2 (0.25), so the resolver caps it and
+//     opens a root flat. Shallow lead ⇒ genuinely valid, now native. depth/pitch = 2.
+//   * major5/pitch1/depth2 — a DEEP V at moderate pitch (former defer). depth/pitch = 2.
+// Both have a shallow lead, roots that clear the axis, and depth/pitch ≤ the deep-spike
+// deferral threshold (kMaxDepthOverPitch), so the native pure-radial V agrees with the
+// OCCT swept solid to within the parity bound and stays native.
+CC_TEST(fine_pitch_resolver_welds_near_touching_turns) {
+  for (const auto& [mj, pi, tu, de] : std::vector<std::array<double, 4>>{
+           {5.0, 0.5, 4.0, 1.0}, {5.0, 1.0, 4.0, 2.0}}) {
+    const topo::Shape s = cst::build_helical_thread(mj, pi, tu, de, 60.0, 1.0, 16);
+    CC_CHECK(!s.isNull());  // resolver keeps it a native candidate (no defer)
+    // HARD: watertight at EVERY rung of the same ladder the engine self-verify uses.
+    requireWatertightLadder(cc_ok_, s, kThreadDeflLadder);
+    tess::MeshParams vp;
+    vp.deflection = 0.01;
+    CC_CHECK(tess::enclosedVolume(tess::SolidMesher{vp}.mesh(s)) > 0.0);
+  }
+}
+
+// ── GUARD (regression, native-vs-OCCT parity): a DEEP-SPIKE fine-pitch thread defers ──
+// major2/pitch0.2/depth3 (depth/pitch = 15) builds a watertight native radial-V solid
+// (it does NOT geometrically fold — the roots clear the axis and the lead is shallow),
+// but its purely-radial V transport diverges from OCCT's MakePipeShell swept solid by
+// ~11% in volume (native's exact radial Pappus volume vs OCCT's healed swept volume) —
+// FAR outside the parity bound. The native self-verify (watertight only, no OCCT) cannot
+// see that mismatch, so a depth/pitch guard (thread.h detail::threadUnsafe,
+// depth > kMaxDepthOverPitch·pitch) DEFERS it to the OCCT oracle rather than ship a
+// native solid that silently disagrees with the reference. Regression for the
+// native_geomcompletion_parity [sweep] self-intersecting-thread fall-through case.
+CC_TEST(deep_spike_fine_pitch_thread_deferred) {
+  CC_CHECK(cst::build_helical_thread(2.0, 0.2, 4.0, 3.0, 60.0, 1.0, 16).isNull());
+  CC_CHECK(cst::build_helical_thread(2.0, 0.2, 8.0, 3.0, 60.0, 4.0, 16).isNull());  // parity params
+}
+
+// ── GUARD (unchanged intent): a GENUINELY self-intersecting thread falls back ─────
+// A root flat cannot fix a sweep whose radial-V flanks cross in 3D. That happens at a
+// STEEP helix LEAD — a large pitch on a small pitch radius, lead = atan(pitch/(2π·pitchR))
+// well past ~20°. The lead-ratio guard (thread.h detail::threadUnsafe,
+// pitch/(2π·pitchR) > kMaxLeadRatio) DEFERS these to OCCT by returning a NULL Shape;
+// this is Tier-4 surface-surface-intersection territory, never attempted natively.
+//   * major1/pitch3/depth0.4 — pitchR 0.8, lead ~31° → fold → NULL.
+//   * major2/pitch6/depth0.5 — pitchR 1.75, lead ~29° → fold → NULL.
+//   * major0.6/pitch3/depth0.3 — pitchR 0.45, lead ~47° → fold → NULL.
+CC_TEST(steep_lead_self_intersecting_thread_deferred) {
+  CC_CHECK(cst::build_helical_thread(1.0, 3.0, 3.0, 0.4, 60.0, 1.0, 16).isNull());
+  CC_CHECK(cst::build_helical_thread(2.0, 6.0, 3.0, 0.5, 60.0, 1.0, 16).isNull());
+  CC_CHECK(cst::build_helical_thread(0.6, 3.0, 3.0, 0.3, 60.0, 1.0, 16).isNull());
+  // The tapered analogue: a tip whose local pitch radius makes the lead steep defers.
+  CC_CHECK(cst::build_tapered_thread(3.0, 1.0, 3.0, 3.0, 0.4, 60.0, 1.0, 16).isNull());
+}
+
+// ── NATIVE (HARD REQUIREMENT): a FINER-PITCH thread than the reference is watertight
+// at MULTIPLE deflections ──────────────────────────────────────────────────────────
+// The reference watertight case uses pitch 2 (helical_thread_is_watertight_across_ladder).
+// This asserts a FINER pitch (1.0 — half the reference lead, more turns packed into the
+// same axial rise) still meshes ROBUSTLY WATERTIGHT (boundaryEdges==0) at EVERY rung of
+// the deflection ladder, with the right V-tiling face count and a positive volume. A
+// finer pitch puts the per-turn ruled-band ↔ band seams closer together, so it is the
+// stronger regression for the canonical seam-weld fix (edge_mesher CanonicalEndpoints /
+// face_mesher BoundaryAnchors). major6/pitch1/turns4/depth0.8/flank60°/spt16 — the lead
+// stays shallow (pitchR = 6 − 0.4 = 5.6, lead ≈ atan(1/(2π·5.6)) ≈ 1.6°), well clear of
+// the self-intersection guard, so it is a legitimately NATIVE thread.
+CC_TEST(finer_pitch_thread_is_watertight_across_ladder) {
+  const int turns = 4, spt = 16;
+  const topo::Shape s = cst::build_helical_thread(6.0, 1.0, turns, 0.8, 60.0, 1.0, spt);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+  const int stations = turns * spt;
+  // A fine pitch triggers the root-flat RESOLVER (thread.h detail::resolveHalfBase),
+  // which opens an extra root band where adjacent turns' V bases would meet, so the
+  // face count is ≥ the plain 3-band-per-span tiling (not the exact 3·stations+2 of a
+  // coarse thread). We assert it is a genuinely tiled thread with the expected per-span
+  // band structure lower bound.
+  CC_CHECK(countSub(s, topo::ShapeType::Face) >= 3 * stations + 2);  // ≥ 3 bands/span + 2 caps
+
+  // HARD watertight requirement across the whole deflection ladder (finer pitch = the
+  // tighter seam-weld regression).
+  requireWatertightLadder(cc_ok_, s, kThreadDeflLadder);
+
+  tess::MeshParams vp;
+  vp.deflection = 0.01;
+  const tess::Mesh vm = tess::SolidMesher{vp}.mesh(s);
+  CC_CHECK(tess::enclosedVolume(vm) > 0.0);  // correct volume sign
+
+  // Gross geometry: axial rise = pitch·turns = 4; apex reaches major + depth/2 = 6.4.
+  const double pitchR = 6.0 - 0.8 / 2.0;  // 5.6
+  const double apexR = pitchR + 0.8;       // 6.4
+  const Bbox b = bboxAt(s, 0.02);
+  const double rMax = std::max({-b.xmin, b.xmax, -b.ymin, b.ymax});
+  CC_CHECK(std::fabs(rMax - apexR) / apexR < 5e-2);
+  const double rise = 1.0 * turns;  // pitch·turns = 4
+  const double zExtent = b.zmax - b.zmin;
+  CC_CHECK(zExtent > rise * 0.95);
+  CC_CHECK(zExtent < rise + 2.0);
 }
 
 int main() { return cctest::run_all(); }

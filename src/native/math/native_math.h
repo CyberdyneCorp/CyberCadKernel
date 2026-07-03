@@ -10,6 +10,7 @@
 //                    derivatives, surface normal); FindSpan / BasisFuns / de Boor.
 //   * bezier.h     — Bézier curves & surfaces via de Casteljau (+ rational).
 //   * elementary.h — analytic plane / cylinder / cone / sphere.
+//   * torus.h      — analytic torus (surface of revolution of an off-axis circle).
 //
 // Conventions mirror OCCT gp_*/BSplCLib/BSplSLib/ElSLib so results can be
 // verified against the OCCT oracle on the simulator; but no OCCT header is
@@ -26,6 +27,7 @@
 #include "bspline.h"
 #include "bezier.h"
 #include "elementary.h"
+#include "torus.h"
 
 /// The entire native math API lives in this namespace.
 namespace cybercad::native::math {}

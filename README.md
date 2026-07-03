@@ -47,10 +47,10 @@ flowchart TD
     end
 
     Engine -->|"default"| OCCT["OCCT adapter<br/>(exact B-rep, fp64, CPU)"]
-    Engine -->|"cc_set_engine(1)"| Native["NativeEngine (C++20)<br/>native: math · topology · tessellation ·<br/>construction (extrude / revolve / 2-section loft / sweep / tapered-shank / helical+tapered thread) ·<br/>booleans (planar-polyhedron + axis-aligned box-cylinder fuse/cut/common) ·<br/>STEP export (in-scope native solids)"]
+    Engine -->|"cc_set_engine(1)"| Native["NativeEngine (C++20)<br/>native: math · topology · tessellation ·<br/>construction (extrude / revolve / spline extrude / torus revolve / 2- &amp; N-section loft / straight+planar+RMF sweep / tapered-shank / helical+tapered thread) ·<br/>booleans (planar-polyhedron + axis-aligned box-cylinder fuse/cut/common) ·<br/>STEP export (in-scope native solids)"]
     Engine -.->|"no-OCCT host build"| Stub["Stub engine"]
 
-    Native -.->|"fallthrough (still OCCT):<br/>general curved booleans · curved/concave/variable blends · features ·<br/>STEP import · IGES export/import · fine-pitch (self-intersecting) thread · wrap-emboss ·<br/>non-planar-sweep · healing"| OCCT
+    Native -.->|"fallthrough (still OCCT, all SSI/Tier-4):<br/>general curved booleans · curved/concave/variable blends · features ·<br/>STEP import · IGES export/import · fine-pitch (self-intersecting) thread · wrap-emboss ·<br/>self-intersecting/tight/real-twist/guided/rail sweep · mismatched/guided/hard-rail loft · spindle torus · healing"| OCCT
     OCCT ==>|"still required"| OCCTlib[("OCCT libs")]
 
     Compute --> CPUb["CPU backend (fp64)"]
@@ -76,9 +76,10 @@ the rest, so OCCT remains a required dependency until Phase 4 completes.
   **`NativeEngine`** (`src/engine/native`, opt-in via `cc_set_engine`) that serves
   the rewritten capabilities and falls through to OCCT for the rest.
 - **Native core** (`src/native`) — OCCT-free C++20: `math` (vectors/transforms +
-  Bézier/B-spline/NURBS eval), `topology` (B-rep model + traversal), `tessellate`
-  (watertight mesher), `construct` (extrude/revolve/2-section ruled loft/sweep/
-  tapered-shank/helical+tapered thread), `boolean` (planar-polyhedron fuse/cut/common
+  Bézier/B-spline/NURBS eval + Torus), `topology` (B-rep model + traversal), `tessellate`
+  (watertight mesher), `construct` (extrude/revolve/spline extrude/torus revolve/
+  2- &amp; N-section ruled loft/straight+planar+RMF sweep/tapered-shank/helical+tapered thread),
+  `boolean` (planar-polyhedron fuse/cut/common
   via BSP-CSG + axis-aligned box-cylinder curved analytic fuse/cut/common, self-verified),
   `exchange` (native STEP AP203 EXPORT for in-scope native solids). Host-buildable and
   unit-tested with no OCCT.
@@ -105,11 +106,11 @@ linked until it is complete. Current split:
 | **exchange: `cc_step_export`** (native ISO-10303-21 STEP AP203 for in-scope native solids — sewn manifold `MANIFOLD_SOLID_BREP`, OCCT re-read round-trip verified) | exchange: out-of-scope geometry kinds (Ellipse/Bezier curve, rational spline, Bezier surface) |
 | **blends: `cc_fillet_edges`** (CONSTANT radius, convex planar-dihedral edge — rolling-ball cylinder, deflection-bounded) | booleans: near-tangent / coincident |
 | construction: extrude, revolve (line-segment) | full general robust blend / offset over arbitrary NURBS solids |
-| construction: holed extrude (circular + polygon holes) | sweep: non-planar / tight-curvature / real-twist / guided / rail |
-| construction: typed-profile extrude (line / arc / full-circle) | 3+-section / guided / rail loft |
-| construction: typed-profile revolve (line, on-axis arc → sphere) | `cc_helical_thread` / `cc_tapered_thread` FINE-PITCH / self-intersecting (non-manifold → self-verify defers to OCCT `MakePipeShell`) |
-| construction: 2-section ruled loft (equal-count planar sections) | wrap-emboss: general curved-surface (planar-target reachable via native `cc_offset_face` #6 + native planar boolean #5; axis-aligned-cylinder-target boolean step now native via #5 curved slice) |
-| construction: sweep (straight spine, or smooth curved but planar spine) | spline-profile edges, off-axis-arc (torus) / spline revolve |
+| construction: holed extrude (circular + polygon holes) | sweep: tight-curvature / self-intersecting / real-twist / guided / rail (all SSI / Tier-4) |
+| construction: typed-profile extrude (line / arc / full-circle) + kind-3 SPLINE profile edge | loft: mismatched-count / non-planar / guided / hard-rail (SSI / Tier-4) |
+| construction: typed-profile revolve (line, on-axis arc → sphere) + off-axis-arc → TORUS | `cc_helical_thread` / `cc_tapered_thread` FINE-PITCH / self-intersecting (non-manifold → self-verify defers to OCCT `MakePipeShell`) |
+| construction: 2-section AND N-section (3+) ruled loft (equal-count planar sections) | wrap-emboss: general curved-surface (planar-target reachable via native `cc_offset_face` #6 + native planar boolean #5; axis-aligned-cylinder-target boolean step now native via #5 curved slice) |
+| construction: sweep (straight / smooth-planar / NON-PLANAR (RMF) spine) | general SPLINE surface-of-revolution; SPINDLE torus (off-axis arc crossing the axis — self-intersecting SoR) |
 | construction: `cc_tapered_shank` (silhouette revolved 360° about Z) | shape healing |
 | **construction: `cc_helical_thread` / `cc_tapered_thread`** (well-formed radial-V helical tiling — per-turn seams weld watertight `boundaryEdges==0` at every deflection, verified vs OCCT `MakePipeShell`) | |
 
@@ -162,7 +163,7 @@ cmake -S . -B build \
   -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++ \
   -DCYBERCAD_HAS_OCCT=OFF -DCYBERCAD_HAS_METAL=OFF
 cmake --build build
-cd build && ctest --output-on-failure          # -> 19/19 pass (incl. native math/topology/tessellate/construct/profile/loft/sweep/thread/boolean (planar + curved box-cylinder)/blend/engine)
+cd build && ctest --output-on-failure          # -> 22/22 pass (incl. native math/topology/tessellate/construct/profile/residuals/loft/sweep/thread/boolean (planar + curved box-cylinder)/blend/step/engine)
 ```
 
 ```sh
@@ -183,6 +184,7 @@ bash scripts/run-sim-native-sweep.sh         # 11/11 — sweep (straight + smoot
 bash scripts/run-sim-native-thread.sh        # tapered-shank + helical/tapered thread (native, watertight) vs OCCT MakePipeShell/MakeRevol
 bash scripts/run-sim-native-boolean.sh       # 25/25 — planar-polyhedron fuse/cut/common vs OCCT BOPAlgo
 bash scripts/run-sim-curved-boolean.sh       # 18/18 — axis-aligned box-cylinder cut/fuse/common (native) + fallback vs OCCT BOPAlgo
+bash scripts/run-sim-native-geomcompletion.sh # spline extrude / off-axis-arc torus revolve / N-section loft / non-planar (RMF) sweep (native) + SSI/Tier-4 fall-through vs OCCT
 ```
 
 Full toolchain notes are in [docs/build.md](docs/build.md).

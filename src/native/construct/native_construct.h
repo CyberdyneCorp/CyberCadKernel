@@ -56,26 +56,58 @@
 //                                    top at z=depth, then build_ruled_loft.
 //   build_loft_wires(aXYZ,bXYZ)      entry for cc_solid_loft_wires: the two 3D wires
 //                                    directly, then build_ruled_loft.
+//   build_ruled_loft_sections(secs)  N-SECTION generalisation (N≥2): skin 2..N
+//                                    equal-count planar section loops into one solid
+//                                    — (N−1) ruled bands (shared internal vertex
+//                                    rings) + the first & last planar caps. Each
+//                                    section is aligned to its predecessor so the
+//                                    1:1 correspondence propagates down the chain.
+//                                    build_ruled_loft(A,B) is the N=2 special case.
+//                                    Mismatched counts / non-planar / degenerate /
+//                                    self-intersecting → NULL (OCCT fallthrough).
+//   build_loft_sections(xyz,cnt,ns)  entry for the cc_solid_loft CHAIN / a section
+//                                    list: `xyz` packs `ns` flat (x,y,z) section
+//                                    loops back to back, `cnt[k]` the vertex count
+//                                    of section k; then build_ruled_loft_sections.
 //
 //   ── Tier-C (#4b, sweep.h) ────────────────────────────────────────────────────
 //   build_sweep(profileXY,pathXYZ)   sweep a CLOSED planar profile along a 3D
 //                                    polyline path: profile centred on its centroid,
 //                                    placed perpendicular to the START tangent (local
 //                                    x = cross(tan,+Y), local y = +Y), transported
-//                                    with a rotation-minimizing frame (double
-//                                    reflection). NATIVE for a STRAIGHT spine → an
-//                                    EXACT directional prism (profile area × path
-//                                    length), AND for a SMOOTH CURVED spine → an
-//                                    RMF-transported ruled-band tube (deflection-bounded
-//                                    vs OCCT, watertight at working deflections). A
-//                                    TIGHT-CURVATURE / self-intersecting spine (turning
-//                                    radius < profile circumradius, or a too-sharp turn)
-//                                    returns NULL → OCCT MakePipe (guarded, not faked).
-//                                    Degenerate profile / < 2 path points → NULL.
-//   build_twisted_sweep(...,tw,sc)   NATIVE only when it reduces to the plain sweep
-//                                    (twist ≈ 0, scale ≈ 1) → forwards to build_sweep
-//                                    (straight or smooth curved); any real twist/scale
-//                                    → NULL (OCCT). cc_twisted_sweep.
+//                                    with the CONSTANT frame (OCCT MakePipe's planar
+//                                    corrected-Frenet law). NATIVE for a STRAIGHT spine
+//                                    → an EXACT directional prism (profile area × path
+//                                    length), AND for a SMOOTH CURVED but PLANAR spine →
+//                                    a constant-frame ruled-band tube (deflection-bounded
+//                                    vs OCCT, watertight). A NON-PLANAR curved spine
+//                                    (genuine corrected-Frenet) or a TIGHT-CURVATURE /
+//                                    self-intersecting spine (turning radius < profile
+//                                    circumradius, or a too-sharp turn) returns NULL →
+//                                    OCCT MakePipe (guarded, not faked). Degenerate
+//                                    profile / < 2 path points → NULL. A rotation-
+//                                    minimizing frame (double-reflection RMF, detail::
+//                                    rmfFrames) is provided for twist-free non-planar
+//                                    transport but is not used by the constant-frame
+//                                    MakePipe oracle path.
+//   build_twisted_sweep(...,tw,sc)   NATIVE: plain (twist ≈ 0, scale ≈ 1) forwards to
+//                                    build_sweep; a REAL twist/scale builds the per-
+//                                    station Frenet-framed ruled ThruSections tube
+//                                    (matching the OCCT twisted_sweep oracle) when it
+//                                    welds watertight and does not self-fold, else NULL
+//                                    (OCCT). cc_twisted_sweep.
+//   build_guided_sweep(...,guide)    NATIVE. Sweep the profile scaling each station's
+//                                    section by the guide splay dist(path,guide)/d0
+//                                    (per-station Frenet-framed ruled ThruSections,
+//                                    matching the OCCT guided_sweep oracle). NULL on a
+//                                    coincident guide start / degenerate input / self-
+//                                    fold. cc_guided_sweep.
+//   build_loft_along_rail(rail,A,B)  NATIVE for a STRAIGHT rail — a ruled loft between
+//                                    the two equal-count sections placed perpendicular
+//                                    to the rail tangent (matching MakePipeShell on a
+//                                    straight rail). A CURVED / kinked rail (genuine
+//                                    pipe-shell morph) or mismatched section counts →
+//                                    NULL (OCCT MakePipeShell). cc_loft_along_rail.
 //
 //   ── Tier-D (#4b, thread.h) ────────────────────────────────────────────────────
 //   build_tapered_shank(r,fh,th,ppm) GENUINELY NATIVE. Revolve a shank silhouette 360°
@@ -146,6 +178,7 @@
 #include "native/construct/construct.h"
 #include "native/construct/loft.h"
 #include "native/construct/profile.h"
+#include "native/construct/residuals.h"
 #include "native/construct/sweep.h"
 #include "native/construct/thread.h"
 

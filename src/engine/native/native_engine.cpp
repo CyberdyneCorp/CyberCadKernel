@@ -572,15 +572,29 @@ ShapeResult NativeEngine::twisted_sweep(const double* p, int pc, const double* p
     if (solid.isNull()) return fallback().twisted_sweep(p, pc, path, pathc, tw, se);
     return track(wrapNative(std::move(solid)));
 }
-// loft_along_rail / guided_sweep: HARD pipe-shell/guide cases — left OCCT
-// fallthrough (Tier C, not yet native). Labelled, verified fall-through.
+// ── Tier-2#4 (#4b) NATIVE general sweep: loft_along_rail + guided_sweep ──────────
+// loft_along_rail is NATIVE for a STRAIGHT rail (a ruled loft between the two
+// equal-count sections placed perpendicular to the rail tangent, matching
+// MakePipeShell on a straight rail); a CURVED / kinked rail (genuine pipe-shell
+// morph) or mismatched section counts → build_loft_along_rail returns NULL → OCCT.
+// guided_sweep is NATIVE when the guide-scaled per-station Frenet ThruSections tube
+// welds watertight and does not self-fold; a coincident guide start, degenerate
+// input, or a SELF-INTERSECTING tube (which needs surface-surface intersection —
+// Tier 4) → NULL → OCCT. Both results are SELF-VERIFIED robustly watertight before
+// being kept native (never a faked or leaky solid).
 ShapeResult NativeEngine::loft_along_rail(const double* r, int rc, const double* a, int ac,
                                           const double* b, int bc) {
-    return fallback().loft_along_rail(r, rc, a, ac, b, bc);
+    ntopo::Shape solid = ncst::build_loft_along_rail(r, rc, a, ac, b, bc);
+    if (solid.isNull() || !robustlyWatertight(solid))
+        return fallback().loft_along_rail(r, rc, a, ac, b, bc);
+    return track(wrapNative(std::move(solid)));
 }
 ShapeResult NativeEngine::guided_sweep(const double* p, int pc, const double* path, int pathc,
                                        const double* g, int gc) {
-    return fallback().guided_sweep(p, pc, path, pathc, g, gc);
+    ntopo::Shape solid = ncst::build_guided_sweep(p, pc, path, pathc, g, gc);
+    if (solid.isNull() || !robustlyWatertight(solid))
+        return fallback().guided_sweep(p, pc, path, pathc, g, gc);
+    return track(wrapNative(std::move(solid)));
 }
 ShapeResult NativeEngine::wrap_emboss(EngineShape body, int faceId, const double* p, int c, double d,
                                       int boss) {
@@ -638,29 +652,45 @@ ShapeResult NativeEngine::solid_extrude_polyholes(const double* o, int oc, const
     if (solid.isNull()) return fallback().solid_extrude_polyholes(o, oc, h, hcs, hc, d);
     return track(wrapNative(std::move(solid)));
 }
+// solid_extrude_profile / _polyholes route through build_prism_profile_spline, which
+// handles kind-3 SPLINE outer edges (Tier-1 residual) via the splineXY side channel
+// and delegates a line/arc/full-circle-only profile to the already-native
+// build_prism_profile. A spline-bearing profile expands to a dense polyline through
+// the fitted NURBS; the result is SELF-VERIFIED robustly watertight before being kept
+// native (a self-crossing / degenerate profile → NULL or fails verify → OCCT, never
+// faked). A pure line/arc profile is exact and passes verify trivially.
 ShapeResult NativeEngine::solid_extrude_profile(const ProfileSeg* s, int sc, const double* h, int hc,
                                                 const double* sx, int sxc, double d) {
     ntopo::Shape solid =
-        ncst::build_prism_profile(toNativeSegs(s, sc), toCircleHoles(h, hc), {}, d);
-    if (solid.isNull()) return fallback().solid_extrude_profile(s, sc, h, hc, sx, sxc, d);
+        ncst::build_prism_profile_spline(toNativeSegs(s, sc), sx, sxc, toCircleHoles(h, hc), {}, d);
+    if (solid.isNull() || !robustlyWatertight(solid))
+        return fallback().solid_extrude_profile(s, sc, h, hc, sx, sxc, d);
     return track(wrapNative(std::move(solid)));
 }
 ShapeResult NativeEngine::solid_extrude_profile_polyholes(const ProfileSeg* s, int sc,
                                                           const double* h, int cc, const double* px,
                                                           const int* pcs, int pc, const double* sx,
                                                           int sxc, double d) {
-    ntopo::Shape solid = ncst::build_prism_profile(toNativeSegs(s, sc), toCircleHoles(h, cc),
-                                                   toPolyHoles(px, pcs, pc), d);
-    if (solid.isNull())
+    ntopo::Shape solid = ncst::build_prism_profile_spline(
+        toNativeSegs(s, sc), sx, sxc, toCircleHoles(h, cc), toPolyHoles(px, pcs, pc), d);
+    if (solid.isNull() || !robustlyWatertight(solid))
         return fallback().solid_extrude_profile_polyholes(s, sc, h, cc, px, pcs, pc, sx, sxc, d);
     return track(wrapNative(std::move(solid)));
 }
+// solid_revolve_profile routes through build_revolution_profile_spline, which adds the
+// two Tier-1 residuals: a kind-3 SPLINE meridian and an OFF-AXIS circular arc (a TORUS
+// surface of revolution via the native Torus, src/native/math/torus.h). A profile with
+// neither residual delegates to the already-native build_revolution_profile (line →
+// Plane/Cylinder/Cone, on-axis arc → Sphere). The curved result is SELF-VERIFIED
+// robustly watertight before being kept native; a spindle torus / axis-crossing
+// generatrix (self-intersecting surface of revolution — Tier-4 SSI), a partial-turn
+// residual revolve, or any candidate that fails verify → NULL / OCCT (never faked).
 ShapeResult NativeEngine::solid_revolve_profile(const ProfileSeg* s, int sc, double ax, double ay,
                                                 double adx, double ady, const double* sx, int sxc,
                                                 double a) {
     const ncst::RevolveAxis axis{ax, ay, adx, ady};
-    ntopo::Shape solid = ncst::build_revolution_profile(toNativeSegs(s, sc), axis, a);
-    if (solid.isNull())
+    ntopo::Shape solid = ncst::build_revolution_profile_spline(toNativeSegs(s, sc), sx, sxc, axis, a);
+    if (solid.isNull() || !robustlyWatertight(solid))
         return fallback().solid_revolve_profile(s, sc, ax, ay, adx, ady, sx, sxc, a);
     return track(wrapNative(std::move(solid)));
 }

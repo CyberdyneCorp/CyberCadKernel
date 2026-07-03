@@ -83,11 +83,31 @@ inline UV pcurveValue(const topo::PCurve& c, double t, double frac) noexcept {
       const double a = c.dir2d.x, b = c.dir2d.y;  // major, minor radii
       return {c.origin2d.x + a * std::cos(t), c.origin2d.y + b * std::sin(t)};
     }
+    case K::BSpline: {
+      // A B-spline pcurve with a proper knot vector is evaluated as the TRUE B-spline
+      // in (u,v) at the edge parameter `t` (so S_face(pcurve(t)) = C_edge(t) — the
+      // seam-weld contract). This matters when the pcurve is a GENUINELY curved 2D
+      // B-spline (e.g. a spline extrude cap's boundary in the plane's (x,y)); linearly
+      // lerping its control poles would trace the CONTROL POLYGON (overshooting the
+      // curve) and open the cap↔wall seam. A pcurve whose poles are colinear (a
+      // straight-in-UV rim) evaluates to the same line either way, so this is safe for
+      // the existing revolve/torus rim pcurves. Falls back to pole-lerp when no usable
+      // knot vector is supplied.
+      const int deg = c.degree;
+      const std::size_t np = c.poles2d.size();
+      const bool haveKnots =
+          deg >= 1 && np >= static_cast<std::size_t>(deg + 1) && c.knots.size() == np + deg + 1;
+      if (haveKnots) {
+        const math::Point3 p = math::curvePoint(deg, {c.poles2d.data(), np},
+                                                {c.knots.data(), c.knots.size()}, t);
+        return {p.x, p.y};
+      }
+      [[fallthrough]];
+    }
     case K::Bezier:
-    case K::BSpline:
     default: {
-      // Free-form: linear-interpolate the poly of 2D poles by the [0,1] fraction
-      // across the edge's param range (poles are stored uniformly over that range).
+      // Free-form fallback: linear-interpolate the poly of 2D poles by the [0,1]
+      // fraction across the edge's param range (poles stored uniformly over that range).
       if (c.poles2d.empty()) return {c.origin2d.x, c.origin2d.y};
       if (c.poles2d.size() == 1) return {c.poles2d[0].x, c.poles2d[0].y};
       const double f = frac <= 0.0 ? 0.0 : (frac >= 1.0 ? 1.0 : frac);

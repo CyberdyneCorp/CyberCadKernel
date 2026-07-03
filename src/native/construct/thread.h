@@ -33,10 +33,12 @@
 //     samplesPerTurn, places the SAME V section radially at every station
 //     (radial = (cosθ, sinθ, 0), axial = +Z), and tiles the three profile edges into
 //     bilinear RULED bands (loft.h ruledSideFace) with shared per-station vertex rings +
-//     two planar end caps → a native Solid. GUARDED against self-intersection at fine
-//     pitch / large depth / overlapping turns; if the radial V cannot form even a
-//     candidate solid the builder returns a NULL Shape. A round-profile fallback
-//     (matching the oracle's own fallback) is NOT attempted natively.
+//     two planar end caps → a native Solid. A FINE-PITCH RESOLVER opens a small root
+//     flat where adjacent turns would otherwise touch (widening the native envelope to
+//     tight pitch / large depth — see the FINE-PITCH RESOLVER section below), and a
+//     self-intersection guard still DEFERS genuine 3D folds (steep helix lead) and
+//     axis-diving roots to OCCT via a NULL Shape. A round-profile fallback (matching
+//     the oracle's own fallback) is NOT attempted natively.
 //
 // ── HONESTY (Tier D — threads are hard; measured, not claimed) ───────────────────
 // The radial-V tiling above produces topology with the CORRECT volume and the correct
@@ -55,11 +57,12 @@
 // 3D point and the conservative single-cell weld fuses them; the V geometry/volume are
 // untouched. So helical_thread / tapered_thread now mesh ROBUSTLY watertight across the
 // deflection ladder and the ENGINE (native_engine.cpp `robustlyWatertight` self-verify)
-// keeps them NATIVE. The guards below are unchanged: a FINE-PITCH / self-intersecting
-// thread (turns fold through each other) still fails robustlyWatertight — a self-
-// overlapping mesh is non-manifold no matter how vertices weld — so it still falls
-// through to the OCCT MakePipeShell oracle (labelled, verified, never faked; the native
-// builder never emits the round-profile fallback). tapered_shank is genuinely native
+// keeps them NATIVE. The fine-pitch resolver (below) further widens which threads weld
+// cleanly by adding a root flat where turns would touch; the remaining fall-through is
+// now only the GENUINE 3D fold (turns cross through each other at a steep helix lead) —
+// a self-overlapping mesh is non-manifold no matter how vertices weld — which the lead-
+// ratio guard defers to the OCCT MakePipeShell oracle (labelled, verified, never faked;
+// the native builder never emits the round-profile fallback). tapered_shank is genuinely native
 // (it reuses the already-verified revolve). "Fall through to OCCT only when we cannot
 // verify a watertight native body — never a faked or leaky solid."
 //
@@ -87,22 +90,52 @@
 // half-base = min(pitch/2, depth·tan(flankAngle/2)) so the included apex angle is
 // `flankAngleDeg` (ISO ≈ 60°) and adjacent turns nearly meet.
 //
-// ── SELF-INTERSECTION GUARD (fine pitch / large depth / overlap) ─────────────────
-// The radial V is native-safe only when the swept turns do not fold through each
-// other or through the axis:
-//   * the apex must clear the axis: pitchR + depth stays finite and pitchR − 0 > 0
-//     (root radius pitchR > 0 — a non-positive pitch-line radius defers);
-//   * turns must not axially overlap: 2·halfBase ≤ pitch (adjacent V bases do not
-//     cross) — halfBase is already capped at pitch/2 so this holds by construction,
-//     but a degenerate half-base (≤ 0) defers;
-//   * the helix must be resolved finely enough that one turn's chord does not cut a
-//     neighbour: samplesPerTurn ≥ kMinSamplesPerTurn after the cap, else defer;
-//   * a strongly TAPERED thread whose pitch-line radius goes non-positive anywhere
-//     defers (build_tapered_thread guards both end radii).
-// Any violation → NULL Shape → OCCT fallthrough (guarded, never a self-overlapping
-// solid). The assembled solid is additionally re-validated by the caller's Gate-1
-// tessellation (watertight + plausible volume); a build that meshes non-watertight is
-// the honest signal to defer.
+// ── FINE-PITCH RESOLVER + SELF-INTERSECTION GUARD (widened envelope) ─────────────
+// Two regimes were previously conflated as "fine pitch → defer": (A) turns whose V
+// bases MEET but do not actually intersect (geometrically valid, just non-manifold in
+// the naive tiling), and (B) turns that genuinely fold through each other in 3D. This
+// module now RESOLVES (A) and still DEFERS (B):
+//
+//   RESOLVED (A) — near-touching turns (tight pitch / large depth). When the natural
+//   flank-angle half-base would make 2·halfBase ≈ pitch (no root land between turns),
+//   the two coincident root rings weld into a NON-manifold seam (each root helix edge
+//   ends up shared by four faces: the two flank bands plus the two neighbours' inner-
+//   root walls), so the mesh failed the watertight bar even though the SOLID is valid.
+//   detail::resolveHalfBase caps halfBase so a small ROOT FLAT — a thin cylindrical
+//   land at pitchR, exactly what a real ISO thread carries — separates consecutive
+//   turns (flat = max(kMinRootFlat, kRootFlatFrac·pitch), an ABSOLUTE floor so it
+//   clears the mesher weld tolerance at every deflection). The ridges then meet the
+//   inner cylinder at DISTINCT root helices and the mesh welds a clean 2-manifold. A
+//   resolved thread is sampled at kMaxSamplesPerTurn so its thin flat/ridge features
+//   are resolved at every rung of the verify ladder. This widens the robust native
+//   envelope from pitch ≳ 1.5·depth to roughly pitch ≳ 0.4 (ppm 1) and depth up to
+//   ≈ 3× the reference — see the WIDENED ENVELOPE note below.
+//
+//   DEFERRED (B) — genuine 3D folds + degeneracies (detail::threadUnsafe → NULL →
+//   OCCT). A root flat cannot fix a sweep whose flanks cross in 3D, so the guard
+//   defers when:
+//     * the root radius dives to/through the axis at either end (pitchR ≤ clearance);
+//     * the resolved ridge half-base falls below the sub-weld scale kMinRidgeHalf
+//       (opening the needed flat would leave a ridge the mesh cannot resolve → the
+//       turns re-merge);
+//     * the helix LEAD ratio pitch/(2π·pitchR) at the smallest pitch radius exceeds
+//       kMaxLeadRatio (steep lead → the radial-V helicoid flanks self-intersect; this
+//       needs surface-surface intersection, Tier 4, NOT attempted here).
+//   Any violation → NULL Shape → OCCT fallthrough (guarded, never a self-overlapping
+//   solid). The assembled solid is additionally re-validated by the engine's
+//   robustlyWatertight self-verify across the deflection ladder; a resolved candidate
+//   that still fails to weld at some deflection (residual spatial-hash cell-boundary
+//   aliasing at a handful of tight pitches) defers there — honest, never a leaky body.
+//
+// ── WIDENED ENVELOPE (measured, ppm 1, host tessellator) ─────────────────────────
+//   Now NATIVE-watertight (was defer/leak before the resolver): pitch {2…0.4} at
+//   depth 1, depth {1…3} at pitch 2, pitch/depth combos down to pitch 0.5 / depth 2,
+//   major {5…20}, and the matching tapered threads (e.g. top6/tip4/pitch2). Genuinely
+//   fine (e.g. major5/pitch0.2/depth1, lead 3.6°) is native too — small pitch is fine
+//   when the LEAD is shallow. Still DEFER: steep-lead folds (small pitchR with large
+//   pitch, lead ≳ 20°, e.g. major1/pitch3, major2/pitch6), root-dive depths
+//   (major − depth/2 ≤ 0), and a residual handful of tight pitches whose thin flat
+//   aliases the weld grid at one deflection (the self-verify catches those).
 //
 // REFERENCE ORACLE ONLY: BRepOffsetAPI_MakePipeShell (aux-spine radial sweep) and
 // BRepPrimAPI_MakeRevol (shank silhouette revolve) were consulted to confirm the
@@ -144,6 +177,42 @@ inline constexpr double kThreadPi = 3.14159265358979323846;
 inline constexpr int kMinSamplesPerTurn = 8;
 inline constexpr int kMaxSamplesPerTurn = 24;
 
+// ── FINE-PITCH RESOLVER constants (see resolveThreadParams / threadUnsafe) ────────
+// When the flank-angle half-base would make adjacent turns' V bases MEET (2·halfBase
+// ≈ pitch, i.e. no root land), the two coincident root rings weld into a NON-manifold
+// seam (each root helix edge is then shared by 4 faces — the two flank bands PLUS the
+// two adjacent turns' inner-root walls), so the mesh fails the watertight bar even
+// though the geometry is not self-intersecting. The resolver caps halfBase so a small
+// ROOT FLAT (a thin cylindrical land at pitchR, exactly what a real ISO thread has)
+// separates consecutive turns; the two ridges then meet the inner cylinder at distinct
+// root helices and the mesh is a clean 2-manifold. The flat must clear the mesher's
+// spatial-weld tolerance (deflection·0.5, up to 0.025 at the coarsest verify rung) at
+// EVERY resolved station, so it is an ABSOLUTE floor, not just a pitch fraction.
+inline constexpr double kMinRootFlat = 0.08;   // ≳ 3× coarsest-ladder weld tol (0.025)
+inline constexpr double kRootFlatFrac = 0.06;  // …but at least this fraction of pitch
+// The resolved ridge (half-base) must itself stay above the sub-weld scale, else the
+// ridge is thinner than the mesh can resolve and the turns re-merge → defer.
+inline constexpr double kMinRidgeHalf = 0.05;
+// Self-intersection (true 3D helicoid fold) guard: the helix LEAD ratio
+// pitch / (2π·pitchR) at the STEEPEST (smallest) pitch radius. Above this the radial-V
+// flanks of adjacent turns cross in 3D (a genuine self-intersecting sweep — Tier-4
+// SSI territory) and the enclosed volume diverges from the analytic ridge; measured
+// clean separation: valid threads sit ≤ ~0.32, folds ≥ ~0.55, so 0.35 is a safe cut.
+inline constexpr double kMaxLeadRatio = 0.35;
+// Max radial-V DEPTH as a multiple of the PITCH. A real thread has depth ≈ 0.5–0.6·pitch
+// (ISO); depth up to a few × pitch is still a valid, non-folding radial-V that the native
+// pure-radial section transport captures to within the parity bound. But a depth that is
+// a LARGE multiple of the pitch (a deep spike on a fine pitch) is a geometry where the
+// native pure-radial V and OCCT's MakePipeShell section transport (withCorrection, not
+// purely radial) DIVERGE materially — the two kernels enclose different volumes (native's
+// exact radial-V Pappus volume vs OCCT's healed swept solid), a REAL native-vs-oracle
+// mismatch the native self-verify (watertight only, no OCCT) cannot detect. Such an
+// extreme thread is deferred to the OCCT MakePipeShell oracle rather than shipped as a
+// native solid that silently disagrees with the reference. Threshold chosen so every
+// tested valid thread (depth/pitch ≤ 4) stays native and the deep-fine spike (depth/pitch
+// = 15, major2/pitch0.2/depth3) defers.
+inline constexpr double kMaxDepthOverPitch = 6.0;
+
 // Resolve the effective per-turn sample count: clamp into [kMinSamplesPerTurn,
 // kMaxSamplesPerTurn]. A request BELOW the floor is bumped up (finer, still bounded)
 // rather than deferred — the oracle also silently clamps.
@@ -184,7 +253,25 @@ struct ThreadParams {
   double turns = 0.0;
   int samplesPerTurn = 0;
   bool valid = false;
+  bool resolved = false;  ///< true when the fine-pitch resolver capped halfBase to
+                          ///< open a root flat (adjacent turns would otherwise touch)
 };
+
+// FINE-PITCH RESOLVER (the crux of this module's widening): cap `halfBase` so a root
+// flat of at least `flat = max(kMinRootFlat, kRootFlatFrac·pitch)` separates adjacent
+// turns' V bases (2·halfBase + flat ≤ pitch). Below that flat the two coincident root
+// rings weld into a non-manifold seam; above it the ridges meet the inner cylinder at
+// distinct root helices → a clean 2-manifold. Returns the (possibly capped) half-base;
+// sets `resolved` when the cap actually engaged (i.e. the natural flank-angle half-base
+// was too wide for the pitch). A resolver-engaged thread is sampled at the FINEST
+// helix resolution (kMaxSamplesPerTurn) so its thin flat/ridge features clear the
+// mesh weld tolerance at every deflection.
+inline double resolveHalfBase(double naturalHalf, double pitch, bool& resolved) noexcept {
+  const double flat = std::max(kMinRootFlat, kRootFlatFrac * pitch);
+  const double capped = std::min(naturalHalf, (pitch - flat) / 2.0);
+  resolved = capped < naturalHalf - kProfileTol;
+  return capped;
+}
 
 inline ThreadParams resolveThreadParams(double majorTopMM, double majorTipMM, double pitchMM,
                                         double turns, double depthMM, double flankAngleDeg,
@@ -200,30 +287,48 @@ inline ThreadParams resolveThreadParams(double majorTopMM, double majorTipMM, do
   tp.pitchRBottom = (majorTipMM - depthMM / 2.0) * scale;  // z = 0 (tip)
   tp.pitchRTop = (majorTopMM - depthMM / 2.0) * scale;     // z = rise (head)
   if (tp.pitchRBottom <= 0 || tp.pitchRTop <= 0) return tp;
-  tp.halfBase =
+  const double naturalHalf =
       std::min(tp.pitch / 2.0, tp.depth * std::tan((flankAngleDeg * kThreadPi / 180.0) / 2.0));
+  tp.halfBase = resolveHalfBase(naturalHalf, tp.pitch, tp.resolved);
   if (tp.halfBase <= 0) return tp;
   tp.turns = turns;
-  tp.samplesPerTurn = resolveSamplesPerTurn(samplesPerTurn);
+  // A resolved (fine-pitch) thread is sampled as finely as the oracle allows so the
+  // thin root flat + ridge weld cleanly; an unresolved (coarse) thread keeps its
+  // requested/clamped sample count.
+  tp.samplesPerTurn =
+      tp.resolved ? kMaxSamplesPerTurn : resolveSamplesPerTurn(samplesPerTurn);
   tp.valid = true;
   return tp;
 }
 
-// Self-intersection guard for the radial-V helical sweep (fine pitch / large depth /
-// overlapping turns). Returns true (→ defer to OCCT) when the section cannot be swept
-// safely:
-//   * the root radius (pitch-line minus nothing; the base sits AT pitchR) must clear
-//     the axis with margin at BOTH ends (a strongly tapered tip can dive to the axis);
-//   * the axial V base must fit inside the pitch (2·halfBase ≤ pitch) so adjacent
-//     turns' bases do not cross — halfBase is capped at pitch/2 so this holds, but a
-//     rounding slack is checked;
-//   * the apex must not wrap past the axis (pitchR + depth is finite & positive — a
-//     sanity clamp).
+// Self-intersection guard for the radial-V helical sweep. Returns true (→ defer to
+// OCCT) for the cases the fine-pitch resolver canNOT rescue — the section cannot be
+// swept as a valid watertight solid:
+//   * the root radius must clear the axis with margin at BOTH ends (a strongly tapered
+//     tip can dive to the axis);
+//   * the axial V base + its resolved root flat must fit inside the pitch
+//     (2·halfBase ≤ pitch) so adjacent turns' bases do not cross — the resolver caps
+//     halfBase for this, but a rounding slack is checked;
+//   * the RESOLVED ridge half-base must stay above the sub-weld scale (kMinRidgeHalf):
+//     if opening the required root flat leaves a ridge too thin for the mesher to
+//     resolve, the turns re-merge — defer rather than emit a near-degenerate ridge;
+//   * the helix LEAD ratio pitch / (2π·pitchR) at the STEEPEST (smallest) pitch radius
+//     must stay ≤ kMaxLeadRatio. Above it the radial-V flanks of adjacent turns cross
+//     in 3D — a GENUINE self-intersecting sweep (surface-surface intersection, Tier-4)
+//     that a root flat cannot fix and whose enclosed volume diverges from the analytic
+//     ridge; this is the honest fine-pitch fold fall-through the module promises.
 inline bool threadUnsafe(const ThreadParams& tp) noexcept {
   constexpr double kAxisClearance = 1e-3;  // root must stay this far off the axis
   if (tp.pitchRBottom <= kAxisClearance || tp.pitchRTop <= kAxisClearance) return true;
-  if (2.0 * tp.halfBase > tp.pitch + kProfileTol) return true;   // axial overlap
+  if (2.0 * tp.halfBase > tp.pitch + kProfileTol) return true;  // axial overlap
   if (!(tp.depth > 0.0) || !(tp.pitch > 0.0)) return true;
+  if (tp.halfBase < kMinRidgeHalf) return true;  // resolved ridge sub-weld → re-merges
+  const double minPitchR = std::min(tp.pitchRBottom, tp.pitchRTop);  // steepest lead
+  if (tp.pitch > kMaxLeadRatio * 2.0 * kThreadPi * minPitchR) return true;  // 3D fold
+  // Deep-spike-on-fine-pitch: the native pure-radial V diverges from OCCT's swept solid
+  // beyond the parity bound (a real native-vs-oracle mismatch the watertight self-verify
+  // cannot see) — defer to the OCCT MakePipeShell oracle rather than ship a divergent solid.
+  if (tp.depth > kMaxDepthOverPitch * tp.pitch) return true;
   return false;
 }
 
@@ -304,7 +409,14 @@ inline topo::Shape build_thread(double majorTopMM, double majorTipMM, double pit
   if (detail::threadUnsafe(tp)) return {};  // fine pitch / large depth / overlap → OCCT
 
   const double rise = tp.pitch * tp.turns;  // total Z over all turns
-  const int nStations = std::max(2, static_cast<int>(std::lround(tp.turns * tp.samplesPerTurn)));
+  // Station count = turns · samplesPerTurn. For a RESOLVED (fine-pitch) thread, add ONE
+  // extra station to break a Z-STEP ↔ WELD-GRID resonance: at certain tight pitches the
+  // per-station Z step (rise / stations) lands exactly on the mesher's weld-cell size
+  // (deflection·0.5), so a station's ring aliases onto its neighbour's cell boundary and
+  // the seam opens at that deflection. An odd offset makes the Z step incommensurate
+  // with the cell grid at every ladder rung, so the resolved thread welds robustly.
+  int nStations = std::max(2, static_cast<int>(std::lround(tp.turns * tp.samplesPerTurn)));
+  if (tp.resolved) ++nStations;
 
   // Per-station V vertex rings (root-bottom, apex, root-top). The pitch-line radius
   // and Z interpolate linearly with the helix parameter f ∈ [0,1] (matching sampleHelix

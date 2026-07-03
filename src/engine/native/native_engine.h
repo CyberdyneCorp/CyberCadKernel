@@ -58,11 +58,26 @@
 //                              cannot read, that returns a clean error (never faked). Mixed
 //                              native/OCCT operands are rejected; all-OCCT operands forward
 //                              to the OCCT BRepAlgoAPI oracle.               [#5]
+//   * chamfer_edges / fillet_edges / offset_face / shell — NATIVE blends for the
+//                              tractable PLANAR cases (src/native/blend): chamfer a
+//                              CONVEX edge between two planar faces (plane cut through
+//                              the two setback lines), constant-radius rolling-ball
+//                              FILLET on a convex planar dihedral (tangent-cylinder,
+//                              deflection-bounded facets), OFFSET a planar face along
+//                              its normal (slab grow/shrink), and SHELL a convex
+//                              planar solid to a uniform wall (offset + BSP cut). Each
+//                              runs on a native body, edits its planar-polygon soup,
+//                              re-welds a watertight solid, and is accepted only by a
+//                              mandatory SELF-VERIFY (watertight + sane volume sign);
+//                              a curved/concave/oversized/variable case yields no
+//                              verified result → OCCT BRepFilletAPI/BRepOffsetAPI
+//                              (for an OCCT body) or an honest error (native void).
+//                              fillet_edges_variable / fillet_face stay OCCT-only. [#6]
 //   Each native op tries the native builder and FALLS THROUGH to the fallback engine
 //   when the native path returns a NULL Shape (a deferred sub-case or degenerate
 //   input) — the native path never fakes a shape. Everything else (guided sweep /
-//   loft-along-rail / threads, fillet/shell/boolean/transform/exchange/reference-
-//   geometry) falls through unconditionally.
+//   loft-along-rail / threads, transform / exchange / reference-geometry) falls
+//   through unconditionally.
 //
 // SHAPE COEXISTENCE. The facade owns ONE ShapeRegistry mapping CCShapeId ->
 // EngineShape (std::shared_ptr<void>). The OCCT adapter type-erases an OcctShape

@@ -344,18 +344,72 @@ longest; a native exchange is lower priority than the modelling core.
   app-facing behaviour already works). Native wrap-emboss needs three pieces:
   (1) native project-a-2D-pattern-onto-a-surface into the target face UV domain,
   (2) native offset-along-normal by the emboss depth, and (3) a boolean merge of the
-  raised/recessed region with the base solid. Step (3) is **partially unblocked by #5**
-  (planar-polyhedron emboss/deboss can already use the native BSP-CSG fuse/cut), but a
-  curved-surface wrap-emboss still requires the **curved native-boolean slice of #5**
-  plus **native offset from #6**. Therefore native wrap-emboss is sequenced AFTER #6,
-  as its own OpenSpec change (`/opsx:propose`) when those dependencies land. Until then
-  `cc_wrap_emboss` stays OCCT-fallthrough (labelled, verified). The other residual #4b
+  raised/recessed region with the base solid. Step (2) is now **unblocked by #6** — the
+  native planar `cc_offset_face` (slide a planar face along its normal + drag the side
+  faces, EXACT slab, self-verified vs OCCT) is exactly the planar offset-along-normal a
+  PLANAR-face emboss/deboss needs; step (3) is **partially unblocked by #5** (a
+  planar-polyhedron emboss/deboss can use the native BSP-CSG fuse/cut). So a
+  **planar-target wrap-emboss is now reachable natively** (native offset from #6 + native
+  planar boolean from #5), and only a **curved-surface** wrap-emboss still waits on the
+  **curved native-boolean slice of #5** plus a **curved-surface native offset** (the
+  planar slice of #6 does not offset curved faces). Native wrap-emboss remains sequenced
+  AFTER #6, as its own OpenSpec change (`/opsx:propose`) — the planar slice can be
+  proposed now that #6 landed; the curved slice waits on curved #5 + curved offset. Until
+  then `cc_wrap_emboss` stays OCCT-fallthrough (labelled, verified). The other residual #4b
   natives — robust-watertight `cc_helical_thread`/`cc_tapered_thread` (needs the mesher
   shared-edge weld), 3+-section/guided/rail loft, non-planar/guided/rail sweep, and
   arc/spline-profile revolve — are likewise deferred future work, all currently
   OCCT-fallthrough.
-- ☐ #6–#8 — planned; proposed as each is about to start (blends → exchange →
-  drop-occt).
+- ✅ **#6 `native-blends` — tractable PLANAR slice done at the verification bar (both
+  gates green); curved / concave / variable / fillet_face OCCT-fallthrough (honest).** Native
+  `cc_chamfer_edges` / `cc_fillet_edges` (constant radius) / `cc_offset_face` /
+  `cc_shell` for the tractable planar cases, built OCCT-free under
+  `src/native/blend/` (`blend_geom.h`, `chamfer_edges.h`, `fillet_edges.h`,
+  `offset_face.h`, `shell.h`, aggregate `native_blend.h`). Each op edits the solid's
+  oriented-planar-polygon soup (the boolean's `extractPolygons`) and re-welds a
+  watertight solid via the boolean's `assembleSolid` (T-junction repair + triangulate
+  + weld), so it meshes by the SAME path a native prism / boolean does; the engine
+  then runs a MANDATORY self-verify (`blendResultVerified` — watertight + sane volume
+  sign: chamfer/fillet/shell REDUCE volume, offset GROWS for +distance / shrinks for
+  −distance) and DISCARDS a bad candidate → OCCT (never a wrong/leaky/faked solid).
+  Native: **chamfer** slices the convex corner off with the plane through the two
+  setback lines (EXACT vs OCCT for a box corner — 10³ edge d=2 → vol 980);
+  **fillet** replaces a convex planar-dihedral edge with the rolling-ball tangent
+  cylinder (the Phase-3 dihedral construction — axis ∥ crease, radius r, seated
+  tangent to both planes: C = E − r/(1+n1·n2)·(n1+n2), tangent lines Ti = C + r·ni),
+  tiled into deflection-bounded facets (vol 991.4, BETWEEN the sharp 1000 and the
+  chamfer 980, watertight); **offset_face** slides a planar face along its normal
+  dragging the side faces (EXACT slab — +5 → 1500, −4 → 600); **shell** insets the
+  kept walls inward by thickness and native-BSP-cuts the cavity (open-top box t=1 →
+  wall vol 424). Gate 1 GREEN — host `test_native_blend` (10 cases: chamfer box /
+  2-edge exact + degenerate/curved fallthrough; fillet watertight-between +
+  curved/degenerate fallthrough; offset grow/shrink exact; shell wall exact +
+  oversize fallthrough; concave L-prism edge → NULL while a convex edge of the same
+  prism still lands native) + 5 new `test_native_engine` facade cases (native
+  chamfer/fillet/offset/shell through `cc_set_engine(1)` + a variable-radius
+  deferral + a native `cc_edge_polylines` regression case) host CTest **18/18**. STILL
+  OCCT-fallthrough (native builder
+  returns NULL / self-verify discards → forwarded or honest error, never faked):
+  CURVED-face inputs, CONCAVE edges, variable-radius `cc_fillet_edges_variable`,
+  `cc_fillet_face`, an edge shared by ≠2 faces, multi-edge fillet interference,
+  non-convex shell, oversized thickness. Blend functions are 🟢 Excellent (≤10)
+  except the two op drivers `fillet_edges` (13) / `chamfer_edges` (11) in the
+  🟡 Acceptable band (systems-band per-edge loop, flagged). Gate 2 (sim native-vs-OCCT
+  parity, `native_blend_parity.mm` vs BRepFilletAPI/BRepOffsetAPI) GREEN — **`[NBLEND]`
+  16 passed / 0 failed** through the `cc_*` facade under `cc_set_engine(0/1)`: chamfer
+  (vol o=995 n=995 **rel 2.29e-16**) / offset (1500, rel 4.55e-16) / shell (424, rel
+  4.02e-16) EXACT + watertight, constant-radius fillet deflection-bounded (o=997.854
+  n=997.765 rel 8.96e-05, watertight), the curved-rim fillet forwarded to OCCT
+  (`[fallback]` rel 0.00e+00), and the self-verify guard rejecting a thickness-6 shell on
+  a 10³ box (id 0, honest error). **Root-cause fix:** the NativeEngine had no native
+  `edge_polylines` — a native body's edges were unqueryable (the op refused a native
+  body), so `findAxisEdge` in the sim harness resolved edge id 0 and `cc_chamfer_edges`
+  / `cc_fillet_edges` always returned 0. `NativeEngine::edge_polylines` now discretizes
+  each edge (in `mapShapes(Edge)` 1-based order, matching `subshape_ids` / the blend
+  ops' edge lookup) via the shared `EdgeCache`, so native-body edges are pickable exactly
+  as OCCT-body edges are. On `run-sim-suite.sh`'s SKIP list (own `main()`); 221/221
+  re-verified.
+- ☐ #7–#8 — planned; proposed as each is about to start (exchange → drop-occt).
 
 Progress is reflected in [ROADMAP.md](ROADMAP.md) Phase 4 and per-change
 `tasks.md`; living specs are synced/archived per capability as they pass the

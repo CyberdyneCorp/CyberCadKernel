@@ -50,7 +50,7 @@ flowchart TD
     Engine -->|"cc_set_engine(1)"| Native["NativeEngine (C++20)<br/>native: math · topology · tessellation ·<br/>construction (extrude / revolve / 2-section loft / sweep / tapered-shank) ·<br/>booleans (planar-polyhedron fuse/cut/common)"]
     Engine -.->|"no-OCCT host build"| Stub["Stub engine"]
 
-    Native -.->|"fallthrough (still OCCT):<br/>curved/general booleans · fillets/offsets · features ·<br/>STEP/IGES · helical/tapered thread · wrap-emboss ·<br/>non-planar-sweep · healing"| OCCT
+    Native -.->|"fallthrough (still OCCT):<br/>curved/general booleans · curved/concave/variable blends · features ·<br/>STEP/IGES · helical/tapered thread · wrap-emboss ·<br/>non-planar-sweep · healing"| OCCT
     OCCT ==>|"still required"| OCCTlib[("OCCT libs")]
 
     Compute --> CPUb["CPU backend (fp64)"]
@@ -93,14 +93,18 @@ linked until it is complete. Current split:
 | Native (C++20, verified vs OCCT) | Still OCCT-backed (native pending) |
 |---|---|
 | math / geometry primitives | **booleans**: curved-face (surface-surface intersection) |
-| B-rep topology + traversal | booleans: near-tangent / coincident / general / concave-general |
-| tessellation (watertight) | fillets / chamfers / offsets / shell |
-| **booleans: PLANAR-polyhedron fuse / cut / common** (axis-aligned boxes, prisms — BSP-CSG, self-verified EXACT vs OCCT) | features (replace-face, etc.) |
-| construction: extrude, revolve (line-segment) | data exchange (STEP / IGES) |
+| B-rep topology + traversal | booleans: general / concave-general / foreign operands |
+| tessellation (watertight) | **blends**: curved-face fillet / chamfer / offset / shell (curved-surface blend + trimming) |
+| **booleans: PLANAR-polyhedron fuse / cut / common** (axis-aligned boxes, prisms — BSP-CSG, self-verified EXACT vs OCCT) | blends: concave edges, variable-radius `cc_fillet_edges_variable`, `cc_fillet_face`, multi-edge interference |
+| **blends: `cc_chamfer_edges`** (convex planar-planar edge — EXACT vs OCCT) | blends: non-convex / oversized-thickness shell |
+| **blends: `cc_offset_face`** (planar face along its normal — EXACT slab) | features (replace-face, etc.) |
+| **blends: `cc_shell`** (uniform thickness, box-like planar solid — EXACT wall) | data exchange (STEP / IGES) |
+| **blends: `cc_fillet_edges`** (CONSTANT radius, convex planar-dihedral edge — rolling-ball cylinder, deflection-bounded) | booleans: near-tangent / coincident |
+| construction: extrude, revolve (line-segment) | full general robust blend / offset over arbitrary NURBS solids |
 | construction: holed extrude (circular + polygon holes) | sweep: non-planar / tight-curvature / real-twist / guided / rail |
 | construction: typed-profile extrude (line / arc / full-circle) | 3+-section / guided / rail loft |
 | construction: typed-profile revolve (line, on-axis arc → sphere) | `cc_helical_thread` / `cc_tapered_thread` (native tiling built; self-verify defers to OCCT `MakePipeShell`) |
-| construction: 2-section ruled loft (equal-count planar sections) | wrap-emboss: curved-surface (planar-polyhedron emboss/deboss now unblocked by native planar booleans) |
+| construction: 2-section ruled loft (equal-count planar sections) | wrap-emboss: curved-surface (planar-target now reachable via native `cc_offset_face` #6 + native planar boolean #5) |
 | construction: sweep (straight spine, or smooth curved but planar spine) | spline-profile edges, off-axis-arc (torus) / spline revolve |
 | construction: `cc_tapered_shank` (silhouette revolved 360° about Z) | shape healing |
 
@@ -205,7 +209,7 @@ verified geometry numbers.
 | **1 — Multi-core** | parallel OCCT booleans + meshing, determinism audit | ✅ complete at the simulator acceptance bar |
 | **2 — GPU (Metal)** | Metal backend, GPU tessellation wired into `cc_tessellate`, BVH + ray/frustum pick | ✅ complete at the simulator acceptance bar |
 | **3 — Missing features** | reference geometry, wrap-emboss, thread boolean, full-round (any planar dihedral) + G2 fillets | ✅ 5/5 (curved-neighbour full-round is the only residual) |
-| **4 — Native rewrite** | replace OCCT capability-by-capability, then drop it | ◐ native math · topology · tessellation · construction done; booleans planar-polyhedron slice done (curved/general OCCT); fillets/exchange pending |
+| **4 — Native rewrite** | replace OCCT capability-by-capability, then drop it | ◐ native math · topology · tessellation · construction done; booleans + blends planar slices done (curved/general OCCT); exchange (#7) + drop-occt (#8) pending |
 
 The **acceptance bar** is the in-repo iOS-simulator suite (correctness verified
 against analytic references, GPU vs CPU, and B-rep validity/watertightness).

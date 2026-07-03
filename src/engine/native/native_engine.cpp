@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "native/blend/native_blend.h"
 #include "native/boolean/native_boolean.h"
 #include "native/construct/native_construct.h"
 #include "native/tessellate/native_tessellate.h"
@@ -244,6 +245,25 @@ bool booleanResultVerified(const ntopo::Shape& result, const ntopo::Shape& a,
     if (!(expected > 0.0)) return false;  // an empty/degenerate result is not a valid solid
     const double tol = std::max(1e-6 * expected, 1e-9);
     return std::fabs(vr - expected) <= tol;
+}
+
+// SELF-VERIFY a native BLEND result (Phase 4 #6 native-blends). MANDATORY guard: a
+// blend is accepted native ONLY when its result is a valid watertight solid with a
+// SANE VOLUME SIGN vs the original body — else the candidate is DISCARDED and the op
+// falls through to OCCT (never a wrong/leaky solid). The expected sign per op:
+//   * chamfer / fillet — a convex-edge blend REDUCES volume: 0 < Vr < Vorig.
+//   * offset_face grow (distance > 0) — GROWS: Vr > Vorig.
+//   * offset_face shrink / shell — stays positive but SMALLER: 0 < Vr < Vorig.
+// `wantGrow` selects the grow inequality; otherwise the result must be a valid
+// watertight positive-volume solid strictly smaller than the original.
+bool blendResultVerified(const ntopo::Shape& result, const ntopo::Shape& original, bool wantGrow) {
+    const double vr = watertightVolume(result);
+    if (vr <= 0.0) return false;  // not watertight or empty → reject
+    const double vo = watertightVolume(original);
+    if (vo <= 0.0) return true;   // original not measurable → trust watertight+positive
+    const double tol = std::max(1e-6 * vo, 1e-9);
+    if (wantGrow) return vr > vo + tol;  // offset grow
+    return vr < vo - tol;                // chamfer / fillet / shell / offset-shrink
 }
 
 }  // namespace
@@ -579,26 +599,74 @@ ShapeResult NativeEngine::solid_revolve_profile(const ProfileSeg* s, int sc, dou
 
 // ── feature fallthrough ─────────────────────────────────────────────────────────
 
+// ── NATIVE blends (Phase 4 #6 native-blends) with mandatory self-verify ──────────
+//
+// Each blend op is NATIVE when the body is a native PLANAR-FACED solid and the picked
+// feature is in the tractable domain (a convex planar-dihedral edge for chamfer/
+// fillet; a planar face for offset; a convex planar solid for shell). The native
+// builder (src/native/blend) edits the solid's planar-polygon soup and re-welds a
+// watertight solid; the result is then SELF-VERIFIED (watertight + sane volume sign
+// vs the original — chamfer/fillet/shell shrink, offset grows or shrinks) and
+// DISCARDED if it fails. A native body that the native builder cannot handle (curved,
+// concave, ≠2-face edge, oversized) or that fails self-verify canNOT be forwarded to
+// OCCT (OCCT would misread the native void), so it returns an honest error — never a
+// wrong/leaky or faked solid. An OCCT body forwards to the OCCT BRepFilletAPI/
+// BRepOffsetAPI oracle unconditionally.
+//
+// STILL OCCT-FALLTHROUGH (native builder returns NULL / self-verify discards):
+// curved-face inputs, CONCAVE edges, variable-radius (fillet_edges_variable),
+// fillet_face, an edge shared by ≠2 faces, multi-edge fillet interference, non-convex
+// shell — labelled, verified, never faked.
+
+namespace nblend = cybercad::native::blend;
+
 ShapeResult NativeEngine::fillet_edges(EngineShape body, const int* e, int ec, double r) {
-    CC_NATIVE_BODY_UNSUPPORTED("fillet_edges", body);
-    return fallback().fillet_edges(body, e, ec, r);
+    if (!isNative(body)) return fallback().fillet_edges(body, e, ec, r);
+    const auto* h = static_cast<const NativeShape*>(body.get());
+    ntopo::Shape result = nblend::fillet_edges(h->shape, e, ec, r);
+    if (result.isNull() || !blendResultVerified(result, h->shape, /*wantGrow=*/false))
+        return make_error(
+            "native fillet_edges: no verified watertight result for this native body "
+            "(curved face / concave edge / ≠2-face edge / interference → OCCT-only)");
+    return track(wrapNative(std::move(result)));
 }
 ShapeResult NativeEngine::fillet_edges_variable(EngineShape body, const int* e, int ec, double r1,
                                                 double r2) {
+    // Variable radius is out of the native domain — OCCT-only. (Never forward a
+    // native void; report honestly.)
     CC_NATIVE_BODY_UNSUPPORTED("fillet_edges_variable", body);
     return fallback().fillet_edges_variable(body, e, ec, r1, r2);
 }
 ShapeResult NativeEngine::chamfer_edges(EngineShape body, const int* e, int ec, double d) {
-    CC_NATIVE_BODY_UNSUPPORTED("chamfer_edges", body);
-    return fallback().chamfer_edges(body, e, ec, d);
+    if (!isNative(body)) return fallback().chamfer_edges(body, e, ec, d);
+    const auto* h = static_cast<const NativeShape*>(body.get());
+    ntopo::Shape result = nblend::chamfer_edges(h->shape, e, ec, d);
+    if (result.isNull() || !blendResultVerified(result, h->shape, /*wantGrow=*/false))
+        return make_error(
+            "native chamfer_edges: no verified watertight result for this native body "
+            "(curved face / concave edge / ≠2-face edge → OCCT-only)");
+    return track(wrapNative(std::move(result)));
 }
 ShapeResult NativeEngine::shell(EngineShape body, const int* f, int fc, double t) {
-    CC_NATIVE_BODY_UNSUPPORTED("shell", body);
-    return fallback().shell(body, f, fc, t);
+    if (!isNative(body)) return fallback().shell(body, f, fc, t);
+    const auto* h = static_cast<const NativeShape*>(body.get());
+    ntopo::Shape result = nblend::shell(h->shape, f, fc, t);
+    if (result.isNull() || !blendResultVerified(result, h->shape, /*wantGrow=*/false))
+        return make_error(
+            "native shell: no verified watertight wall for this native body "
+            "(curved/non-convex solid or thickness too large → OCCT-only)");
+    return track(wrapNative(std::move(result)));
 }
 ShapeResult NativeEngine::offset_face(EngineShape body, int f, double d) {
-    CC_NATIVE_BODY_UNSUPPORTED("offset_face", body);
-    return fallback().offset_face(body, f, d);
+    if (!isNative(body)) return fallback().offset_face(body, f, d);
+    const auto* h = static_cast<const NativeShape*>(body.get());
+    ntopo::Shape result = nblend::offset_face(h->shape, f, d);
+    // Grow (d>0) must increase volume; shrink (d<0) must decrease it.
+    if (result.isNull() || !blendResultVerified(result, h->shape, /*wantGrow=*/d > 0.0))
+        return make_error(
+            "native offset_face: no verified watertight result for this native body "
+            "(curved solid / non-planar face or degenerate offset → OCCT-only)");
+    return track(wrapNative(std::move(result)));
 }
 ShapeResult NativeEngine::replace_face(EngineShape body, int f, double o, double t) {
     CC_NATIVE_BODY_UNSUPPORTED("replace_face", body);
@@ -688,9 +756,37 @@ ShapeResult NativeEngine::thread_apply(EngineShape shaft, EngineShape thread, in
 
 // ── query / reference fallthrough ────────────────────────────────────────────────
 
+// Native edge_polylines: one EdgePolylineData per edge, in the SAME 1-based
+// mapShapes(Edge) order subshape_ids / cc_fillet_edges / cc_chamfer_edges use, each a
+// world-placed 3D polyline. A straight edge yields its two endpoints; a curved native
+// edge (a circle from a revolve) is deflection-discretized by the shared EdgeCache —
+// the same discretizer the solid mesher stitches seams with, so the ids and geometry
+// an app/harness resolves here match exactly what the blend ops act on. Without this,
+// a native body's edges were unqueryable (the old fallthrough refused a native body),
+// so cc_fillet_edges / cc_chamfer_edges could never resolve an edge id and always
+// returned 0 — the sim-parity failure this fixes. An OCCT body still forwards.
 Result<std::vector<EdgePolylineData>> NativeEngine::edge_polylines(EngineShape body) {
-    CC_NATIVE_BODY_UNSUPPORTED("edge_polylines", body);
-    return fallback().edge_polylines(body);
+    if (!isNative(body)) return fallback().edge_polylines(body);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    // Deflection matched to the OCCT adapter's 0.2 tangential-deflection discretization
+    // (a straight edge collapses to 2 points; a curved edge subdivides). minSegs=1 so a
+    // line is exactly its two endpoints, matching mapShapes' single edge polyline.
+    ntess::EdgeCache cache(/*deflection=*/0.2, /*minSegs=*/1, /*maxSegs=*/64);
+    const ntopo::ShapeMap map = ntopo::mapShapes(holder->shape, ntopo::ShapeType::Edge);
+    std::vector<EdgePolylineData> edges(map.size());
+    for (std::size_t i = 0; i < map.size(); ++i) {
+        EdgePolylineData& e = edges[i];
+        e.edgeId = static_cast<int>(i) + 1;  // 1-based, matches subshape_ids
+        const ntess::EdgeDiscretization& d = cache.discretize(map.shape(static_cast<int>(i) + 1));
+        if (d.points.size() < 2) continue;  // degenerate → empty polyline (id preserved)
+        e.points.reserve(d.points.size() * 3);
+        for (const auto& p : d.points) {
+            e.points.push_back(p.x);
+            e.points.push_back(p.y);
+            e.points.push_back(p.z);
+        }
+    }
+    return edges;
 }
 Result<std::vector<double>> NativeEngine::principal_moments(EngineShape body) {
     CC_NATIVE_BODY_UNSUPPORTED("principal_moments", body);

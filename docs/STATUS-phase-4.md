@@ -57,8 +57,47 @@ Date: 2026-07-03 · Branch: `main`.
   out-of-domain result; curved (cyl-box, rel 0.00e+00), near-coincident (0.00e+00) and
   disjoint (0.00e+00) cases fall through to OCCT (delegated, no native interception).
   Booleans remain the longest-lived OCCT dependency for curved / general.
-- **No regressions.** Host build + CTest **17/17** (incl. `test_native_tessellate`,
-  `test_native_boolean`); `scripts/run-sim-suite.sh` stays **221 passed, 0 failed**
+- **Capability #6 `native-blends` — tractable planar slice done at the
+  verification bar (BOTH gates green); curved / concave / variable / fillet_face
+  OCCT-fallthrough (honest).**
+  Native `cc_chamfer_edges` / `cc_fillet_edges` (constant radius) / `cc_offset_face` /
+  `cc_shell` for the tractable PLANAR cases, built OCCT-free under `src/native/blend/`
+  (`blend_geom.h`, `chamfer_edges.h`, `fillet_edges.h`, `offset_face.h`, `shell.h`,
+  aggregate `native_blend.h`). Each op edits the solid's oriented-planar-polygon soup
+  (the boolean's `extractPolygons`) and re-welds a watertight solid via the boolean's
+  `assembleSolid` (T-junction repair + triangulate + weld), then the engine runs a
+  MANDATORY SELF-VERIFY (watertight + sane volume sign — chamfer/fillet/shell shrink,
+  offset grows/shrinks) and DISCARDS a bad candidate. What lands native:
+  **chamfer** = slice the convex corner off with the plane through the two setback
+  lines (EXACT vs OCCT for a box corner — 10×10×10 edge chamfer d=2 → vol 980);
+  **fillet** = the rolling-ball tangent cylinder on a convex planar dihedral (axis ∥
+  crease, radius r, seated tangent to both planes — the Phase-3 dihedral construction),
+  tiled into deflection-bounded facets (vol 991.4, between the sharp 1000 and chamfer
+  980, watertight); **offset_face** = slide a planar face along its normal, dragging the
+  side faces (EXACT slab — top-face +5 → 1500, −4 → 600); **shell** = inset the kept
+  walls inward by thickness and native-BSP-cut the cavity (open-top box t=1 → wall vol
+  424). Gate 1 GREEN — host `test_native_blend` (10 cases: chamfer box/2-edge exact +
+  degenerate/curved fallthrough; fillet watertight-between + curved/degenerate
+  fallthrough; offset grow/shrink exact; shell wall exact + oversize fallthrough;
+  concave L-prism edge chamfer/fillet → NULL while a convex edge of the same prism still
+  works) + 5 new `test_native_engine` facade cases (native chamfer/fillet/offset/shell
+  through `cc_set_engine(1)` + variable-radius deferral); host CTest **18/18** (was 17).
+  STILL OCCT-fallthrough (native builder returns NULL / self-verify discards → forwarded
+  or honest error, never faked): CURVED-face inputs, CONCAVE edges, variable-radius
+  `cc_fillet_edges_variable`, `cc_fillet_face`, an edge shared by ≠2 faces, multi-edge
+  fillet interference, non-convex shell, oversized thickness. New `src/native/blend/`
+  functions are 🟢 Excellent (≤10) except the two op drivers `fillet_edges` (13) /
+  `chamfer_edges` (11) in the 🟡 Acceptable band (systems-band per-edge loop). **Gate 2
+  (sim native-vs-OCCT parity, `native_blend_parity.mm` vs `BRepFilletAPI` /
+  `BRepOffsetAPI`) GREEN — `[NBLEND]` 16 passed / 0 failed** through the `cc_*` facade
+  under `cc_set_engine(0/1)` (OCCT default restored in teardown): chamfer (vol o=995
+  n=995 **rel 2.29e-16**), offset (1500, rel 4.55e-16) and shell (424, rel 4.02e-16)
+  EXACT + watertight; constant-radius fillet deflection-bounded (o=997.854 n=997.765
+  rel 8.96e-05, watertight); a curved-rim fillet forwarded to OCCT (`[fallback]` rel
+  0.00e+00); and the self-verify guard rejecting a thickness-6 shell on a 10³ box
+  (id 0, honest error). See the native-blend result table below.
+- **No regressions.** Host build + CTest **18/18** (incl. `test_native_tessellate`,
+  `test_native_boolean`, `test_native_blend`); `scripts/run-sim-suite.sh` stays **221 passed, 0 failed**
   (the OCCT default engine and `cc_boolean` under it are unchanged; only change is
   `native_boolean_parity.mm` on the SKIP list).
 - **Contained blast radius.** Native math lives under `src/native/math/`, native
@@ -812,12 +851,96 @@ robust near-tangent/coincident handling, and full shape healing are future work.
 - `tests/sim/native_boolean_parity.mm` + `scripts/run-sim-native-boolean.sh` — sim Gate-2
   native-vs-OCCT parity (own `main()`; SKIPped by `run-sim-suite.sh`).
 
+## native-blend result table (#6)
+
+**Tractable-PLANAR slice of the blend family** — `cc_chamfer_edges` (convex planar-planar
+edge), `cc_fillet_edges` (CONSTANT radius, convex planar-DIHEDRAL edge), `cc_offset_face`
+(planar face), `cc_shell` (uniform-thickness box-like solid) are NATIVE; every other blend
+configuration is a labelled, verified OCCT fall-through. Each native builder edits the
+solid's oriented-planar-polygon soup (`boolean/extractPolygons`) and re-welds via
+`boolean/assembleSolid`, then the engine runs a MANDATORY `blendResultVerified` self-verify
+(watertight + sane volume SIGN — chamfer/fillet/shell REDUCE, offset GROWS for +d / shrinks
+for −d) and DISCARDS a bad candidate → OCCT.
+
+### What is native vs what falls through to OCCT
+
+| `cc_*` blend op / case | Engine | Native geometry / fall-through reason |
+|---|---|---|
+| `cc_chamfer_edges` — convex PLANAR-PLANAR edge | **NATIVE** | slice the convex corner off with the plane through the two setback lines; EXACT vs OCCT |
+| `cc_offset_face` — PLANAR face along its normal | **NATIVE** | slide the face along its normal, drag the side faces; EXACT slab (grow +d / shrink −d) |
+| `cc_shell` — uniform thickness on a PLANAR / box-like solid | **NATIVE** | inset the kept walls inward by thickness + native BSP-cut the cavity; EXACT wall |
+| `cc_fillet_edges` — CONSTANT radius, convex PLANAR-DIHEDRAL edge | **NATIVE** | rolling-ball tangent cylinder (axis ∥ crease, `C = E − r/(1+n1·n2)·(n1+n2)`, tangent lines `Ti = C + r·ni`), deflection-bounded facets; blend face a `Cylinder` of radius r |
+| `cc_fillet_edges` — CURVED-face / curved-rim edge | OCCT-fallthrough | no curved-face blend surface / curved trimming in the planar slice; builder NULL → forwarded to `BRepFilletAPI_MakeFillet` |
+| `cc_fillet_edges` / `cc_chamfer_edges` — CONCAVE edge | OCCT-fallthrough | reflex-dihedral material add + neighbourhood trimming out of slice; builder DECLINEs → NULL |
+| `cc_fillet_edges_variable` (variable radius) | OCCT-fallthrough | non-cylindrical swept blend surface; pure fall-through, no native builder call |
+| `cc_fillet_face` (blend a whole face) | OCCT-fallthrough | pure fall-through, no native builder call |
+| MULTI-EDGE interference (blends overlap at a corner) | OCCT-fallthrough | setback / corner-patch handling out of the single-edge slice; DECLINE → NULL |
+| edge shared by ≠ 2 faces / non-convex shell / oversized thickness / foreign body | OCCT-fallthrough | preflight guard DECLINEs or self-verify discards → forwarded, never faked |
+
+**Host gate (Gate 1):** `test_native_blend` (10 cases) + 5 new `test_native_engine` facade
+cases, Homebrew clang 22.1.8, `-std=c++20 -DCYBERCAD_HAS_OCCT=OFF -DCYBERCAD_HAS_METAL=OFF`,
+clean build zero warnings/errors, host CTest **18/18** (incl. `test_native_tessellate`
+13/13 watertight, unperturbed by the blend changes).
+
+**Native-vs-OCCT parity gate (Gate 2)** — `tests/sim/native_blend_parity.mm` +
+`scripts/run-sim-native-blend.sh`, booted iOS simulator, arm64, through the `cc_*` facade
+under `cc_set_engine(0/1)` (OCCT default restored in teardown). **`[NBLEND]` 16 passed /
+0 failed.** Per-op native (n) vs OCCT (o) deltas:
+
+| Case | Op / edge | Engine | mass vol (o / n) · relVol | area rel | centroidΔ | bbox maxCornerΔ (tol) | tessellate |
+|---|---|---|---|---|---|---|---|
+| chamfer-edge | `cc_chamfer_edges` planar corner | **NATIVE** | 995 / 995 · **2.29e-16** | 1.92e-16 | 8.88e-16 | 1.11e-16 (1e-6) | watertight, 16 tris, meshVolRel 0.00e+00 |
+| offset-face | `cc_offset_face` planar face | **NATIVE** | 1500 / 1500 · **4.55e-16** | 1.42e-16 | 2.66e-15 | 0.00e+00 (1e-6) | watertight, 12 tris, meshVolRel 0.00e+00 |
+| shell-open-top | `cc_shell` t on box, top open | **NATIVE** | 424 / 424 · **4.02e-16** | 1.28e-16 | 8.88e-16 | 0.00e+00 (1e-6) | watertight, 52 tris, meshVolRel 0.00e+00 |
+| fillet-edge | `cc_fillet_edges` const-r planar dihedral | **NATIVE** (deflection-bounded) | 997.854 / 997.765 · **8.96e-05** | 1.05e-04 | 4.16e-04 | 1.88e-16 (2e-2) | watertight, 36 tris, meshVolRel 0.00e+00 |
+| fillet-curved-edge | `cc_fillet_edges` on a curved rim | OCCT-fallthrough | 497.562 / 497.562 · **0.00e+00** | 0.00e+00 | 0.00e+00 | 0.00e+00 (1e-6) | forwarded to OCCT, watertight, 1010 tris, meshVolRel 3.48e-03 (curved fallback: volume-bound only) |
+| self-verify-guard | `cc_shell` t=6 on 10³ box (wall ≥ ½ span) | native REJECTS | id 0 (expect 0) | — | — | — | no verified watertight wall → OCCT-only (honest error, no fake result) |
+
+Tolerances: chamfer / offset / box-shell are EXACT (vol/area/centroid/bbox rel ≤ 4.55e-16
+vs OCCT `BRepFilletAPI_MakeChamfer` / `BRepOffsetAPI`); the constant-radius planar-dihedral
+fillet matches OCCT `BRepFilletAPI_MakeFillet` within a deflection bound (vol rel 8.96e-05,
+tol 2e-2) with the blend face a cylinder of radius r, watertight. **Fall-through proof:** the
+curved-rim fillet runs with native active (`cc_active_engine()==1`) yet is forwarded to OCCT
+(rel 0.00e+00 — delegated, no native interception); the oversized-thickness shell is rejected
+by the self-verify and returns id 0 (an honest failure, not a faked solid). Runs on the sim
+(OCCT linked); on `run-sim-suite.sh`'s SKIP list (own `main()`), so the 221-assertion
+OCCT-only suite count is unperturbed.
+
+**Root-cause fix that made Gate 2 pass:** the `NativeEngine` had no native
+`edge_polylines`, so a native body's edges were unqueryable and `findAxisEdge` in the sim
+harness resolved edge id 0 → `cc_chamfer_edges` / `cc_fillet_edges` always returned 0.
+`NativeEngine::edge_polylines` now discretizes each edge (in `mapShapes(Edge)` 1-based order,
+matching `subshape_ids` and the blend ops' edge lookup) via the shared `EdgeCache`, so
+native-body edges are pickable exactly as OCCT-body edges are (covered by a
+`test_native_engine` `cc_edge_polylines` regression case).
+
+### Files (#6)
+
+- `src/native/blend/blend_geom.h` — convex planar-dihedral edge classifier, in-face
+  perpendicular-to-edge direction, setback lines, rolling-ball tangent-cylinder solve,
+  planar-cutter builder (OCCT-free).
+- `src/native/blend/chamfer_edges.h` — `chamfer_edges(shape, edgeIds, count, distance)`.
+- `src/native/blend/fillet_edges.h` — `fillet_edges(shape, edgeIds, count, radius)` (constant).
+- `src/native/blend/offset_face.h` — `offset_face(shape, faceId, distance)`.
+- `src/native/blend/shell.h` — `shell(shape, faceIds, count, thickness)`.
+- `src/native/blend/native_blend.h` — umbrella (namespace `cybercad::native::blend`).
+- `src/engine/native/native_engine.cpp` — `chamfer_edges` / `fillet_edges` / `offset_face` /
+  `shell` native-else-(self-verify)-else-fallback branches + `blendResultVerified` +
+  native `edge_polylines`; `fillet_edges_variable` / `fillet_face` stay pure fall-throughs.
+- `tests/native/test_native_blend.cpp` — host Gate-1 (no OCCT).
+- `tests/sim/native_blend_parity.mm` + `scripts/run-sim-native-blend.sh` — sim Gate-2
+  native-vs-OCCT parity (own `main()`; SKIPped by `run-sim-suite.sh`).
+
 ## Regression evidence
 
-- Host build + CTest with Homebrew clang, `-DCYBERCAD_HAS_OCCT=OFF
+- Host build + CTest with Homebrew clang 22.1.8, `-DCYBERCAD_HAS_OCCT=OFF
   -DCYBERCAD_HAS_METAL=OFF`, fresh build dir: configure OK, build OK (no
-  warnings/errors), **CTest 12/12 passed, 0 failed** (10 existing +
-  `test_native_construct` + `test_native_engine`).
+  warnings/errors), **CTest 18/18 passed, 0 failed** (through #6) — the 7 pre-existing
+  targets (registry / guard / scheduler / compute_backend / parallel_policy /
+  parallel_toggle / abi) + `test_native_math` / `_topology` / `_tessellate` /
+  `_construct` / `_profile` / `_loft` / `_sweep` / `_thread` / `_boolean` / `_blend` /
+  `_engine`. `test_native_tessellate` stays 13/13 (box/cylinder/sphere/filleted-box
+  watertight `boundaryEdges==0`) — unperturbed by the #6 blend changes.
 - `scripts/run-sim-suite.sh` (iphonesimulator arm64): still
   **== 221 passed, 0 failed ==** (verified twice). To confirm HONESTLY against the
   facade+NativeEngine changes (the prebuilt sim lib predated them), the
@@ -829,7 +952,10 @@ robust near-tangent/coincident handling, and full shape healing are future work.
   `native_tessellation_parity.mm`, and the new `native_construct_parity.mm`) are in
   the script's SKIP list and carry their own `main()`, so the OCCT-only
   221-assertion suite count is unchanged. The suite never calls `cc_set_engine`, so
-  it exercises the pure OCCT path exactly as before.
+  it exercises the pure OCCT path exactly as before. The #6 blend parity harness
+  `native_blend_parity.mm` (own `main()`, its own `run-sim-native-blend.sh`) is
+  likewise on the SKIP list — the only uncommitted change to `run-sim-suite.sh` — so
+  the 221 count is preserved; `run-sim-suite.sh` **221/221** re-verified (twice).
 - Isolation / blast radius: capabilities #1–#3 (native math `src/native/math/`,
   native topology `src/native/topology/`, native tessellation
   `src/native/tessellate/`) remain unreachable from the `cc_*` facade by design.
@@ -855,5 +981,6 @@ robust near-tangent/coincident handling, and full shape healing are future work.
 | 4 | `native-construction` | **done at the bar** | Native `cc_solid_extrude` (closed polygon → prism: bottom/top planar caps + one planar quad per profile edge) and native `cc_solid_revolve` for **LINE-SEGMENT** profiles (segments → plane / cylinder / cone faces of revolution; full 360° closes, partial adds planar caps) — full native topology + geometry under `src/native/construct/construct.h`, OCCT-free/host-buildable. Wired through a new `NativeEngine : IEngine` (`src/engine/native/`) that serves these ops + native tessellate / mass / bbox / **subshape_ids** on its own native bodies and FALLS THROUGH to the OCCT engine (or the stub on host) for every other capability. Facade toggle `cc_set_engine(int)` / `cc_active_engine()` (additive, like `cc_set_parallel`; **default stays OCCT** so existing suites are unchanged). **Both gates green.** Host: `test_native_engine` + `test_native_construct` assert native builds with NO OCCT — boxes (exact vol/area/6-faces/centroid/bbox/watertight), a **triangle prism** (now watertight, exact vol = area×depth, via the tessellator cap-fill fix below), an L-prism, a full-turn tube (9π), a quarter-turn tube (9π/4) and a cone (4π), within the deflection bound; CTest **12/12**. Sim native-vs-OCCT parity (`native_construct_parity.mm`, driven through the `cc_*` facade under `cc_set_engine(0/1)`): **17/17** across box / triangle-prism / cylinder-tube / partial-revolve — mass (vol/area/centroid), bbox, face count, watertight tessellation, plus the fallthrough boolean (native→OCCT) all match. No regressions (`run-sim-suite.sh` **221/221**, `native_tessellation_parity.mm` **20/20**). Three fixes landed here: (a) the tessellator `isFullRectangle` fast-path now, for a PLANAR face, also requires the loop to hit all four box corners, so a convex polygon cap (triangle/hexagon) is ear-clipped instead of filled as its bbox — native extrude of ANY simple polygon now meshes watertight with the exact volume (`trim.h`); (b) `NativeEngine::bounding_box` derives from the tessellated mesh (a revolved solid's B-rep vertices sit only at angular stations, so a vertex-only AABB missed the circular extremes); (c) `NativeEngine::subshape_ids` is native for native bodies (Vertex/Edge/Face counts via the native Explorer). EXPLICITLY DEFERRED to OCCT (not faked, falls through): loft, sweep, twisted/guided sweep, threads, holed/typed-profile extrude variants, revolve of ARC/SPLINE profiles. DOCUMENTED REPRESENTATIONAL DIFFERENCE (not a geometric mismatch): the native builder emits per-face edges / per-patch vertices (proper edge/vertex SHARING deferred) and tiles a full-turn surface of revolution into <π angular patches (periodic-face construction deferred), so native V/E and the full-turn face count differ from OCCT's shared/periodic representation while the SOLID is geometrically identical (volume/area/bbox/watertight all match) — the parity gate asserts face-count where the tiling matches (prisms, partial revolve) and an integer-multiple relation for the full-turn revolve. |
 | 4b | `native-construction` (advanced swept solids) | ◐ Tiers A + B + C + D(shank) done at the bar; threads OCCT-fallthrough, E follow-up | **Tier A (`add-native-construction-profiles`) done at the verification bar:** `cc_solid_extrude_holes` (circular holes → TRUE `Circle` edge + `Cylinder` wall), `cc_solid_extrude_polyholes` (polygon holes), `cc_solid_extrude_profile` / `_profile_polyholes` (typed line/arc/full-circle outer + holes), `cc_solid_revolve_profile` (line → Plane/Cylinder/Cone, on-axis arc → Sphere) are NATIVE (`src/native/construct/profile.h`). Both gates green: host `test_native_profile` + `test_native_engine` CTest **13/13** (no OCCT); sim native-vs-OCCT parity `native_construct_profiles_parity.mm` **22/22** — 5 native families (polyhole EXACT rel 1.97e-16; curved vol rel ≤ 4.97e-2, all watertight) + 2 fall-through families (kind-3 spline extrude, off-axis-arc torus revolve, vol rel 0.00e+00). **Tier B (`add-native-loft`) done at the verification bar:** `cc_solid_loft` / `cc_solid_loft_wires` for TWO PLANAR sections with EQUAL vertex counts (≥3) are NATIVE — one BILINEAR (degree-1 Bézier) ruled side face per corresponding edge pair + two planar caps → watertight solid, mirroring ruled `BRepOffsetAPI_ThruSections` (`src/native/construct/loft.h`, all functions cognitive complexity ≤ 7). Both gates green: host `test_native_loft` (9 cases) + `test_native_engine` (2 new facade cases) CTest **14/14** (no OCCT); sim native-vs-OCCT parity `native_loft_parity.mm` **17/17** — 3 EXACT families (square-frustum rel 2.54e-16, hex-prism rel 0.00e+00, tri-prism loft_wires rel 0.00e+00) + rotated-square TWIST deflection-bounded (vol rel 5.33e-3, watertight) + a mismatched-count fall-through delegating to OCCT (vol rel 0.00e+00). No regressions (`test_native_tessellate` green — box/cylinder/sphere/filleted-box watertight `boundaryEdges==0`, 13/13 cases; `run-sim-suite.sh` 221/221). **Tier C (`add-native-sweep`) done at the verification bar:** `cc_solid_sweep` for a STRAIGHT spine (EXACT directional prism, vol = profileArea×\|d\|) and a SMOOTH CURVED but PLANAR spine (CONSTANT-frame ruled tube — the section is TRANSLATED with a fixed orientation, matching OCCT MakePipe's planar `GeomFill_CorrectedFrenet` → `Law_Constant`, NOT a perpendicular/Pappus sweep) are NATIVE (`src/native/construct/sweep.h`, reuses `loft.h` `ruledSideFace` + `construct.h` `planarFace`; `build_sweep` cognitive complexity 14). `cc_twisted_sweep` is native only when it reduces to the plain sweep (twist ≈ 0 AND scale ≈ 1). An earlier RMF/double-reflection revision was REMOVED — it produced the Pappus volume, a real oracle mismatch. Both gates green: host `test_native_sweep` (11 cases) + `test_native_engine` (3 sweep cases) CTest **15/15** (no OCCT); sim native-vs-OCCT parity `native_sweep_parity.mm` **11/11** (8 native + 3 fallback) — straight EXACT vol rel 7.11e-16 and smooth-arc EXACT vol o=330.299 n=330.299 rel 1.72e-16 (native F = OCCT F = 98, watertight), plus real-twist / guided / loft-rail fall-through delegating to OCCT (vol rel 0.00e+00, native active). STILL OCCT-fallthrough (not faked): kind-3 SPLINE edges, off-axis-arc (torus) / spline surface-of-revolution; loft with MISMATCHED counts / a NON-PLANAR section / a point-collapse section / 3+ sections / guided / rail; a NON-PLANAR / TIGHT-CURVATURE / self-intersecting sweep spine, a REAL twist/scale sweep, `cc_guided_sweep` / `cc_loft_along_rail`; and E wrap-emboss. **Tier D (`add-native-threads`): `cc_tapered_shank` done at the verification bar (NATIVE); threads honestly OCCT-fallthrough.** `cc_tapered_shank` is a pointed-shank silhouette (cone tip → full-radius cylinder → head disk) revolved 360° about the WORLD Z axis by reusing the native `build_revolution` (`src/native/construct/thread.h`, all functions cognitive complexity ≤ 5) — reproducing the OCCT `BRepPrimAPI_MakeRevol` oracle (mass/centroid/bbox), tip a TRUE on-axis apex, robustly watertight at every deflection. `cc_helical_thread` / `cc_tapered_thread` build the full radial-V axis-aux-spine helical tiling (correct volume + V geometry) but their per-turn seams do not weld robustly watertight on the current two-stage mesher, so the engine `robustlyWatertight` self-verify REJECTS the native thread and FALLS THROUGH to OCCT `MakePipeShell` (labelled, verified, never faked). Both gates green: host `test_native_thread` (8 cases) + `test_native_engine` (3 facade cases) CTest **16/16** (no OCCT; one TEST-ONLY fix — stale in-plane-Y bbox/axis assertions in `tapered_shank_is_watertight_revolve` corrected to the shipped Z-axial convention, implementation unchanged); sim native-vs-OCCT parity `native_thread_parity.mm` — `cc_tapered_shank` NATIVE r5/fh20/th10 vol o=1837.94 n=1830.27 rel 4.17e-03 / area rel 3.64e-03 / centroidΔ 3.85e-02 / bbox maxCornerΔ 1.00e-07 / F 4→9 (k=3 tiling) / watertight 144 tris meshVolRel 3.81e-03, plus the two thread ops as OCCT fall-through (native active=1, self-verify defers → delegated, vol rel 0.00e+00). No regressions (`run-sim-suite.sh` 221/221, `test_native_tessellate` green). |
 | 5 | `native-booleans` | ◐ PLANAR-polyhedron slice done at the bar; curved/general OCCT-fallthrough | Native `cc_boolean` (fuse/cut/common) for PLANAR-faced solids (axis-aligned boxes, prisms) via a BSP-tree CSG (`src/native/boolean/`), guarded by a MANDATORY self-verify (`robustlyWatertight` + set-algebra volume) that discards + falls through to OCCT otherwise. Both gates green: host `test_native_boolean` + `test_native_engine` CTest **17/17** (no OCCT); sim native-vs-OCCT parity `native_boolean_parity.mm` **25/25** — box fuse (rel 1.27e-16) / cut (2.96e-16) / common (2.22e-16), contained fuse (0.00e+00) / common (2.22e-16) all EXACT + watertight, self-verify rejects native∩native disjoint, plus curved (cyl-box, rel 0.00e+00) / near-coincident (rel 0.00e+00) / disjoint (rel 0.00e+00) OCCT-fallthrough (delegated, no interception). No regressions (`run-sim-suite.sh` 221/221, `test_native_tessellate` green). STILL OCCT: curved-face booleans (surface-surface intersection), near-tangent/coincident, general/concave-general, foreign operands, shape healing — booleans remain the longest-lived OCCT dependency for curved/general. |
-| 6–7 | blends → exchange | ☐ planned | Proposed as each begins. |
+| 6 | `native-blends` | ◐ tractable planar slice done at the bar (BOTH gates green); curved/concave/variable/fillet_face OCCT-fallthrough | Native `cc_chamfer_edges` / `cc_fillet_edges` (constant radius) / `cc_offset_face` / `cc_shell` for the tractable PLANAR cases (`src/native/blend/`), each editing the solid's oriented-planar-polygon soup (`boolean/extractPolygons`) and re-welding a watertight solid via `boolean/assembleSolid`, then a MANDATORY engine self-verify (`blendResultVerified` — watertight + sane volume sign: chamfer/fillet/shell shrink, offset grows/shrinks) that DISCARDS a bad candidate (never faked). Native: **chamfer** = slice the convex corner off with the plane through the two setback lines (EXACT for a box); **fillet** = rolling-ball tangent cylinder on a convex planar dihedral (Phase-3 dihedral construction: axis ∥ crease, radius r, tangent to both planes), deflection-bounded facets, blend face a `Cylinder` of radius r, watertight; **offset_face** = slide a planar face along its normal dragging the side faces (EXACT slab); **shell** = inset kept walls inward by thickness + native BSP-cut the cavity (open-top box t=1 → wall vol 424). Both gates green: host `test_native_blend` (10 cases incl. 2-edge chamfer exact + concave-L-prism fallthrough) + 5 new `test_native_engine` facade cases (incl. a native `cc_edge_polylines` regression), host CTest **18/18** (no OCCT); sim native-vs-OCCT parity `native_blend_parity.mm` **[NBLEND] 16/16** — chamfer (vol o=995 n=995 rel 2.29e-16) / offset (1500, rel 4.55e-16) / shell (424, rel 4.02e-16) EXACT + watertight, constant-radius fillet deflection-bounded (o=997.854 n=997.765 rel 8.96e-05, watertight), a curved-rim fillet forwarded to OCCT (rel 0.00e+00), the self-verify rejecting a thickness-6 shell (id 0, honest error). No regressions (`run-sim-suite.sh` 221/221, `test_native_tessellate` 13/13 green). STILL OCCT-fallthrough (builder NULL / self-verify discards → forwarded, never faked): CURVED-face inputs, CONCAVE edges, variable-radius `cc_fillet_edges_variable`, `cc_fillet_face`, ≠2-face edges, multi-edge fillet interference, non-convex shell, oversized thickness. Blend fns 🟢 Excellent (≤10) except drivers `fillet_edges` (13) / `chamfer_edges` (11) 🟡 Acceptable. |
+| 7 | `native-exchange` | ☐ planned | Proposed when it begins. |
 | 8 | `drop-occt` | ☐ planned | Unlink OCCT once every capability is native. |

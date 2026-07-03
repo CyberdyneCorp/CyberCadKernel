@@ -634,4 +634,176 @@ CC_TEST(native_boolean_curved_operand_errors_not_faked) {
     cc_shape_release(cyl);
 }
 
+// ── Phase 4 #6 native-blends through the cc_* facade ──────────────────────────────
+// Each op runs NATIVE on a native box body under cc_set_engine(1), self-verifies
+// (watertight + sane volume sign), and DISCARDS a bad result (→ 0 + error on the
+// OCCT-free host, since a native void cannot be forwarded to OCCT). Every box edge is
+// a convex 90° planar dihedral, so a single-edge chamfer/fillet always lands native.
+
+// Chamfer one convex box edge: distance 2 on a 10×10×10 box removes a
+// ½·2·2·10 = 20 corner prism → volume 980, watertight.
+CC_TEST(native_chamfer_box_edge_volume_reduced) {
+    EngineGuard g;
+    cc_set_engine(1);
+    const double sq[] = {0, 0, 10, 0, 10, 10, 0, 10};
+    const CCShapeId box = cc_solid_extrude(sq, 4, 10.0);
+    CC_CHECK(box != 0);
+    // Chamfer each edge id until one lands native (all 12 box edges are convex, so
+    // id 1 succeeds); assert the native result is watertight and smaller.
+    const int edges[] = {1};
+    const CCShapeId ch = cc_chamfer_edges(box, edges, 1, 2.0);
+    CC_CHECK(ch != 0);
+    if (ch == 0) { std::printf("  last_error=%s\n", cc_last_error()); }
+    else {
+        const CCMassProps mp = cc_mass_properties(ch);
+        CC_CHECK(mp.valid != 0);
+        CC_CHECK(mp.volume < 1000.0 && mp.volume > 900.0);  // one corner chamfered
+        cc_shape_release(ch);
+    }
+    cc_shape_release(box);
+}
+
+// Fillet one convex box edge with r=2: watertight, volume reduced but LESS than the
+// chamfer (the fillet keeps the quarter-cylinder material).
+CC_TEST(native_fillet_box_edge_watertight) {
+    EngineGuard g;
+    cc_set_engine(1);
+    const double sq[] = {0, 0, 10, 0, 10, 10, 0, 10};
+    const CCShapeId box = cc_solid_extrude(sq, 4, 10.0);
+    CC_CHECK(box != 0);
+    const int edges[] = {1};
+    const CCShapeId f = cc_fillet_edges(box, edges, 1, 2.0);
+    CC_CHECK(f != 0);
+    if (f == 0) { std::printf("  last_error=%s\n", cc_last_error()); }
+    else {
+        const CCMassProps mp = cc_mass_properties(f);
+        CC_CHECK(mp.valid != 0);
+        CC_CHECK(mp.volume < 1000.0 && mp.volume > 985.0);  // < sharp, > chamfer
+        cc_shape_release(f);
+    }
+    cc_shape_release(box);
+}
+
+// Offset one box face outward by 5: a 10×10×10 box grows to 10×10×15 = 1500 for the
+// cap face (id chosen by scanning; a side face grows the corresponding extent). We
+// assert the native result is watertight and LARGER than the original.
+CC_TEST(native_offset_face_grows) {
+    EngineGuard g;
+    cc_set_engine(1);
+    const double sq[] = {0, 0, 10, 0, 10, 10, 0, 10};
+    const CCShapeId box = cc_solid_extrude(sq, 4, 10.0);
+    CC_CHECK(box != 0);
+    // Scan face ids for one whose outward offset self-verifies as a grow.
+    bool grew = false;
+    for (int fid = 1; fid <= 6 && !grew; ++fid) {
+        const CCShapeId gsh = cc_offset_face(box, fid, 5.0);
+        if (gsh == 0) continue;
+        const CCMassProps mp = cc_mass_properties(gsh);
+        if (mp.valid && mp.volume > 1000.0 + 1e-6) {
+            grew = true;
+            CC_CHECK(std::fabs(mp.volume - 1500.0) < 1e-2);
+        }
+        cc_shape_release(gsh);
+    }
+    CC_CHECK(grew);
+    cc_shape_release(box);
+}
+
+// Shell a box open on one face, thickness 1: wall volume 1000 − 8×8×9 = 424 when the
+// open face is a cap; scan face ids and assert one gives a watertight wall < original.
+CC_TEST(native_shell_box_wall) {
+    EngineGuard g;
+    cc_set_engine(1);
+    const double sq[] = {0, 0, 10, 0, 10, 10, 0, 10};
+    const CCShapeId box = cc_solid_extrude(sq, 4, 10.0);
+    CC_CHECK(box != 0);
+    bool walled = false;
+    for (int fid = 1; fid <= 6 && !walled; ++fid) {
+        const int faces[] = {fid};
+        const CCShapeId sh = cc_shell(box, faces, 1, 1.0);
+        if (sh == 0) continue;
+        const CCMassProps mp = cc_mass_properties(sh);
+        if (mp.valid && mp.volume > 0.0 && mp.volume < 1000.0) {
+            walled = true;
+            CC_CHECK(std::fabs(mp.volume - 424.0) < 1.0);  // one open cap
+        }
+        cc_shape_release(sh);
+    }
+    CC_CHECK(walled);
+    cc_shape_release(box);
+}
+
+// REGRESSION (Phase 4 #6 sim-parity): a NATIVE body's edges must be QUERYABLE through
+// cc_edge_polylines so an app/harness can resolve an edge id to chamfer/fillet. The
+// native engine used to refuse edge_polylines on a native body (returned an error), so
+// cc_edge_polylines gave 0 edges and any edge-id resolver (as the sim blend harness
+// does via findAxisEdge) got id 0 → cc_chamfer_edges/cc_fillet_edges returned 0. This
+// guards the native edge_polylines path: every native edge is returned as a 2-point
+// straight line with a 1-based id, AND resolving one edge geometrically then chamfering
+// it lands a valid native result — the exact end-to-end path the sim harness exercises.
+// (The native builder emits per-face edges — vertex/edge SHARING is deferred — so a box
+// yields 24 edge nodes, not OCCT's 12 shared edges; the id COUNT differs by that k=2
+// factor while the GEOMETRY of every edge is exact. The test asserts the representation-
+// tolerant invariants, not a hard 12.)
+CC_TEST(native_edge_polylines_and_resolved_chamfer) {
+    EngineGuard g;
+    cc_set_engine(1);
+    const double sq[] = {0, 0, 10, 0, 10, 10, 0, 10};
+    const CCShapeId box = cc_solid_extrude(sq, 4, 10.0);
+    CC_CHECK(box != 0);
+
+    CCEdgePolyline* edges = nullptr;
+    const int n = cc_edge_polylines(box, &edges);
+    CC_CHECK(n > 0);              // native body edges MUST be queryable (the bug)
+    CC_CHECK(edges != nullptr);
+
+    bool idsOk = true, lineOk = true, lenOk = true;
+    // Resolve the vertical edge at x=0,y=0 (the sim harness's chamfer/fillet pick).
+    int vertEdge = 0;
+    for (int i = 0; i < n && edges != nullptr; ++i) {
+        const CCEdgePolyline& e = edges[i];
+        if (e.edgeId != i + 1) idsOk = false;         // ids are 1..n in order
+        if (e.pointCount != 2 || e.points == nullptr) { lineOk = false; continue; }
+        const double* a = &e.points[0];
+        const double* b = &e.points[3];
+        const double len = std::sqrt((b[0]-a[0])*(b[0]-a[0]) + (b[1]-a[1])*(b[1]-a[1]) +
+                                     (b[2]-a[2])*(b[2]-a[2]));
+        if (std::fabs(len - 10.0) > 1e-6) lenOk = false;  // every box edge is 10 mm
+        const bool onX0Y0 = std::fabs(a[0]) < 1e-6 && std::fabs(a[1]) < 1e-6 &&
+                            std::fabs(b[0]) < 1e-6 && std::fabs(b[1]) < 1e-6;
+        if (onX0Y0) vertEdge = e.edgeId;
+    }
+    CC_CHECK(idsOk);
+    CC_CHECK(lineOk);
+    CC_CHECK(lenOk);
+    CC_CHECK(vertEdge != 0);
+    if (edges) cc_edge_polylines_free(edges, n);
+
+    // The end-to-end path: chamfer the RESOLVED edge → a valid, smaller native solid.
+    const int ids[] = {vertEdge};
+    const CCShapeId ch = cc_chamfer_edges(box, ids, 1, 1.0);
+    CC_CHECK(ch != 0);
+    if (ch == 0) { std::printf("  last_error=%s\n", cc_last_error()); }
+    else {
+        const CCMassProps mp = cc_mass_properties(ch);
+        CC_CHECK(mp.valid != 0);
+        CC_CHECK(std::fabs(mp.volume - 995.0) < 1e-3);  // 1000 − ½·1·1·10
+        cc_shape_release(ch);
+    }
+    cc_shape_release(box);
+}
+
+// Variable-radius fillet is out of the native domain → honest error on a native body
+// (never faked, never a native void handed to OCCT).
+CC_TEST(native_variable_fillet_defers) {
+    EngineGuard g;
+    cc_set_engine(1);
+    const double sq[] = {0, 0, 10, 0, 10, 10, 0, 10};
+    const CCShapeId box = cc_solid_extrude(sq, 4, 10.0);
+    const int edges[] = {1};
+    CC_CHECK_EQ(cc_fillet_edges_variable(box, edges, 1, 1.0, 3.0), 0);
+    CC_CHECK(std::strlen(cc_last_error()) > 0);
+    cc_shape_release(box);
+}
+
 CC_RUN_ALL()

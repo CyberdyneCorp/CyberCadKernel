@@ -51,9 +51,11 @@
 
 #include "native/boolean/assemble.h"
 #include "native/boolean/bsp.h"
+#include "native/boolean/curved.h"
 #include "native/boolean/polygon.h"
 #include "native/topology/native_topology.h"
 
+#include <optional>
 #include <vector>
 
 namespace cybercad::native::boolean {
@@ -132,6 +134,18 @@ inline std::vector<Polygon> booleanPolygons(std::vector<Polygon> aPolys,
 // ─────────────────────────────────────────────────────────────────────────────
 inline topo::Shape boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op) {
   if (a.isNull() || b.isNull()) return {};
+
+  // ── Curved slice: axis-aligned box ⟷ axis-parallel cylinder (analytic) ────────
+  // Try the narrow curved-boolean path FIRST (one operand curved). It recognises
+  // the box/cylinder configuration analytically and builds a true-B-rep result
+  // (Cylinder/Circle/Plane faces). A NULL means "not in the analytic family" and we
+  // fall through to the planar path (which itself gates on isAllPlanar). The engine
+  // self-verify (watertight + analytic volume) still guards whatever comes back.
+  if (topo::Shape curvedResult = curved::tryBoxCylinder(a, b, static_cast<int>(op));
+      !curvedResult.isNull())
+    return curvedResult;
+
+  // ── Planar polyhedron path (both operands all-planar) ─────────────────────────
   if (!isAllPlanar(a) || !isAllPlanar(b)) return {};  // curved → OCCT fallthrough
 
   std::vector<Polygon> aPolys = extractPolygons(a);

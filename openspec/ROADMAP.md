@@ -260,10 +260,22 @@ the numeric oracle; native code is host-buildable (OCCT-free).
   watertight; self-verify rejects native∩native disjoint; curved cyl-box / near-coincident
   / disjoint OCCT-fallthrough rel 0.00e+00, no interception); no regressions
   (`run-sim-suite.sh` 221/221, `test_native_tessellate` green); archived to
-  `openspec/specs/native-booleans`. STILL OCCT (research-grade, not faked): **curved-face
-  booleans** (surface-surface intersection), near-tangent / coincident, general /
+  `openspec/specs/native-booleans`. **CURVED analytic slice DONE at the verification bar
+  (both gates green), archived:** change **`add-native-curved-booleans`** — `cc_boolean`
+  (cut / fuse / common) is native for an **AXIS-ALIGNED box ⟷ axis-parallel cylinder**
+  (cylinder radially inside the box), built as a closed-form `Cylinder`+`Circle`+`Plane`
+  B-rep (cut → round THROUGH hole `boxVol − πr²·h`, fuse → protruding BOSS, common →
+  clipped segment) guarded by an analytic-volume self-verify (`src/native/boolean/curved.h`).
+  Both gates green: host CTest **18/18** no-OCCT + iOS-sim `[NCURVBOOL]` **18 checks (6×3),
+  0 failed** — 3 NATIVE (through-hole-cut rel 3.19e-04, boss-fuse rel 6.10e-05, common rel
+  1.30e-03, all watertight) + 3 OCCT-fallback (blind-hole-cut / oblique-cyl-cut /
+  sphere-box-cut, rel 0 forwarded); no regressions (`run-sim-suite.sh` 221/221, host CTest
+  19/19). This partially unblocks the boolean step of an axis-aligned-cylinder-target
+  wrap-emboss (#4b-E). STILL OCCT (research-grade, not faked): **general curved-face
+  booleans** (surface-surface intersection: sphere / cone / NURBS / non-axis-aligned /
+  cyl-cyl / blind-hole / non-through cut), near-tangent / coincident, general /
   concave-general, foreign operands, shape healing — booleans remain the longest-lived
-  OCCT dependency for curved / general.
+  OCCT dependency for general curved.
 - ◐ Fillets/chamfers/offsets/shell. Change **`add-native-fillets-offsets`** —
   capability `native-blends`. Contract: `occt-usage` §Fillets & chamfers,
   §Offsets/sweeps/lofts/shells. **TRACTABLE-PLANAR slice done at the verification bar

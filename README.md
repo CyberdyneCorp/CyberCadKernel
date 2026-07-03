@@ -47,10 +47,10 @@ flowchart TD
     end
 
     Engine -->|"default"| OCCT["OCCT adapter<br/>(exact B-rep, fp64, CPU)"]
-    Engine -->|"cc_set_engine(1)"| Native["NativeEngine (C++20)<br/>native: math · topology · tessellation ·<br/>construction (extrude / revolve / 2-section loft / sweep / tapered-shank / helical+tapered thread) ·<br/>booleans (planar-polyhedron fuse/cut/common)"]
+    Engine -->|"cc_set_engine(1)"| Native["NativeEngine (C++20)<br/>native: math · topology · tessellation ·<br/>construction (extrude / revolve / 2-section loft / sweep / tapered-shank / helical+tapered thread) ·<br/>booleans (planar-polyhedron + axis-aligned box-cylinder fuse/cut/common)"]
     Engine -.->|"no-OCCT host build"| Stub["Stub engine"]
 
-    Native -.->|"fallthrough (still OCCT):<br/>curved/general booleans · curved/concave/variable blends · features ·<br/>STEP/IGES · fine-pitch (self-intersecting) thread · wrap-emboss ·<br/>non-planar-sweep · healing"| OCCT
+    Native -.->|"fallthrough (still OCCT):<br/>general curved booleans · curved/concave/variable blends · features ·<br/>STEP/IGES · fine-pitch (self-intersecting) thread · wrap-emboss ·<br/>non-planar-sweep · healing"| OCCT
     OCCT ==>|"still required"| OCCTlib[("OCCT libs")]
 
     Compute --> CPUb["CPU backend (fp64)"]
@@ -79,7 +79,8 @@ the rest, so OCCT remains a required dependency until Phase 4 completes.
   Bézier/B-spline/NURBS eval), `topology` (B-rep model + traversal), `tessellate`
   (watertight mesher), `construct` (extrude/revolve/2-section ruled loft/sweep/
   tapered-shank/helical+tapered thread), `boolean` (planar-polyhedron fuse/cut/common
-  via BSP-CSG, self-verified). Host-buildable and unit-tested with no OCCT.
+  via BSP-CSG + axis-aligned box-cylinder curved analytic fuse/cut/common, self-verified).
+  Host-buildable and unit-tested with no OCCT.
 - **Compute backend** (`src/compute`) — default CPU backend + a **Metal** backend
   (iOS) for GPU work behind the same interface.
 
@@ -92,10 +93,11 @@ linked until it is complete. Current split:
 
 | Native (C++20, verified vs OCCT) | Still OCCT-backed (native pending) |
 |---|---|
-| math / geometry primitives | **booleans**: curved-face (surface-surface intersection) |
+| math / geometry primitives | **booleans**: GENERAL curved-face (surface-surface intersection: sphere / cone / NURBS / non-axis-aligned / cyl-cyl) |
 | B-rep topology + traversal | booleans: general / concave-general / foreign operands |
 | tessellation (watertight) | **blends**: curved-face fillet / chamfer / offset / shell (curved-surface blend + trimming) |
 | **booleans: PLANAR-polyhedron fuse / cut / common** (axis-aligned boxes, prisms — BSP-CSG, self-verified EXACT vs OCCT) | blends: concave edges, variable-radius `cc_fillet_edges_variable`, `cc_fillet_face`, multi-edge interference |
+| **booleans: AXIS-ALIGNED box ⟷ axis-parallel cylinder** cut (round through-hole) / fuse (boss) / common — closed-form `Cylinder`+`Circle`+`Plane` B-rep, analytic-volume self-verified vs OCCT | booleans: blind-hole / non-through cut / cyl−box, near-tangent / coincident-curved |
 | **blends: `cc_chamfer_edges`** (convex planar-planar edge — EXACT vs OCCT) | blends: non-convex / oversized-thickness shell |
 | **blends: `cc_offset_face`** (planar face along its normal — EXACT slab) | features (replace-face, etc.) |
 | **blends: `cc_shell`** (uniform thickness, box-like planar solid — EXACT wall) | data exchange (STEP / IGES) |
@@ -104,7 +106,7 @@ linked until it is complete. Current split:
 | construction: holed extrude (circular + polygon holes) | sweep: non-planar / tight-curvature / real-twist / guided / rail |
 | construction: typed-profile extrude (line / arc / full-circle) | 3+-section / guided / rail loft |
 | construction: typed-profile revolve (line, on-axis arc → sphere) | `cc_helical_thread` / `cc_tapered_thread` FINE-PITCH / self-intersecting (non-manifold → self-verify defers to OCCT `MakePipeShell`) |
-| construction: 2-section ruled loft (equal-count planar sections) | wrap-emboss: curved-surface (planar-target now reachable via native `cc_offset_face` #6 + native planar boolean #5) |
+| construction: 2-section ruled loft (equal-count planar sections) | wrap-emboss: general curved-surface (planar-target reachable via native `cc_offset_face` #6 + native planar boolean #5; axis-aligned-cylinder-target boolean step now native via #5 curved slice) |
 | construction: sweep (straight spine, or smooth curved but planar spine) | spline-profile edges, off-axis-arc (torus) / spline revolve |
 | construction: `cc_tapered_shank` (silhouette revolved 360° about Z) | shape healing |
 | **construction: `cc_helical_thread` / `cc_tapered_thread`** (well-formed radial-V helical tiling — per-turn seams weld watertight `boundaryEdges==0` at every deflection, verified vs OCCT `MakePipeShell`) | |
@@ -158,7 +160,7 @@ cmake -S . -B build \
   -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++ \
   -DCYBERCAD_HAS_OCCT=OFF -DCYBERCAD_HAS_METAL=OFF
 cmake --build build
-cd build && ctest --output-on-failure          # -> 18/18 pass (incl. native math/topology/tessellate/construct/profile/loft/sweep/thread/boolean/blend/engine)
+cd build && ctest --output-on-failure          # -> 19/19 pass (incl. native math/topology/tessellate/construct/profile/loft/sweep/thread/boolean (planar + curved box-cylinder)/blend/engine)
 ```
 
 ```sh
@@ -178,6 +180,7 @@ bash scripts/run-sim-native-loft.sh          # 17/17 — 2-section ruled loft vs
 bash scripts/run-sim-native-sweep.sh         # 11/11 — sweep (straight + smooth-planar) vs OCCT MakePipe
 bash scripts/run-sim-native-thread.sh        # tapered-shank + helical/tapered thread (native, watertight) vs OCCT MakePipeShell/MakeRevol
 bash scripts/run-sim-native-boolean.sh       # 25/25 — planar-polyhedron fuse/cut/common vs OCCT BOPAlgo
+bash scripts/run-sim-curved-boolean.sh       # 18/18 — axis-aligned box-cylinder cut/fuse/common (native) + fallback vs OCCT BOPAlgo
 ```
 
 Full toolchain notes are in [docs/build.md](docs/build.md).

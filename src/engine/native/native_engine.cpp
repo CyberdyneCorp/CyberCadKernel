@@ -210,6 +210,64 @@ double watertightVolume(const ntopo::Shape& s) {
     return std::fabs(ntess::enclosedVolume(m));
 }
 
+// CURVED-SLICE self-verify (NATIVE-REWRITE.md #5 residual: axis-aligned box ⟷
+// axis-parallel cylinder). When BOTH operands are recognised as an axis-aligned box
+// and an axis-parallel cylinder, the expected result volume is ANALYTIC (closed form,
+// not a mesh estimate), so the guard checks the result's watertight mesh volume
+// against that analytic value:
+//   cut  (box − cyl through hole) = boxVol − πr²·boxAxialDepth
+//   fuse (box ∪ cyl boss)         = boxVol + πr²·protrudingLength
+//   common(box ∩ cyl segment)     = πr²·overlapLength
+// Because the result carries a TRUE curved surface, its watertight mesh only
+// approximates the analytic volume (deflection-bounded), so the tolerance is the
+// tessellation bound (1% relative + a small absolute floor), NOT the exact-planar
+// 1e-6. Returns {matched, applicable}: applicable=false means "not a recognised
+// box-cylinder pair" and the caller should use the exact planar set-algebra check.
+struct CurvedCheck {
+    bool applicable = false;
+    bool matched = false;
+};
+CurvedCheck curvedBooleanVerified(const ntopo::Shape& result, const ntopo::Shape& a,
+                                  const ntopo::Shape& b, int op) {
+    namespace cv = cybercad::native::boolean::curved;
+    const auto aBox = cv::recogniseBox(a);
+    const auto bBox = cv::recogniseBox(b);
+    const auto aCyl = aBox ? std::nullopt : cv::recogniseCylinder(a);
+    const auto bCyl = bBox ? std::nullopt : cv::recogniseCylinder(b);
+    const bool pair = (aBox && bCyl) || (aCyl && bBox);
+    if (!pair) return {};  // not applicable → planar path decides
+
+    const cv::AABox box = aBox ? *aBox : *bBox;
+    const cv::AxisCylinder cyl = aCyl ? *aCyl : *bCyl;
+    const int axis = cyl.axis;
+    const double r2 = cyl.radius * cyl.radius;
+
+    double expected = 0.0;
+    switch (op) {
+        case 0: {  // fuse (boss): protruding length past the box hi face
+            const double protrude = std::max(0.0, cyl.hi - box.hi[axis]);
+            expected = box.volume() + cv::kPi * r2 * protrude;
+            break;
+        }
+        case 1: {  // cut a − b: round through hole removes a full box-depth cylinder
+            expected = box.volume() - cv::kPi * r2 * box.size(axis);
+            break;
+        }
+        case 2: {  // common: cylinder segment clipped to the box axial extent
+            const double lo = std::max(cyl.lo, box.lo[axis]);
+            const double hi = std::min(cyl.hi, box.hi[axis]);
+            expected = cv::kPi * r2 * std::max(0.0, hi - lo);
+            break;
+        }
+        default: return {/*applicable=*/true, /*matched=*/false};
+    }
+    if (!(expected > 0.0)) return {true, false};
+    const double vr = watertightVolume(result);
+    if (vr < 0.0) return {true, false};  // not watertight
+    const double tol = std::max(1e-2 * expected, 1e-6);  // deflection-bounded curved mesh
+    return {true, std::fabs(vr - expected) <= tol};
+}
+
 // SELF-VERIFY the native boolean result against SET-ALGEBRA volume (mandatory guard,
 // NATIVE-REWRITE.md #5). The result must be a closed watertight 2-manifold AND carry
 // the volume the op's set algebra predicts from the operands, to a relative tolerance:
@@ -221,8 +279,14 @@ double watertightVolume(const ntopo::Shape& s) {
 // geometrically WRONG (a mis-classified fragment) — such a result is DISCARDED and the
 // engine falls through / errors rather than emit a wrong solid. For the planar domain
 // every mesh is exact, so the tolerance is tight (1e-6 relative, 1e-9 absolute floor).
+// For the CURVED box-cylinder slice the ANALYTIC check (curvedBooleanVerified) takes
+// over — its expected volume is closed-form, not a mesh estimate of the operands.
 bool booleanResultVerified(const ntopo::Shape& result, const ntopo::Shape& a,
                            const ntopo::Shape& b, int op) {
+    // Curved slice first: an analytic-volume check for a box-cylinder pair.
+    if (const CurvedCheck cc = curvedBooleanVerified(result, a, b, op); cc.applicable)
+        return cc.matched;
+
     const double vr = watertightVolume(result);
     if (vr < 0.0) return false;  // not watertight
 

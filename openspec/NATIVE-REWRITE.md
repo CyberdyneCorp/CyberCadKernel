@@ -364,6 +364,49 @@ longest; a native exchange is lower priority than the modelling core.
   surface-surface intersection, robust near-tangent handling, and full shape healing are
   future work. See [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md); living change
   `openspec/changes/add-native-booleans` → archived to `openspec/specs/native-booleans`.
+  - **◐ Curved analytic slice (deferred residual #2) — AXIS-ALIGNED box ⟷ axis-parallel
+    cylinder NOW NATIVE at BOTH gates (host + sim parity), ARCHIVED; general curved still
+    OCCT-fallthrough (honest).** `cc_boolean` cut / fuse / common is NATIVE when one operand is an
+    axis-aligned box and the other a cylinder whose axis ∥ a box axis (and a world axis),
+    with the cylinder RADIALLY INSIDE the box cross-section. Here plane-cylinder
+    intersection is ANALYTIC — a box face ⟂ the axis cuts the cylinder in a CIRCLE — so
+    instead of faceting (which would fail the analytic-volume self-verify) or a
+    research-grade surface-surface solver, the builder RECOGNISES the (box, cylinder) pair
+    and CONSTRUCTS the closed-form result B-rep directly from TRUE `Cylinder` walls +
+    `Circle` rim edges + `Plane` caps (the exact watertight face/edge kinds a native
+    cylinder-with-holes prism uses): **cut** → box with a round THROUGH hole
+    (`boxVol − πr²·h`), **common** → the cylinder segment clipped to the box axial extent
+    (`πr²·overlap`), **fuse** → box + a protruding round BOSS (`boxVol + πr²·protrude`).
+    Every curved seam is a SHARED `Circle` rim edge, so the mesher's two-stage
+    shared-1D-discretization welds it WATERTIGHT across the deflection ladder (verified
+    `boundaryEdges==0` at {0.1,0.05,0.02,0.01,0.005} on all three world axes, off-centre).
+    Built OCCT-free in `src/native/boolean/curved.h` (recognisers `recogniseBox` /
+    `recogniseCylinder`, world-frame axis-aware primitive builders, dispatcher
+    `tryBoxCylinder`), wired into `native_boolean.h::boolean_solid` (curved path tried
+    FIRST; the planar BSP-CSG path is unchanged) and guarded by an ANALYTIC-volume
+    self-verify in `native_engine.cpp` (`curvedBooleanVerified`: `Vr` must match the
+    closed-form `boxVol ± πr²·len` to the curved-mesh deflection bound, else DISCARD →
+    OCCT). Gate 1 GREEN (host CTest **18/18**): `test_native_boolean` adds box-cylinder
+    cut / common / fuse (watertight, analytic volume within ~0.2% deflection bound on all
+    three axes) + honest DECLINE cases (wrong-order cyl−box, radial breach, blind hole,
+    cone operand → NULL → OCCT); `test_native_engine` asserts the engine's analytic guard
+    engages and errs honestly (never faked) when the facade-built config leaves the family.
+    Cognitive complexity: worst `tryBoxCylinder` 12 (🟡), no 🟠/🔴. **Gate 2 (sim
+    native-vs-OCCT parity) GREEN** — `tests/sim/native_curved_boolean_parity.mm` +
+    `scripts/run-sim-curved-boolean.sh` through the `cc_*` facade: `[NCURVBOOL]` **18 checks
+    (6 cases × 3), 0 failed** — 3 NATIVE analytic-intercept (through-hole-cut mass rel
+    **3.19e-04** / area rel 2.10e-08 / watertight 216 tris; boss-fuse rel **6.10e-05** / area
+    rel 2.00e-05 / watertight 212 tris; common rel **1.30e-03** / area rel 5.84e-04 /
+    watertight 196 tris) + 3 OCCT-fallback (blind-hole-cut / oblique-cyl-cut / sphere-box-cut,
+    rel 0 forwarded, volume-bound tessellation only). No regressions (host CTest 19/19 incl.
+    `test_native_boolean` + `test_native_tessellate`; `run-sim-suite.sh` 221/221). STILL
+    OCCT-fallthrough (DECLINE → NULL, never faked): **sphere / cone / NURBS**, **NON-axis-aligned
+    cylinders**, **cylinder ⟷ cylinder**, **radially-breaching (∥-face LINE-ruling slots)**,
+    **blind holes / non-through cuts / cyl−box**, and **near-tangent / coincident-curved**.
+    Living change `openspec/changes/add-native-curved-booleans` **archived** to
+    `openspec/specs/native-booleans` (validate --strict green). **General curved B-rep
+    booleans (surface-surface intersection, robust near-tangent handling, shape healing)
+    remain research-grade OCCT-backed — the longest-lived OCCT dependency.**
 - ☐ **`#4b` Tier E — native `cc_wrap_emboss` — DEFERRED (FUTURE WORK, not scheduled
   yet).** This is the *native* (OCCT-free) rewrite of wrap-emboss; it is distinct from
   the Phase-3 `add-robust-wrap-emboss` change, which is ✅ done and OCCT-backed (the
@@ -374,10 +417,13 @@ longest; a native exchange is lower priority than the modelling core.
   native planar `cc_offset_face` (slide a planar face along its normal + drag the side
   faces, EXACT slab, self-verified vs OCCT) is exactly the planar offset-along-normal a
   PLANAR-face emboss/deboss needs; step (3) is **partially unblocked by #5** (a
-  planar-polyhedron emboss/deboss can use the native BSP-CSG fuse/cut). So a
-  **planar-target wrap-emboss is now reachable natively** (native offset from #6 + native
-  planar boolean from #5), and only a **curved-surface** wrap-emboss still waits on the
-  **curved native-boolean slice of #5** plus a **curved-surface native offset** (the
+  planar-polyhedron emboss/deboss can use the native BSP-CSG fuse/cut, and — with the
+  curved analytic slice now archived — an AXIS-ALIGNED-CYLINDER target can use the native
+  box-cylinder curved fuse/cut). So a **planar-target wrap-emboss is now reachable
+  natively** (native offset from #6 + native planar boolean from #5), the **boolean step
+  of an axis-aligned-cylinder-target wrap-emboss is now also native** (curved analytic
+  slice of #5), and only a **general curved-surface** wrap-emboss still waits on the
+  **general curved native-boolean slice of #5** plus a **curved-surface native offset** (the
   planar slice of #6 does not offset curved faces). Native wrap-emboss remains sequenced
   AFTER #6, as its own OpenSpec change (`/opsx:propose`) — the planar slice can be
   proposed now that #6 landed; the curved slice waits on curved #5 + curved offset. Until

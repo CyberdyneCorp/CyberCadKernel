@@ -37,6 +37,12 @@ SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 # coincident/disjoint OCCT fall-through, links the whole kernel + full OCCT);
 # its own main(); unlike the oracle-slice harnesses it drives the cc_* facade under
 # BOTH engines via cc_set_engine and links the whole kernel + full OCCT), the Phase-4
+# native-BOOLEANS (#5) deferred-residual-#2 CURVED-slice parity harness
+# native_curved_boolean_parity.mm (run-sim-native-curved-boolean.sh — its own main();
+# drives cc_boolean under both engines via cc_set_engine, asserting native axis-aligned
+# box⟷axis-∥-cylinder cut(through+blind)/fuse(boss)/common vs OCCT at the deflection-
+# bounded analytic volume + a NON-axis-aligned cylinder and a sphere-box OCCT
+# fall-through, links the whole kernel + full OCCT), the Phase-4
 # native-BLENDS (#6) parity harness native_blend_parity.mm (run-sim-native-blend.sh —
 # its own main(); drives cc_fillet_edges / cc_chamfer_edges / cc_offset_face / cc_shell
 # under both engines via cc_set_engine, asserting native planar chamfer/offset/shell
@@ -52,6 +58,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_topology_parity.mm native_tessellate_parity.mm native_tessellation_parity.mm \
       native_construct_parity.mm native_construct_profiles_parity.mm native_loft_parity.mm \
       native_sweep_parity.mm native_thread_parity.mm native_boolean_parity.mm \
+      native_curved_boolean_parity.mm \
       native_blend_parity.mm \
       phase3_suite.cpp checks_reference_geometry.cpp checks_wrap_emboss.cpp \
       checks_thread_boolean.cpp checks_full_round_fillet.cpp checks_g2_fillet.cpp"

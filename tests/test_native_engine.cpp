@@ -669,6 +669,43 @@ CC_TEST(native_boolean_curved_operand_errors_not_faked) {
     cc_shape_release(cyl);
 }
 
+// ── NATIVE curved slice (Phase 4 #5 residual): the ENGINE's analytic guard engages
+// for an axis-aligned box ⟷ axis-parallel cylinder and DELEGATES honestly when the
+// configuration leaves the analytic family — never faking a curved result.
+//
+// The full positive path (round THROUGH hole / disc segment / boss, self-verified to
+// the analytic boxVol ± πr²·len) is exercised at the LIBRARY level in
+// test_native_boolean (box_cylinder_cut_round_through_hole / _common_segment /
+// _fuse_boss), where a body can be positioned to straddle the cylinder's z=0 centre
+// line. Through the FACADE, cc_solid_revolve revolves only about world Y (cylinder
+// centre z=0) and cc_solid_extrude yields z∈[0,depth], so a facade-built box cannot
+// straddle z=0 and the Y-cylinder always radially breaches the box — which the guard
+// must reject with an honest error (both operands are native voids OCCT cannot read),
+// exactly as for any out-of-family curved case.
+CC_TEST(native_box_cylinder_out_of_family_errors_not_faked) {
+    EngineGuard g;
+    cc_set_engine(1);
+    CC_CHECK_EQ(cc_active_engine(), 1);
+
+    // Cylinder axis Y, r=2, centre (x=0,z=0), y∈[0,10].
+    const double rect[] = {0, 0, 2, 0, 2, 10, 0, 10};
+    const CCShapeId cyl = cc_solid_revolve(rect, 4, 2.0 * kPi);
+    CC_CHECK(cyl != 0);
+
+    // Box x[−5,5] y[2,8] z[0,10]: the cylinder (centre z=0, r=2 → z∈[−2,2]) breaches
+    // the box's z=0 face, so it is NOT radially inside → out of the analytic family →
+    // honest 0 + error, not a faked leaky curved cut.
+    const double bp[] = {-5, 2, 5, 2, 5, 8, -5, 8};
+    const CCShapeId box = cc_solid_extrude(bp, 4, 10.0);
+    CC_CHECK(box != 0);
+
+    CC_CHECK_EQ(cc_boolean(box, cyl, 1), 0);  // z-breach → not in family → honest 0
+    CC_CHECK(std::strlen(cc_last_error()) > 0);
+
+    cc_shape_release(cyl);
+    cc_shape_release(box);
+}
+
 // ── Phase 4 #6 native-blends through the cc_* facade ──────────────────────────────
 // Each op runs NATIVE on a native box body under cc_set_engine(1), self-verifies
 // (watertight + sane volume sign), and DISCARDS a bad result (→ 0 + error on the

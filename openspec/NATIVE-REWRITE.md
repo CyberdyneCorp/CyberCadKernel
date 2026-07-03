@@ -338,6 +338,22 @@ longest; a native exchange is lower priority than the modelling core.
   surface-surface intersection, robust near-tangent handling, and full shape healing are
   future work. See [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md); living change
   `openspec/changes/add-native-booleans` → archived to `openspec/specs/native-booleans`.
+- ☐ **`#4b` Tier E — native `cc_wrap_emboss` — DEFERRED (FUTURE WORK, not scheduled
+  yet).** This is the *native* (OCCT-free) rewrite of wrap-emboss; it is distinct from
+  the Phase-3 `add-robust-wrap-emboss` change, which is ✅ done and OCCT-backed (the
+  app-facing behaviour already works). Native wrap-emboss needs three pieces:
+  (1) native project-a-2D-pattern-onto-a-surface into the target face UV domain,
+  (2) native offset-along-normal by the emboss depth, and (3) a boolean merge of the
+  raised/recessed region with the base solid. Step (3) is **partially unblocked by #5**
+  (planar-polyhedron emboss/deboss can already use the native BSP-CSG fuse/cut), but a
+  curved-surface wrap-emboss still requires the **curved native-boolean slice of #5**
+  plus **native offset from #6**. Therefore native wrap-emboss is sequenced AFTER #6,
+  as its own OpenSpec change (`/opsx:propose`) when those dependencies land. Until then
+  `cc_wrap_emboss` stays OCCT-fallthrough (labelled, verified). The other residual #4b
+  natives — robust-watertight `cc_helical_thread`/`cc_tapered_thread` (needs the mesher
+  shared-edge weld), 3+-section/guided/rail loft, non-planar/guided/rail sweep, and
+  arc/spline-profile revolve — are likewise deferred future work, all currently
+  OCCT-fallthrough.
 - ☐ #6–#8 — planned; proposed as each is about to start (blends → exchange →
   drop-occt).
 

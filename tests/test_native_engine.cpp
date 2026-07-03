@@ -554,20 +554,55 @@ CC_TEST(native_tapered_shank_degenerate_falls_through) {
     CC_CHECK_EQ(cc_tapered_shank(0.0, 20.0, 10.0, 1.0), 0);  // r ≤ 0 → NULL → stub → 0
 }
 
-// Native helical_thread / tapered_thread: the native radial-V tiling is built + guarded
-// but does NOT weld robustly watertight on the current tessellator, so the engine's
-// self-verify defers the op to the fallback (stub on host → 0). This asserts the honest
-// OCCT-fallthrough (no faked/leaky native thread), matching thread.h §HONESTY. On the
-// iOS sim (OCCT linked) the same call returns the OCCT MakePipeShell thread.
-CC_TEST(native_thread_falls_through_to_default) {
+// Native helical_thread / tapered_thread: the radial-V tiling now welds ROBUSTLY
+// watertight (the per-turn ruled-band ↔ band / band ↔ cap seams weld via the mesher's
+// canonical shared-edge points — edge_mesher CanonicalEndpoints / face_mesher
+// BoundaryAnchors), so the engine's robustlyWatertight self-verify PASSES and the op runs
+// NATIVELY. On host there is no OCCT, so a non-zero id can ONLY come from the native
+// builder (the stub has no thread op → 0); a valid mass-properties result confirms the
+// native mesh is watertight (mass_properties requires a closed mesh). This closes the
+// Tier-D DEFERRED thread residual — the well-formed thread is now native, not OCCT-fallen.
+CC_TEST(native_thread_runs_native_watertight) {
     EngineGuard g;
     cc_set_engine(1);
     CC_CHECK_EQ(cc_active_engine(), 1);
 
-    // Well-formed thread params: the native builder makes a candidate, self-verify
-    // finds it not-robustly-watertight → forwards to the stub (0 on host).
-    CC_CHECK_EQ(cc_helical_thread(5.0, 2.0, 4.0, 1.0, 60.0, 1.0, 16), 0);
-    CC_CHECK_EQ(cc_tapered_thread(6.0, 4.0, 2.0, 3.0, 1.0, 60.0, 1.0, 16), 0);
+    // Well-formed thread params (the reference helical: major5 / pitch2 / turns4 /
+    // depth1). The native builder welds a robustly-watertight solid → self-verify passes
+    // → the engine keeps it native (non-zero id on host, where the fallback is the stub).
+    const CCShapeId h = cc_helical_thread(5.0, 2.0, 4.0, 1.0, 60.0, 1.0, 16);
+    CC_CHECK(h != 0);
+    if (h == 0) std::printf("  last_error=%s\n", cc_last_error());
+    if (h != 0) {
+        const CCMassProps mp = cc_mass_properties(h);
+        CC_CHECK(mp.valid != 0);       // valid ⇒ the native thread mesh is watertight
+        CC_CHECK(mp.volume > 0.0);     // a real, positively-enclosed solid
+        cc_shape_release(h);
+    }
+
+    const CCShapeId t = cc_tapered_thread(6.0, 4.0, 2.0, 3.0, 1.0, 60.0, 1.0, 16);
+    CC_CHECK(t != 0);
+    if (t == 0) std::printf("  last_error=%s\n", cc_last_error());
+    if (t != 0) {
+        const CCMassProps mp = cc_mass_properties(t);
+        CC_CHECK(mp.valid != 0);
+        CC_CHECK(mp.volume > 0.0);
+        cc_shape_release(t);
+    }
+}
+
+// A FINE-PITCH / self-intersecting thread still fails robustlyWatertight (a self-
+// overlapping mesh is non-manifold no matter how vertices weld), so the engine defers it
+// to the fallback (stub on host → 0). This is the unchanged honest guard — no faked or
+// leaky native thread ships. On the iOS sim (OCCT linked) the same call returns the OCCT
+// MakePipeShell thread.
+CC_TEST(native_fine_pitch_thread_falls_through_to_default) {
+    EngineGuard g;
+    cc_set_engine(1);
+    CC_CHECK_EQ(cc_active_engine(), 1);
+    // major2 / pitch0.2 / depth3: turns fold through each other → not robustly watertight
+    // → forwards to the stub (0 on host).
+    CC_CHECK_EQ(cc_helical_thread(2.0, 0.2, 4.0, 3.0, 60.0, 1.0, 16), 0);
 }
 
 // ── NATIVE boolean (Phase 4 #5) through the cc_boolean facade ────────────────────

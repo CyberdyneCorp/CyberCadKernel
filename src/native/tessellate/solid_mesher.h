@@ -107,7 +107,11 @@ class VertexWelder {
   }
 
   // Return the merged index of input vertex i, inserting it as a representative
-  // if its cell is empty.
+  // if its cell is empty. The weld stays STRICTLY single-cell (a wider search
+  // would over-merge a fine curvature grid whose legitimate neighbours sit within
+  // `tol`); coincident seam points are made BIT-IDENTICAL upstream by the face
+  // mesher's canonical boundary anchors (edge_mesher CanonicalEndpoints), so they
+  // hash to the same cell here without widening the merge radius.
   std::uint32_t mapVertex(const Mesh& in, std::size_t i, bool normals, Mesh& out,
                           std::unordered_map<Cell, std::uint32_t, CellHash>& cellToNew) const {
     const Cell c = cellOf(in.vertices[i]);

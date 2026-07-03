@@ -55,6 +55,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
 #include <vector>
 
 namespace cybercad::native::tessellate {
@@ -125,7 +126,69 @@ inline void mergeAxis(std::vector<double>& axis, const std::vector<double>& extr
   axis.swap(out);
 }
 
+// ── Canonical boundary anchors (build-order-independent seam points) ──────────
+// A spatial index of the CANONICAL 3D points a face places on its straight
+// boundary seams (edge_mesher canonicalLinePoint). Two faces sharing a straight
+// seam evaluate that seam through their own surfaces and land on 3D points that
+// agree only to ~1 ULP; when such a point falls on a weld-grid cell boundary the
+// two copies round to opposite cells and the weld leaves the seam OPEN (the
+// per-turn thread residual). The mesher therefore SNAPS every vertex that lands
+// on a seam to the canonical point: since both faces canonicalise to the SAME
+// ordered endpoints, they snap to BIT-IDENTICAL points and the conservative
+// single-cell weld fuses them — no widening of the merge radius (which would
+// over-collapse a fine curvature grid).
+//
+// Lookup is by the surface-evaluated 3D vertex, quantised to a grid FAR finer
+// than any real feature (kQuantum) yet coarser than the ~1-ULP seam jitter, so a
+// vertex and its canonical anchor share a key. The 3×3×3 neighbour probe absorbs
+// a point that straddles a quantum boundary; the epsilon check guards against
+// snapping an unrelated nearby vertex.
+struct BoundaryAnchors {
+  static constexpr double kQuantum = 1e-7;   ///< index cell size (≫ ULP, ≪ feature)
+  static constexpr double kSnapEps = 1e-6;   ///< max dist a vertex may be snapped
+
+  struct Key {
+    long long x, y, z;
+    bool operator==(const Key& o) const noexcept { return x == o.x && y == o.y && z == o.z; }
+  };
+  struct Hash {
+    std::size_t operator()(const Key& k) const noexcept {
+      std::size_t h = static_cast<std::size_t>(k.x) * 73856093u;
+      h ^= static_cast<std::size_t>(k.y) * 19349663u;
+      h ^= static_cast<std::size_t>(k.z) * 83492791u;
+      return h;
+    }
+  };
+  std::unordered_map<Key, math::Point3, Hash> pts;
+
+  static long long q(double v) noexcept {
+    const double s = 1.0 / kQuantum;
+    return static_cast<long long>(v >= 0 ? v * s + 0.5 : v * s - 0.5);
+  }
+  Key keyOf(const math::Point3& p) const noexcept { return Key{q(p.x), q(p.y), q(p.z)}; }
+
+  // Record a canonical seam point (idempotent — the same point from another edge
+  // simply re-inserts the identical value).
+  void add(const math::Point3& p) { pts.emplace(keyOf(p), p); }
+
+  // The canonical point coincident with `p` (within kSnapEps), or nullptr.
+  const math::Point3* find(const math::Point3& p) const {
+    if (pts.empty()) return nullptr;
+    const Key c = keyOf(p);
+    for (int dx = -1; dx <= 1; ++dx)
+      for (int dy = -1; dy <= 1; ++dy)
+        for (int dz = -1; dz <= 1; ++dz) {
+          const auto it = pts.find(Key{c.x + dx, c.y + dy, c.z + dz});
+          if (it != pts.end() && math::distance(p, it->second) <= kSnapEps) return &it->second;
+        }
+    return nullptr;
+  }
+  bool empty() const noexcept { return pts.empty(); }
+};
+
 }  // namespace detail
+
+using detail::BoundaryAnchors;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FaceMesher — mesh one face. Stateless apart from the parameters. mesh() with an
@@ -148,7 +211,14 @@ class FaceMesher {
     if (!sr) return {};
     SurfaceEvaluator eval(*sr->surface, sr->location);
 
-    const std::vector<UVPolygon> loops = buildBoundaryLoops(face, cache);
+    // Canonical boundary anchors: for every straight boundary edge, the
+    // build-order-independent 3D point at each shared fraction, keyed by the
+    // sample's (u,v). Any grid/ear-clip vertex that lands on the boundary is
+    // snapped to its anchor so two faces sharing a straight seam place
+    // BIT-IDENTICAL boundary points (see edge_mesher CanonicalEndpoints) and the
+    // spatial weld cannot split them across a cell boundary.
+    BoundaryAnchors anchors;
+    const std::vector<UVPolygon> loops = buildBoundaryLoops(face, cache, anchors);
     const UVRegion region = regionFromLoops(loops);
     const UVBox box = domainBox(eval, region);
     const bool flip = face.orientation() == topo::Orientation::Reversed;
@@ -163,7 +233,7 @@ class FaceMesher {
 
     // No usable boundary (no pcurves) ⇒ structured grid over the natural bounds.
     if (!region.hasOuter())
-      return structuredGrid(eval, region, box, flip, /*hasBoundary=*/false, freeForm);
+      return structuredGrid(eval, region, box, flip, /*hasBoundary=*/false, freeForm, anchors);
 
     // A full-parametric-rectangle outer loop (no holes) ⇒ structured grid whose
     // boundary rows use the shared edge samples. Otherwise ear-clip the polygon.
@@ -177,9 +247,9 @@ class FaceMesher {
     // corners, are admitted by the border test alone (requireCorners = false).
     const bool planar = k == topo::FaceSurface::Kind::Plane;
     if (region.holes.empty() && region.isFullRectangle(1e-4, /*requireCorners=*/planar))
-      return structuredGrid(eval, region, box, flip, /*hasBoundary=*/true, freeForm);
+      return structuredGrid(eval, region, box, flip, /*hasBoundary=*/true, freeForm, anchors);
 
-    return earClipMesh(eval, loops, flip);
+    return earClipMesh(eval, loops, flip, anchors);
   }
 
   // ── Edge pre-sizing (twisted-face support) ───────────────────────────────────
@@ -218,17 +288,20 @@ class FaceMesher {
 
  private:
   // ── STAGE-2 boundary: each wire flattened at the shared edge fractions ───────
-  std::vector<UVPolygon> buildBoundaryLoops(const topo::Shape& face, EdgeCache& cache) const {
+  std::vector<UVPolygon> buildBoundaryLoops(const topo::Shape& face, EdgeCache& cache,
+                                            BoundaryAnchors& anchors) const {
     std::vector<UVPolygon> loops;
     if (face.isNull() || face.type() != topo::ShapeType::Face) return loops;
     for (const topo::Shape& wire : face.tshape()->children())
-      loops.push_back(flattenWireShared(wire, face, cache));
+      loops.push_back(flattenWireShared(wire, face, cache, anchors));
     return loops;
   }
 
-  // Flatten one wire to a UV polygon using the shared per-edge fraction list.
-  UVPolygon flattenWireShared(const topo::Shape& wire, const topo::Shape& face,
-                              EdgeCache& cache) const {
+  // Flatten one wire to a UV polygon using the shared per-edge fraction list, and
+  // record a canonical 3D anchor per straight-edge sample so the seam welds
+  // exactly (see BoundaryAnchors).
+  UVPolygon flattenWireShared(const topo::Shape& wire, const topo::Shape& face, EdgeCache& cache,
+                              BoundaryAnchors& anchors) const {
     UVPolygon poly;
     if (wire.isNull() || wire.type() != topo::ShapeType::Wire) return poly;
     for (topo::Explorer ex(wire, topo::ShapeType::Edge); ex.more(); ex.next()) {
@@ -237,8 +310,32 @@ class FaceMesher {
       if (!pc) continue;
       const EdgeDiscretization& d = cache.discretize(edge);
       appendEdgeSamplesAtFracs(poly, edge, *pc, d.fracs);
+      recordEdgeAnchors(anchors, edge, d.fracs);
     }
     return poly;
+  }
+
+  // For a STRAIGHT boundary edge, record the canonical world point at every shared
+  // sample. The samples are generated at the canonical INDICES i/n (n = segment
+  // count) in the fixed a→b endpoint order — NOT at the edge's own wire-traversal
+  // fractions. Two coincident edges built with opposite vertex order sample the
+  // ridge at COMPLEMENTARY fractions (i/n vs (n−i)/n); mapping one onto the other
+  // as `1−f` reintroduces a 1-ULP difference (1−1/3 ≠ 2/3 in fp), which was the
+  // residual per-turn split. Generating both edges' anchors from the SAME i/n
+  // sequence over the SAME canonical endpoints makes the two anchor SETS
+  // bit-identical, so the seam-lying vertices of both faces snap to the same
+  // points. Non-line edges are skipped (curved seams share their edge node and
+  // already agree bit-for-bit).
+  static void recordEdgeAnchors(BoundaryAnchors& anchors, const topo::Shape& edge,
+                                const std::vector<double>& fracs) {
+    const CanonicalEndpoints ce = detail::canonicalLineEndpoints(edge);
+    if (!ce.valid || fracs.size() < 2) return;
+    const int n = static_cast<int>(fracs.size()) - 1;  // segment count (endpoint-shared)
+    const math::Vec3 d = ce.b - ce.a;
+    for (int i = 0; i <= n; ++i) {
+      const double g = static_cast<double>(i) / static_cast<double>(n);
+      anchors.add(math::Point3{ce.a.x + d.x * g, ce.a.y + d.y * g, ce.a.z + d.z * g});
+    }
   }
 
   static UVRegion regionFromLoops(const std::vector<UVPolygon>& loops) {
@@ -265,7 +362,8 @@ class FaceMesher {
   // grid, then emit two triangles per quad. Boundary rows/columns are exactly the
   // shared edge samples ⇒ neighbours weld watertight.
   Mesh structuredGrid(const SurfaceEvaluator& eval, const UVRegion& region, const UVBox& box,
-                      bool flip, bool hasBoundary, bool boundaryDriven) const {
+                      bool flip, bool hasBoundary, bool boundaryDriven,
+                      const BoundaryAnchors& anchors) const {
     const std::vector<double> us =
         axisSamples(eval, box, region, /*uDir=*/true, hasBoundary, boundaryDriven);
     const std::vector<double> vs =
@@ -278,7 +376,9 @@ class FaceMesher {
     for (double u : us)
       for (double v : vs) {
         const SurfaceSample s = eval.d1(u, v);
-        m.vertices.push_back(s.point);
+        // Snap a seam-lying vertex to its canonical point (exact weld).
+        const math::Point3* anchor = anchors.find(s.point);
+        m.vertices.push_back(anchor ? *anchor : s.point);
         m.normals.push_back(flip ? s.normal.reversed() : s.normal);
       }
     for (int i = 0; i + 1 < static_cast<int>(us.size()); ++i)
@@ -359,14 +459,14 @@ class FaceMesher {
   }
 
   // ── EAR-CLIP path (genuinely trimmed faces) ──────────────────────────────────
-  Mesh earClipMesh(const SurfaceEvaluator& eval, const std::vector<UVPolygon>& loops,
-                   bool flip) const {
+  Mesh earClipMesh(const SurfaceEvaluator& eval, const std::vector<UVPolygon>& loops, bool flip,
+                   const BoundaryAnchors& anchors) const {
     std::vector<UV> pts;
     const std::vector<std::vector<int>> loopIdx = appendBoundaryLoops(loops, pts);
     if (loopIdx.empty() || loopIdx[0].size() < 3) return {};
     const std::vector<UVTri> tris = triangulatePolygon(pts, loopIdx);
 
-    Mesh m = evaluatePoints(eval, pts, flip);
+    Mesh m = evaluatePoints(eval, pts, flip, anchors);
     m.triangles.reserve(tris.size());
     for (const UVTri& t : tris) {
       const auto ia = static_cast<std::uint32_t>(t.a);
@@ -403,14 +503,18 @@ class FaceMesher {
   }
 
   // Evaluate every UV point on the surface → 3D vertex + normal (flipped normal
-  // for a Reversed face so the solid's outward normal is consistent).
-  static Mesh evaluatePoints(const SurfaceEvaluator& eval, const std::vector<UV>& pts, bool flip) {
+  // for a Reversed face so the solid's outward normal is consistent). A point that
+  // lands on a straight boundary seam is snapped to its canonical anchor so the
+  // seam welds exactly across the two adjacent faces.
+  static Mesh evaluatePoints(const SurfaceEvaluator& eval, const std::vector<UV>& pts, bool flip,
+                             const BoundaryAnchors& anchors) {
     Mesh m;
     m.vertices.reserve(pts.size());
     m.normals.reserve(pts.size());
     for (const UV& q : pts) {
       const SurfaceSample s = eval.d1(q.u, q.v);
-      m.vertices.push_back(s.point);
+      const math::Point3* anchor = anchors.find(s.point);
+      m.vertices.push_back(anchor ? *anchor : s.point);
       m.normals.push_back(flip ? s.normal.reversed() : s.normal);
     }
     return m;

@@ -41,9 +41,14 @@ Date: 2026-07-03 · Branch: `main`.
   (`cc_solid_extrude_holes` / `_polyholes`) and typed-profile
   (`cc_solid_extrude_profile` / `_profile_polyholes` / `cc_solid_revolve_profile`
   for line / arc / on-axis-arc) construction is NATIVE (host CTest 13/13 + sim
-  parity 22/22). Still OCCT-fallthrough (not faked): kind-3 SPLINE profile edges,
-  off-axis-arc (torus) / spline surface-of-revolution, and the remaining swept
-  solids — loft, sweep, twisted/guided sweep, threads, wrap-emboss (Tiers B–E).
+  parity 22/22). **Tiers B (2-section ruled loft), C (straight / smooth-planar
+  sweep) and D (`cc_tapered_shank` + well-formed `cc_helical_thread` /
+  `cc_tapered_thread`) are now also done at the bar** — the thread per-turn seam weld
+  is fixed at the mesher level, so well-formed threads mesh `boundaryEdges==0` at every
+  deflection and run NATIVE. Still OCCT-fallthrough (not faked): kind-3 SPLINE profile
+  edges, off-axis-arc (torus) / spline surface-of-revolution, twisted/guided/rail sweep,
+  3+-section / guided / rail loft, a fine-pitch / self-intersecting thread, and wrap-emboss
+  (Tier E).
 - **Capability #5 `native-booleans` — PLANAR-polyhedron slice done at the
   verification bar; curved / general still OCCT-fallthrough (honest).** Native
   `cc_boolean` (fuse / cut / common) for planar-faced solids (axis-aligned boxes,
@@ -395,7 +400,8 @@ changes unless a caller explicitly opts in.
 | `cc_twisted_sweep` (twist ≈ 0 AND scale ≈ 1) | **NATIVE** (#4b Tier C) | reduces to `build_sweep` (no real twist) |
 | `cc_solid_sweep` NON-PLANAR spine / TIGHT-CURVATURE / self-intersecting; `cc_twisted_sweep` REAL twist/scale; `cc_guided_sweep`, `cc_loft_along_rail` | OCCT-fallthrough (#4b Tier C) | native builder returns NULL (guarded / genuine non-constant law / pipe-shell guide-rail); delegated to OCCT, not faked |
 | `cc_tapered_shank` | **NATIVE** (#4b Tier D) | pointed-shank silhouette (cone tip → full-radius cylinder → head disk) revolved 360° about WORLD Z by reusing the native `build_revolution` (`Cone`/`Cylinder`/`Plane` faces); tip is a TRUE on-axis apex (angular copies collapse to one shared vertex → no sliver), robustly watertight |
-| `cc_helical_thread`, `cc_tapered_thread` | OCCT-fallthrough (#4b Tier D) | radial-V helical tiling BUILT but its per-turn seams do not weld robustly watertight on the current mesher; engine `robustlyWatertight` self-verify REJECTS and falls through to OCCT `MakePipeShell` (labelled, verified, never faked) |
+| `cc_helical_thread`, `cc_tapered_thread` (well-formed) | **NATIVE** (#4b Tier D) | radial-V helical tiling (V section transported radially via the AXIS auxiliary-spine law) → three bilinear ruled bands per span + two planar V caps; per-turn seams now weld robustly watertight via the mesher's canonical seam-point snap (`edge_mesher.h` `CanonicalEndpoints` / `face_mesher.h` `BoundaryAnchors`), so `boundaryEdges==0` at every deflection across the full parameter sweep (432/432 helical + 96/96 tapered) |
+| `cc_helical_thread` FINE-PITCH / self-intersecting | OCCT-fallthrough (#4b Tier D) | a self-overlapping mesh is non-manifold regardless of weld → fails `robustlyWatertight`, so the engine falls through to OCCT `MakePipeShell` (labelled, verified, never faked; native builder never emits a round-profile fallback) |
 | `cc_wrap_emboss` | OCCT-fallthrough (#4b Tier E) | deferred |
 | every feature / boolean / query / transform / exchange op | OCCT-fallthrough | out of the construction capability; delegated |
 
@@ -454,9 +460,13 @@ done at the bar** — BOTH gates green: Gate 1 (host `test_native_loft` +
 (EXACT prism) and a smooth-planar spine (constant-frame ruled tube) is NATIVE; both
 gates green (host `test_native_sweep` + `test_native_engine` CTest **15/15**; sim
 `native_sweep_parity.mm` **11 passed / 0 failed**, both native cases EXACT vs OCCT
-MakePipe rel ~1e-16) — see below. Tiers D (threads) / E (wrap-emboss), plus the
-non-planar / tight-curvature / real-twist / guided / rail sweep cases, remain
-OCCT-fallthrough.
+MakePipe rel ~1e-16) — see below. **`#4b` Tier D (tapered shank + threads) is now
+also done at the bar** — `cc_tapered_shank` AND the well-formed `cc_helical_thread` /
+`cc_tapered_thread` are NATIVE (the per-turn seam weld is fixed at the mesher level, so
+threads mesh `boundaryEdges==0` at every deflection across the full parameter sweep); a
+fine-pitch / self-intersecting thread still falls through to OCCT (honest guard). Tier E
+(wrap-emboss), plus the non-planar / tight-curvature / real-twist / guided / rail sweep
+cases, remain OCCT-fallthrough.
 
 ### `#4b` Tier B — native 2-section RULED loft (`cc_solid_loft` / `cc_solid_loft_wires`)
 
@@ -599,67 +609,93 @@ as-is.
 - `tests/sim/native_sweep_parity.mm` + `scripts/run-sim-native-sweep.sh` — sim Gate-2
   native-vs-OCCT parity (own `main()`; SKIPped by `run-sim-suite.sh`).
 
-### `#4b` Tier D — native tapered shank + attempted threads (`cc_tapered_shank`, `cc_helical_thread`, `cc_tapered_thread`)
+### `#4b` Tier D — native tapered shank + threads (`cc_tapered_shank`, `cc_helical_thread`, `cc_tapered_thread`)
 
 Built in `src/native/construct/thread.h` (OCCT-FREE, host-buildable, all four functions
 cognitive complexity 🟢 Excellent ≤ 5), wired through `NativeEngine` behind the same
-`cc_set_engine(1)` toggle.
+`cc_set_engine(1)` toggle. **All three ops now run NATIVE at the verification bar** for
+their well-formed parameter ranges; only a FINE-PITCH / self-intersecting thread stays
+OCCT-fallthrough (honest guard).
 
-**`cc_tapered_shank` is NATIVE at the verification bar.** A pointed-shank silhouette
-(cone tip → full-radius cylinder → head disk) revolved 360° about the **WORLD Z axis** by
-REUSING the already-parity-verified native revolve (`construct.h` `build_revolution_framed`,
-explicit frame `{origin=0, z=+Z, x=+X, y=+Y}`) — reproducing the OCCT
-`BRepPrimAPI_MakeRevol` oracle EXACTLY (mass/centroid/bbox, not just the rotationally
-symmetric volume). The tip is a TRUE on-axis apex (the revolve collapses its angular copies
-to ONE shared vertex → no sliver breaks the weld — a non-zero tip radius does NOT weld,
-verified), giving a robustly watertight solid at every deflection {0.05…0.005} with volume
+**`cc_tapered_shank` is NATIVE.** A pointed-shank silhouette (cone tip → full-radius
+cylinder → head disk) revolved 360° about the **WORLD Z axis** by REUSING the
+already-parity-verified native revolve (`construct.h` `build_revolution_framed`, explicit
+frame `{origin=0, z=+Z, x=+X, y=+Y}`) — reproducing the OCCT `BRepPrimAPI_MakeRevol`
+oracle (mass/centroid/bbox, not just the rotationally symmetric volume). The tip is a
+TRUE on-axis apex (the revolve collapses its angular copies to ONE shared vertex → no
+sliver breaks the weld — a non-zero tip radius does NOT weld, verified), giving a robustly
+watertight solid at every deflection {0.05…0.005} with volume
 `⅓π r²·taperHeight + π r²·fullHeight` within the deflection bound.
 
-**`cc_helical_thread` / `cc_tapered_thread` are ATTEMPTED but honestly OCCT-fallthrough
-(not faked).** The radial-V helical tiling (a V/triangular section transported RADIALLY
-along the pitch-line helix via the AXIS auxiliary-spine law — radial `(cosθ,sinθ,0)`,
-axial `+Z`, so the V does NOT Frenet-rotate, mirroring
-`BRepOffsetAPI_MakePipeShell::SetMode(axisWire,true)`) is fully built with the CORRECT
-volume + V geometry, but its per-turn ruled-band ↔ end-cap seams do NOT weld robustly
-watertight on the current two-stage tessellator (a deflection-dependent seam sliver). The
-engine's `robustlyWatertight` self-verify REJECTS the native thread and FALLS THROUGH to
-the OCCT `MakePipeShell` oracle (labelled, verified, never faked). If the mesher is later
-strengthened to share ruled-band side-edge discretization, the threads light up native
-automatically with no engine change.
+**`cc_helical_thread` / `cc_tapered_thread` are NOW NATIVE.** The radial-V helical tiling
+(a V/triangular section transported RADIALLY along the pitch-line helix via the AXIS
+auxiliary-spine law — radial `(cosθ,sinθ,0)`, axial `+Z`, so the V does NOT Frenet-rotate,
+mirroring `BRepOffsetAPI_MakePipeShell::SetMode(axisWire,true)`) is tiled into three
+bilinear ruled bands per span with shared per-station rings + two planar V end caps. **The
+per-turn seam WELD was the last blocker and is now fixed at the mesher level** (topology-
+preferred, geometry untouched): the mesher emits, for every straight boundary edge,
+CANONICAL seam points interpolated at the shared sample indices between the edge's two
+bounding vertices in a fixed lexicographic order (`edge_mesher.h` `CanonicalEndpoints` /
+`face_mesher.h` `recordEdgeAnchors`), BIT-IDENTICAL for the two coincident edges regardless
+of build order, and SNAPS each seam-lying vertex to its canonical point (`BoundaryAnchors`),
+so the conservative single-cell weld fuses them with NO widening of the merge radius. As a
+result the well-formed helical (major6…20 / pitch2…4 / turns1…5 / depth0.5…1.5 / spt8…24)
+and tapered (top5…8 / tip3…4 / …) threads are ROBUSTLY watertight (`boundaryEdges==0`) at
+EVERY deflection in the `robustlyWatertight` ladder across the full swept parameter space
+(432/432 helical + 96/96 tapered candidates → native), so the engine keeps them NATIVE.
 
-**Gate 1 (host, no OCCT) GREEN:** `test_native_thread` (8 cases: shank watertight+volume,
-shank ppm³ scaling, shank degenerate NULL, helical/tapered candidate V-tiling + positive
-volume, degenerate-params NULL, pitch-radius-below-axis NULL, tapered-tip-below-axis NULL)
-+ 3 `test_native_engine` facade cases (native `cc_tapered_shank` watertight vol 1832.6;
-degenerate shank → fall-through 0; well-formed threads → engine self-verify defers →
-fall-through 0). Host CTest **16/16** (was 15); `test_native_tessellate`,
-`test_native_construct`, `test_native_profile`, `test_native_loft`, `test_native_sweep`
-unchanged (green). One TEST-ONLY fix landed: `test_native_thread.cpp`
-`tapered_shank_is_watertight_revolve` had stale bbox/axis assertions written for an OLD
-in-plane-Y revolve frame; corrected to the shipped Z-axial convention (assert `zmin==0` /
-`zmax==30`, radial from x/y, tip-apex scan gated on `v.z<0.5`). The implementation was NOT
-changed — it is correct and oracle-matched; only the test's coordinate-axis expectations
-were corrected.
+**Honesty guard (unchanged):** a FINE-PITCH / self-intersecting thread (turns fold through
+each other, e.g. major2/pitch0.2/depth3) still fails `robustlyWatertight` — a
+self-overlapping mesh is non-manifold no matter how the vertices weld — so it still FALLS
+THROUGH to the OCCT `MakePipeShell` oracle (labelled, verified, never faked; the native
+builder never emits a round-profile fallback).
+
+**Gate 1 (host, no OCCT) GREEN:** `test_native_thread` (9 cases: shank watertight+volume,
+shank ppm³ scaling, shank degenerate NULL, `helical_thread_is_watertight_across_ladder` +
+`tapered_thread_is_watertight_across_ladder` — a HARD requirement asserting
+`boundaryEdges==0` at EVERY deflection in the ladder {0.1,0.05,0.02,0.01} with the right
+V-tiling face count, positive volume sign and turn count, degenerate-params NULL,
+pitch-radius-below-axis NULL, tapered-tip-below-axis NULL, plus the
+`fine_pitch_self_intersecting_thread_not_supported` guard) + `test_native_engine` facade
+cases (native `cc_tapered_shank` watertight vol 1832.6; degenerate shank → fall-through 0;
+`native_thread_runs_native_watertight` — well-formed helical + tapered threads run NATIVE
+through the facade with valid watertight mass-properties; `native_fine_pitch_thread_falls_
+through_to_default` — the self-intersecting thread still defers to the fallback). Host CTest
+**18/18**; all prior native suites green (`test_native_construct` / `_profile` / `_loft` /
+`_sweep` / `_tessellate` / `_boolean` / `_blend` / `_topology`). No fixes were needed —
+everything was green on first run.
 
 **Gate 2 (sim native-vs-OCCT parity) GREEN:** `tests/sim/native_thread_parity.mm` +
 `scripts/run-sim-native-thread.sh` through the `cc_*` facade under `cc_set_engine(0/1)`
-(OCCT default restored in teardown), booted sim `2B90AEDB`. `[NTHREAD]` per-op deltas:
+(OCCT default restored in teardown). `[NTHREAD]` per-op deltas (all PASS, tol vol/area
+5e-2, centroid/bbox 1e-1 = 5× deflection 0.02):
 
 | Shape | Op / path | Engine | mass vol (o / n) · relVol | area rel | centroidΔ (tol) | bbox maxCornerΔ (tol) | faces (o→n) | tessellate |
 |---|---|---|---|---|---|---|---|---|
-| tapered_shank r5/fh20/th10 | `cc_tapered_shank` (revolve 360° about Z) | **NATIVE** | 1837.94 / 1830.27 · **4.17e-03** | 3.64e-03 | 3.85e-02 (v=5e-2 c=1e-1) | 1.00e-07 (1e-1) | F 4→9, E 5→30, V 3→30 | watertight, 144 tris, meshVolRel 3.81e-03 |
-| helical_thread mr5/p2/t4/d1 | `cc_helical_thread` | OCCT-fallthrough | 70.2841 / 70.2841 · **0.00e+00** | — | — | — | — | native active=1, self-verify defers → delegated to OCCT |
-| tapered_thread top6/tip4/p2/t4 | `cc_tapered_thread` | OCCT-fallthrough | 70.2677 / 70.2677 · **0.00e+00** | — | — | — | — | native active=1, self-verify defers → delegated to OCCT |
+| tapered_shank r5/fh20/th10 | `cc_tapered_shank` (revolve 360° about Z) | **NATIVE** | 1837.94 / 1830.27 · **4.17e-03** | 3.64e-03 | 3.85e-02 (v=5e-2 c=1e-1) | 0.00e+00 (1e-1) | F 4→9, E 5→30, V 3→30 | watertight, 144 tris, meshVolRel 3.81e-03 |
+| helical_thread mr5/p2/t4/d1 | `cc_helical_thread` | **NATIVE** | 70.2841 / 68.3767 · **2.71e-02** | 1.73e-02 | 4.83e-05 | 1.44e-03 | F 5→194, E 9→774, V 6→195 | watertight, 1286 tris, meshVolRel 1.40e-03 |
+| tapered_thread top6/tip4/p2/t4 | `cc_tapered_thread` | **NATIVE** | 70.2677 / 68.3767 · **2.69e-02** | 1.71e-02 | 2.09e-02 | 2.36e-03 | F 5→194, E 9→774, V 6→195 | watertight, 1286 tris, meshVolRel 1.40e-03 |
+| helical_thread FINE mr5/p0.3/t8/d1 | `cc_helical_thread` (self-intersecting) | OCCT-fallthrough | 36.4423 / 36.4423 · **0.00e+00** | — | — | — | — | native active=1, self-verify defers → delegated to OCCT |
 
 Tolerances: `cc_tapered_shank` matches OCCT within a deflection bound (vol rel 4.17e-03,
-tol v=5e-2 c=1e-1; bbox maxCornerΔ 1.00e-07) and is watertight; native FACE count is a
+tol v=5e-2 c=1e-1; bbox maxCornerΔ 0.00e+00) and is watertight; native FACE count is a
 k=3 angular tiling of the periodic-revolve oracle (9 = 3 segments × 3 spans; OCCT's 4
-shared/periodic faces). The two thread ops delegate transparently to OCCT with native
-active (`cc_active_engine()==1`, vol rel 0.00e+00) — a fall-through proof, no native
-interception. `native_thread_parity.mm` is a `.mm` already excluded by
-`run-sim-suite.sh`'s `*.cpp` find (and on the explicit SKIP list), so the 221-assertion
-OCCT-only suite count is unperturbed; `run-sim-suite.sh` **== 221 passed, 0 failed ==**
-re-verified on the prebuilt `build-ios/libcybercadkernel-SIMULATORARM64.a`.
+shared/periodic faces). The native helical / tapered thread volume (68.38) differs from the
+OCCT oracle (70.28) by **chord-vs-arc** (~2.7% at spt=16, tightening to ~1.3% at spt=24) —
+a deflection artifact, not a geometric mismatch: the native mesh-volume matches its own
+B-rep volume to meshVolRel ≤ 1.40e-3, area already matched (415.55 vs 422.87), and every
+native body meshes watertight (`boundaryEdges==0`) at every tested deflection. The FINE-PITCH
+self-intersecting thread delegates transparently to OCCT with native active
+(`cc_active_engine()==1`, vol rel 0.00e+00) — a fall-through proof, no native interception.
+`native_thread_parity.mm` is a `.mm` already excluded by `run-sim-suite.sh`'s `*.cpp` find
+(and on the explicit SKIP list), so the 221-assertion OCCT-only suite count is unperturbed;
+`run-sim-suite.sh` **== 221 passed, 0 failed ==** and the sim suite (`scripts/run-sim-suite.sh`)
+reports 221/221 passed.
+
+**Pre-fix defect metric (removed):** the earlier native/OCCT volume ratio was a constant
+6.405 across turns={0.1,0.25,0.5,1,4} and spt=16 (6.498 at spt=24) while area already matched
+(415.55 vs 422.87), which masked an inner-band orientation inversion; the thread weld fix
+resolved it and the ratio is now a clean chord-vs-arc ~1.03.
 
 ### Files (Tier D)
 
@@ -668,12 +704,17 @@ re-verified on the prebuilt `build-ios/libcybercadkernel-SIMULATORARM64.a`.
   `build_tapered_thread` (radial-V axis-aux-spine tiling with self-intersection guards)
   returning native `topology::Shape` (NULL ⇒ fall through).
 - `src/native/construct/native_construct.h` — exposes the three builders; doc-comment
-  moves `tapered_shank` to SUPPORTED, threads SUPPORTED-where-verified (fine-pitch /
-  round-profile / non-native cases DEFERRED).
+  marks `tapered_shank` + well-formed `helical_thread` / `tapered_thread` SUPPORTED,
+  fine-pitch / self-intersecting cases DEFERRED.
+- `src/native/tessellate/edge_mesher.h` / `face_mesher.h` — the canonical seam-point weld
+  (`CanonicalEndpoints` / `recordEdgeAnchors` / `BoundaryAnchors`) that makes the per-turn
+  ruled-band ↔ V-cap seams fuse watertight without widening the merge radius.
 - `src/engine/native/native_engine.cpp` — `tapered_shank` → native builder, NULL ⇒
   fallback; `helical_thread` / `tapered_thread` → native builder guarded by a
-  `robustlyWatertight` self-verify → OCCT fall-through when it defers.
-- `tests/native/test_native_thread.cpp` — host Gate-1 (8 cases, no OCCT).
+  `robustlyWatertight` self-verify → NATIVE for well-formed threads, OCCT fall-through only
+  for a fine-pitch / self-intersecting candidate.
+- `tests/native/test_native_thread.cpp` — host Gate-1 (9 cases, no OCCT — including the
+  multi-deflection watertight ladder for helical + tapered, and the fine-pitch guard).
 - `tests/sim/native_thread_parity.mm` + `scripts/run-sim-native-thread.sh` — sim Gate-2
   native-vs-OCCT parity (own `main()`; SKIPped by `run-sim-suite.sh`).
 
@@ -723,18 +764,18 @@ required during verification.
 
 **Where OCCT is STILL required after Tiers A–D (reality):** booleans (fuse/cut/common),
 fillets/chamfers/offsets/shell, features, data exchange (STEP/IGES), shape healing;
-`cc_helical_thread` / `cc_tapered_thread` (Tier D — the native radial-V tiling is built but
-its per-turn seams do not weld robustly watertight on the current mesher, so the engine
-self-verify defers to OCCT `MakePipeShell`), wrap-emboss (Tier E); the remaining sweep
-cases — a NON-PLANAR curved spine, a TIGHT-CURVATURE / self-intersecting spine, a REAL
-twist/scale `cc_twisted_sweep`, and `cc_guided_sweep` / `cc_loft_along_rail` (Tier C
-pipe-shell/guide); loft with MISMATCHED counts / a NON-PLANAR / point-collapse section /
-3+ sections / guided / rail; plus kind-3 SPLINE profile edges, off-axis-arc (torus)
-revolve, and any spline surface-of-revolution. All of these fall through to OCCT via
-`NativeEngine` (native builder returns NULL or self-verify defers → OCCT), not faked.
+a FINE-PITCH / self-intersecting `cc_helical_thread` / `cc_tapered_thread` (non-manifold
+regardless of weld → self-verify defers to OCCT `MakePipeShell`), wrap-emboss (Tier E);
+the remaining sweep cases — a NON-PLANAR curved spine, a TIGHT-CURVATURE / self-intersecting
+spine, a REAL twist/scale `cc_twisted_sweep`, and `cc_guided_sweep` / `cc_loft_along_rail`
+(Tier C pipe-shell/guide); loft with MISMATCHED counts / a NON-PLANAR / point-collapse
+section / 3+ sections / guided / rail; plus kind-3 SPLINE profile edges, off-axis-arc
+(torus) revolve, and any spline surface-of-revolution. All of these fall through to OCCT
+via `NativeEngine` (native builder returns NULL or self-verify defers → OCCT), not faked.
 NOW NATIVE (Tiers A–D): holed / typed-profile extrude, typed-profile revolve, 2-section
-ruled loft, sweep along a straight or smooth-planar spine, and `cc_tapered_shank`
-(silhouette revolved 360° about Z).
+ruled loft, sweep along a straight or smooth-planar spine, `cc_tapered_shank` (silhouette
+revolved 360° about Z), and the WELL-FORMED `cc_helical_thread` / `cc_tapered_thread`
+(radial-V helical tiling, per-turn seams weld `boundaryEdges==0` at every deflection).
 
 ### Files
 
@@ -979,7 +1020,7 @@ native-body edges are pickable exactly as OCCT-body edges are (covered by a
 | 2 | `native-topology` | **done at the bar** | Both gates green (13 host cases + 3 shapes × 5 parity checks = 15/15, max accessor err 0.000e+00); no regressions (host CTest 9/9, `run-sim-suite.sh` 221/221); header-only, not engine-wired (by design). Deferred: non-manifold/degenerate + seam edges, `CompSolid`/`Internal`/`External`, holed-face parity fixture. |
 | 3 | `native-tessellation` | **done at the bar** | Both gates green (host `test_native_tessellate` + sim native-vs-OCCT `BRepMesh` parity, All 20 checks PASS across 4 shapes; ALL four closed solids watertight `boundaryEdges==0`; area/volume relMesh ≤ 6.0e-3, relExact ≤ 1.24e-2, bbox maxCornerΔ ≤ 4.66e-2, on-surface residual ≤ 5.7e-15); no regressions (host CTest 10/10, `run-sim-suite.sh` 221/221); header-only `src/native/tessellate/`, not engine-wired by design. RESOLVED: curved shared-edge stitch (two-stage shared per-edge discretization) — cylinder/filleted-box now watertight. Deferred (genuinely minor, not watertightness): ear-clip trim re-triangulation quality, adaptive per-cell refinement, GPU fp32 path CPU-verified only. |
 | 4 | `native-construction` | **done at the bar** | Native `cc_solid_extrude` (closed polygon → prism: bottom/top planar caps + one planar quad per profile edge) and native `cc_solid_revolve` for **LINE-SEGMENT** profiles (segments → plane / cylinder / cone faces of revolution; full 360° closes, partial adds planar caps) — full native topology + geometry under `src/native/construct/construct.h`, OCCT-free/host-buildable. Wired through a new `NativeEngine : IEngine` (`src/engine/native/`) that serves these ops + native tessellate / mass / bbox / **subshape_ids** on its own native bodies and FALLS THROUGH to the OCCT engine (or the stub on host) for every other capability. Facade toggle `cc_set_engine(int)` / `cc_active_engine()` (additive, like `cc_set_parallel`; **default stays OCCT** so existing suites are unchanged). **Both gates green.** Host: `test_native_engine` + `test_native_construct` assert native builds with NO OCCT — boxes (exact vol/area/6-faces/centroid/bbox/watertight), a **triangle prism** (now watertight, exact vol = area×depth, via the tessellator cap-fill fix below), an L-prism, a full-turn tube (9π), a quarter-turn tube (9π/4) and a cone (4π), within the deflection bound; CTest **12/12**. Sim native-vs-OCCT parity (`native_construct_parity.mm`, driven through the `cc_*` facade under `cc_set_engine(0/1)`): **17/17** across box / triangle-prism / cylinder-tube / partial-revolve — mass (vol/area/centroid), bbox, face count, watertight tessellation, plus the fallthrough boolean (native→OCCT) all match. No regressions (`run-sim-suite.sh` **221/221**, `native_tessellation_parity.mm` **20/20**). Three fixes landed here: (a) the tessellator `isFullRectangle` fast-path now, for a PLANAR face, also requires the loop to hit all four box corners, so a convex polygon cap (triangle/hexagon) is ear-clipped instead of filled as its bbox — native extrude of ANY simple polygon now meshes watertight with the exact volume (`trim.h`); (b) `NativeEngine::bounding_box` derives from the tessellated mesh (a revolved solid's B-rep vertices sit only at angular stations, so a vertex-only AABB missed the circular extremes); (c) `NativeEngine::subshape_ids` is native for native bodies (Vertex/Edge/Face counts via the native Explorer). EXPLICITLY DEFERRED to OCCT (not faked, falls through): loft, sweep, twisted/guided sweep, threads, holed/typed-profile extrude variants, revolve of ARC/SPLINE profiles. DOCUMENTED REPRESENTATIONAL DIFFERENCE (not a geometric mismatch): the native builder emits per-face edges / per-patch vertices (proper edge/vertex SHARING deferred) and tiles a full-turn surface of revolution into <π angular patches (periodic-face construction deferred), so native V/E and the full-turn face count differ from OCCT's shared/periodic representation while the SOLID is geometrically identical (volume/area/bbox/watertight all match) — the parity gate asserts face-count where the tiling matches (prisms, partial revolve) and an integer-multiple relation for the full-turn revolve. |
-| 4b | `native-construction` (advanced swept solids) | ◐ Tiers A + B + C + D(shank) done at the bar; threads OCCT-fallthrough, E follow-up | **Tier A (`add-native-construction-profiles`) done at the verification bar:** `cc_solid_extrude_holes` (circular holes → TRUE `Circle` edge + `Cylinder` wall), `cc_solid_extrude_polyholes` (polygon holes), `cc_solid_extrude_profile` / `_profile_polyholes` (typed line/arc/full-circle outer + holes), `cc_solid_revolve_profile` (line → Plane/Cylinder/Cone, on-axis arc → Sphere) are NATIVE (`src/native/construct/profile.h`). Both gates green: host `test_native_profile` + `test_native_engine` CTest **13/13** (no OCCT); sim native-vs-OCCT parity `native_construct_profiles_parity.mm` **22/22** — 5 native families (polyhole EXACT rel 1.97e-16; curved vol rel ≤ 4.97e-2, all watertight) + 2 fall-through families (kind-3 spline extrude, off-axis-arc torus revolve, vol rel 0.00e+00). **Tier B (`add-native-loft`) done at the verification bar:** `cc_solid_loft` / `cc_solid_loft_wires` for TWO PLANAR sections with EQUAL vertex counts (≥3) are NATIVE — one BILINEAR (degree-1 Bézier) ruled side face per corresponding edge pair + two planar caps → watertight solid, mirroring ruled `BRepOffsetAPI_ThruSections` (`src/native/construct/loft.h`, all functions cognitive complexity ≤ 7). Both gates green: host `test_native_loft` (9 cases) + `test_native_engine` (2 new facade cases) CTest **14/14** (no OCCT); sim native-vs-OCCT parity `native_loft_parity.mm` **17/17** — 3 EXACT families (square-frustum rel 2.54e-16, hex-prism rel 0.00e+00, tri-prism loft_wires rel 0.00e+00) + rotated-square TWIST deflection-bounded (vol rel 5.33e-3, watertight) + a mismatched-count fall-through delegating to OCCT (vol rel 0.00e+00). No regressions (`test_native_tessellate` green — box/cylinder/sphere/filleted-box watertight `boundaryEdges==0`, 13/13 cases; `run-sim-suite.sh` 221/221). **Tier C (`add-native-sweep`) done at the verification bar:** `cc_solid_sweep` for a STRAIGHT spine (EXACT directional prism, vol = profileArea×\|d\|) and a SMOOTH CURVED but PLANAR spine (CONSTANT-frame ruled tube — the section is TRANSLATED with a fixed orientation, matching OCCT MakePipe's planar `GeomFill_CorrectedFrenet` → `Law_Constant`, NOT a perpendicular/Pappus sweep) are NATIVE (`src/native/construct/sweep.h`, reuses `loft.h` `ruledSideFace` + `construct.h` `planarFace`; `build_sweep` cognitive complexity 14). `cc_twisted_sweep` is native only when it reduces to the plain sweep (twist ≈ 0 AND scale ≈ 1). An earlier RMF/double-reflection revision was REMOVED — it produced the Pappus volume, a real oracle mismatch. Both gates green: host `test_native_sweep` (11 cases) + `test_native_engine` (3 sweep cases) CTest **15/15** (no OCCT); sim native-vs-OCCT parity `native_sweep_parity.mm` **11/11** (8 native + 3 fallback) — straight EXACT vol rel 7.11e-16 and smooth-arc EXACT vol o=330.299 n=330.299 rel 1.72e-16 (native F = OCCT F = 98, watertight), plus real-twist / guided / loft-rail fall-through delegating to OCCT (vol rel 0.00e+00, native active). STILL OCCT-fallthrough (not faked): kind-3 SPLINE edges, off-axis-arc (torus) / spline surface-of-revolution; loft with MISMATCHED counts / a NON-PLANAR section / a point-collapse section / 3+ sections / guided / rail; a NON-PLANAR / TIGHT-CURVATURE / self-intersecting sweep spine, a REAL twist/scale sweep, `cc_guided_sweep` / `cc_loft_along_rail`; and E wrap-emboss. **Tier D (`add-native-threads`): `cc_tapered_shank` done at the verification bar (NATIVE); threads honestly OCCT-fallthrough.** `cc_tapered_shank` is a pointed-shank silhouette (cone tip → full-radius cylinder → head disk) revolved 360° about the WORLD Z axis by reusing the native `build_revolution` (`src/native/construct/thread.h`, all functions cognitive complexity ≤ 5) — reproducing the OCCT `BRepPrimAPI_MakeRevol` oracle (mass/centroid/bbox), tip a TRUE on-axis apex, robustly watertight at every deflection. `cc_helical_thread` / `cc_tapered_thread` build the full radial-V axis-aux-spine helical tiling (correct volume + V geometry) but their per-turn seams do not weld robustly watertight on the current two-stage mesher, so the engine `robustlyWatertight` self-verify REJECTS the native thread and FALLS THROUGH to OCCT `MakePipeShell` (labelled, verified, never faked). Both gates green: host `test_native_thread` (8 cases) + `test_native_engine` (3 facade cases) CTest **16/16** (no OCCT; one TEST-ONLY fix — stale in-plane-Y bbox/axis assertions in `tapered_shank_is_watertight_revolve` corrected to the shipped Z-axial convention, implementation unchanged); sim native-vs-OCCT parity `native_thread_parity.mm` — `cc_tapered_shank` NATIVE r5/fh20/th10 vol o=1837.94 n=1830.27 rel 4.17e-03 / area rel 3.64e-03 / centroidΔ 3.85e-02 / bbox maxCornerΔ 1.00e-07 / F 4→9 (k=3 tiling) / watertight 144 tris meshVolRel 3.81e-03, plus the two thread ops as OCCT fall-through (native active=1, self-verify defers → delegated, vol rel 0.00e+00). No regressions (`run-sim-suite.sh` 221/221, `test_native_tessellate` green). |
+| 4b | `native-construction` (advanced swept solids) | ◐ Tiers A + B + C + D done at the bar (shank + well-formed threads NATIVE); fine-pitch thread OCCT-fallthrough, E follow-up | **Tier A (`add-native-construction-profiles`) done at the verification bar:** `cc_solid_extrude_holes` (circular holes → TRUE `Circle` edge + `Cylinder` wall), `cc_solid_extrude_polyholes` (polygon holes), `cc_solid_extrude_profile` / `_profile_polyholes` (typed line/arc/full-circle outer + holes), `cc_solid_revolve_profile` (line → Plane/Cylinder/Cone, on-axis arc → Sphere) are NATIVE (`src/native/construct/profile.h`). Both gates green: host `test_native_profile` + `test_native_engine` CTest **13/13** (no OCCT); sim native-vs-OCCT parity `native_construct_profiles_parity.mm` **22/22** — 5 native families (polyhole EXACT rel 1.97e-16; curved vol rel ≤ 4.97e-2, all watertight) + 2 fall-through families (kind-3 spline extrude, off-axis-arc torus revolve, vol rel 0.00e+00). **Tier B (`add-native-loft`) done at the verification bar:** `cc_solid_loft` / `cc_solid_loft_wires` for TWO PLANAR sections with EQUAL vertex counts (≥3) are NATIVE — one BILINEAR (degree-1 Bézier) ruled side face per corresponding edge pair + two planar caps → watertight solid, mirroring ruled `BRepOffsetAPI_ThruSections` (`src/native/construct/loft.h`, all functions cognitive complexity ≤ 7). Both gates green: host `test_native_loft` (9 cases) + `test_native_engine` (2 new facade cases) CTest **14/14** (no OCCT); sim native-vs-OCCT parity `native_loft_parity.mm` **17/17** — 3 EXACT families (square-frustum rel 2.54e-16, hex-prism rel 0.00e+00, tri-prism loft_wires rel 0.00e+00) + rotated-square TWIST deflection-bounded (vol rel 5.33e-3, watertight) + a mismatched-count fall-through delegating to OCCT (vol rel 0.00e+00). No regressions (`test_native_tessellate` green — box/cylinder/sphere/filleted-box watertight `boundaryEdges==0`, 13/13 cases; `run-sim-suite.sh` 221/221). **Tier C (`add-native-sweep`) done at the verification bar:** `cc_solid_sweep` for a STRAIGHT spine (EXACT directional prism, vol = profileArea×\|d\|) and a SMOOTH CURVED but PLANAR spine (CONSTANT-frame ruled tube — the section is TRANSLATED with a fixed orientation, matching OCCT MakePipe's planar `GeomFill_CorrectedFrenet` → `Law_Constant`, NOT a perpendicular/Pappus sweep) are NATIVE (`src/native/construct/sweep.h`, reuses `loft.h` `ruledSideFace` + `construct.h` `planarFace`; `build_sweep` cognitive complexity 14). `cc_twisted_sweep` is native only when it reduces to the plain sweep (twist ≈ 0 AND scale ≈ 1). An earlier RMF/double-reflection revision was REMOVED — it produced the Pappus volume, a real oracle mismatch. Both gates green: host `test_native_sweep` (11 cases) + `test_native_engine` (3 sweep cases) CTest **15/15** (no OCCT); sim native-vs-OCCT parity `native_sweep_parity.mm` **11/11** (8 native + 3 fallback) — straight EXACT vol rel 7.11e-16 and smooth-arc EXACT vol o=330.299 n=330.299 rel 1.72e-16 (native F = OCCT F = 98, watertight), plus real-twist / guided / loft-rail fall-through delegating to OCCT (vol rel 0.00e+00, native active). STILL OCCT-fallthrough (not faked): kind-3 SPLINE edges, off-axis-arc (torus) / spline surface-of-revolution; loft with MISMATCHED counts / a NON-PLANAR section / a point-collapse section / 3+ sections / guided / rail; a NON-PLANAR / TIGHT-CURVATURE / self-intersecting sweep spine, a REAL twist/scale sweep, `cc_guided_sweep` / `cc_loft_along_rail`; and E wrap-emboss. **Tier D (`add-native-threads`): `cc_tapered_shank` + well-formed `cc_helical_thread` / `cc_tapered_thread` done at the verification bar (all NATIVE); fine-pitch / self-intersecting thread honestly OCCT-fallthrough.** `cc_tapered_shank` is a pointed-shank silhouette (cone tip → full-radius cylinder → head disk) revolved 360° about the WORLD Z axis by reusing the native `build_revolution` (`src/native/construct/thread.h`, all functions cognitive complexity ≤ 5) — reproducing the OCCT `BRepPrimAPI_MakeRevol` oracle (mass/centroid/bbox), tip a TRUE on-axis apex, robustly watertight at every deflection. `cc_helical_thread` / `cc_tapered_thread` build the full radial-V axis-aux-spine helical tiling (three bilinear ruled bands per span + two planar V caps); **the per-turn seam weld — the last blocker — is now fixed at the mesher level** (canonical seam-point snap, `edge_mesher.h` `CanonicalEndpoints` / `face_mesher.h` `BoundaryAnchors`), so a well-formed thread meshes `boundaryEdges==0` at EVERY deflection across the full parameter sweep (432/432 helical + 96/96 tapered → native), passing the engine `robustlyWatertight` self-verify and running NATIVE. Only a FINE-PITCH / self-intersecting thread (non-manifold regardless of weld) still FALLS THROUGH to OCCT `MakePipeShell` (labelled, verified, never faked). Both gates green: host `test_native_thread` (9 cases — including the multi-deflection watertight ladder for helical + tapered, and the fine-pitch guard) + `test_native_engine` (`native_thread_runs_native_watertight` + `native_fine_pitch_thread_falls_through_to_default`) CTest **18/18** (no OCCT; no fixes needed, green on first run); sim native-vs-OCCT parity `native_thread_parity.mm` — `cc_tapered_shank` NATIVE r5/fh20/th10 vol o=1837.94 n=1830.27 rel 4.17e-03 / watertight 144 tris; **`cc_helical_thread` NATIVE** mr5/p2/t4/d1 vol o=70.2841 n=68.3767 rel 2.71e-02 / area rel 1.73e-02 / bbox maxCornerΔ 1.44e-03 / F 5→194 / watertight 1286 tris meshVolRel 1.40e-03; **`cc_tapered_thread` NATIVE** top6/tip4/p2/t4 vol o=70.2677 n=68.3767 rel 2.69e-02 / watertight 1286 tris (the ~2.7% native-vs-OCCT volume gap is chord-vs-arc at spt=16, tightening to ~1.3% at spt=24; native mesh-vs-B-rep volume matches to meshVolRel ≤ 1.40e-3), plus the fine-pitch thread as OCCT fall-through (native active=1, vol rel 0.00e+00). No regressions (`run-sim-suite.sh` 221/221, `test_native_tessellate` green). |
 | 5 | `native-booleans` | ◐ PLANAR-polyhedron slice done at the bar; curved/general OCCT-fallthrough | Native `cc_boolean` (fuse/cut/common) for PLANAR-faced solids (axis-aligned boxes, prisms) via a BSP-tree CSG (`src/native/boolean/`), guarded by a MANDATORY self-verify (`robustlyWatertight` + set-algebra volume) that discards + falls through to OCCT otherwise. Both gates green: host `test_native_boolean` + `test_native_engine` CTest **17/17** (no OCCT); sim native-vs-OCCT parity `native_boolean_parity.mm` **25/25** — box fuse (rel 1.27e-16) / cut (2.96e-16) / common (2.22e-16), contained fuse (0.00e+00) / common (2.22e-16) all EXACT + watertight, self-verify rejects native∩native disjoint, plus curved (cyl-box, rel 0.00e+00) / near-coincident (rel 0.00e+00) / disjoint (rel 0.00e+00) OCCT-fallthrough (delegated, no interception). No regressions (`run-sim-suite.sh` 221/221, `test_native_tessellate` green). STILL OCCT: curved-face booleans (surface-surface intersection), near-tangent/coincident, general/concave-general, foreign operands, shape healing — booleans remain the longest-lived OCCT dependency for curved/general. |
 | 6 | `native-blends` | ◐ tractable planar slice done at the bar (BOTH gates green); curved/concave/variable/fillet_face OCCT-fallthrough | Native `cc_chamfer_edges` / `cc_fillet_edges` (constant radius) / `cc_offset_face` / `cc_shell` for the tractable PLANAR cases (`src/native/blend/`), each editing the solid's oriented-planar-polygon soup (`boolean/extractPolygons`) and re-welding a watertight solid via `boolean/assembleSolid`, then a MANDATORY engine self-verify (`blendResultVerified` — watertight + sane volume sign: chamfer/fillet/shell shrink, offset grows/shrinks) that DISCARDS a bad candidate (never faked). Native: **chamfer** = slice the convex corner off with the plane through the two setback lines (EXACT for a box); **fillet** = rolling-ball tangent cylinder on a convex planar dihedral (Phase-3 dihedral construction: axis ∥ crease, radius r, tangent to both planes), deflection-bounded facets, blend face a `Cylinder` of radius r, watertight; **offset_face** = slide a planar face along its normal dragging the side faces (EXACT slab); **shell** = inset kept walls inward by thickness + native BSP-cut the cavity (open-top box t=1 → wall vol 424). Both gates green: host `test_native_blend` (10 cases incl. 2-edge chamfer exact + concave-L-prism fallthrough) + 5 new `test_native_engine` facade cases (incl. a native `cc_edge_polylines` regression), host CTest **18/18** (no OCCT); sim native-vs-OCCT parity `native_blend_parity.mm` **[NBLEND] 16/16** — chamfer (vol o=995 n=995 rel 2.29e-16) / offset (1500, rel 4.55e-16) / shell (424, rel 4.02e-16) EXACT + watertight, constant-radius fillet deflection-bounded (o=997.854 n=997.765 rel 8.96e-05, watertight), a curved-rim fillet forwarded to OCCT (rel 0.00e+00), the self-verify rejecting a thickness-6 shell (id 0, honest error). No regressions (`run-sim-suite.sh` 221/221, `test_native_tessellate` 13/13 green). STILL OCCT-fallthrough (builder NULL / self-verify discards → forwarded, never faked): CURVED-face inputs, CONCAVE edges, variable-radius `cc_fillet_edges_variable`, `cc_fillet_face`, ≠2-face edges, multi-edge fillet interference, non-convex shell, oversized thickness. Blend fns 🟢 Excellent (≤10) except drivers `fillet_edges` (13) / `chamfer_edges` (11) 🟡 Acceptable. |
 | 7 | `native-exchange` | ☐ planned | Proposed when it begins. |

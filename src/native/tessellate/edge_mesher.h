@@ -49,6 +49,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -74,6 +75,28 @@ struct EdgeDiscretization {
   std::size_t segmentCount() const noexcept {
     return fracs.empty() ? 0 : fracs.size() - 1;
   }
+};
+
+// ── Canonical (build-order-independent) endpoints of an edge, world-placed ─────
+// Two topologically DISTINCT edge nodes that occupy the same segment (a per-turn
+// thread ridge shared by two ruled bands, built as SEPARATE nodes with opposite
+// vertex order) have Line frames that differ in origin/direction, so evaluating a
+// shared fraction through each node's own frame — or through each adjacent face's
+// own surface — lands on 3D points that agree only to ~1 ULP. When such a point
+// falls on a weld-grid cell boundary its two copies round to opposite cells and
+// the spatial weld fails to fuse them, leaving a per-turn seam sliver OPEN at some
+// deflections (the thread robustlyWatertight residual). Canonicalising the two
+// endpoints (lexicographically ordered) makes BOTH coincident edges hand back the
+// SAME ordered pair, so a straight-edge sample interpolated between them is
+// BIT-IDENTICAL across the two edges → the two faces place the same boundary point
+// → the weld fuses them. Curved edges are unaffected (they already share the edge
+// node, hence identical points). This is the "one shared 1D discretization pinned
+// on both faces" contract, completed at the 3D-point level.
+struct CanonicalEndpoints {
+  math::Point3 a;         ///< lexicographically-smaller world endpoint
+  math::Point3 b;         ///< the other world endpoint
+  bool aIsFirst = false;  ///< internal: whether `a` is the edge's `first`-param end
+  bool valid = false;
 };
 
 namespace detail {
@@ -151,6 +174,48 @@ inline int edgeSegments(const topo::EdgeCurve& c, double first, double last, dou
   if (!(step > 0.0)) return maxSegs;
   const int n = static_cast<int>(std::ceil(span / step));
   return std::clamp(n, minSegs, maxSegs);
+}
+
+// Order two world endpoints lexicographically (x, then y, then z). Deterministic
+// and independent of which node/orientation the endpoints came from, so two
+// coincident edges canonicalise to the SAME pair.
+inline bool endpointLess(const math::Point3& p, const math::Point3& q) noexcept {
+  if (p.x != q.x) return p.x < q.x;
+  if (p.y != q.y) return p.y < q.y;
+  return p.z < q.z;
+}
+
+// World-placed canonical endpoints of a STRAIGHT edge (Line curve). Returns
+// `valid == false` for a non-line edge (curved seams already share their edge
+// node and thus identical points; only the thread's per-band straight seams need
+// canonicalising). The face mesher interpolates seam samples between `a` and `b`
+// in this fixed order (see recordEdgeAnchors), so two coincident edges produce
+// bit-identical points.
+//
+// The endpoints are read from the edge's BOUNDING VERTICES (which two coincident
+// edges SHARE as the same TShape node → bit-identical points), NOT reconstructed
+// from the Line frame: `origin + dir·len` differs by ~1 ULP between two edges
+// built with opposite vertex order (different origin/direction), which would
+// defeat the canonicalisation. The first stored vertex is the `first`-parameter
+// end (ShapeBuilder::makeEdge stores v0 Forward at `first`, v1 Reversed at
+// `last`); we take the first two vertices in stored order.
+inline CanonicalEndpoints canonicalLineEndpoints(const topo::Shape& edge) noexcept {
+  CanonicalEndpoints ce;
+  const auto cr = topo::curveOf(edge);
+  if (!cr || !cr->curve || cr->curve->kind != topo::EdgeCurve::Kind::Line) return ce;
+  std::optional<math::Point3> pFirst, pLast;
+  for (topo::Explorer ex(edge, topo::ShapeType::Vertex); ex.more(); ex.next()) {
+    const std::optional<math::Point3> p = topo::pointOf(ex.current());
+    if (!p) continue;
+    if (!pFirst) pFirst = p;
+    else if (!pLast) { pLast = p; break; }
+  }
+  if (!pFirst || !pLast) return ce;  // degenerate edge → leave unshared
+  ce.aIsFirst = !endpointLess(*pLast, *pFirst);  // a = min endpoint; ties keep first
+  ce.a = ce.aIsFirst ? *pFirst : *pLast;
+  ce.b = ce.aIsFirst ? *pLast : *pFirst;
+  ce.valid = true;
+  return ce;
 }
 
 }  // namespace detail

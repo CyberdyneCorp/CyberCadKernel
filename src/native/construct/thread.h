@@ -23,8 +23,8 @@
 //     vs the Z-axis oracle — hence the explicit Z frame here.) Wide at the top (head),
 //     a point at the bottom (tip). Fully native, watertight, deflection-bounded vs OCCT.
 //
-//   * build_helical_thread / build_tapered_thread — the HARD one (an ATTEMPT the
-//     engine self-verifies; see the HONESTY note below). A V/triangular section swept
+//   * build_helical_thread / build_tapered_thread — the HARD one (NATIVE, the engine
+//     self-verifies; see the HONESTY note below). A V/triangular section swept
 //     along a HELIX at the pitch-line radius, transported RADIALLY (the apex points
 //     outward, the base runs along the axis) by an AXIS auxiliary-spine law so the V
 //     does NOT Frenet-rotate — mirroring the OCCT oracle (BRepOffsetAPI_MakePipeShell
@@ -40,20 +40,28 @@
 //
 // ── HONESTY (Tier D — threads are hard; measured, not claimed) ───────────────────
 // The radial-V tiling above produces topology with the CORRECT volume and the correct
-// V geometry, but its ruled-band ↔ triangular-end-cap seams do NOT weld ROBUSTLY under
-// the current two-stage tessellator: the deflection-based subdivision of the straight
-// V-section side edges is not guaranteed identical across the two bands sharing each
-// edge, so the assembled solid meshes watertight at SOME deflections and open at others
-// (a per-turn seam sliver). Because a leaky solid would corrupt mass/bbox/tessellate,
-// the ENGINE (native_engine.cpp) accepts a native thread ONLY when it SELF-VERIFIES as
-// robustly watertight across a deflection ladder, and otherwise falls through to the
-// OCCT MakePipeShell oracle. On the current mesher NO tested thread passes that gate, so
-// helical_thread / tapered_thread are HONESTLY OCCT-fallthrough today — the native
-// builder and its guards are exercised, but the verified watertight body is the OCCT
-// one. tapered_shank IS genuinely native (it reuses the already-verified revolve). If
-// the mesher's seam-welding is later strengthened (shared side-edge discretization for
-// ruled bands), threads light up native automatically with no engine change. This is
-// exactly the "fall through to OCCT — labelled, verified, never faked" rule.
+// V geometry. Its ruled-band ↔ band and band ↔ triangular-end-cap seams are STRAIGHT
+// edges shared by two ruled bands built as SEPARATE edge nodes (with opposite vertex
+// order). Historically each band evaluated a shared seam sample through its OWN bilinear
+// surface, so the two boundary points agreed only to ~1 ULP; when a shared coordinate
+// landed exactly on a spatial-weld cell boundary (coord·⅟tol = k+0.5) the two ULP twins
+// rounded to opposite cells and the weld left that per-turn seam OPEN at isolated
+// deflections — watertight at some, a sliver at others. This is now FIXED at the mesher
+// level (edge_mesher.h CanonicalEndpoints + face_mesher.h BoundaryAnchors), NOT here:
+// the tessellator emits, for every straight boundary edge, a CANONICAL seam point per
+// shared sample index i/n, interpolated between the edge's two BOUNDING VERTICES in a
+// fixed lexicographic order — BIT-IDENTICAL for the two coincident edges regardless of
+// build order — and snaps each seam-lying vertex to it. Both bands then place the same
+// 3D point and the conservative single-cell weld fuses them; the V geometry/volume are
+// untouched. So helical_thread / tapered_thread now mesh ROBUSTLY watertight across the
+// deflection ladder and the ENGINE (native_engine.cpp `robustlyWatertight` self-verify)
+// keeps them NATIVE. The guards below are unchanged: a FINE-PITCH / self-intersecting
+// thread (turns fold through each other) still fails robustlyWatertight — a self-
+// overlapping mesh is non-manifold no matter how vertices weld — so it still falls
+// through to the OCCT MakePipeShell oracle (labelled, verified, never faked; the native
+// builder never emits the round-profile fallback). tapered_shank is genuinely native
+// (it reuses the already-verified revolve). "Fall through to OCCT only when we cannot
+// verify a watertight native body — never a faked or leaky solid."
 //
 // ── THE RADIAL-V TRANSPORT (the crux — matches the aux-spine oracle) ─────────────
 // The OCCT oracle keeps the section RADIAL by binding it to an AUXILIARY spine equal
@@ -326,18 +334,25 @@ inline topo::Shape build_thread(double majorTopMM, double majorTipMM, double pit
 
   // Three ruled bands per span (one per V edge: bottom→apex, apex→top, top→bottom),
   // each a bilinear patch between the two stations' corresponding vertices. The face
-  // orientation is chosen so the patch's natural normal points OUT of the solid: the V
-  // section's centroid at the span midpoint is the interior reference — the outward
-  // normal points AWAY from the local helix axis point (the pitch-line point at the
-  // patch centre). We reuse the same nat/radial test loft/sweep use.
+  // orientation is chosen so the patch's natural normal points OUT of the THIN V
+  // RIDGE. The interior reference is the CENTROID of the swept V section (the mean of
+  // the span's six ring vertices), which lies strictly inside the triangle at radius ≈
+  // pitchR + depth/3. Using the section centroid — NOT a point on the central Z axis —
+  // is essential: the INNER root band (rootTop↔rootBottom, at radius pitchR) faces
+  // radially INWARD (toward the axis), so its outward-solid normal points −radial. An
+  // axis reference would force that band to point +radial (away from the axis), which
+  // inverts the inner face and makes the divergence-theorem volume enclose the whole
+  // core wedge down to the axis (measured ≈ 6.4× the true ridge volume). The centroid
+  // reference sits outward of the root edge, so `mid − centroid` is correctly −radial
+  // there and +radial on the two flank bands — every band points out of the ridge.
   auto emitBand = [&](const topo::Shape& ai, const topo::Shape& aj, const topo::Shape& bi,
                       const topo::Shape& bj, const math::Point3& Ai, const math::Point3& Aj,
-                      const math::Point3& Bi, const math::Point3& Bj, const math::Point3& axisPt) {
+                      const math::Point3& Bi, const math::Point3& Bj, const math::Point3& interior) {
     const math::Point3 mid{(Ai.asVec() + Aj.asVec() + Bi.asVec() + Bj.asVec()) / 4.0};
     const math::Vec3 du = 0.5 * ((Aj - Ai) + (Bj - Bi));
     const math::Vec3 dv = 0.5 * ((Bi - Ai) + (Bj - Aj));
     const math::Vec3 nat = math::cross(du, dv);
-    const math::Vec3 outward = mid - axisPt;  // away from the pitch-line axis point
+    const math::Vec3 outward = mid - interior;  // away from the swept-section centroid
     const topo::Orientation o =
         math::dot(nat, outward) < 0.0 ? topo::Orientation::Reversed : topo::Orientation::Forward;
     faces.push_back(detail::ruledSideFace(ai, aj, bi, bj, o));
@@ -346,14 +361,15 @@ inline topo::Shape build_thread(double majorTopMM, double majorTipMM, double pit
   for (int i = 0; i < nStations; ++i) {
     const Ring& A = rings[static_cast<std::size_t>(i)];
     const Ring& B = rings[static_cast<std::size_t>(i) + 1];
-    // Pitch-line axis point at the span centre (on the central Z axis at the mean
-    // height of the two stations' root vertices) — the interior reference the band
-    // orientation points away from.
-    const double zMid = 0.25 * (A.p0.z + A.p2.z + B.p0.z + B.p2.z);
-    const math::Point3 axisPt{0.0, 0.0, zMid};
-    emitBand(A.v0, A.v1, B.v0, B.v1, A.p0, A.p1, B.p0, B.p1, axisPt);  // bottom→apex
-    emitBand(A.v1, A.v2, B.v1, B.v2, A.p1, A.p2, B.p1, B.p2, axisPt);  // apex→top
-    emitBand(A.v2, A.v0, B.v2, B.v0, A.p2, A.p0, B.p2, B.p0, axisPt);  // top→bottom
+    // Interior reference: the CENTROID of the two stations' V sections (the mean of the
+    // six ring vertices) — a point strictly inside the swept thin ridge, outward of the
+    // root edge. The outward normal of each band points away from this centroid.
+    const math::Point3 centroid{
+        (A.p0.asVec() + A.p1.asVec() + A.p2.asVec() + B.p0.asVec() + B.p1.asVec() + B.p2.asVec()) /
+        6.0};
+    emitBand(A.v0, A.v1, B.v0, B.v1, A.p0, A.p1, B.p0, B.p1, centroid);  // bottom→apex
+    emitBand(A.v1, A.v2, B.v1, B.v2, A.p1, A.p2, B.p1, B.p2, centroid);  // apex→top
+    emitBand(A.v2, A.v0, B.v2, B.v0, A.p2, A.p0, B.p2, B.p0, centroid);  // top→bottom
   }
 
   // Two planar end caps: the V triangle at the first and last station. The cap normal

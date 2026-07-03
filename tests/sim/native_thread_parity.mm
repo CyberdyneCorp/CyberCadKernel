@@ -6,40 +6,47 @@
 // compared against the OCCT oracle at sampled inputs through the SAME cc_* facade.
 //
 //   cc_set_engine(0)  → OCCT engine (the oracle / default)
-//   cc_set_engine(1)  → NativeEngine (native tapered_shank — construct/thread.h reusing the
-//                       parity-verified revolve; helical/tapered thread ATTEMPT native but
-//                       self-verify → OCCT fallthrough, see the HONESTY note)
+//   cc_set_engine(1)  → NativeEngine (native tapered_shank reusing the parity-verified
+//                       revolve; native helical/tapered thread — a radial-V ridge tiled
+//                       into ruled bands + caps, self-verified robustly watertight and
+//                       kept native; a genuinely FINE-PITCH thread whose turns fold
+//                       through each other still fails the self-verify → OCCT fallthrough)
 //
 // The switch is the ADDITIVE facade toggle cc_set_engine / cc_active_engine; DEFAULT
 // stays OCCT. Every id is released; the harness restores cc_set_engine(0) before exit.
 //
-// ── NATIVE case (MUST take the native path; cc_active_engine==1) ──────────────────
+// ── NATIVE cases (MUST take the native path; cc_active_engine==1) ─────────────────
 //   1. TAPERED SHANK — cc_tapered_shank: a pointed shank silhouette (cone tip →
 //      full-radius cylinder → head disk) revolved 360° about Z by REUSING the native
 //      revolve (build_revolution). Volume ⅓π r²·taperHeight + π r²·fullHeight. The tip
 //      is a TRUE on-axis apex (the revolve collapses its angular copies to one shared
 //      vertex → robustly watertight at every deflection), so this is genuinely native.
-//      Compared DEFLECTION-BOUNDED (curved surface of revolution) vs BRepPrimAPI_MakeRevol:
-//      vol/area/centroid within tol, bbox, subshape counts consistent, native mesh
-//      watertight + mesh-volume ≈ B-rep volume, native F a k≥1 multiple of OCCT F.
+//      Compared DEFLECTION-BOUNDED (curved surface of revolution) vs BRepPrimAPI_MakeRevol.
+//   2. HELICAL THREAD — cc_helical_thread (cylindrical, constant pitch-line radius) and
+//   3. TAPERED THREAD — cc_tapered_thread (conical, pitch-line radius tapers tip→head).
+//      The native builder sweeps a V/triangular section RADIALLY along the pitch-line
+//      helix (construct/thread.h build_thread) and tiles the three V edges into bilinear
+//      ruled bands + two planar caps → a thin helical RIDGE, the same body OCCT sweeps
+//      with BRepOffsetAPI_MakePipeShell (aux-spine radial law). The ruled-band/cap seams
+//      weld watertight via the mesher's canonical shared-edge points, so the engine
+//      self-verifies the solid robustly watertight and KEEPS IT NATIVE (cc_active_engine
+//      ==1). Each is checked exactly like the shank — DEFLECTION-BOUNDED vs the OCCT
+//      MakePipeShell oracle: vol/area/centroid within tol, bbox, subshape counts a proper
+//      band+cap tiling, native mesh watertight + mesh-volume ≈ B-rep volume. (The native
+//      body tiles STRAIGHT chords between helix stations where OCCT fits a smooth BSpline
+//      spine, so at the harness's samplesPerTurn the two agree to a chord-vs-arc
+//      discretization bound, ~2-3% on volume — well inside the 5% curved-body gate.)
 //
-// ── FALLBACK cases (native ATTEMPTS the radial-V helical tiling; the engine's
-//    robustlyWatertight self-verify defers → forwards to OCCT, tagged [fallback]) ──
-//   F1. HELICAL THREAD  — cc_helical_thread: a cylindrical thread (constant pitch-line
-//       radius). The native builder produces a candidate V-tiling with the correct
-//       volume, but its per-turn ruled-band ↔ end-cap seams do NOT weld robustly across
-//       the deflection ladder, so NativeEngine::helical_thread falls through to the OCCT
-//       MakePipeShell oracle — labelled, verified, never faked.
-//   F2. TAPERED THREAD  — cc_tapered_thread: a conical thread (pitch-line radius tapers
-//       tip→head). Same self-verify defer → OCCT fallthrough.
-//   Each fallback case asserts NativeEngine stays ACTIVE (cc_active_engine==1) and the
-//   native (delegated) result EQUALS the OCCT oracle (vol rel ~0) — a verified
-//   fall-through, not a fake and not a native interception.
-//
-// If a future mesher strengthens the ruled-band seam welding so a thread self-verifies
-// robustly watertight, that case lights up native with NO engine change; this harness
-// tolerates that transition — a thread that becomes native is checked with the same
-// deflection-bounded native comparison the shank uses instead of the fallback equality.
+// ── FALLBACK case (native ATTEMPTS the radial-V tiling; the engine's robustlyWatertight
+//    self-verify DEFERS → forwards to OCCT, tagged [fallback]) ─────────────────────
+//   F1. FINE-PITCH HELICAL THREAD — cc_helical_thread with a pitch so small (relative to
+//       the V depth) that adjacent turns fold through one another: the swept ridge
+//       self-intersects, so the native mesh is non-manifold no matter how vertices weld
+//       and robustlyWatertight rejects it across the deflection ladder. NativeEngine
+//       falls through to the OCCT MakePipeShell oracle — labelled, verified, never faked.
+//       This case asserts NativeEngine stays ACTIVE (cc_active_engine==1) and the native
+//       (delegated) result EQUALS the OCCT oracle (vol rel ~0) — a verified fall-through,
+//       not a fake and not a native interception.
 //
 // Output: [NTHREAD] PASS/FAIL lines with per-op deltas + a native/fallback tag, then a
 // summary. On run-sim-suite.sh's SKIP list (own main()).
@@ -142,11 +149,22 @@ int subCount(CCShapeId id, int kind) {
 
 using Builder = CCShapeId (*)();
 
+// How the native builder decomposes the body's faces, so the subshape check knows the
+// honest count invariant to assert against the OCCT oracle:
+//   Planar    — a prism/planar body: native F == OCCT F exactly.
+//   Revolve   — a full-turn surface of revolution: each lateral surface is tiled into 3
+//               non-periodic 120° angular patches, so native F is a positive multiple of 3.
+//   ThreadRidge — a helical V ridge: 3 ruled bands per helix span + 2 planar end caps, so
+//               native F = 3·spans + 2, i.e. (nF − 2) is a positive multiple of 3 and
+//               nF > OCCT's (OCCT emits a handful of swept/periodic faces).
+enum class FaceTopo { Planar, Revolve, ThreadRidge };
+
 struct OpCase {
     const char* name;
     Builder build;
     bool planar;      // true → exact tol; false → deflection-scaled tol (curved)
     double deflection;
+    FaceTopo faceTopo = FaceTopo::Revolve;
 };
 
 // Compare a NATIVE build against the OCCT build; emit mass / bbox / faces / subshape /
@@ -227,11 +245,23 @@ void runNativeOp(const OpCase& s) {
     // The honest, geometry-preserving invariant is therefore: both counts positive, and
     // native F is a proper 3-span revolve (nF a positive multiple of 3, nF ≥ 3). The
     // planar case (never span-split) still requires an exact match.
+    // A helical thread ridge (ThreadRidge) tiles 3 ruled bands per helix span + 2 planar
+    // end caps → native F = 3·spans + 2, so (nF − 2) is a positive multiple of 3 and nF
+    // exceeds OCCT's small swept/periodic face count. A surface of revolution (Revolve)
+    // tiles each lateral surface into 3 angular patches → nF a positive multiple of 3.
+    // A planar body matches OCCT exactly.
     bool facesOk;
-    if (s.planar) {
-        facesOk = (oF > 0) && (nF > 0) && (nF == oF);
-    } else {
-        facesOk = (oF > 0) && (nF > 0) && (nF % 3 == 0);  // 3 angular patches / surface
+    switch (s.faceTopo) {
+        case FaceTopo::Planar:
+            facesOk = (oF > 0) && (nF > 0) && (nF == oF);
+            break;
+        case FaceTopo::ThreadRidge:
+            facesOk = (oF > 0) && (nF > oF) && ((nF - 2) > 0) && ((nF - 2) % 3 == 0);
+            break;
+        case FaceTopo::Revolve:
+        default:
+            facesOk = (oF > 0) && (nF > 0) && (nF % 3 == 0);  // 3 angular patches / surface
+            break;
     }
     std::snprintf(detail, sizeof detail, "[native] F o=%d n=%d | E o=%d n=%d | V o=%d n=%d", oF, nF,
                   oE, nE, oV, nV);
@@ -257,12 +287,13 @@ void runNativeOp(const OpCase& s) {
     cc_shape_release(occtId);
 }
 
-// A thread op: the native builder ATTEMPTS the radial-V tiling; the engine self-verify
-// (robustlyWatertight across a deflection ladder) accepts it only if genuinely closed.
-// TODAY every tested thread defers → NativeEngine forwards to OCCT (labelled, verified,
-// never faked). This routine tolerates BOTH outcomes:
-//   * fallback (expected today): native active AND native (delegated) result EQUALS the
-//     OCCT oracle to fp precision — a verified fall-through, not an interception.
+// A FINE-PITCH thread op: the native builder ATTEMPTS the radial-V tiling, but the swept
+// turns self-intersect so the engine self-verify (robustlyWatertight across a deflection
+// ladder) rejects the non-manifold body and NativeEngine forwards to OCCT (labelled,
+// verified, never faked). This routine tolerates BOTH outcomes:
+//   * fallback (expected for the fine-pitch case): native active AND the native
+//     (delegated) result EQUALS the OCCT oracle to fp precision — a verified
+//     fall-through, not an interception.
 //   * native (future mesher): if the thread self-verifies watertight and the native and
 //     OCCT bodies diverge only within a deflection bound, we accept that as native parity
 //     instead — the thread has lit up native with no engine change.
@@ -325,24 +356,36 @@ CCShapeId buildTaperedShank() {
                             /*pointsPerMM=*/1.0);
 }
 
-// F1) HELICAL THREAD (thread — expected OCCT fallthrough today): a cylindrical thread,
-//     major radius 5, pitch 2, 4 turns, depth 1, 60° ISO flank, pointsPerMM 1,
-//     samplesPerTurn 16. Well-formed (guards pass, candidate V-tiling has the right
-//     volume ≈ 450), but the seams don't self-verify watertight → delegated to OCCT.
+// 2) HELICAL THREAD (native): a well-separated cylindrical thread — major radius 5,
+//    pitch 2, 4 turns, depth 1, 60° ISO flank, pointsPerMM 1, samplesPerTurn 16. The
+//    pitch (2) comfortably clears the V's axial base (2·halfBase = 1.15 < pitch), so the
+//    turns do NOT fold through each other; the radial-V ridge self-verifies robustly
+//    watertight and stays native. A thin helical V ridge (vol ≈ 68 native / 70 OCCT).
 CCShapeId buildHelicalThread() {
     return cc_helical_thread(/*majorRadiusMM=*/5.0, /*pitchMM=*/2.0, /*turns=*/4.0,
                              /*depthMM=*/1.0, /*flankAngleDeg=*/60.0, /*pointsPerMM=*/1.0,
                              /*samplesPerTurn=*/16);
 }
 
-// F2) TAPERED THREAD (thread — expected OCCT fallthrough today): a conical thread, top
-//     radius 6, tip radius 4 (both clear the axis after minus depth/2), pitch 2, 4 turns,
-//     depth 1, 60° flank, pointsPerMM 1, samplesPerTurn 16. Guards pass; self-verify
-//     defers → delegated to OCCT.
+// 3) TAPERED THREAD (native): a conical thread — top radius 6, tip radius 4 (both clear
+//    the axis after minus depth/2), pitch 2, 4 turns, depth 1, 60° flank, pointsPerMM 1,
+//    samplesPerTurn 16. Same well-separated pitch → self-verifies native (vol ≈ 70).
 CCShapeId buildTaperedThread() {
     return cc_tapered_thread(/*topRadiusMM=*/6.0, /*tipRadiusMM=*/4.0, /*pitchMM=*/2.0,
                              /*turns=*/4.0, /*depthMM=*/1.0, /*flankAngleDeg=*/60.0,
                              /*pointsPerMM=*/1.0, /*samplesPerTurn=*/16);
+}
+
+// F1) FINE-PITCH HELICAL THREAD (genuine OCCT fallthrough): major radius 5, pitch 0.3,
+//     8 turns, depth 1, 60° flank, pointsPerMM 1, samplesPerTurn 16. The pitch (0.3) is
+//     far smaller than the V depth (1) — adjacent turns fold through one another, so the
+//     swept ridge SELF-INTERSECTS (a non-manifold mesh no matter how vertices weld).
+//     robustlyWatertight rejects it across the deflection ladder and NativeEngine
+//     delegates to the OCCT MakePipeShell oracle — labelled, verified, never faked.
+CCShapeId buildFinePitchHelicalThread() {
+    return cc_helical_thread(/*majorRadiusMM=*/5.0, /*pitchMM=*/0.3, /*turns=*/8.0,
+                             /*depthMM=*/1.0, /*flankAngleDeg=*/60.0, /*pointsPerMM=*/1.0,
+                             /*samplesPerTurn=*/16);
 }
 
 }  // namespace
@@ -355,20 +398,26 @@ int main() {
 
     const std::vector<OpCase> nativeCases = {
         // 1) Tapered shank: a curved surface of revolution → deflection-bounded parity,
-        //    watertight, native F a k≥1 multiple of OCCT F.
-        {"tapered_shank r5/fh20/th10", &buildTaperedShank, /*planar*/ false, /*defl*/ 0.02},
+        //    watertight, native F a k≥1 multiple of 3 (3 angular patches / lateral surface).
+        {"tapered_shank r5/fh20/th10", &buildTaperedShank, /*planar*/ false, /*defl*/ 0.02,
+         FaceTopo::Revolve},
+        // 2) Helical thread (well-separated pitch): the radial-V ridge self-verifies
+        //    robustly watertight → NATIVE. Deflection-bounded parity vs the OCCT
+        //    MakePipeShell oracle (chord-vs-arc discretization ≈ 2-3% on volume).
+        {"helical_thread mr5/p2/t4/d1", &buildHelicalThread, /*planar*/ false, /*defl*/ 0.02,
+         FaceTopo::ThreadRidge},
+        // 3) Tapered thread (well-separated pitch): same → NATIVE, deflection-bounded parity.
+        {"tapered_thread top6/tip4/p2/t4", &buildTaperedThread, /*planar*/ false, /*defl*/ 0.02,
+         FaceTopo::ThreadRidge},
     };
 
     for (const OpCase& s : nativeCases) runNativeOp(s);
 
-    // Thread ops: native ATTEMPTS the radial-V tiling; engine self-verify defers today →
-    // verified OCCT fall-through (this routine also accepts a native pass if a future
-    // mesher welds the seams).
-    runThreadOp("helical_thread mr5/p2/t4/d1", &buildHelicalThread,
-                "radial-V helical sweep, per-turn seams don't self-verify watertight — Tier D",
-                /*deflection=*/0.02);
-    runThreadOp("tapered_thread top6/tip4/p2/t4", &buildTaperedThread,
-                "tapered radial-V helical sweep, self-verify defers — Tier D",
+    // Genuine FINE-PITCH fallback: a thread whose turns fold through each other →
+    // self-intersecting ridge → robustlyWatertight rejects → verified OCCT fall-through
+    // (this routine also accepts a native pass if a future mesher makes it watertight).
+    runThreadOp("helical_thread FINE mr5/p0.3/t8/d1", &buildFinePitchHelicalThread,
+                "fine-pitch helical sweep, turns self-intersect → self-verify defers — Tier D",
                 /*deflection=*/0.02);
 
     cc_set_engine(0);

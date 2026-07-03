@@ -527,13 +527,16 @@ ShapeResult NativeEngine::wrap_emboss(EngineShape body, int faceId, const double
 // native revolve). Wide at the head, a true point at the tip; watertight, exact/
 // deflection-bounded vs BRepPrimAPI_MakeRevol. A degenerate parameter → NULL → OCCT.
 //
-// helical_thread / tapered_thread ATTEMPT native (a V/triangular section swept
-// RADIALLY along the pitch-line helix via the axis-aux-spine law, tiled into ruled
-// bands + planar caps — construct/thread.h), guarded against self-intersection at fine
-// pitch / large depth / overlapping turns. The attempt is only accepted as native when
-// it SELF-VERIFIES as robustly watertight across a deflection ladder (robustlyWatertight);
-// otherwise the SAME arguments fall through to the OCCT MakePipeShell oracle — never a
-// faked or leaky solid (honest coexistence, see NATIVE-REWRITE.md Tier D).
+// helical_thread / tapered_thread run NATIVE (a V/triangular section swept RADIALLY
+// along the pitch-line helix via the axis-aux-spine law, tiled into ruled bands +
+// planar caps — construct/thread.h), guarded against self-intersection at fine pitch /
+// large depth / overlapping turns. The per-turn ruled-band/cap seams weld watertight via
+// the mesher's canonical shared-edge points (edge_mesher CanonicalEndpoints /
+// face_mesher BoundaryAnchors), so a well-formed thread SELF-VERIFIES as robustly
+// watertight across a deflection ladder (robustlyWatertight) and is kept native. A
+// FINE-PITCH / self-intersecting thread fails that gate (a self-overlapping mesh is
+// non-manifold) and the SAME arguments fall through to the OCCT MakePipeShell oracle —
+// never a faked or leaky solid (honest coexistence, see NATIVE-REWRITE.md Tier D).
 ShapeResult NativeEngine::helical_thread(double mr, double pi, double tu, double de, double fa,
                                          double pp, int sp) {
     ntopo::Shape solid = ncst::build_helical_thread(mr, pi, tu, de, fa, pp, sp);

@@ -136,6 +136,11 @@ solid mesh SHALL preserve a per-triangle face-id tag and be deterministic.
 - WHEN the boundary vertices along the shared edge are compared between the two faces
 - THEN they SHALL coincide (sampled from the same edge curve at the same parameter set) within the weld tolerance
 
+#### Scenario: Coincident straight seams built as separate edge nodes weld exactly (host)
+- GIVEN two adjacent faces whose shared STRAIGHT seam is built as two SEPARATE edge nodes with opposite vertex order (a per-turn helical-thread ruled band ↔ band or band ↔ V-cap seam), meshed on the host
+- WHEN each face places its boundary vertices on that seam
+- THEN both faces SHALL emit BIT-IDENTICAL 3D seam points — interpolated at the shared sample indices between the seam's two bounding vertices in a fixed (lexicographic) endpoint order, independent of build order — so the single-cell spatial weld fuses them even when a shared coordinate lands on a weld-grid cell boundary, AND the assembled solid SHALL be watertight (`boundaryEdges == 0`) at EVERY deflection in the self-verify ladder (no deflection-dependent seam sliver)
+
 #### Scenario: Native solid mesh is watertight and matches OCCT (parity)
 - GIVEN a closed OCCT solid (box, cylinder, sphere) walked into the native model on a booted iOS simulator via the reused OCCT→native bridge, and a matched deflection
 - WHEN it is meshed by the native mesher and by OCCT `BRepMesh_IncrementalMesh`

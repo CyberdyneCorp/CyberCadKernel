@@ -12,16 +12,25 @@
 //     (reusing the native revolve): full radius over fullHeight, tapering to a TRUE
 //     point over taperHeight. Watertight at every deflection; volume = cone tip +
 //     full-radius cylinder, matching BRepPrimAPI_MakeRevol.
-//   * helical_thread / tapered_thread ATTEMPT the radial-V helical tiling (a V section
+//   * helical_thread / tapered_thread build the radial-V helical tiling (a V section
 //     swept radially via the axis-aux-spine law, tiled into ruled bands + planar caps,
-//     guarded against self-intersection). The builder returns a candidate solid with
-//     the CORRECT volume and V geometry, but its per-turn ruled-band ↔ cap seams do NOT
-//     weld ROBUSTLY watertight across deflections on the current tessellator, so the
-//     ENGINE self-verify (robustlyWatertight) defers them to OCCT. These host tests
-//     therefore assert (a) the guards reject degenerate + self-intersecting input with
-//     a NULL Shape, and (b) the candidate solid, WHEN built, carries the right V-tiling
-//     face structure and the correct enclosed volume — documenting the native attempt
-//     without claiming a robustly-watertight thread it does not yet produce.
+//     guarded against self-intersection) and now mesh ROBUSTLY WATERTIGHT: the per-turn
+//     ruled-band ↔ band and band ↔ cap straight seams weld exactly because the mesher
+//     emits build-order-independent CANONICAL seam points and snaps both faces' seam
+//     vertices to them (edge_mesher CanonicalEndpoints / face_mesher BoundaryAnchors), so
+//     the two coincident points are BIT-IDENTICAL and the conservative single-cell weld
+//     fuses them at EVERY deflection. These host tests therefore assert (a) the guards
+//     reject degenerate + self-intersecting input, and (b) a well-formed thread — both a
+//     cylindrical (reference: major5 / pitch2 / turns4 / depth1) and a tapered one — is a
+//     HARD REQUIREMENT to be WATERTIGHT (boundaryEdges==0) at EVERY deflection in a ladder
+//     {0.1, 0.05, 0.02, 0.01}, not just one, with the right V-tiling face structure, a
+//     positive enclosed-volume sign and the correct turn count. This is the same
+//     robustness bar native_engine.cpp robustlyWatertight enforces before keeping the op
+//     native; there is NO "candidate only / self-verify defers" allowance for these
+//     well-formed cases — a leak at any single deflection FAILS the test. It is the
+//     regression test for the seam-weld fix. Only a FINE-PITCH / self-intersecting thread
+//     (turns fold through each other) still fails the ladder and falls through to OCCT
+//     (guard unchanged).
 //
 // Build (standalone, no CMake):
 //   clang++ -std=c++20 tests/native/test_native_thread.cpp \
@@ -36,6 +45,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdio>
 #include <vector>
 
 namespace topo = cybercad::native::topology;
@@ -66,13 +77,29 @@ bool watertightAt(const topo::Shape& s, std::vector<double> defls, double& vol) 
   return ok;
 }
 
-// The enclosed volume at a single (tight) deflection — used to check the thread
-// candidate's volume even when its seams do not weld watertight.
-double volumeAt(const topo::Shape& s, double defl) {
-  tess::MeshParams p;
-  p.deflection = defl;
-  const tess::Mesh m = tess::SolidMesher{p}.mesh(s);
-  return std::fabs(tess::enclosedVolume(m));
+// HARD watertight requirement across a deflection LADDER: assert boundaryEdges==0
+// (fully closed 2-manifold) at EVERY rung, individually, so a leak at any single
+// deflection fails the test with the offending deflection reported — not just the
+// aggregate `watertightAt` bool. This is the bar the engine's robustlyWatertight
+// self-verify enforces before keeping a thread native; the well-formed thread ops
+// MUST clear it (no "candidate only / self-verify defers" allowance).
+void requireWatertightLadder(bool& cc_ok_, const topo::Shape& s,
+                             const std::vector<double>& defls) {
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+  for (double d : defls) {
+    tess::MeshParams p;
+    p.deflection = d;
+    const tess::Mesh m = tess::SolidMesher{p}.mesh(s);
+    const std::size_t be = tess::boundaryEdgeCount(m);
+    // boundaryEdges==0 AND a closed 2-manifold (no edge used 3+ times): a
+    // self-intersecting fold can zero the open-boundary count yet still be
+    // non-manifold, so both must hold for a genuinely watertight solid.
+    CC_CHECK(be == 0);
+    CC_CHECK(tess::isWatertight(m));
+    if (be != 0 || !tess::isWatertight(m))
+      std::printf("  [thread] NOT watertight at deflection=%.4f (boundaryEdges=%zu)\n", d, be);
+  }
 }
 
 // Axis-aligned bounding box of a shape's mesh at a given deflection. Used to check
@@ -171,54 +198,80 @@ CC_TEST(tapered_shank_degenerate_deferred) {
   CC_CHECK(cst::build_tapered_shank(5.0, 20.0, 10.0, 0.0).isNull());   // ppm ≤ 0
 }
 
-// ── ATTEMPT: the helical-thread candidate carries the right V-tiling + volume ────
-// A cylindrical V thread (major=10, pitch=3, turns=2, depth=1.5, flank=60°, ppm=1,
-// spt=12). The radial-V tiling builds 3 ruled bands per span × (turns·spt) spans + 2
-// caps. The pitch-line radius is major − depth/2 = 9.25; the V apex reaches the major
-// radius 10 and the root sits at 8.5. This asserts the native builder returns a
-// candidate (non-null) with the expected face structure and a plausible, positive
-// enclosed volume — the native radial-V machinery IS exercised. It does NOT assert
-// robust watertightness: the per-turn seams do not weld robustly on the current mesher,
-// which is why the ENGINE self-verify defers this op to OCCT (see thread.h §HONESTY).
-CC_TEST(helical_thread_candidate_has_v_tiling) {
-  const int turns = 2, spt = 12;
-  const topo::Shape s = cst::build_helical_thread(10.0, 3.0, turns, 1.5, 60.0, 1.0, spt);
+// The deflection LADDER every well-formed thread must be watertight across. This is
+// the multi-deflection bar the engine's robustlyWatertight self-verify applies (its
+// own rungs are {0.05,0.02,0.01,0.005}); we add the coarser 0.1 rung so a seam that
+// only opens at low resolution is caught too. boundaryEdges MUST be 0 at every rung.
+const std::vector<double> kThreadDeflLadder = {0.1, 0.05, 0.02, 0.01};
+
+// ── NATIVE (HARD REQUIREMENT): a well-formed helical thread is WATERTIGHT at every
+// deflection, with the right V-tiling + volume sign + turn count ──────────────────
+// A cylindrical V thread with the reference parameters (major=5, pitch=2, turns=4,
+// depth=1, flank=60°, ppm=1, spt=12). The radial-V tiling builds 3 ruled bands per
+// span × (turns·spt) spans + 2 caps. The pitch-line radius is major − depth/2 = 4.5;
+// the V apex reaches the major radius 5 and the root sits at 4.
+//
+// This is the seam-weld REGRESSION and a HARD gate (no "candidate only / self-verify
+// defers" allowance for a well-formed thread): the per-turn ruled-band ↔ band and
+// band ↔ cap straight seams used to open at isolated deflections; they now weld via
+// the mesher's canonical shared-edge points (edge_mesher CanonicalEndpoints /
+// face_mesher BoundaryAnchors), so the thread meshes boundaryEdges==0 at EVERY rung of
+// the ladder and the ENGINE keeps this op native.
+CC_TEST(helical_thread_is_watertight_across_ladder) {
+  const int turns = 4, spt = 12;
+  const topo::Shape s = cst::build_helical_thread(5.0, 2.0, turns, 1.0, 60.0, 1.0, spt);
   CC_CHECK(!s.isNull());
   if (s.isNull()) return;
   const int stations = turns * spt;             // spans between station rings
   CC_CHECK_EQ(countSub(s, topo::ShapeType::Face), 3 * stations + 2);  // 3 bands/span + 2 caps
-  const double vol = volumeAt(s, 0.02);
-  CC_CHECK(vol > 0.0);  // a real, positively-enclosed candidate solid
 
-  // Gross geometry of the candidate (checked from the native mesh, no OCCT). The thread
-  // is swept about the Z axis. Radial extent: the V apex is projected outward by `depth`
-  // from the pitch-line radius (major−depth/2 = 9.25), so the outermost radius is
-  // pitchR+depth = major+depth/2 = 10.75 (the bbox radius ≈ that). Z-extent: the helix
-  // rises pitch·turns = 6 and the V section overhangs one half-base beyond each end
-  // (halfBase = min(pitch/2, depth·tan(30°)) = min(1.5, 0.866) = 0.866), so ≈ 6 + 2·0.866.
-  const double pitchR = 10.0 - 1.5 / 2.0;   // major − depth/2 = 9.25
-  const double apexR = pitchR + 1.5;        // 10.75
+  // HARD watertight requirement: boundaryEdges==0 at EVERY deflection in the ladder.
+  requireWatertightLadder(cc_ok_, s, kThreadDeflLadder);
+
+  // Correct volume SIGN + turn count, plus gross geometry from the native mesh (no
+  // OCCT). Radial extent: the V apex is projected outward by `depth` from the
+  // pitch-line radius (major−depth/2 = 4.5), so the outermost radius is pitchR+depth =
+  // major+depth/2 = 5.5. Z-extent: the helix rises pitch·turns = 8 and the V section
+  // overhangs one half-base beyond each end (halfBase = min(pitch/2, depth·tan(30°)) =
+  // min(1.0, 0.577) = 0.577), so the Z span ≈ 8 + 2·0.577.
+  tess::MeshParams vp;
+  vp.deflection = 0.01;
+  const tess::Mesh vm = tess::SolidMesher{vp}.mesh(s);
+  const double vol = tess::enclosedVolume(vm);
+  CC_CHECK(vol > 0.0);  // a real, positively-enclosed solid (correct volume sign)
+
+  const double pitchR = 5.0 - 1.0 / 2.0;   // major − depth/2 = 4.5
+  const double apexR = pitchR + 1.0;        // 5.5
   const Bbox b = bboxAt(s, 0.02);
   const double rMax = std::max({-b.xmin, b.xmax, -b.ymin, b.ymax});
   CC_CHECK(std::fabs(rMax - apexR) / apexR < 5e-2);  // apex reaches major + depth/2
-  CC_CHECK(rMax > 10.0);                              // and clears the requested major radius
-  const double rise = 3.0 * turns;                   // pitch·turns = 6
+  CC_CHECK(rMax > 5.0);                               // and clears the requested major radius
+  const double rise = 2.0 * turns;                    // pitch·turns = 8 (the turn count)
   const double zExtent = b.zmax - b.zmin;
-  CC_CHECK(zExtent > rise * 0.95);                   // spans at least the requested turns
-  CC_CHECK(zExtent < rise + 3.0);                    // + at most one V base of overhang/end
+  CC_CHECK(zExtent > rise * 0.95);                    // spans at least the requested turns
+  CC_CHECK(zExtent < rise + 2.0);                     // + at most one V base of overhang/end
 }
 
-// ── ATTEMPT: the tapered-thread candidate is built (tapering pitch-line radius) ──
+// ── NATIVE (HARD REQUIREMENT): a well-formed tapered thread is WATERTIGHT at every
+// deflection (tapering pitch radius) ──────────────────────────────────────────────
 // top=6, tip=4, pitch=2, turns=3, depth=1, flank=60°, spt=16. The pitch-line radius
-// tapers 3.5 (tip) → 5.5 (top). Candidate non-null with the V-tiling face count.
-CC_TEST(tapered_thread_candidate_is_built) {
+// tapers 3.5 (tip) → 5.5 (top). Non-null with the V-tiling face count, boundaryEdges==0
+// at EVERY rung of the ladder (seam-weld regression, tapered variant), positive volume.
+CC_TEST(tapered_thread_is_watertight_across_ladder) {
   const int turns = 3, spt = 16;
   const topo::Shape s = cst::build_tapered_thread(6.0, 4.0, 2.0, turns, 1.0, 60.0, 1.0, spt);
   CC_CHECK(!s.isNull());
   if (s.isNull()) return;
   const int stations = turns * spt;
   CC_CHECK_EQ(countSub(s, topo::ShapeType::Face), 3 * stations + 2);
-  CC_CHECK(volumeAt(s, 0.02) > 0.0);
+
+  // HARD watertight requirement across the ladder.
+  requireWatertightLadder(cc_ok_, s, kThreadDeflLadder);
+
+  tess::MeshParams vp;
+  vp.deflection = 0.01;
+  const tess::Mesh vm = tess::SolidMesher{vp}.mesh(s);
+  CC_CHECK(tess::enclosedVolume(vm) > 0.0);  // correct volume sign
 }
 
 // ── GUARD: degenerate thread parameters return NULL (→ OCCT) ─────────────────────

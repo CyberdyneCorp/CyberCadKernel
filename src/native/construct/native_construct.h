@@ -77,6 +77,24 @@
 //                                    (straight or smooth curved); any real twist/scale
 //                                    → NULL (OCCT). cc_twisted_sweep.
 //
+//   ── Tier-D (#4b, thread.h) ────────────────────────────────────────────────────
+//   build_tapered_shank(r,fh,th,ppm) GENUINELY NATIVE. Revolve a shank silhouette 360°
+//                                    about Z (full radius r over the upper fullHeight,
+//                                    tapering to a TRUE point over the lower taperHeight)
+//                                    by reusing the native revolve (build_revolution).
+//                                    Wide at the head, a point at the tip; watertight,
+//                                    exact/deflection-bounded vs BRepPrimAPI_MakeRevol.
+//   build_helical_thread(...)        ATTEMPT native, engine-verified. A V/triangular
+//   build_tapered_thread(...)        section swept RADIALLY along the pitch-line helix
+//                                    via the axis-aux-spine law (mirroring MakePipeShell
+//                                    SetMode(axisWire,true)), tiled into bilinear ruled
+//                                    bands + planar caps, guarded against self-
+//                                    intersection. The engine accepts it as native ONLY
+//                                    when it self-verifies robustly watertight; on the
+//                                    current tessellator the per-turn seams do not weld
+//                                    robustly, so these HONESTLY fall through to OCCT
+//                                    (never faked). See thread.h §HONESTY.
+//
 // ── SUPPORTED vs DEFERRED (honest — see openspec/NATIVE-REWRITE.md) ───────────
 //   SUPPORTED natively:
 //     * extrude of a closed polygon profile → prism solid.
@@ -92,6 +110,11 @@
 //     * a TIGHT-CURVATURE / self-intersecting sweep spine, or a TWISTED/scaled sweep
 //       (build_sweep is native for straight + smooth curved; build_twisted_sweep is
 //       native only for the plain no-twist sweep).
+//     * helical_thread / tapered_thread (Tier D): the native radial-V helical tiling is
+//       built + guarded, but its per-turn seams do not weld robustly watertight on the
+//       current tessellator, so the engine self-verify defers them to OCCT (honest,
+//       verified fall-through, never faked — see thread.h §HONESTY). tapered_shank IS
+//       native.
 //     * kind-3 SPLINE profile edges (extrude and revolve).
 //     * arc-revolve whose circle centre is OFF the axis (a Torus surface of
 //       revolution — no native Torus surface yet).
@@ -124,5 +147,6 @@
 #include "native/construct/loft.h"
 #include "native/construct/profile.h"
 #include "native/construct/sweep.h"
+#include "native/construct/thread.h"
 
 #endif  // CYBERCAD_NATIVE_CONSTRUCT_NATIVE_CONSTRUCT_H

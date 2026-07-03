@@ -456,22 +456,28 @@ inline topo::FaceSurface segmentSurface(const AxisFrame& f, const RevPoint& p, c
 
 }  // namespace detail
 
-inline topo::Shape build_revolution(const std::vector<LineSeg>& segments, const RevolveAxis& axisIn,
-                                    double angle) {
+// Core revolve on an EXPLICIT 3D axis frame (origin, Z = axis, X = radial reference,
+// Y = Z×X). The planar RevolveAxis overload below builds the in-plane frame the
+// cc_solid_revolve contract implies (axis = in-plane Y); other callers (e.g. the
+// tapered-shank, which must land in OCCT's world-Z frame) pass a frame directly. All
+// downstream geometry (decompose / revolved / analytic surfaces / caps) is expressed
+// through `f`, so the same machinery produces the solid in whatever frame is supplied.
+inline topo::Shape build_revolution_framed(const std::vector<LineSeg>& segments,
+                                           const detail::AxisFrame& f, double angle) {
   if (segments.empty() || !(angle > kMinDepth)) return {};
-  const math::Dir3 adir{axisIn.adx, axisIn.ady, 0.0};
-  if (!adir.valid()) return {};
-
-  detail::AxisFrame f;
-  f.origin = detail::xy(axisIn.ax, axisIn.ay, 0.0);
-  f.z = adir;
-  // Radial reference X = in-plane perpendicular to the axis (rotate axis by −90°
-  // in z=0), so a profile that lies on the +radial side maps to θ = 0.
-  f.x = math::Dir3{math::Vec3{axisIn.ady, -axisIn.adx, 0.0}};
-  f.y = math::Dir3{math::cross(f.z.vec(), f.x.vec())};
 
   const bool full = angle >= kFullTurn - 1e-9;
   const double sweep = full ? kFullTurn : angle;
+
+  // A LineSeg carries the silhouette directly in the frame's own (radial, axial)
+  // coordinates: x = radial distance r (≥ 0) from the axis, y = axial coord h along
+  // the axis. This is frame-independent — the SAME (r,h) profile is placed into
+  // whatever `f` supplies (the in-plane Y-axis frame for cc_solid_revolve, or a
+  // world-Z frame for the tapered shank). (For the canonical in-plane frame this is
+  // identical to decompose(xy(x,y)) since there x maps to r and y to h.)
+  auto rh = [](const LineSeg& s, double& r0, double& h0, double& r1, double& h1) {
+    r0 = s.x0; h0 = s.y0; r1 = s.x1; h1 = s.y1;
+  };
 
   // Profile winding in the (r,h) half-plane (shoelace). The sign selects the
   // material-outward side of every swept face (see faceOrientation): a CCW profile
@@ -479,8 +485,7 @@ inline topo::Shape build_revolution(const std::vector<LineSeg>& segments, const 
   double area2 = 0.0;
   for (const LineSeg& s : segments) {
     double r0, h0, r1, h1;
-    f.decompose(detail::xy(s.x0, s.y0), r0, h0);
-    f.decompose(detail::xy(s.x1, s.y1), r1, h1);
+    rh(s, r0, h0, r1, h1);
     area2 += r0 * h1 - r1 * h0;
   }
   const double windingSign = area2 >= 0.0 ? 1.0 : -1.0;
@@ -502,8 +507,7 @@ inline topo::Shape build_revolution(const std::vector<LineSeg>& segments, const 
   // One or more swept sub-faces per profile segment.
   for (const LineSeg& s : segments) {
     detail::RevPoint p, q;
-    f.decompose(detail::xy(s.x0, s.y0), p.r, p.h);
-    f.decompose(detail::xy(s.x1, s.y1), q.r, q.h);
+    rh(s, p.r, p.h, q.r, q.h);
     p.onAxis = p.r < kProfileTol;
     q.onAxis = q.r < kProfileTol;
     if (p.onAxis && q.onAxis) continue;  // segment on the axis: no swept face
@@ -534,13 +538,9 @@ inline topo::Shape build_revolution(const std::vector<LineSeg>& segments, const 
         verts.push_back(topo::ShapeBuilder::makeVertex(p));
       };
       for (const LineSeg& s : segments) {
-        double r, h;
-        f.decompose(detail::xy(s.x0, s.y0), r, h);
-        push(r, h);
+        push(s.x0, s.y0);
       }
-      double r, h;
-      f.decompose(detail::xy(segments.back().x1, segments.back().y1), r, h);
-      push(r, h);
+      push(segments.back().x1, segments.back().y1);
       // Drop a closing duplicate (loop end == start).
       if (verts.size() > 1 &&
           math::distance(*topo::pointOf(verts.front()), *topo::pointOf(verts.back())) < kProfileTol)
@@ -558,6 +558,23 @@ inline topo::Shape build_revolution(const std::vector<LineSeg>& segments, const 
 
   const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
   return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// Planar RevolveAxis entry (the cc_solid_revolve contract): the profile lies in the
+// world z=0 plane and is revolved about an IN-PLANE axis (default = the world Y axis,
+// mirroring OcctEngine::solid_revolve which revolves the X–Y profile about gp_Dir(0,1,0)).
+inline topo::Shape build_revolution(const std::vector<LineSeg>& segments, const RevolveAxis& axisIn,
+                                    double angle) {
+  const math::Dir3 adir{axisIn.adx, axisIn.ady, 0.0};
+  if (!adir.valid()) return {};
+  detail::AxisFrame f;
+  f.origin = detail::xy(axisIn.ax, axisIn.ay, 0.0);
+  f.z = adir;
+  // Radial reference X = in-plane perpendicular to the axis (rotate axis by −90°
+  // in z=0), so a profile that lies on the +radial side maps to θ = 0.
+  f.x = math::Dir3{math::Vec3{axisIn.ady, -axisIn.adx, 0.0}};
+  f.y = math::Dir3{math::cross(f.z.vec(), f.x.vec())};
+  return build_revolution_framed(segments, f, angle);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

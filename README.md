@@ -47,10 +47,10 @@ flowchart TD
     end
 
     Engine -->|"default"| OCCT["OCCT adapter<br/>(exact B-rep, fp64, CPU)"]
-    Engine -->|"cc_set_engine(1)"| Native["NativeEngine (C++20)<br/>native: math · topology · tessellation ·<br/>construction (extrude / revolve / 2-section loft / sweep)"]
+    Engine -->|"cc_set_engine(1)"| Native["NativeEngine (C++20)<br/>native: math · topology · tessellation ·<br/>construction (extrude / revolve / 2-section loft / sweep / tapered-shank)"]
     Engine -.->|"no-OCCT host build"| Stub["Stub engine"]
 
-    Native -.->|"fallthrough (still OCCT):<br/>booleans · fillets/offsets · features ·<br/>STEP/IGES · threads/wrap · non-planar-sweep · healing"| OCCT
+    Native -.->|"fallthrough (still OCCT):<br/>booleans · fillets/offsets · features ·<br/>STEP/IGES · helical/tapered thread · wrap-emboss ·<br/>non-planar-sweep · healing"| OCCT
     OCCT ==>|"still required"| OCCTlib[("OCCT libs")]
 
     Compute --> CPUb["CPU backend (fp64)"]
@@ -77,8 +77,8 @@ the rest, so OCCT remains a required dependency until Phase 4 completes.
   the rewritten capabilities and falls through to OCCT for the rest.
 - **Native core** (`src/native`) — OCCT-free C++20: `math` (vectors/transforms +
   Bézier/B-spline/NURBS eval), `topology` (B-rep model + traversal), `tessellate`
-  (watertight mesher), `construct` (extrude/revolve/2-section ruled loft/sweep).
-  Host-buildable and unit-tested with no OCCT.
+  (watertight mesher), `construct` (extrude/revolve/2-section ruled loft/sweep/
+  tapered-shank). Host-buildable and unit-tested with no OCCT.
 - **Compute backend** (`src/compute`) — default CPU backend + a **Metal** backend
   (iOS) for GPU work behind the same interface.
 
@@ -97,9 +97,10 @@ linked until it is complete. Current split:
 | construction: extrude, revolve (line-segment) | data exchange (STEP / IGES) |
 | construction: holed extrude (circular + polygon holes) | sweep: non-planar / tight-curvature / real-twist / guided / rail |
 | construction: typed-profile extrude (line / arc / full-circle) | 3+-section / guided / rail loft |
-| construction: typed-profile revolve (line, on-axis arc → sphere) | threads, wrap-emboss |
+| construction: typed-profile revolve (line, on-axis arc → sphere) | `cc_helical_thread` / `cc_tapered_thread` (native tiling built; self-verify defers to OCCT `MakePipeShell`), wrap-emboss |
 | construction: 2-section ruled loft (equal-count planar sections) | spline-profile edges, off-axis-arc (torus) / spline revolve |
 | construction: sweep (straight spine, or smooth curved but planar spine) | shape healing |
+| construction: `cc_tapered_shank` (silhouette revolved 360° about Z) | |
 
 Native code is opt-in (`cc_set_engine(1)`); the **default engine remains OCCT**,
 so shipped behaviour is unchanged. OCCT is unlinked only at the final `drop-occt`

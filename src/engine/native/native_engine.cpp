@@ -130,6 +130,27 @@ MeshData toMeshData(const ntess::Mesh& m) {
     return out;
 }
 
+// Self-verify that a freshly built native solid meshes ROBUSTLY watertight — closed
+// at EVERY deflection in a small ladder, not just one. Used by ops whose native
+// builder attempts a hard tiling that may or may not weld (Tier-D helical threads):
+// the builder can return non-null topology whose ruled-band + cap seams only weld at
+// some deflections, so shipping it as native would leak an open mesh into
+// mass/bbox/tessellate. Verifying across the ladder means the engine keeps a thread
+// native ONLY when it is genuinely watertight, and otherwise falls through to OCCT —
+// honest coexistence, never a faked or leaky solid. A closed solid also encloses a
+// positive volume, which we require.
+bool robustlyWatertight(const ntopo::Shape& s) {
+    if (s.isNull()) return false;
+    for (const double d : {0.05, 0.02, 0.01, 0.005}) {
+        ntess::MeshParams p;
+        p.deflection = d;
+        const ntess::Mesh m = ntess::SolidMesher{p}.mesh(s);
+        if (!ntess::isWatertight(m)) return false;
+        if (!(std::fabs(ntess::enclosedVolume(m)) > 0.0)) return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 // ── Fallback engine factory (build-specific) ───────────────────────────────────
@@ -385,16 +406,36 @@ ShapeResult NativeEngine::wrap_emboss(EngineShape body, int faceId, const double
     CC_NATIVE_BODY_UNSUPPORTED("wrap_emboss", body);
     return fallback().wrap_emboss(body, faceId, p, c, d, boss);
 }
+// ── Tier-D (#4b) threads + tapered shank ──────────────────────────────────────
+// tapered_shank is NATIVE: a shank silhouette revolved 360° about Z (reusing the
+// native revolve). Wide at the head, a true point at the tip; watertight, exact/
+// deflection-bounded vs BRepPrimAPI_MakeRevol. A degenerate parameter → NULL → OCCT.
+//
+// helical_thread / tapered_thread ATTEMPT native (a V/triangular section swept
+// RADIALLY along the pitch-line helix via the axis-aux-spine law, tiled into ruled
+// bands + planar caps — construct/thread.h), guarded against self-intersection at fine
+// pitch / large depth / overlapping turns. The attempt is only accepted as native when
+// it SELF-VERIFIES as robustly watertight across a deflection ladder (robustlyWatertight);
+// otherwise the SAME arguments fall through to the OCCT MakePipeShell oracle — never a
+// faked or leaky solid (honest coexistence, see NATIVE-REWRITE.md Tier D).
 ShapeResult NativeEngine::helical_thread(double mr, double pi, double tu, double de, double fa,
                                          double pp, int sp) {
-    return fallback().helical_thread(mr, pi, tu, de, fa, pp, sp);
+    ntopo::Shape solid = ncst::build_helical_thread(mr, pi, tu, de, fa, pp, sp);
+    if (solid.isNull() || !robustlyWatertight(solid))
+        return fallback().helical_thread(mr, pi, tu, de, fa, pp, sp);
+    return track(wrapNative(std::move(solid)));
 }
 ShapeResult NativeEngine::tapered_thread(double tr, double tip, double pi, double tu, double de,
                                          double fa, double pp, int sp) {
-    return fallback().tapered_thread(tr, tip, pi, tu, de, fa, pp, sp);
+    ntopo::Shape solid = ncst::build_tapered_thread(tr, tip, pi, tu, de, fa, pp, sp);
+    if (solid.isNull() || !robustlyWatertight(solid))
+        return fallback().tapered_thread(tr, tip, pi, tu, de, fa, pp, sp);
+    return track(wrapNative(std::move(solid)));
 }
 ShapeResult NativeEngine::tapered_shank(double r, double fh, double th, double pp) {
-    return fallback().tapered_shank(r, fh, th, pp);
+    ntopo::Shape solid = ncst::build_tapered_shank(r, fh, th, pp);
+    if (solid.isNull()) return fallback().tapered_shank(r, fh, th, pp);
+    return track(wrapNative(std::move(solid)));
 }
 // ── Tier-A (#4b) NATIVE holed / typed-profile extrude + typed-profile revolve ───
 // Each tries the native builder first; a NULL Shape means the native path defers

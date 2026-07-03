@@ -523,4 +523,51 @@ CC_TEST(native_sweep_tight_and_twisted_defer) {
     CC_CHECK_EQ(cc_twisted_sweep(prof, 4, path, 2, 1.5708, 1.0), 0);  // real twist → fallback
 }
 
+// ── Tier-D (#4b): native tapered shank + thread fall-through ───────────────────
+
+// Native cc_tapered_shank: r=5, fullHeight=20, taperHeight=10, ppm=1 → a silhouette
+// revolved 360° about Z (cone tip + full-radius cylinder + head disk). Served
+// NATIVELY (the host stub has no shank op, so a non-zero id can only come from the
+// native revolve-based builder); the mass properties come from the native watertight
+// mesh. Volume = cone ⅓π·25·10 + cylinder π·25·20 ≈ 1832.6.
+CC_TEST(native_tapered_shank_watertight_volume) {
+    EngineGuard g;
+    cc_set_engine(1);
+
+    const CCShapeId id = cc_tapered_shank(5.0, 20.0, 10.0, 1.0);
+    CC_CHECK(id != 0);
+    if (id == 0) { std::printf("  last_error=%s\n", cc_last_error()); return; }
+
+    const CCMassProps mp = cc_mass_properties(id);
+    CC_CHECK(mp.valid != 0);  // valid ⇒ the native mesh is watertight
+    const double exact = kPi * 25.0 * 10.0 / 3.0 + kPi * 25.0 * 20.0;  // ≈ 1832.6
+    CC_CHECK(std::fabs(mp.volume - exact) / exact < 3e-2);
+
+    cc_shape_release(id);
+}
+
+// Degenerate shank parameters: the native builder returns NULL, the engine forwards
+// to the fallback (stub on host → 0).
+CC_TEST(native_tapered_shank_degenerate_falls_through) {
+    EngineGuard g;
+    cc_set_engine(1);
+    CC_CHECK_EQ(cc_tapered_shank(0.0, 20.0, 10.0, 1.0), 0);  // r ≤ 0 → NULL → stub → 0
+}
+
+// Native helical_thread / tapered_thread: the native radial-V tiling is built + guarded
+// but does NOT weld robustly watertight on the current tessellator, so the engine's
+// self-verify defers the op to the fallback (stub on host → 0). This asserts the honest
+// OCCT-fallthrough (no faked/leaky native thread), matching thread.h §HONESTY. On the
+// iOS sim (OCCT linked) the same call returns the OCCT MakePipeShell thread.
+CC_TEST(native_thread_falls_through_to_default) {
+    EngineGuard g;
+    cc_set_engine(1);
+    CC_CHECK_EQ(cc_active_engine(), 1);
+
+    // Well-formed thread params: the native builder makes a candidate, self-verify
+    // finds it not-robustly-watertight → forwards to the stub (0 on host).
+    CC_CHECK_EQ(cc_helical_thread(5.0, 2.0, 4.0, 1.0, 60.0, 1.0, 16), 0);
+    CC_CHECK_EQ(cc_tapered_thread(6.0, 4.0, 2.0, 3.0, 1.0, 60.0, 1.0, 16), 0);
+}
+
 CC_RUN_ALL()

@@ -142,7 +142,17 @@ inline std::vector<int> bridgeHole(const std::vector<UV>& pts, std::vector<int> 
 // Is vertex `i` of `loop` a valid ear (convex, and no other loop vertex inside the
 // candidate triangle)? Extracted from earClip to keep the clipping loop's nesting
 // penalty low.
-inline bool isEar(const std::vector<UV>& pts, const std::vector<int>& loop, std::size_t i) {
+// `minArea` is the smallest signed twice-area accepted as convex. Pass 0 for the
+// strict convex-ear test; pass a small NEGATIVE-exclusive floor of 0 to also admit
+// COLLINEAR ears (orient2d == 0) — needed when a straight polygon edge carries many
+// collinear boundary samples (a planar loft cap whose straight edges were subdivided
+// to match a twisted neighbour): with the strict test no collinear vertex is ever a
+// convex ear, so the clip abandons that collinear run and leaves its boundary
+// segments open. Clipping a collinear vertex emits a thin (zero-area) triangle whose
+// two boundary edges (a-b, b-c) still match the neighbour and whose third edge (a-c)
+// is interior to the cap, so the seam stays watertight and the volume is unaffected.
+inline bool isEar(const std::vector<UV>& pts, const std::vector<int>& loop, std::size_t i,
+                  double minArea) {
   const std::size_t n = loop.size();
   const int ip = loop[(i + n - 1) % n];
   const int ic = loop[i];
@@ -150,7 +160,7 @@ inline bool isEar(const std::vector<UV>& pts, const std::vector<int>& loop, std:
   const UV& a = pts[ip];
   const UV& b = pts[ic];
   const UV& c = pts[in];
-  if (orient2d(a, b, c) <= 0.0) return false;  // reflex/collinear — not a convex ear
+  if (orient2d(a, b, c) < minArea) return false;  // reflex (or, when minArea>−ε, collinear)
   for (std::size_t k = 0; k < n; ++k) {
     const int idx = loop[k];
     if (idx == ip || idx == ic || idx == in) continue;
@@ -163,6 +173,20 @@ inline bool isEar(const std::vector<UV>& pts, const std::vector<int>& loop, std:
 // per-vertex ear test is delegated to isEar() (which absorbs the inner scan), so
 // this clip-one-ear-per-pass driver stays low-complexity (~11); a per-pass guard
 // stops rather than spins on degenerate input (no ear found).
+// Index of the first clippable ear in `loop`, or loop.size() if none. Two tiers:
+// a STRICT convex ear (minArea 0) is preferred; if none exists — a run of COLLINEAR
+// boundary samples on a straight, subdivided cap edge — a COLLINEAR ear is accepted
+// (minArea just below 0, still rejecting genuinely reflex vertices) so the clip
+// keeps making progress instead of abandoning the run and opening the seam.
+inline std::size_t findEar(const std::vector<UV>& pts, const std::vector<int>& loop) {
+  const std::size_t n = loop.size();
+  for (std::size_t i = 0; i < n; ++i)
+    if (isEar(pts, loop, i, /*minArea=*/0.0)) return i;
+  for (std::size_t i = 0; i < n; ++i)
+    if (isEar(pts, loop, i, /*minArea=*/-1e-12)) return i;
+  return n;
+}
+
 inline void earClip(const std::vector<UV>& pts, std::vector<int> loop, std::vector<UVTri>& out) {
   if (loop.size() < 3) return;
   if (signedArea(pts, loop) < 0.0) std::reverse(loop.begin(), loop.end());  // CCW
@@ -171,12 +195,9 @@ inline void earClip(const std::vector<UV>& pts, std::vector<int> loop, std::vect
   const std::size_t maxIters = loop.size() * loop.size() + 16;
   while (loop.size() > 3 && guard++ < maxIters) {
     const std::size_t n = loop.size();
-    std::size_t ear = n;
-    for (std::size_t i = 0; i < n; ++i)
-      if (isEar(pts, loop, i)) { ear = i; break; }
-    if (ear == n) break;  // no ear found (degenerate) — stop
-    const std::size_t np = loop.size();
-    out.push_back(UVTri{loop[(ear + np - 1) % np], loop[ear], loop[(ear + 1) % np]});
+    const std::size_t ear = findEar(pts, loop);
+    if (ear == n) break;  // truly degenerate — stop
+    out.push_back(UVTri{loop[(ear + n - 1) % n], loop[ear], loop[(ear + 1) % n]});
     loop.erase(loop.begin() + static_cast<long>(ear));
   }
   if (loop.size() == 3) out.push_back(UVTri{loop[0], loop[1], loop[2]});

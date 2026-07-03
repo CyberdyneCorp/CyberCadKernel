@@ -49,6 +49,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -168,8 +169,29 @@ class EdgeCache {
   EdgeCache(double deflection, int minSegs, int maxSegs) noexcept
       : deflection_(deflection), minSegs_(std::max(1, minSegs)), maxSegs_(std::max(1, maxSegs)) {}
 
+  // Raise the MINIMUM segment count for the edge with the given ENDPOINTS, ahead of
+  // discretize(). Used by the solid mesher's pre-pass: a STRAIGHT edge bounding a
+  // TWISTED (ruled/free-form saddle) face must be subdivided to match the face's
+  // chord-deflection need, even though the edge's own 3D curvature is zero.
+  // Otherwise the twisted face and its flat neighbour (a planar cap) place a
+  // different number of points on the (geometrically) shared edge and the seam
+  // opens. The requirement is keyed by the endpoint pair (order-independent, quantized
+  // to the weld grid), so it applies to the twisted face's edge AND the coincident
+  // cap edge even when — as this builder does — the two faces hold SEPARATE edge
+  // nodes with the same endpoints (vertex-share + spatial weld, not edge-share).
+  // Both then discretize to the SAME uniform straight-line samples, which coincide
+  // in 3D and weld watertight. Must be called before discretize().
+  void requireMinSegs(const topo::Shape& edge, int segs) {
+    if (edge.isNull() || segs <= 1) return;
+    EndpointKey k;
+    if (!endpointKey(edge, k)) return;
+    int& cur = segsByEndpoints_[k];
+    cur = std::max(cur, std::min(segs, maxSegs_));
+  }
+
   // Shared discretization for `edge` (keyed by TShape identity). Curved edges get
-  // enough segments to meet the deflection bound; straight edges get minSegs.
+  // enough segments to meet the deflection bound; straight edges get minSegs (or
+  // the requireMinSegs override, when an adjacent face demanded more).
   const EdgeDiscretization& discretize(const topo::Shape& edge) {
     const topo::TShape* key = edge.tshape().get();
     if (auto it = cache_.find(key); it != cache_.end()) return it->second;
@@ -178,15 +200,59 @@ class EdgeCache {
   }
 
  private:
+  // Order-independent endpoint key, quantized so two coincident edges (built as
+  // separate nodes) hash to the same slot. The quantum is a small fraction of the
+  // weld tolerance basis so distinct vertices never collide.
+  struct EndpointKey {
+    long long ax, ay, az, bx, by, bz;
+    bool operator==(const EndpointKey& o) const noexcept {
+      return ax == o.ax && ay == o.ay && az == o.az && bx == o.bx && by == o.by && bz == o.bz;
+    }
+  };
+  struct EndpointKeyHash {
+    std::size_t operator()(const EndpointKey& k) const noexcept {
+      std::size_t h = 1469598103934665603ull;
+      for (long long v : {k.ax, k.ay, k.az, k.bx, k.by, k.bz}) {
+        h ^= static_cast<std::size_t>(v);
+        h *= 1099511628211ull;
+      }
+      return h;
+    }
+  };
+  static long long quant(double v) noexcept {
+    const double q = 1e6;  // 1e-6 spatial quantum (well below any real feature)
+    return static_cast<long long>(v >= 0 ? v * q + 0.5 : v * q - 0.5);
+  }
+  bool endpointKey(const topo::Shape& edge, EndpointKey& out) const {
+    const auto cr = topo::curveOf(edge);
+    if (!cr || !cr->curve) return false;
+    const math::Point3 a =
+        detail::placePoint(cr->location, detail::edgeCurveLocal(*cr->curve, cr->first));
+    const math::Point3 b =
+        detail::placePoint(cr->location, detail::edgeCurveLocal(*cr->curve, cr->last));
+    EndpointKey ka{quant(a.x), quant(a.y), quant(a.z), 0, 0, 0};
+    EndpointKey kb{quant(b.x), quant(b.y), quant(b.z), 0, 0, 0};
+    // Order-independent: put the lexicographically smaller endpoint first.
+    const bool aFirst = std::tie(ka.ax, ka.ay, ka.az) <= std::tie(kb.ax, kb.ay, kb.az);
+    out = aFirst ? EndpointKey{ka.ax, ka.ay, ka.az, kb.ax, kb.ay, kb.az}
+                 : EndpointKey{kb.ax, kb.ay, kb.az, ka.ax, ka.ay, ka.az};
+    return true;
+  }
+
   EdgeDiscretization build(const topo::Shape& edge) const {
     EdgeDiscretization d;
     const auto cr = topo::curveOf(edge);
     const double first = cr ? cr->first : 0.0;
     const double last = cr ? cr->last : 1.0;
+    int localMin = minSegs_;
+    EndpointKey k;
+    if (endpointKey(edge, k))
+      if (auto it = segsByEndpoints_.find(k); it != segsByEndpoints_.end())
+        localMin = std::max(localMin, it->second);
     const int n =
         (cr && cr->curve)
-            ? detail::edgeSegments(*cr->curve, first, last, deflection_, minSegs_, maxSegs_)
-            : minSegs_;
+            ? detail::edgeSegments(*cr->curve, first, last, deflection_, localMin, maxSegs_)
+            : localMin;
     d.fracs.reserve(static_cast<std::size_t>(n) + 1);
     d.points.reserve(static_cast<std::size_t>(n) + 1);
     for (int i = 0; i <= n; ++i) {
@@ -201,6 +267,7 @@ class EdgeCache {
   }
 
   std::unordered_map<const topo::TShape*, EdgeDiscretization> cache_;
+  std::unordered_map<EndpointKey, int, EndpointKeyHash> segsByEndpoints_;
   double deflection_;
   int minSegs_;
   int maxSegs_;

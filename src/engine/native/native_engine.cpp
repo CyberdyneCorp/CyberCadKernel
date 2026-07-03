@@ -103,7 +103,14 @@ std::vector<std::vector<cybercad::native::math::Point3>> toPolyHoles(const doubl
 // Default tessellation deflection when a body-consuming op does not carry one
 // (mass_properties / bounding_box derive from a mesh). A tight value keeps the
 // area/volume within the convergence bound the native tessellator guarantees.
-constexpr double kPropertyDeflection = 0.05;
+// Planar prisms and analytic revolves converge (near-)exactly even at a loose
+// deflection, but a TWISTED ruled loft (a bilinear saddle side face) only
+// converges as the mesh subdivides the twist, so this must be tight enough that
+// the worst supported case — a square lofted to a 45°-rotated square — lands its
+// mesh-derived volume within the parity tolerance of the OCCT oracle (at 0.005 the
+// rotated-square-twist volume is 14.515 vs OCCT 14.438, rel ≈ 5.3e-3, well under
+// the 5e-2 gate; 0.05 gave 15.38 / rel 6.5e-2 and failed).
+constexpr double kPropertyDeflection = 0.005;
 
 // Convert a native mesh into the ABI MeshData (flat vertex/triangle arrays).
 MeshData toMeshData(const ntess::Mesh& m) {
@@ -330,11 +337,18 @@ Result<std::vector<int>> NativeEngine::subshape_ids(EngineShape body, int kind) 
 Result<MeshData> NativeEngine::extrude_mesh(const double* p, int n, double d) {
     return fallback().extrude_mesh(p, n, d);
 }
+// ── Tier-B (#4b) NATIVE 2-section ruled loft (fall through for the deferred
+// cases: mismatched section counts, a non-planar section, a degenerate/point
+// section, or 3+/guided/rail lofts — a NULL Shape → forward the SAME args). ──────
 ShapeResult NativeEngine::solid_loft(const double* b, int bc, const double* t, int tc, double d) {
-    return fallback().solid_loft(b, bc, t, tc, d);
+    ntopo::Shape solid = ncst::build_loft(b, bc, t, tc, d);
+    if (solid.isNull()) return fallback().solid_loft(b, bc, t, tc, d);
+    return track(wrapNative(std::move(solid)));
 }
 ShapeResult NativeEngine::solid_loft_wires(const double* a, int ac, const double* b, int bc) {
-    return fallback().solid_loft_wires(a, ac, b, bc);
+    ntopo::Shape solid = ncst::build_loft_wires(a, ac, b, bc);
+    if (solid.isNull()) return fallback().solid_loft_wires(a, ac, b, bc);
+    return track(wrapNative(std::move(solid)));
 }
 ShapeResult NativeEngine::solid_sweep(const double* p, int pc, const double* path, int pathc) {
     return fallback().solid_sweep(p, pc, path, pathc);

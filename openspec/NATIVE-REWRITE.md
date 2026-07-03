@@ -154,16 +154,22 @@ longest; a native exchange is lower priority than the modelling core.
   face count differ from OCCT's shared/periodic representation while the SOLID is
   geometrically identical. See [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md);
   living spec archived to `openspec/specs/native-construction`.
-  - **◐ `#4b` follow-up — Tier A DONE at the verification bar; the rest still
-    OCCT-fallthrough (not faked).** NOW NATIVE (host-verified, engine-wired behind the
-    same `cc_set_engine(1)` toggle): `cc_solid_extrude_holes` (outer polygon +
+  - **◐ `#4b` follow-up — Tier A + Tier B (2-section ruled loft) DONE at the
+    verification bar; the rest still OCCT-fallthrough (not faked).** NOW NATIVE
+    (host-verified, engine-wired behind the same `cc_set_engine(1)` toggle):
+    `cc_solid_extrude_holes` (outer polygon +
     CIRCULAR through-holes kept as TRUE circle edges + cylinder walls),
     `cc_solid_extrude_polyholes` (outer + POLYGON holes), `cc_solid_extrude_profile` /
     `_profile_polyholes` (TYPED outer profile — kind 0 line / 1 arc / 2 full circle —
     with circular + polygon holes; a whole-circle profile keeps one Circle cap edge +
     one Cylinder wall), and `cc_solid_revolve_profile` (TYPED profile revolve: line →
     Plane/Cylinder/Cone, an arc whose circle centre lies ON the axis → Sphere band;
-    full 2π closes, partial adds two planar meridian caps). Built in
+    full 2π closes, partial adds two planar meridian caps). **Tier B:**
+    `cc_solid_loft` / `cc_solid_loft_wires` for TWO sections with EQUAL vertex counts
+    (≥3) that are both PLANAR — corresponding edge pairs span one BILINEAR (degree-1
+    Bézier) ruled side face + two planar caps → watertight solid (mirrors ruled
+    `BRepOffsetAPI_ThruSections`); built in `src/native/construct/loft.h` (OCCT-FREE,
+    host-buildable, all functions cognitive complexity ≤ 7). Built in
     `src/native/construct/profile.h` (OCCT-FREE, host-buildable) + a robustified
     multi-hole cap triangulator (visibility-checked, rightmost-first hole bridging in
     `src/native/tessellate/uv_triangulate.h`, replacing the single-hole-only nearest-
@@ -176,7 +182,9 @@ longest; a native exchange is lower priority than the modelling core.
     OCCT-fallthrough (the native builder returns a NULL Shape → `NativeEngine` forwards
     to OCCT, never fakes): **kind-3 SPLINE profile edges** (extrude AND revolve),
     **arc-revolve whose circle centre is OFF the axis** (a TORUS surface of revolution
-    — no native Torus surface yet), and loft/sweep/twisted-guided-sweep/threads. A
+    — no native Torus surface yet), a loft with MISMATCHED section counts / a
+    NON-PLANAR section / 3+ sections / guided or rail loft (Tier C), and
+    sweep/twisted-guided-sweep/threads (Tiers C–E). A
     kind-1 ARC extrude edge is a TRUE `Circle` cap edge + a `Cylinder` side wall — one
     bounded, non-periodic patch per ≤180° span (split threshold is π for the EXTRUDE
     wall, NOT the revolve's 120°: an extrude wall is never periodic, so a semicircle is
@@ -189,7 +197,23 @@ longest; a native exchange is lower priority than the modelling core.
     spline extrude, off-axis-circle → torus revolve) transparently delegate to OCCT
     (vol rel 0.00e+00). Note: `splineXYCount` on the kind-3 side-channel is the number
     of DOUBLES (2× the point count), matching the OCCT `addSplineEdge` bounds guard —
-    now documented in `cc_kernel.h`.
+    now documented in `cc_kernel.h`. **Tier B (2-section ruled loft):** Gate 1 (host,
+    no OCCT) GREEN — `test_native_loft` (9 cases: prism / frustum / twisted rotated
+    square / two-3D-wire triangle prism / tilted planar section watertight, + deferred
+    mismatched-count / non-planar / degenerate / bad-input all NULL) + 2 new
+    `test_native_engine` facade cases (native square-frustum loft vol 56 @ 6 faces;
+    native `loft_wires` triangle prism vol 18); CTest **14/14**, `loft.h` cognitive
+    complexity ≤ 7 across all functions. Gate 2 (sim OCCT parity) GREEN —
+    `tests/sim/native_loft_parity.mm` + `scripts/run-sim-native-loft.sh` through the
+    `cc_*` facade under `cc_set_engine(0/1)` (OCCT default restored in teardown):
+    **`[NLOFT]` 17 passed / 0 failed** — square frustum (vol rel 2.54e-16) / hex
+    prism (rel 0.00e+00) / two-wire triangle prism (rel 0.00e+00) EXACT,
+    rotated-square TWIST deflection-bounded (vol rel 5.33e-3, watertight, tol 5e-2),
+    native F = OCCT F (n=1×o) on all four, plus the mismatched-count deferred case
+    delegating to OCCT (vol rel 0.00e+00, native active — fall-through proof). Runs
+    on the sim (OCCT linked); on `run-sim-suite.sh`'s SKIP list (own `main()`), so
+    the 221-assertion suite count is unchanged. No regressions (`test_native_tessellate`
+    green, `run-sim-suite.sh` 221/221).
 - ☐ **#5 `native-booleans` — NEXT (research-grade).** The hardest and longest-lived
   OCCT dependency. Native robust B-rep booleans require surface-surface intersection
   (the intersection curves between arbitrary analytic + NURBS surfaces), robust

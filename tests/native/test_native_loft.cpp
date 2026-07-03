@@ -1,0 +1,222 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Host unit tests for Tier-B native construction (Phase 4 #4b): 2-section RULED
+// loft (src/native/construct/loft.h). OCCT-FREE — Gate 1 (host, analytic) of the
+// two-gate model in openspec/NATIVE-REWRITE.md. Each result is validated with the
+// native tessellator (watertight / enclosed volume) and the topology Explorer
+// (face structure). Deferred cases (mismatched counts / non-planar / degenerate)
+// are asserted to return a NULL Shape so the engine can fall through to OCCT.
+//
+// Build (standalone, no CMake):
+//   clang++ -std=c++20 tests/native/test_native_loft.cpp \
+//     src/native/math/bspline.cpp src/native/math/bezier.cpp \
+//     -I src -I tests -o test_native_loft
+//
+#include "native/construct/native_construct.h"
+#include "native/tessellate/native_tessellate.h"
+#include "native/topology/native_topology.h"
+
+#include "harness.h"
+
+#include <algorithm>
+#include <cmath>
+#include <vector>
+
+namespace topo = cybercad::native::topology;
+namespace cst = cybercad::native::construct;
+namespace tess = cybercad::native::tessellate;
+namespace m = cybercad::native::math;
+
+namespace {
+int countSub(const topo::Shape& shape, topo::ShapeType type) {
+  int n = 0;
+  for (topo::Explorer ex(shape, type); ex.more(); ex.next()) ++n;
+  return n;
+}
+}  // namespace
+
+// ── build_loft: square→square, equal size → a straight box ───────────────────---
+// Bottom = top = 10×10 square, depth 10. The ruled skin degenerates to 4 vertical
+// planar quads; the solid is a box, volume = 100·10 = 1000, EXACT. 6 faces
+// (4 sides + 2 caps), watertight.
+CC_TEST(loft_square_to_equal_square_is_box) {
+  const double bot[] = {0, 0, 10, 0, 10, 10, 0, 10};
+  const double top[] = {0, 0, 10, 0, 10, 10, 0, 10};
+  const topo::Shape solid = cst::build_loft(bot, 4, top, 4, 10.0);
+  CC_CHECK(!solid.isNull());
+  if (solid.isNull()) return;
+
+  CC_CHECK_EQ(countSub(solid, topo::ShapeType::Face), 6);  // 4 sides + 2 caps
+  tess::MeshParams p;
+  p.deflection = 0.05;
+  const tess::Mesh mesh = tess::SolidMesher{p}.mesh(solid);
+  CC_CHECK(tess::isWatertight(mesh));
+  CC_CHECK(std::fabs(std::fabs(tess::enclosedVolume(mesh)) - 1000.0) < 1e-6);
+}
+
+// ── build_loft: 10×10 → 6×6 square (a frustum / truncated pyramid) ───────────---
+// Bottom 10×10 (area A1 = 100) at z=0, top 6×6 (area A2 = 36) at z=10, both centred
+// at (0,0) so corresponding corners pair sensibly. This is a square frustum; its
+// exact volume is the prismatoid formula h/3·(A1 + A2 + √(A1·A2)) =
+// 10/3·(100 + 36 + √3600) = 10/3·(100 + 36 + 60) = 10/3·196 = 653.33. The ruled
+// side faces are true bilinear (here planar trapezoids), so the volume is exact up
+// to a deflection bound.
+CC_TEST(loft_square_frustum_prismatoid_volume) {
+  const double bot[] = {-5, -5, 5, -5, 5, 5, -5, 5};
+  const double top[] = {-3, -3, 3, -3, 3, 3, -3, 3};
+  const topo::Shape solid = cst::build_loft(bot, 4, top, 4, 10.0);
+  CC_CHECK(!solid.isNull());
+  if (solid.isNull()) return;
+
+  CC_CHECK_EQ(countSub(solid, topo::ShapeType::Face), 6);
+  tess::MeshParams p;
+  p.deflection = 0.02;
+  const tess::Mesh mesh = tess::SolidMesher{p}.mesh(solid);
+  CC_CHECK(tess::isWatertight(mesh));
+  const double expected = 10.0 / 3.0 * (100.0 + 36.0 + std::sqrt(100.0 * 36.0));  // 653.33
+  CC_CHECK(std::fabs(std::fabs(tess::enclosedVolume(mesh)) - expected) / expected < 0.02);
+}
+
+// ── build_loft: rotated square → square (a genuinely NON-PLANAR ruled skin) ──---
+// Bottom 2×2 square; top the SAME square rotated 45° about z, at z=4. Corresponding
+// corners no longer align, so each ruled side face is a truly twisted bilinear
+// patch (an "antiprism"-like skin). We do not assert an exact closed form (the
+// twisted patch volume is between the two extreme readings); we assert the solid is
+// watertight and the volume is positive and bounded by the convex-hull estimate.
+CC_TEST(loft_rotated_square_twisted_watertight) {
+  const double s = 1.0;                                  // half-side of the bottom
+  const double bot[] = {-s, -s, s, -s, s, s, -s, s};     // axis-aligned square
+  const double r = std::sqrt(2.0) * s;                   // top rotated 45°, same "radius"
+  const double top[] = {r, 0, 0, r, -r, 0, 0, -r, 0};    // 4 corners on axes, z filled below
+  // Rebuild top with z=4 explicitly (build_loft places top at z=depth already; the
+  // XY above is what matters). Bottom corners map to these rotated corners in order.
+  (void)top;
+  const double topXY[] = {r, 0, 0, r, -r, 0, 0, -r};
+  const topo::Shape solid = cst::build_loft(bot, 4, topXY, 4, 4.0);
+  CC_CHECK(!solid.isNull());
+  if (solid.isNull()) return;
+
+  CC_CHECK_EQ(countSub(solid, topo::ShapeType::Face), 6);
+  tess::MeshParams p;
+  p.deflection = 0.02;
+  const tess::Mesh mesh = tess::SolidMesher{p}.mesh(solid);
+  CC_CHECK(tess::isWatertight(mesh));
+  const double vol = std::fabs(tess::enclosedVolume(mesh));
+  CC_CHECK(vol > 1.0);   // clearly a nonzero solid
+  CC_CHECK(vol < 40.0);  // bounded well under bbox*depth
+}
+
+// ── build_loft_wires: two planar triangles in ARBITRARY 3D planes ────────────---
+// Section A is a triangle in the z=0 plane; section B the same triangle translated
+// +3 in z (so both planar, parallel). Ruled loft = a triangular prism, volume =
+// area·3. Triangle area (0,0)(4,0)(2,3) = ½|4·3| = 6, volume 18. Watertight.
+CC_TEST(loft_wires_planar_triangles_prism) {
+  const double a[] = {0, 0, 0, 4, 0, 0, 2, 3, 0};
+  const double b[] = {0, 0, 3, 4, 0, 3, 2, 3, 3};
+  const topo::Shape solid = cst::build_loft_wires(a, 3, b, 3);
+  CC_CHECK(!solid.isNull());
+  if (solid.isNull()) return;
+
+  CC_CHECK_EQ(countSub(solid, topo::ShapeType::Face), 5);  // 3 sides + 2 caps
+  tess::MeshParams p;
+  p.deflection = 0.05;
+  const tess::Mesh mesh = tess::SolidMesher{p}.mesh(solid);
+  CC_CHECK(tess::isWatertight(mesh));
+  CC_CHECK(std::fabs(std::fabs(tess::enclosedVolume(mesh)) - 18.0) < 1e-6);
+}
+
+// ── build_loft_wires: a tilted planar section (arbitrary plane) → still native --
+// Section A pentagon in z=0; section B the SAME pentagon lifted and tilted (a plane
+// with a non-vertical normal). Both are planar, equal count → native ruled loft,
+// watertight. We only assert watertight + positive volume (exact volume of a skew
+// prism is fiddly; the point is that a non-axis-aligned planar section works).
+CC_TEST(loft_wires_tilted_planar_section_watertight) {
+  const double A[] = {0, 0, 0, 2, 0, 0, 3, 2, 0, 1, 3, 0, -1, 2, 0};
+  // Top pentagon: same XY, but z = 4 + 0.5*x (a tilted plane z = 4 + 0.5 x).
+  auto tz = [](double x) { return 4.0 + 0.5 * x; };
+  const double B[] = {0, 0, tz(0), 2, 0, tz(2), 3, 2, tz(3), 1, 3, tz(1), -1, 2, tz(-1)};
+  const topo::Shape solid = cst::build_loft_wires(A, 5, B, 5);
+  CC_CHECK(!solid.isNull());
+  if (solid.isNull()) return;
+
+  CC_CHECK_EQ(countSub(solid, topo::ShapeType::Face), 7);  // 5 sides + 2 caps
+  tess::MeshParams p;
+  p.deflection = 0.05;
+  const tess::Mesh mesh = tess::SolidMesher{p}.mesh(solid);
+  CC_CHECK(tess::isWatertight(mesh));
+  CC_CHECK(std::fabs(tess::enclosedVolume(mesh)) > 1.0);
+}
+
+// ── build_loft_wires: two OFFSET + ROTATED same-count 3D quads → ruled solid ──---
+// Section A is a 4×4 square in the z=0 plane (corners at ±2). Section B is the same
+// square rotated 45° about z AND offset +6 in z (its corners fall on the axes at
+// radius r = 2√2). Corresponding corners no longer align, so each of the 4 ruled
+// side faces is a genuinely twisted bilinear patch (an antiprism-like skin). We
+// assert: 6 faces (4 sides + 2 caps), watertight, volume > 0, and a correct
+// bounding box — XY spans [-r, r] (the top quad is the widest ring, reaching the
+// axes at ±2√2 ≈ 2.828) and Z spans [0, 6].
+CC_TEST(loft_wires_offset_rotated_quads) {
+  const double a[] = {-2, -2, 0, 2, -2, 0, 2, 2, 0, -2, 2, 0};        // z=0 axis-aligned square
+  const double r = 2.0 * std::sqrt(2.0);                              // rotated-corner radius
+  const double b[] = {r, 0, 6, 0, r, 6, -r, 0, 6, 0, -r, 6};         // z=6 square rotated 45°
+  const topo::Shape solid = cst::build_loft_wires(a, 4, b, 4);
+  CC_CHECK(!solid.isNull());
+  if (solid.isNull()) return;
+
+  CC_CHECK_EQ(countSub(solid, topo::ShapeType::Face), 6);  // 4 sides + 2 caps
+  tess::MeshParams p;
+  p.deflection = 0.02;
+  const tess::Mesh mesh = tess::SolidMesher{p}.mesh(solid);
+  CC_CHECK(tess::isWatertight(mesh));
+  CC_CHECK(std::fabs(tess::enclosedVolume(mesh)) > 1.0);  // a genuine nonzero solid
+
+  // Bounding box: XY spans [-r, r] (top ring is widest), Z spans [0, 6].
+  double lo[3] = {1e9, 1e9, 1e9}, hi[3] = {-1e9, -1e9, -1e9};
+  for (const m::Point3& v : mesh.vertices) {
+    lo[0] = std::min(lo[0], v.x); hi[0] = std::max(hi[0], v.x);
+    lo[1] = std::min(lo[1], v.y); hi[1] = std::max(hi[1], v.y);
+    lo[2] = std::min(lo[2], v.z); hi[2] = std::max(hi[2], v.z);
+  }
+  CC_CHECK(std::fabs(lo[0] - (-r)) < 1e-6 && std::fabs(hi[0] - r) < 1e-6);
+  CC_CHECK(std::fabs(lo[1] - (-r)) < 1e-6 && std::fabs(hi[1] - r) < 1e-6);
+  CC_CHECK(std::fabs(lo[2] - 0.0) < 1e-6 && std::fabs(hi[2] - 6.0) < 1e-6);
+}
+
+// ── DEFERRED: mismatched section counts (4-pt → 6-pt) → NULL (OCCT fallthrough) --
+// Corresponding-vertex pairing is ambiguous when the counts differ (OCCT's
+// ThruSections re-parametrizes/resamples — Tier C), so the native builder returns
+// a NULL Shape and does NOT produce a wrong solid.
+CC_TEST(loft_mismatched_counts_deferred) {
+  const double bot[] = {0, 0, 4, 0, 4, 4, 0, 4};                 // 4-gon
+  const double top[] = {0, 0, 2, 0, 4, 0, 4, 4, 2, 4, 0, 4};     // 6-gon
+  CC_CHECK(cst::build_loft(bot, 4, top, 6, 3.0).isNull());
+}
+
+// ── DEFERRED: a NON-PLANAR section wire → NULL (OCCT fallthrough) ────────────---
+// Section B's four points do NOT lie on a common plane (one corner lifted in z),
+// so a planar cap cannot close it — the native ruled loft defers to OCCT.
+CC_TEST(loft_wires_non_planar_section_deferred) {
+  const double a[] = {0, 0, 0, 4, 0, 0, 4, 4, 0, 0, 4, 0};        // planar square
+  const double b[] = {0, 0, 3, 4, 0, 3, 4, 4, 5, 0, 4, 3};        // corner 3 lifted → skew
+  CC_CHECK(cst::build_loft_wires(a, 4, b, 4).isNull());
+}
+
+// ── DEFERRED: a degenerate (collinear / point) section → NULL ────────────────---
+CC_TEST(loft_degenerate_section_deferred) {
+  const double bot[] = {0, 0, 4, 0, 4, 4, 0, 4};
+  const double collinearTop[] = {0, 0, 1, 0, 2, 0};  // 3 collinear points → zero area
+  CC_CHECK(cst::build_loft(bot, 4, collinearTop, 3, 3.0).isNull());
+  const double pointTop[] = {1, 1, 1, 1, 1, 1};      // all coincident → point
+  CC_CHECK(cst::build_loft(bot, 4, pointTop, 3, 3.0).isNull());
+}
+
+// ── DEFERRED: degenerate depth / too-few points → NULL ───────────────────────---
+CC_TEST(loft_bad_input_deferred) {
+  const double sq[] = {0, 0, 4, 0, 4, 4, 0, 4};
+  CC_CHECK(cst::build_loft(sq, 4, sq, 4, 0.0).isNull());   // zero depth
+  CC_CHECK(cst::build_loft(sq, 4, sq, 4, -1.0).isNull());  // negative depth
+  const double two[] = {0, 0, 1, 1};
+  CC_CHECK(cst::build_loft(two, 2, sq, 4, 3.0).isNull());  // < 3 bottom points
+}
+
+CC_RUN_ALL()

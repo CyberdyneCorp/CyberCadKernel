@@ -163,6 +163,12 @@ class SolidMesher {
   Mesh meshAllFaces(const topo::Shape& shape) const {
     FaceMesher fm(p_);
     EdgeCache cache(p_.deflection, p_.edgeMinSegs, p_.edgeMaxSegs);
+    // PRE-PASS: let each face raise the minimum segment count of its boundary edges
+    // (a twisted ruled/free-form face forces its straight edges to subdivide so the
+    // shared discretization resolves the twist for BOTH adjacent faces). Runs before
+    // any discretize()/mesh() so every edge is built once at its final segment count.
+    for (topo::Explorer ex(shape, topo::ShapeType::Face); ex.more(); ex.next())
+      fm.requireEdgeSegments(ex.current(), cache);
     Mesh all;
     for (topo::Explorer ex(shape, topo::ShapeType::Face); ex.more(); ex.next())
       all.append(fm.mesh(ex.current(), cache));

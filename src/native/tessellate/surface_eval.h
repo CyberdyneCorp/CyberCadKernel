@@ -90,8 +90,11 @@ class SurfaceEvaluator {
   /// A conservative per-direction second-derivative magnitude used to size the
   /// sampling step from a deflection bound (see face_mesher chordDeviationStep).
   /// For analytic surfaces this is exact at (u,v); for free-form it is a finite
-  /// difference of the first derivative. Returns {‖Sᵤᵤ‖, ‖Sᵥᵥ‖}.
-  std::array<double, 2> curvatureMagnitude(double u, double v) const noexcept;
+  /// difference of the first derivative. Returns {‖Sᵤᵤ‖, ‖Sᵥᵥ‖, ‖Sᵤᵥ‖} — the
+  /// MIXED term ‖Sᵤᵥ‖ (the twist) is what makes a ruled/bilinear saddle patch
+  /// (Sᵤᵤ = Sᵥᵥ = 0 but Sᵤᵥ ≠ 0) subdivide; without it a twisted loft side face
+  /// would mesh as a single flat quad and its enclosed volume would be wrong.
+  std::array<double, 3> curvatureMagnitude(double u, double v) const noexcept;
 
  private:
   struct LocalD1 {
@@ -245,7 +248,7 @@ inline UVBounds SurfaceEvaluator::bounds() const noexcept {
 }
 
 // ── curvatureMagnitude ──────────────────────────────────────────────────────--
-inline std::array<double, 2> SurfaceEvaluator::curvatureMagnitude(double u,
+inline std::array<double, 3> SurfaceEvaluator::curvatureMagnitude(double u,
                                                                   double v) const noexcept {
   // Central second difference of the LOCAL point (curvature is location-invariant
   // for rigid motions; a non-uniform scale only rescales it, which is acceptable
@@ -258,7 +261,14 @@ inline std::array<double, 2> SurfaceEvaluator::curvatureMagnitude(double u,
       (localValue(u + hu, v).asVec() - 2.0 * c.asVec() + localValue(u - hu, v).asVec()) / (hu * hu);
   const math::Vec3 svv =
       (localValue(u, v + hv).asVec() - 2.0 * c.asVec() + localValue(u, v - hv).asVec()) / (hv * hv);
-  return {math::norm(suu), math::norm(svv)};
+  // Mixed derivative Sᵤᵥ via the central cross difference
+  // [f(+,+) − f(+,−) − f(−,+) + f(−,−)] / (4·hu·hv). Nonzero for a twisted
+  // (saddle / ruled) patch even when suu = svv = 0.
+  const math::Vec3 suv =
+      (localValue(u + hu, v + hv).asVec() - localValue(u + hu, v - hv).asVec() -
+       localValue(u - hu, v + hv).asVec() + localValue(u - hu, v - hv).asVec()) /
+      (4.0 * hu * hv);
+  return {math::norm(suu), math::norm(svv), math::norm(suv)};
 }
 
 }  // namespace cybercad::native::tessellate

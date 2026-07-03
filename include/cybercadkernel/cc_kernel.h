@@ -135,9 +135,22 @@ int  cc_active_engine(void);         /* 1 if the NativeEngine is active, else 0 
 CCShapeId cc_solid_extrude(const double *profileXY, int pointCount, double depth);
 CCShapeId cc_solid_revolve(const double *profileXY, int pointCount, double angleRadians);
 
+/* Ruled loft between a bottom XY section on z=0 and a top XY section on z=depth.
+ * `bottomXY` / `topXY` are flat (x,y) pairs; each section is a closed polygon. With
+ * EQUAL point counts (bottomCount == topCount, ≥3) the two sections are skinned by a
+ * RULED surface: corresponding vertices are paired 1:1 and each corresponding edge
+ * pair becomes one ruled side face, capped with the bottom + top polygons → a closed
+ * watertight solid. Returns 0 on degenerate input (< 3 points either side, or
+ * depth ≤ 0). Mismatched point counts fall to the engine's general loft. */
 CCShapeId cc_solid_loft(const double *bottomXY, int bottomCount,
                         const double *topXY, int topCount, double depth);
 
+/* Ruled loft between two ARBITRARY 3D section wires. `aXYZ` / `bXYZ` are flat
+ * (x,y,z) triples; each is a closed polygon in space. With EQUAL point counts
+ * (aCount == bCount, ≥3) the sections are skinned as in cc_solid_loft (paired
+ * vertices → one ruled side face per corresponding edge pair + the two section end
+ * faces) → a closed watertight solid. Returns 0 on degenerate input (< 3 points
+ * either side). */
 CCShapeId cc_solid_loft_wires(const double *aXYZ, int aCount,
                               const double *bXYZ, int bCount);
 

@@ -86,17 +86,29 @@ inline int divisionsFor(double span, double d2, const MeshParams& p) noexcept {
   return std::clamp(n, p.minDiv, p.maxDiv);
 }
 
-/// Worst {‖Sᵤᵤ‖, ‖Sᵥᵥ‖} over a 3×3 UV lattice — a conservative step basis.
+/// Worst effective per-direction second-derivative over a 3×3 UV lattice — a
+/// conservative step basis. When `foldTwist` is set, each direction folds in the
+/// MIXED term ‖Sᵤᵥ‖ scaled by the OPPOSITE parameter span: a twisted/ruled saddle
+/// patch has Sᵤᵤ = Sᵥᵥ = 0 but ‖Sᵤᵥ‖ ≠ 0, and its chord sagitta off the flat quad
+/// grows like ‖Sᵤᵥ‖·Δu·Δv, so treating ‖Sᵤᵥ‖·span_other as an effective directional
+/// curvature makes divisionsFor subdivide the twist (otherwise it meshes as one flat
+/// quad and the enclosed volume of a twisted loft is wrong). Only free-form
+/// (Bezier/BSpline) faces set foldTwist: analytic faces (sphere/cone) are already
+/// sized correctly by their Sᵤᵤ/Sᵥᵥ, and folding their (coupled) Sᵤᵥ in would
+/// needlessly over-subdivide them.
 inline std::array<double, 2> worstCurvature(const SurfaceEvaluator& eval, double uMin, double uMax,
-                                            double vMin, double vMax) noexcept {
+                                            double vMin, double vMax,
+                                            bool foldTwist = false) noexcept {
+  const double uSpan = std::max(uMax - uMin, 0.0);
+  const double vSpan = std::max(vMax - vMin, 0.0);
   double d2u = 0.0, d2v = 0.0;
   for (int i = 0; i <= 2; ++i)
     for (int j = 0; j <= 2; ++j) {
       const double u = uMin + (uMax - uMin) * (i * 0.5);
       const double v = vMin + (vMax - vMin) * (j * 0.5);
       const auto c = eval.curvatureMagnitude(u, v);
-      d2u = std::max(d2u, c[0]);
-      d2v = std::max(d2v, c[1]);
+      d2u = std::max(d2u, foldTwist ? std::max(c[0], c[2] * vSpan) : c[0]);
+      d2v = std::max(d2v, foldTwist ? std::max(c[1], c[2] * uSpan) : c[1]);
     }
   return {d2u, d2v};
 }
@@ -141,8 +153,17 @@ class FaceMesher {
     const UVBox box = domainBox(eval, region);
     const bool flip = face.orientation() == topo::Orientation::Reversed;
 
+    // Free-form (Bezier/BSpline) faces may be TWISTED (ruled loft side patches):
+    // their straight boundary edges are subdivided by the solid-mesher pre-pass and
+    // the structured grid must be driven by those boundary samples (see axisSamples).
+    // Analytic faces (Plane/Cylinder/Cone/Sphere) keep the historical curvature grid.
+    const topo::FaceSurface::Kind k = sr->surface->kind;
+    const bool freeForm =
+        k == topo::FaceSurface::Kind::Bezier || k == topo::FaceSurface::Kind::BSpline;
+
     // No usable boundary (no pcurves) ⇒ structured grid over the natural bounds.
-    if (!region.hasOuter()) return structuredGrid(eval, region, box, flip, /*hasBoundary=*/false);
+    if (!region.hasOuter())
+      return structuredGrid(eval, region, box, flip, /*hasBoundary=*/false, freeForm);
 
     // A full-parametric-rectangle outer loop (no holes) ⇒ structured grid whose
     // boundary rows use the shared edge samples. Otherwise ear-clip the polygon.
@@ -154,11 +175,45 @@ class FaceMesher {
     // — the corner test routes it to ear-clip. Curved full-parametric faces
     // (cylinder / sphere / cone), whose degenerate/seam boundaries lack distinct box
     // corners, are admitted by the border test alone (requireCorners = false).
-    const bool planar = sr->surface->kind == topo::FaceSurface::Kind::Plane;
+    const bool planar = k == topo::FaceSurface::Kind::Plane;
     if (region.holes.empty() && region.isFullRectangle(1e-4, /*requireCorners=*/planar))
-      return structuredGrid(eval, region, box, flip, /*hasBoundary=*/true);
+      return structuredGrid(eval, region, box, flip, /*hasBoundary=*/true, freeForm);
 
     return earClipMesh(eval, loops, flip);
+  }
+
+  // ── Edge pre-sizing (twisted-face support) ───────────────────────────────────
+  // Report, into `cache`, the MINIMUM segment count each boundary edge of this
+  // face needs so the face's chord deflection is met. For a TWISTED free-form face
+  // (a ruled loft side patch: Sᵤᵤ = Sᵥᵥ = 0 but ‖Sᵤᵥ‖ ≠ 0) the deflection is
+  // driven by the twist, so its STRAIGHT boundary edges must be subdivided — the
+  // edge's own 3D curvature (zero) would leave it at one segment and open the seam
+  // against the subdivided interior. Planar/analytic-only faces demand nothing
+  // extra here (their straight edges stay at the edge's own sizing). Each boundary
+  // edge is assigned the division count of the parameter axis it runs along.
+  void requireEdgeSegments(const topo::Shape& face, EdgeCache& cache) const {
+    const auto sr = topo::surfaceOf(face);
+    if (!sr) return;
+    // Only free-form (ruled/skinned) faces carry twist the edge sizing misses.
+    const topo::FaceSurface::Kind k = sr->surface->kind;
+    if (k != topo::FaceSurface::Kind::Bezier && k != topo::FaceSurface::Kind::BSpline) return;
+
+    SurfaceEvaluator eval(*sr->surface, sr->location);
+    const UVBounds b = eval.bounds();
+    const auto d2 = detail::worstCurvature(eval, b.uMin, b.uMax, b.vMin, b.vMax, /*foldTwist=*/true);
+    const int nu = detail::divisionsFor(b.uMax - b.uMin, d2[0], p_);
+    const int nv = detail::divisionsFor(b.vMax - b.vMin, d2[1], p_);
+    if (nu <= 1 && nv <= 1) return;
+
+    for (const topo::Shape& wire : face.tshape()->children())
+      for (topo::Explorer ex(wire, topo::ShapeType::Edge); ex.more(); ex.next()) {
+        const topo::Shape& edge = ex.current();
+        const topo::PCurve* pc = pcurveForFace(edge, face);
+        if (!pc) continue;
+        // The pcurve direction tells which axis the edge runs along: |du| vs |dv|.
+        const bool alongU = std::fabs(pc->dir2d.x) >= std::fabs(pc->dir2d.y);
+        cache.requireMinSegs(edge, alongU ? nu : nv);
+      }
   }
 
  private:
@@ -210,9 +265,11 @@ class FaceMesher {
   // grid, then emit two triangles per quad. Boundary rows/columns are exactly the
   // shared edge samples ⇒ neighbours weld watertight.
   Mesh structuredGrid(const SurfaceEvaluator& eval, const UVRegion& region, const UVBox& box,
-                      bool flip, bool hasBoundary) const {
-    const std::vector<double> us = axisSamples(eval, box, region, /*uDir=*/true, hasBoundary);
-    const std::vector<double> vs = axisSamples(eval, box, region, /*uDir=*/false, hasBoundary);
+                      bool flip, bool hasBoundary, bool boundaryDriven) const {
+    const std::vector<double> us =
+        axisSamples(eval, box, region, /*uDir=*/true, hasBoundary, boundaryDriven);
+    const std::vector<double> vs =
+        axisSamples(eval, box, region, /*uDir=*/false, hasBoundary, boundaryDriven);
     const int cols = static_cast<int>(vs.size());
 
     Mesh m;
@@ -239,22 +296,54 @@ class FaceMesher {
   // Sorted-unique sample coordinates for one axis: a curvature-driven uniform grid
   // over [lo,hi], with the boundary coordinates on that axis merged in (so the grid
   // lines land on the shared edge samples). uDir selects u vs v.
+  //
+  // When the boundary edges bounding this axis are ALREADY subdivided (they place
+  // more than two distinct coordinates on this axis — the twisted-loft case, where
+  // the solid-mesher pre-pass forced the straight side edges to subdivide), the
+  // boundary samples ARE the correct grid for this axis: every interior grid line
+  // on this axis lies on a shared boundary edge, so it must match the neighbour's
+  // discretization EXACTLY. Adding independent curvature lines would put rows on
+  // the shared edge that the neighbour (a planar cap) lacks and open the seam.
+  // We therefore use the boundary samples verbatim and skip the curvature grid.
+  // A straight, unsubdivided axis (≤ 2 boundary coords — a cylinder/sphere's axis
+  // direction) keeps the historical curvature grid unioned with the boundary.
+  //
+  // This boundary-driven shortcut is applied ONLY to free-form (Bezier/BSpline)
+  // faces (`boundaryDriven`). Analytic faces (Cylinder/Cone/Sphere) keep the exact
+  // historical union path — their curvature grid carries the circumferential
+  // sampling and their straight seam edges are NOT subdivided by any pre-pass, so
+  // switching them to boundary-only would drop the interior rows and open the seam.
   std::vector<double> axisSamples(const SurfaceEvaluator& eval, const UVBox& box,
-                                  const UVRegion& region, bool uDir, bool hasBoundary) const {
+                                  const UVRegion& region, bool uDir, bool hasBoundary,
+                                  bool boundaryDriven) const {
     const double lo = uDir ? box.uMin : box.vMin;
     const double hi = uDir ? box.uMax : box.vMax;
-    const auto d2 = detail::worstCurvature(eval, box.uMin, box.uMax, box.vMin, box.vMax);
+    const double tol = std::max(hi - lo, 1.0) * 1e-7;
+
+    if (hasBoundary && boundaryDriven) {
+      std::vector<double> bnd = boundaryCoords(region, uDir);
+      dedupSorted(bnd, tol);
+      if (bnd.size() > 2) return bnd;  // boundary already subdivides this axis
+    }
+
+    const auto d2 =
+        detail::worstCurvature(eval, box.uMin, box.uMax, box.vMin, box.vMax, boundaryDriven);
     const int n = detail::divisionsFor(hi - lo, uDir ? d2[0] : d2[1], p_);
     std::vector<double> axis;
     axis.reserve(static_cast<std::size_t>(n) + 1);
     for (int i = 0; i <= n; ++i)
       axis.push_back(lo + (hi - lo) * (static_cast<double>(i) / n));
-    if (hasBoundary) {
-      std::vector<double> bnd = boundaryCoords(region, uDir);
-      const double tol = std::max(hi - lo, 1.0) * 1e-7;
-      detail::mergeAxis(axis, bnd, tol);
-    }
+    if (hasBoundary) detail::mergeAxis(axis, boundaryCoords(region, uDir), tol);
     return axis;
+  }
+
+  // In-place sort + dedup within `tol` (endpoints kept).
+  static void dedupSorted(std::vector<double>& v, double tol) {
+    std::sort(v.begin(), v.end());
+    std::vector<double> out;
+    for (double x : v)
+      if (out.empty() || x - out.back() > tol) out.push_back(x);
+    v.swap(out);
   }
 
   // Distinct coordinates that the outer boundary places on the given axis (the

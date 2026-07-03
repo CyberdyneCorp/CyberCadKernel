@@ -47,10 +47,10 @@ flowchart TD
     end
 
     Engine -->|"default"| OCCT["OCCT adapter<br/>(exact B-rep, fp64, CPU)"]
-    Engine -->|"cc_set_engine(1)"| Native["NativeEngine (C++20)<br/>native: math · topology · tessellation ·<br/>construction (extrude / revolve)"]
+    Engine -->|"cc_set_engine(1)"| Native["NativeEngine (C++20)<br/>native: math · topology · tessellation ·<br/>construction (extrude / revolve / 2-section loft)"]
     Engine -.->|"no-OCCT host build"| Stub["Stub engine"]
 
-    Native -.->|"fallthrough (still OCCT):<br/>booleans · fillets/offsets · features ·<br/>STEP/IGES · loft/sweep/threads · healing"| OCCT
+    Native -.->|"fallthrough (still OCCT):<br/>booleans · fillets/offsets · features ·<br/>STEP/IGES · sweep/threads/wrap · healing"| OCCT
     OCCT ==>|"still required"| OCCTlib[("OCCT libs")]
 
     Compute --> CPUb["CPU backend (fp64)"]
@@ -77,8 +77,8 @@ the rest, so OCCT remains a required dependency until Phase 4 completes.
   the rewritten capabilities and falls through to OCCT for the rest.
 - **Native core** (`src/native`) — OCCT-free C++20: `math` (vectors/transforms +
   Bézier/B-spline/NURBS eval), `topology` (B-rep model + traversal), `tessellate`
-  (watertight mesher), `construct` (extrude/revolve). Host-buildable and
-  unit-tested with no OCCT.
+  (watertight mesher), `construct` (extrude/revolve/2-section ruled loft).
+  Host-buildable and unit-tested with no OCCT.
 - **Compute backend** (`src/compute`) — default CPU backend + a **Metal** backend
   (iOS) for GPU work behind the same interface.
 
@@ -95,9 +95,10 @@ linked until it is complete. Current split:
 | B-rep topology + traversal | fillets / chamfers / offsets / shell |
 | tessellation (watertight) | features (replace-face, etc.) |
 | construction: extrude, revolve (line-segment) | data exchange (STEP / IGES) |
-| construction: holed extrude (circular + polygon holes) | loft, sweep / twisted / guided / rail |
-| construction: typed-profile extrude (line / arc / full-circle) | threads, wrap-emboss |
-| construction: typed-profile revolve (line, on-axis arc → sphere) | spline-profile edges, off-axis-arc (torus) / spline revolve |
+| construction: holed extrude (circular + polygon holes) | sweep / twisted / guided / rail |
+| construction: typed-profile extrude (line / arc / full-circle) | 3+-section / guided / rail loft |
+| construction: typed-profile revolve (line, on-axis arc → sphere) | threads, wrap-emboss |
+| construction: 2-section ruled loft (equal-count planar sections) | spline-profile edges, off-axis-arc (torus) / spline revolve |
 | | shape healing |
 
 Native code is opt-in (`cc_set_engine(1)`); the **default engine remains OCCT**,
@@ -164,6 +165,8 @@ bash scripts/run-sim-native-math.sh          # 24/24 — vec/transform + Bézier
 bash scripts/run-sim-native-topology.sh      # 15/15 — counts, ancestry, accessors
 bash scripts/run-sim-native-tessellation.sh  # 20/20 — watertight, area/volume vs OCCT
 bash scripts/run-sim-native-construct.sh     # 17/17 — extrude/revolve vs OCCT through the facade
+bash scripts/run-sim-native-construct-profiles.sh  # 22/22 — holed / typed-profile extrude + revolve
+bash scripts/run-sim-native-loft.sh          # 17/17 — 2-section ruled loft vs OCCT ThruSections
 ```
 
 Full toolchain notes are in [docs/build.md](docs/build.md).

@@ -28,11 +28,17 @@
 //   * solid_revolve_profile  — TYPED profile revolve: line → Plane/Cylinder/Cone,
 //                              on-axis arc → Sphere. Off-axis arc (Torus) / spline
 //                              → OCCT fallthrough.                          [#4b]
-//   Each Tier-A op tries the native builder and FALLS THROUGH to the fallback engine
+//   * solid_loft / solid_loft_wires — 2-SECTION RULED loft with EQUAL vertex counts
+//                              and PLANAR sections: one bilinear (degree-1 Bézier)
+//                              side face per corresponding edge pair + two planar
+//                              caps → watertight solid. Mismatched counts / a
+//                              non-planar section / a point-collapse section / 3+
+//                              /guided/rail lofts → OCCT fallthrough.       [#4b Tier B]
+//   Each native op tries the native builder and FALLS THROUGH to the fallback engine
 //   when the native path returns a NULL Shape (a deferred sub-case or degenerate
-//   input) — the native path never fakes a shape. Everything else (loft/sweep/
-//   threads, fillet/shell/boolean/transform/exchange/reference-geometry) falls
-//   through unconditionally.
+//   input) — the native path never fakes a shape. Everything else (sweep/threads,
+//   fillet/shell/boolean/transform/exchange/reference-geometry) falls through
+//   unconditionally.
 //
 // SHAPE COEXISTENCE. The facade owns ONE ShapeRegistry mapping CCShapeId ->
 // EngineShape (std::shared_ptr<void>). The OCCT adapter type-erases an OcctShape

@@ -43,14 +43,32 @@
 //                                    Cone, arc centred ON the axis → Sphere band. An
 //                                    arc OFF the axis (Torus) / spline → NULL (OCCT).
 //
+//   ── Tier-B (#4b, loft.h) ─────────────────────────────────────────────────────
+//   build_ruled_loft(secA,secB)      skin TWO closed section loops with EQUAL vertex
+//                                    counts into a watertight ruled SOLID: one
+//                                    BILINEAR (degree-1 Bézier) side face per
+//                                    corresponding edge pair + two planar caps.
+//                                    Requires both sections PLANAR & non-degenerate;
+//                                    mismatched counts / non-planar / point-collapse
+//                                    → NULL (OCCT fallthrough). Mirrors ruled
+//                                    BRepOffsetAPI_ThruSections.
+//   build_loft(botXY,topXY,depth)    entry for cc_solid_loft: bottom profile at z=0,
+//                                    top at z=depth, then build_ruled_loft.
+//   build_loft_wires(aXYZ,bXYZ)      entry for cc_solid_loft_wires: the two 3D wires
+//                                    directly, then build_ruled_loft.
+//
 // ── SUPPORTED vs DEFERRED (honest — see openspec/NATIVE-REWRITE.md) ───────────
 //   SUPPORTED natively:
 //     * extrude of a closed polygon profile → prism solid.
 //     * revolve of a LINE-SEGMENT profile (segment → plane / cylinder / cone
 //       face of revolution), full 360° or partial with planar side caps.
+//   NOW NATIVE (Tier-B #4b, loft.h): 2-section RULED loft with EQUAL vertex counts
+//   and planar sections (cc_solid_loft / cc_solid_loft_wires) → bilinear side faces
+//   + planar caps → watertight solid.
 //   DEFERRED (the builder returns a NULL Shape so the engine falls through to
 //   OCCT — it NEVER fakes a wrong shape):
-//     * loft, sweep, twisted/guided sweep, threads.
+//     * loft with MISMATCHED section counts / a NON-PLANAR section / 3+ sections /
+//       guided or rail loft (Tier C); sweep, twisted/guided sweep, threads.
 //     * kind-3 SPLINE profile edges (extrude and revolve).
 //     * arc-revolve whose circle centre is OFF the axis (a Torus surface of
 //       revolution — no native Torus surface yet).
@@ -80,6 +98,7 @@
 #define CYBERCAD_NATIVE_CONSTRUCT_NATIVE_CONSTRUCT_H
 
 #include "native/construct/construct.h"
+#include "native/construct/loft.h"
 #include "native/construct/profile.h"
 
 #endif  // CYBERCAD_NATIVE_CONSTRUCT_NATIVE_CONSTRUCT_H

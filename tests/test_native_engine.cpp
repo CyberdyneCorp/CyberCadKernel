@@ -255,12 +255,61 @@ CC_TEST(native_deferred_falls_through_to_default) {
     const CCShapeId id = cc_solid_extrude(bad, 2, 1.0);
     CC_CHECK_EQ(id, 0);
 
-    // A capability with NO native implementation (loft) forwards to the fallback
-    // (stub → 0 on host) without crashing.
-    const double a[] = {0, 0, 1, 0, 1, 1};
-    const double b[] = {0, 0, 2, 0, 2, 2};
-    const CCShapeId loftId = cc_solid_loft(a, 3, b, 3, 1.0);
+    // A DEFERRED loft sub-case (mismatched section counts: 4-gon bottom, 3-gon top)
+    // is not built natively — it forwards to the fallback (stub → 0 on host) without
+    // crashing or faking. (The equal-count planar loft IS native; see below.)
+    const double a[] = {0, 0, 4, 0, 4, 4, 0, 4};  // 4-gon
+    const double b[] = {0, 0, 2, 0, 1, 2};        // 3-gon
+    const CCShapeId loftId = cc_solid_loft(a, 4, b, 3, 1.0);
     CC_CHECK_EQ(loftId, 0);
+}
+
+// ── Tier-B (#4b): native 2-section RULED loft ──────────────────────────────────
+
+// Native cc_solid_loft: a 4×4 bottom square lofted to a 2×2 top square at depth 6
+// (both centred) → a square frustum, volume h/3·(A1+A2+√(A1·A2)) = 6/3·(16+4+8) =
+// 56. Proves the op is served NATIVELY (the host stub has no loft, so a non-zero id
+// can only come from the native ruled-loft builder), and the mass properties come
+// from the native watertight mesh.
+CC_TEST(native_loft_square_frustum) {
+    EngineGuard g;
+    cc_set_engine(1);
+
+    const double bot[] = {-2, -2, 2, -2, 2, 2, -2, 2};
+    const double top[] = {-1, -1, 1, -1, 1, 1, -1, 1};
+    const CCShapeId id = cc_solid_loft(bot, 4, top, 4, 6.0);
+    CC_CHECK(id != 0);
+    if (id == 0) { std::printf("  last_error=%s\n", cc_last_error()); return; }
+
+    const CCMassProps mp = cc_mass_properties(id);
+    CC_CHECK(mp.valid != 0);
+    CC_CHECK(std::fabs(mp.volume - 56.0) / 56.0 < 0.02);
+
+    CCFaceMesh* faces = nullptr;
+    const int nFaces = cc_face_meshes(id, 0.05, &faces);
+    CC_CHECK_EQ(nFaces, 6);  // 4 ruled sides + 2 planar caps
+    cc_face_meshes_free(faces, nFaces);
+
+    cc_shape_release(id);
+}
+
+// Native cc_solid_loft_wires: two planar triangles in parallel z-planes (z=0, z=3)
+// → a triangular prism, volume = area·3 = 6·3 = 18. Served natively; watertight.
+CC_TEST(native_loft_wires_triangle_prism) {
+    EngineGuard g;
+    cc_set_engine(1);
+
+    const double a[] = {0, 0, 0, 4, 0, 0, 2, 3, 0};
+    const double b[] = {0, 0, 3, 4, 0, 3, 2, 3, 3};
+    const CCShapeId id = cc_solid_loft_wires(a, 3, b, 3);
+    CC_CHECK(id != 0);
+    if (id == 0) { std::printf("  last_error=%s\n", cc_last_error()); return; }
+
+    const CCMassProps mp = cc_mass_properties(id);
+    CC_CHECK(mp.valid != 0);
+    CC_CHECK(std::fabs(mp.volume - 18.0) < 1e-2);
+
+    cc_shape_release(id);
 }
 
 // ── Tier-A (#4b): native holed / typed-profile extrude + typed-profile revolve ──

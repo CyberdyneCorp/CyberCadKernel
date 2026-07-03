@@ -39,7 +39,7 @@ SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 # find below; they are listed here to make the intent explicit.)
 SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.mm \
       native_topology_parity.mm native_tessellate_parity.mm native_tessellation_parity.mm \
-      native_construct_parity.mm native_construct_profiles_parity.mm \
+      native_construct_parity.mm native_construct_profiles_parity.mm native_loft_parity.mm \
       phase3_suite.cpp checks_reference_geometry.cpp checks_wrap_emboss.cpp \
       checks_thread_boolean.cpp checks_full_round_fillet.cpp checks_g2_fillet.cpp"
 SRCS=()

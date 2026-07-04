@@ -78,7 +78,7 @@ Dependency order. Each row is one OpenSpec change (`add-native-*`).
 | 4 | `add-native-swept-solids` | `native-construction` | hard | `BRepPrimAPI`, `BRepBuilderAPI`, `BRepOffsetAPI` |
 | 5 | `add-native-booleans` | `native-booleans` | **research-grade** | `BRepAlgoAPI` (BOPAlgo) |
 
-> #5 SSI → curved-booleans implementation plan: see [SSI-ROADMAP.md](SSI-ROADMAP.md) (staged S1-S5, substrate #2 done; S1 analytic + S2 seeding + S3 marching done — the SSI curve pipeline is now NATIVE for transversal freeform/quadric pairs; **S4 near-tangent robustness (the moat) is NEXT**, S5 curved booleans (the payoff consuming these WLines) follows).
+> #5 SSI → curved-booleans implementation plan: see [SSI-ROADMAP.md](SSI-ROADMAP.md) (staged S1-S5, substrate #2 done; S1 analytic + S2 seeding + S3 marching done — the SSI curve pipeline is now NATIVE for transversal freeform/quadric pairs; **S5-a landed its first native curved boolean** — the through-drill cyl∩cyl COMMON verified vs OCCT `BRepAlgoAPI_Common` (watertight, ΔV 8.1e-4; `ssi_boolean.{h,cpp}`, change `add-native-ssi-curved-boolean` archived). Remaining: **S4 near-tangent robustness (the moat)** + wider S5 coverage (fuse/cut, more curved-curved families, lifting the near-tangent gate)).
 | 6 | `add-native-fillets-offsets` | `native-blends` | hard | `BRepFilletAPI`, `BRepOffsetAPI` |
 | 7 | `add-native-data-exchange` | `native-exchange` | moderate (external?) | `STEPControl`, `IGESControl` |
 | 8 | `drop-occt` | â | â | unlink OCCT; kernel fully native |

@@ -52,7 +52,9 @@
 #include "native/boolean/assemble.h"
 #include "native/boolean/bsp.h"
 #include "native/boolean/curved.h"
+#include "native/boolean/native_boolean_fwd.h"  // Op (shared with ssi_boolean.h)
 #include "native/boolean/polygon.h"
+#include "native/boolean/ssi_boolean.h"          // ssi_boolean_solid (SSI Stage S5-a)
 #include "native/topology/native_topology.h"
 
 #include <optional>
@@ -60,8 +62,8 @@
 
 namespace cybercad::native::boolean {
 
-/// The three set operations, matching the cc_boolean op codes.
-enum class Op { Fuse = 0, Cut = 1, Common = 2 };
+// `Op` is declared in native_boolean_fwd.h so the SSI-driven S5-a path can name it
+// without a circular include; it is the same enum the cc_boolean op codes map to.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // booleanPolygons — the BSP-CSG compositions. Given the two solids' polygon soups,
@@ -144,6 +146,17 @@ inline topo::Shape boolean_solid(const topo::Shape& a, const topo::Shape& b, Op 
   if (topo::Shape curvedResult = curved::tryBoxCylinder(a, b, static_cast<int>(op));
       !curvedResult.isNull())
     return curvedResult;
+
+  // ── SSI Stage S5-a: the GENERAL, SSI-curve-driven curved boolean ──────────────
+  // When the analytic box∩cylinder pattern did not match, try the transversal
+  // elementary curved path (cyl∩cyl / sphere∩box / cone∩box …). It drives the split
+  // from the S3 TraceSet instead of matching a primitive, so it generalises across
+  // the elementary family. A NULL means "not a robustly-handleable transversal
+  // elementary pair" (near-tangent / coincident / freeform / out-of-scope op) and we
+  // fall through to the planar path / OCCT. The engine self-verify still guards it.
+  // Substrate-gated: without CYBERCAD_HAS_NUMSCI this links a NULL-returning stub.
+  if (topo::Shape ssiResult = ssi_boolean_solid(a, b, op); !ssiResult.isNull())
+    return ssiResult;
 
   // ── Planar polyhedron path (both operands all-planar) ─────────────────────────
   if (!isAllPlanar(a) || !isAllPlanar(b)) return {};  // curved → OCCT fallthrough

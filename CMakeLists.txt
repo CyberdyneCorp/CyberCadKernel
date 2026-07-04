@@ -248,6 +248,17 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_ssi_marching)
         set(test_native_ssi_marching_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_marching.cpp")
+        # SSI Stage S5-a curved boolean — consumes the S3 TraceSet, so it is gated on
+        # CYBERCAD_HAS_NUMSCI too and its host suite builds only in that config.
+        list(APPEND CYBERCAD_TESTS test_native_ssi_boolean)
+        set(test_native_ssi_boolean_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_boolean.cpp")
+        # SSI Stage S5-a ANALYTIC-ground-truth tests (Steinmetz 16r³/3 + inclusion–
+        # exclusion monotone relations, no OCCT). Consumes the S3 TraceSet, so it is
+        # gated on CYBERCAD_HAS_NUMSCI too and its host suite builds only in that config.
+        list(APPEND CYBERCAD_TESTS test_native_ssi_curved_boolean)
+        set(test_native_ssi_curved_boolean_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_curved_boolean.cpp")
     endif()
 
     # Most tests live directly under tests/; native-library tests live under
@@ -296,6 +307,30 @@ if(CYBERCAD_BUILD_TESTS)
             "${CMAKE_CURRENT_SOURCE_DIR}/tests")
         add_test(NAME ${test} COMMAND ${test})
     endforeach()
+
+    # The SSI Stage S5-a boolean test reaches into the substrate-gated ssidetail::
+    # helpers (recogniseCurvedSolid / classifyPoint), so its TU must see
+    # CYBERCAD_HAS_NUMSCI and the substrate include trees — matching how the library
+    # is built. (The S2/S3 tests only call always-visible declarations, so they do
+    # not need this.) Guarded on the option + target existence.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_ssi_boolean)
+        target_compile_definitions(test_native_ssi_boolean PRIVATE CYBERCAD_HAS_NUMSCI=1)
+        target_include_directories(test_native_ssi_boolean PRIVATE
+            "${CYBERCAD_NUMPP_DIR}/include"
+            "${CYBERCAD_SCIPP_DIR}/include"
+            "${CYBERCAD_NUMSCI_DIR}/gen")
+    endif()
+
+    # The S5-a analytic-ground-truth test reaches into the same substrate-gated
+    # ssidetail:: helpers (recogniseCurvedSolid), so its TU also needs
+    # CYBERCAD_HAS_NUMSCI and the substrate include trees.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_ssi_curved_boolean)
+        target_compile_definitions(test_native_ssi_curved_boolean PRIVATE CYBERCAD_HAS_NUMSCI=1)
+        target_include_directories(test_native_ssi_curved_boolean PRIVATE
+            "${CYBERCAD_NUMPP_DIR}/include"
+            "${CYBERCAD_SCIPP_DIR}/include"
+            "${CYBERCAD_NUMSCI_DIR}/gen")
+    endif()
 
     if(EXISTS "${CYBERCAD_REFERENCE_ABI_HEADER}")
         get_filename_component(CYBERCAD_REFERENCE_ABI_DIR

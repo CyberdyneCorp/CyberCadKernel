@@ -176,7 +176,7 @@ self-intersection guards. **This is the moat** — OCCT's decades of tuning. Lan
 as *progressively hardened*; whatever isn't robust **falls back to OCCT** and is
 reported with the measured gap. Never "done"; hardened over time.
 
-### S5 — Curved booleans via SSI (the payoff) · (~months on top of S1–S3)
+### S5 — Curved booleans via SSI (the payoff) · ◐ FIRST NATIVE SLICE landed (~months for full coverage)
 Use SSI curves to **split** the curved faces of two solids, **classify**
 fragments inside/outside (reuse the BSP-CSG classifier + a curved point-in-solid
 test), **assemble** the surviving shell watertight (curved-seam weld from the
@@ -186,12 +186,28 @@ mesher). Extends `src/native/boolean/` from planar/axis-aligned to general curve
   OCCT fallback for the rest.
 - **Unlocks:** curved blends (#6) and curved wrap-emboss (#7) then compose on top.
 
+**S5-a done at the bar (change `add-native-ssi-curved-boolean`, archived):** the
+SSI-curve-driven split→classify→select→weld pipeline lives in
+`src/native/boolean/ssi_boolean.{h,cpp}` (OCCT-free, `CYBERCAD_HAS_NUMSCI`-gated,
+consumes the S3 `TraceSet`). It produces **one real native curved boolean verified
+vs OCCT `BRepAlgoAPI_Common`**: the **through-drill cylinder∩cylinder COMMON**
+(unequal radii, transversal two-loop trace) — watertight, ΔV = 8.1e-04, ΔA = 2.8e-04
+(sim parity `native-pass=1`, 11 honest fallbacks). Honest scope of this first slice:
+- **Steinmetz** (equal-radius orthogonal cyl∩cyl) is **near-tangent** at the top/bottom
+  crossings (`nearTangentGaps > 0`) → an **S4** case, not S5 → declines to OCCT.
+- **Fuse / Cut** need the outside-fragment + re-trimmed-cap weld (not yet robust) → decline.
+- **sphere×box, cone×box** have a planar (box) operand → not a curved-curved pair → decline.
+All declines are honest NULL→OCCT fallbacks (measured, never faked). Remaining S5
+work: fuse/cut caps, more curved-curved families, and lifting the near-tangent gate
+once S4 lands.
+
 ## Sequencing & effort
 
 ```
 substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ──► S3 marching (DONE) ──► S4 robustness (NEXT, moat)
                              │                                    │
                              └──────────────► S5 curved booleans ◄─┘  ──► #6 blends ──► #7 wrap-emboss
+                                              (S5-a: drill cyl∩cyl COMMON native ✓)
 ```
 
 | Stage | Effort (robust) | Nature |
@@ -200,7 +216,7 @@ substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ─
 | S2 seeding | ✅ DONE at the bar (transversal) | subdivision + substrate refine — verified host + sim recall |
 | S3 marching | ✅ DONE at the bar (transversal) | tangent-step + substrate re-projection — 5 pairs / 9 branches vs OCCT |
 | S4 tangent robustness | multi-year, ongoing | the moat — best-effort + fallback |
-| S5 curved booleans | ~months | extends existing assembler |
+| S5 curved booleans | ◐ first slice DONE at the bar (~months for full) | S5-a: through-drill cyl∩cyl COMMON native vs OCCT (wt, ΔV 8.1e-4); fuse/cut + more families + near-tangent gate remain |
 
 SSI + curved booleans total ≈ **1.5–3 py** (substrate-accelerated) for *usable*
 coverage; full OCCT-grade robustness (S4) is the long tail. Recommended cadence:

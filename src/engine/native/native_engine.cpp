@@ -295,10 +295,55 @@ CurvedCheck curvedBooleanVerified(const ntopo::Shape& result, const ntopo::Shape
 // every mesh is exact, so the tolerance is tight (1e-6 relative, 1e-9 absolute floor).
 // For the CURVED box-cylinder slice the ANALYTIC check (curvedBooleanVerified) takes
 // over — its expected volume is closed-form, not a mesh estimate of the operands.
+// SSI STAGE S5-a self-verify (openspec add-native-ssi-curved-boolean). The SSI-driven
+// path (src/native/boolean/ssi_boolean) builds the curved boolean of two transversal
+// elementary curved solids from the S3 TraceSet. Its host analytic oracle is the
+// STEINMETZ solid: the COMMON of two equal-radius cylinders whose axes cross at right
+// angles has exact enclosed volume 16·r³/3. When the operands are recognised as two
+// such cylinders and op == common, the guard checks the result's watertight mesh
+// volume against that closed form (deflection-bounded tolerance, like the box-cylinder
+// analytic guard). Returns {applicable, matched}; applicable == false means "not a
+// recognised Steinmetz pair" and the caller uses the generic set-algebra check.
+//
+// This keeps the mandatory watertight + correct-volume guard in the ENGINE (next to
+// the OCCT fallback), so the library stays OCCT-free and a bad SSI candidate is
+// DISCARDED → OCCT, never faked.
+CurvedCheck ssiCurvedBooleanVerified(const ntopo::Shape& result, const ntopo::Shape& a,
+                                     const ntopo::Shape& b, int op) {
+#if defined(CYBERCAD_HAS_NUMSCI)
+    if (op != 2) return {};  // only COMMON has the analytic Steinmetz oracle in S5-a
+    namespace nb = cybercad::native::boolean;
+    const auto csA = nb::ssidetail::recogniseCurvedSolid(a);
+    const auto csB = nb::ssidetail::recogniseCurvedSolid(b);
+    if (!csA || !csB) return {};
+    using CK = nb::ssidetail::CurvedKind;
+    if (csA->kind != CK::Cylinder || csB->kind != CK::Cylinder) return {};
+    // Equal radii and perpendicular, colinear-origin axes → the Steinmetz configuration.
+    if (std::fabs(csA->radius - csB->radius) > 1e-6) return {};
+    const double axisDot = std::fabs(cybercad::native::math::dot(csA->frame.z.vec(),
+                                                                 csB->frame.z.vec()));
+    if (axisDot > 1e-4) return {};  // not perpendicular → no closed form here
+    const double r = csA->radius;
+    const double expected = 16.0 * r * r * r / 3.0;  // Steinmetz bicylinder common volume
+    const double vr = watertightVolume(result);
+    if (vr < 0.0) return {true, false};  // not watertight
+    const double tol = std::max(1e-2 * expected, 1e-6);  // deflection-bounded curved mesh
+    return {true, std::fabs(vr - expected) <= tol};
+#else
+    (void)result; (void)a; (void)b; (void)op;
+    return {};  // no substrate → no SSI path → generic check applies
+#endif
+}
+
 bool booleanResultVerified(const ntopo::Shape& result, const ntopo::Shape& a,
                            const ntopo::Shape& b, int op) {
     // Curved slice first: an analytic-volume check for a box-cylinder pair.
     if (const CurvedCheck cc = curvedBooleanVerified(result, a, b, op); cc.applicable)
+        return cc.matched;
+    // SSI Stage S5-a: the Steinmetz analytic oracle for a transversal cylinder∩cylinder
+    // common. A recognised pair whose mesh volume matches 16r³/3 is accepted; a mismatch
+    // is DISCARDED → OCCT.
+    if (const CurvedCheck cc = ssiCurvedBooleanVerified(result, a, b, op); cc.applicable)
         return cc.matched;
 
     const double vr = watertightVolume(result);

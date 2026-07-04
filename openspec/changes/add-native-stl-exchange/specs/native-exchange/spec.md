@@ -49,8 +49,12 @@ and return a **mesh body** (a welded triangle soup), or `0` on failure with
 `84 + 50·N` for the little-endian `uint32` count `N` at offset 80 as binary
 (definitive, even when its 80-byte header begins with `"solid"`), SHALL treat a
 file containing a non-text byte in its leading bytes as binary, and SHALL treat a
-text file beginning `solid` and containing `facet` as ASCII. The reader SHALL
-**weld** coincident vertices within a tolerance and SHALL tolerate degenerate /
+text file beginning `solid` and containing either `facet` or `endsolid` as ASCII
+(so a well-formed zero-facet ASCII solid is NOT misread as a too-small binary
+file). The reader SHALL **weld** coincident vertices within a tolerance —
+searching the neighbouring cells of the tolerance grid so that two vertices within
+tolerance that quantize into ADJACENT cells (a coordinate straddling a cell
+boundary) still merge — and SHALL tolerate degenerate /
 zero-area facets, non-manifold edges, and inconsistent winding — storing the soup
 as-is without fixing winding or enforcing manifold. The result SHALL be an
 import-as-mesh body only (NOT B-rep reconstruction), carried directly as a
@@ -83,3 +87,13 @@ bounding box (within tolerance).
 - GIVEN an otherwise-valid ASCII STL containing two well-formed facets (with leading-`+` signed coordinates) and one zero-area / repeated-vertex facet
 - WHEN `cc_stl_import(path)` reads it
 - THEN the call SHALL return a non-zero `CCShapeId` AND `cc_tessellate` of the imported body SHALL yield exactly the two valid triangles (the degenerate facet is skipped, the leading-`+` coordinates are accepted)
+
+#### Scenario: Coincident vertices straddling a weld-grid cell boundary still merge (host)
+- GIVEN an ASCII STL of a quad split into two triangles that share a diagonal edge, where each shared vertex is written in the two facets at coordinates that differ by less than the weld tolerance but quantize into ADJACENT grid cells
+- WHEN `cc_stl_import(path)` reads and welds it
+- THEN the call SHALL return a non-zero `CCShapeId` AND the welded mesh SHALL contain exactly 4 vertices and 2 triangles (the straddling shared vertices are merged, not left as 6 distinct vertices)
+
+#### Scenario: A well-formed zero-facet ASCII solid is detected as ASCII, not binary (host)
+- GIVEN a text file containing only `solid x` / `endsolid x` (a valid but empty ASCII STL, too small to be a binary file)
+- WHEN `cc_stl_import(path)` is called on it
+- THEN the file SHALL be detected as ASCII and fail cleanly through the ASCII path (returning `0`, `cc_last_error` reporting the ASCII no-vertices case) rather than being misdetected as a too-small binary file

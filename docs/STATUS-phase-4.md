@@ -1308,16 +1308,17 @@ never fails), true millimetres, deterministic byte-identical output (fixed heade
 timestamp/host/build-id), binary 80-byte header that never begins `solid`. `cc_stl_import(path)`
 (`stl_reader.{h,cpp}`) auto-detects ASCII vs binary — size-identity (`84 + 50·N`) beats a
 deceptive `solid` header, a non-text head byte forces binary — parses the triangle soup,
-**welds** coincident vertices on a tolerance grid, and tolerates degenerate/zero-area facets
-(skipped) → a mesh-backed native body (import-as-mesh only, **NOT** B-rep reconstruction) so
-display, `cc_tessellate`, bounding box, surface area, and volume-if-closed all work. Malformed
-input fails cleanly (`cc_last_error`, `0`, no partial body). Host `test_native_stl` (#22, 8
-cases: binary round-trip, ASCII well-formed, determinism binary+ASCII, ASCII/binary
-auto-detect, `solid`-headed binary trap, malformed clean-fail, measurement, and mixed
-valid/degenerate + leading-`+` tolerate-and-recover) green. Known follow-ups (documented,
-out of this slice): single-cell grid weld can under-weld foreign STLs whose coincident
-vertices straddle a cell boundary; a zero-facet ASCII file is misdetected as binary and
-rejected with a misleading message. `cc_step_import`, `cc_iges_export/import` still stay OCCT.
+**welds** coincident vertices on a tolerance grid — searching the 3×3×3 cell neighbourhood so
+sub-tolerance vertices that straddle a cell boundary still merge (no under-welding of foreign
+STLs) — and tolerates degenerate/zero-area facets (skipped) → a mesh-backed native body
+(import-as-mesh only, **NOT** B-rep reconstruction) so display, `cc_tessellate`, bounding box,
+surface area, and volume-if-closed all work. A well-formed zero-facet ASCII solid is detected as
+ASCII (a `solid` lead closed by `endsolid`, not only one containing `facet`), not misread as a
+too-small binary. Malformed input fails cleanly (`cc_last_error`, `0`, no partial body). Host
+`test_native_stl` (#22, 10 cases: binary round-trip, ASCII well-formed, determinism binary+ASCII,
+ASCII/binary auto-detect, `solid`-headed binary trap, malformed clean-fail, measurement, mixed
+valid/degenerate + leading-`+` tolerate-and-recover, grid-boundary weld straddle, and zero-facet
+ASCII detection) green. `cc_step_import`, `cc_iges_export/import` still stay OCCT.
 
 **Native-vs-fallback split (engine wiring).** `NativeEngine::step_export`: an in-scope
 native body → NATIVE writer; an out-of-scope native body → clean error (never a native

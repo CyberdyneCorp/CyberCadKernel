@@ -47,6 +47,13 @@ parsers into small helpers).
 - [x] 2.5 Weld / dedup coincident vertices on a `weldTol` quantization grid (hash
       map keyed by quantized coordinates); store the un-quantized fp64 vertex on a
       miss, reuse the index on a hit. Factor into a `weld_vertex` helper.
+- [x] 2.5a Search the 3×3×3 grid-cell neighbourhood (not just the exact cell) and
+      compare true distance, so two vertices within `weldTol` that quantize into
+      adjacent cells (a coordinate straddling a cell boundary) still merge — a
+      foreign STL with sub-tolerance jitter must not under-weld.
+- [x] 2.5b Detect a well-formed zero-facet ASCII solid as ASCII: accept a `solid`
+      lead closed by `endsolid` (not only one containing `facet`), so an empty
+      ASCII solid is not misread as a too-small binary file.
 - [x] 2.6 Tolerate degenerate input: after welding, skip a triangle with a repeated
       index or near-zero area; do NOT fix winding or enforce manifold (soup stored
       as-is). Zero valid triangles after skipping → `err` + `std::nullopt`.

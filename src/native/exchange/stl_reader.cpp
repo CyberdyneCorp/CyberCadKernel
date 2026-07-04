@@ -62,7 +62,15 @@ bool ascii_signature(const std::vector<unsigned char>& b) {
     while (i < sv.size() && (sv[i] == ' ' || sv[i] == '\t' || sv[i] == '\n' || sv[i] == '\r'))
         ++i;
     const std::string_view rest = sv.substr(i);
-    return rest.rfind("solid", 0) == 0 && rest.find("facet") != std::string_view::npos;
+    // A binary header can also begin "solid ...", but detect_format runs the
+    // decisive size-identity and non-text-byte checks FIRST; by the time we get
+    // here the head is all text. A "solid" lead followed by either a "facet" or an
+    // "endsolid" keyword is a real ASCII STL — the "endsolid" alternative catches a
+    // well-formed ZERO-facet solid, which carries no "facet" but still closes with
+    // "endsolid" and must not be misread as (a too-small) binary file.
+    if (rest.rfind("solid", 0) != 0) return false;
+    return rest.find("facet") != std::string_view::npos ||
+           rest.find("endsolid") != std::string_view::npos;
 }
 
 // Auto-detect the format. First decisive check wins: a byte-exact binary size
@@ -182,13 +190,27 @@ std::optional<ntess::Mesh> weld_mesh(const std::vector<math::Point3>& raw, doubl
     }
     const double tol = weldTol > 0.0 ? weldTol : 1e-6;
     ntess::Mesh mesh;
-    std::unordered_map<WeldKey, std::uint32_t, WeldKeyHash> index;
+    std::unordered_map<WeldKey, std::vector<std::uint32_t>, WeldKeyHash> index;
+    // Weld onto a tolerance grid, but SEARCH the 3×3×3 neighbourhood of cells: two
+    // coincident coordinates can round into ADJACENT cells (a vertex straddling a
+    // cell boundary), and a single-cell lookup would leave them unmerged — foreign
+    // STLs whose shared vertices carry sub-tolerance jitter would then under-weld.
+    // With a cell side of `tol`, any vertex within `tol` of `p` is guaranteed to
+    // lie in one of the 27 neighbour cells, so we find it and compare true distance.
     auto weld = [&](const math::Point3& p) -> std::uint32_t {
-        const WeldKey k{std::llround(p.x / tol), std::llround(p.y / tol), std::llround(p.z / tol)};
-        const auto it = index.find(k);
-        if (it != index.end()) return it->second;
+        const std::int64_t cx = std::llround(p.x / tol);
+        const std::int64_t cy = std::llround(p.y / tol);
+        const std::int64_t cz = std::llround(p.z / tol);
+        for (std::int64_t dx = -1; dx <= 1; ++dx)
+            for (std::int64_t dy = -1; dy <= 1; ++dy)
+                for (std::int64_t dz = -1; dz <= 1; ++dz) {
+                    const auto it = index.find(WeldKey{cx + dx, cy + dy, cz + dz});
+                    if (it == index.end()) continue;
+                    for (const std::uint32_t id : it->second)
+                        if (math::norm(mesh.vertices[id] - p) <= tol) return id;
+                }
         const std::uint32_t id = mesh.addVertex(p);
-        index.emplace(k, id);
+        index[WeldKey{cx, cy, cz}].push_back(id);
         return id;
     };
     for (std::size_t t = 0; t + 2 < raw.size(); t += 3) {

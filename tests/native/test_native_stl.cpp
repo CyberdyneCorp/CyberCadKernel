@@ -297,4 +297,56 @@ CC_TEST(stl_import_tolerates_degenerate_and_plus_signs) {
     cc_shape_release(id);
 }
 
+// 9 ── regression (weld straddle): coincident shared vertices that round into
+//       ADJACENT grid cells must still weld. A quad split into two triangles shares
+//       its diagonal (2 vertices); each shared vertex is written 2e-7 mm apart
+//       between the facets — below the 1e-6 weld tolerance but across a cell
+//       boundary. A single-cell weld would leave 6 vertices; the neighbourhood
+//       search must merge to 4. ────────────────────────────────────────────────────
+CC_TEST(stl_import_welds_across_grid_boundary) {
+    cc_set_engine(1);
+    const std::string path = tmpPath("cc_stl_straddle.stl");
+    {
+        std::ofstream f(path, std::ios::binary);
+        // Quad corners P0(0,0) P1(10,0) P2(10,10) P3(0,10); tris (P0,P1,P2)+(P0,P2,P3).
+        // P0 and P2 straddle the tol=1e-6 grid: x=...0.0000004 (cell 0) in tri 1 vs
+        // x=...0.0000006 (cell 1) in tri 2 — 2e-7 apart, must weld.
+        f << "solid straddle\n"
+          << "  facet normal 0 0 1\n    outer loop\n"
+          << "      vertex 0.0000004 0 0\n      vertex 10 0 0\n"
+          << "      vertex 10.0000004 10 0\n"
+          << "    endloop\n  endfacet\n"
+          << "  facet normal 0 0 1\n    outer loop\n"
+          << "      vertex 0.0000006 0 0\n      vertex 10.0000006 10 0\n"
+          << "      vertex 0 10 0\n"
+          << "    endloop\n  endfacet\n"
+          << "endsolid straddle\n";
+    }
+    const CCShapeId id = cc_stl_import(path.c_str());
+    CC_CHECK(id != 0);
+    CCMesh m = cc_tessellate(id, 0.1);
+    CC_CHECK(m.triangleCount == 2);
+    CC_CHECK(m.vertexCount == 4);  // straddling shared vertices welded (not 6)
+    cc_mesh_free(m);
+    cc_shape_release(id);
+}
+
+// 10 ── regression (detect): a well-formed ZERO-facet ASCII solid must be detected
+//        as ASCII and fail through the ASCII path (no vertices), NOT be misread as a
+//        too-small binary file. ───────────────────────────────────────────────────
+CC_TEST(stl_import_empty_ascii_detected_not_binary) {
+    cc_set_engine(1);
+    const std::string path = tmpPath("cc_stl_empty_ascii.stl");
+    {
+        std::ofstream f(path, std::ios::binary);
+        f << "solid empty\nendsolid empty\n";
+    }
+    CC_CHECK(cc_stl_import(path.c_str()) == 0);  // no triangles → clean fail
+    const std::string err = cc_last_error();
+    // Proves ASCII detection: the ASCII parser reports the empty case; a binary
+    // misdetection would instead complain the file is too small for a header.
+    CC_CHECK(err.find("ASCII") != std::string::npos);
+    CC_CHECK(err.find("binary") == std::string::npos);
+}
+
 CC_RUN_ALL()

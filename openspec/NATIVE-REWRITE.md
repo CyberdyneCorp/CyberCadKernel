@@ -484,6 +484,34 @@ longest; a native exchange is lower priority than the modelling core.
     `openspec/specs/native-booleans` (validate --strict green). **General curved B-rep
     booleans (surface-surface intersection, robust near-tangent handling, shape healing)
     remain research-grade OCCT-backed â the longest-lived OCCT dependency.**
+  - **SSI Stage S1 (analytic surface-surface intersection) — DONE at the verification
+    bar (both gates), ARCHIVED; general / freeform / near-tangent SSI is S2–S4 (honest).**
+    SSI is the enabler for the S5 general curved-boolean payoff (see
+    [`SSI-ROADMAP.md`](SSI-ROADMAP.md), staged S1–S5). S1 delivers CLOSED-FORM
+    intersection curves for the elementary-surface family, OCCT-free and header-only under
+    `src/native/ssi/`, built over `src/native/math` ONLY (IntAna-style closed form; NO
+    GeomAPI / NO numsci — the SSI unit test does not require NUMSCI). SSI is INTERNAL: no
+    `cc_*` entry point; parity asserted at the `cybercad::native::ssi` C++ boundary, like
+    native-math / native-topology. **17 analytic-native pairs** verified vs OCCT
+    `GeomAPI_IntSS` (all curve TYPES match; on-surface / coincidence residuals ≤ ~4e-15,
+    well inside each pair's tol): plane∩plane (Line), plane∩sphere (Circle), plane∩cyl
+    (⟂ Circle / ∥ 2 Lines / ∠ Ellipse), plane∩cone (Circle / Ellipse / Parabola / 2
+    Hyperbola branches), plane∩torus (⟂ axis 1–2 circles, ∋ axis 2 meridian circles),
+    sphere∩sphere (Circle), coaxial sphere∩cyl / sphere∩cone / cyl∩cone (Circles),
+    parallel cyl∩cyl (2 Lines), coaxial cyl∩cyl (coincident). **Honestly DEFERRED →
+    `NotAnalytic` (never faked):** skew cyl∩cyl (OCCT emits 7 Ellipse curves — a planar
+    quartic, no degree-≤2 reduction) and by the same rule general cone∩cone, non-coaxial
+    cone∩cyl / sphere∩cyl / sphere∩cone, oblique plane∩torus (spiric quartic),
+    torus∩curved, and all freeform pairs — these route to **S2 subdivision seeding
+    (NEXT)** / S3 marching / S4 robustness. `NotAnalytic` + empty `curves` IS the contract
+    with S2/S3/OCCT. Both gates green: host `test_native_ssi` (**11 cases, 0 failed**;
+    NUMSCI OFF CTest **23/23**, NUMSCI ON CTest **24/24**) + sim native-vs-OCCT
+    `GeomAPI_IntSS` parity `scripts/run-sim-native-ssi.sh` (**18 pairs, 0 failed**). No
+    regressions (`run-sim-suite.sh` **221/221**). Files: `src/native/ssi/{curve,tolerance,
+    dispatch,plane_conics,plane_torus,quadric_pairs,native_ssi}.h` +
+    `tests/native/test_native_ssi.cpp` + `tests/sim/native_ssi_parity.mm`. Living change
+    `openspec/changes/add-native-ssi-analytic` **archived**. See
+    [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md) SSI-S1 result table.
 - â **`#4b` Tier E â native `cc_wrap_emboss` â DEFERRED (FUTURE WORK, not scheduled
   yet).** This is the *native* (OCCT-free) rewrite of wrap-emboss; it is distinct from
   the Phase-3 `add-robust-wrap-emboss` change, which is â done and OCCT-backed (the
@@ -658,7 +686,7 @@ LOC are OCCT's (the port/reference size).
 | 2 | ~~**Numeric foundations**~~ â **DONE at the bar.** `math_` solvers (Newton/FunctionSetRoot/BFGS) + `Extrema` (45k) + `Adaptor3d` (7k). **NumPP + SciPP ADOPTED** as the OCCT-free substrate (`add-native-numerics`, archived); generic solvers + native closest-point / projection are NATIVE + verified vs OCCT `Extrema` (22/22 `[NNUM]`, dDist â¤ 1.776e-15); SSI stays #5 | ~55k | â | done | **~0.15â0.35 py REALIZED** (was 0.5â1 py) â *~60â75% saving banked; on-ramp to everything below now native* |
 | 3 | STEP/IGES **import** (full AP203/214/242 + IGES parse + reconstruct) | ~300â600k | needs #4 | narrow (own export): ~w | 2â4 py |
 | 4 | **Shape healing** (`ShapeFix`/`ShapeUpgrade`/`ShapeAnalysis`) | 87,647 | â | n/a | 2â4 py |
-| 5 | **SSI + general curved booleans** (`IntPatch`/`IntWalk` 89k + BOPAlgo 76k) | ~165k | #2 | ~w/case | **3â6 py** (clean-room) / ~1.5â3 py (port from OCCT) â *the moat* |
+| 5 | **SSI + general curved booleans** (`IntPatch`/`IntWalk` 89k + BOPAlgo 76k). **SSI-ROADMAP S1 analytic slice DONE at the bar** (17 elementary pairs vs OCCT `GeomAPI_IntSS`, `add-native-ssi-analytic` archived); **S2 subdivision seeding is NEXT** | ~165k | #2 | ~w/case | **3â6 py** (clean-room) / ~1.5â3 py (port from OCCT) â *the moat* |
 | 6 | Curved / variable-radius / fillet-face / concave **blends** (`ChFi3d`) | 95,710 | #5 | ~w/case | 2â4 py |
 | 7 | Curved **wrap-emboss** | (composition) | #5 + curved offset | ~days | 0.2â0.5 py |
 | 8 | `drop-occt` â unlink + full regression | â | 1â7 | â | small, last |
@@ -666,10 +694,12 @@ LOC are OCCT's (the port/reference size).
 Critical path: **#2 numeric foundations (DONE) â #5 SSI (NEXT) â curved booleans â
 #6 blends â #7 wrap-emboss**, with **#3 import â #4 healing** as a parallel track.
 Both gate **#8**. **#2 is done** â NumPP/SciPP adopted, generic solvers + native
-closest-point verified vs OCCT `Extrema` â so the next critical-path item is **#5 SSI**:
-the substrate (adopt) is done; what remains for #5 is writing the **marching-line +
-tangent-robustness (near-tangent seed) layer** on top of it (the moat NumPP/SciPP does not
-buy). Total to genuinely drop OCCT â **10â20 py** (a small team, several years); matching
+closest-point verified vs OCCT `Extrema` â so the next critical-path item is **#5 SSI**: its **S1 analytic slice is now DONE**
+(17 elementary pairs closed-form + verified vs OCCT `GeomAPI_IntSS`, `add-native-ssi-analytic`
+archived), and what remains is
+**S2 subdivision seeding (NEXT)** → **S3 marching-line + S4 tangent-robustness (near-tangent
+seed) layer** on top of the substrate (the moat NumPP/SciPP does not buy), feeding the S5
+curved-boolean payoff. Total to genuinely drop OCCT â **10â20 py** (a small team, several years); matching
 OCCT means re-earning its person-decades of hardening on real CAD data.
 
 > **Numeric-substrate decision (NumPP/SciPP): ADOPTED â GO-WITH-HARDENING â DELIVERED at

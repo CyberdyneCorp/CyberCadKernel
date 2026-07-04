@@ -42,16 +42,54 @@ never emit a wrong/leaky curved result. Oracle source: `/Users/leonardoaraujo/wo
 
 ## Stages (dependency order, analytic-first)
 
-### S1 — Analytic SSI (elementary-surface pairs) · workflow-sized (~weeks)
+### S1 — Analytic SSI (elementary-surface pairs) · ✅ DONE AT THE BAR
 Closed-form intersection curves for elementary pairs: plane∩plane (line),
-plane∩{cylinder,cone,sphere,torus} (line/conic/circle), cylinder∩cylinder
-(≤quartic), cylinder∩sphere, sphere∩sphere (circle), etc. **No marching** — pure
-math (generalizes the plane∩cylinder we already ship). Returns exact
-`Line`/`Circle`/`Ellipse`/conic + `Geom`-quality curves.
-- **Verify:** host analytic (known conics) + sim vs OCCT `GeomAPI_IntSS`.
+plane∩{cylinder,cone,sphere,torus} (line/conic/circle), coaxial/parallel
+cylinder∩cylinder, coaxial sphere/cylinder/cone families, sphere∩sphere (circle).
+**No marching** — pure closed-form math over `native-math` (generalizes the
+plane∩cylinder we already shipped). Returns exact `Line`/`Circle`/`Ellipse`/
+`Parabola`/`Hyperbola` `Geom`-quality curves. OCCT-free, header-only under
+`src/native/ssi/`; INTERNAL (no `cc_*` entry point — parity asserted at the C++
+boundary like native-math). Change `add-native-ssi-analytic` (**archived**).
+- **Verify:** ✅ host analytic `test_native_ssi` (**11 cases, 0 failed**) + ✅ sim
+  native-vs-OCCT `GeomAPI_IntSS` parity `run-sim-native-ssi.sh` (**18 pairs, 0
+  failed**). No regressions (`run-sim-suite.sh` **221/221**).
 - **Unlocks:** most CAD-primitive curved booleans (S5 restricted to elementary faces).
 
-### S2 — Subdivision seeding · (~weeks–months)
+**Analytic-native pairs, native-vs-OCCT deltas** (onSurf = max residual of native
+curve samples on both input surfaces; coin = native-vs-OCCT curve coincidence; all
+at machine epsilon, well inside each pair's tol):
+
+| Pair | native | OCCT | kind | onSurf | coin | tol |
+|---|---|---|---|---|---|---|
+| plane ∩ plane | 1 | 1 | Line | 0 | 0 | 1e-9 |
+| plane ∩ sphere | 1 | 1 | Circle | 3.79e-15 | 3.82e-15 | 1e-9 |
+| plane ⟂ cyl | 1 | 1 | Circle | 1.91e-15 | 1.91e-15 | 1e-9 |
+| plane ∠ cyl | 1 | 1 | Ellipse | 1.42e-15 | 2.57e-15 | 1e-8 |
+| plane ∥ cyl | 2 | 2 | Line/Line | 5.55e-17 | 0 | 1e-9 |
+| plane ⟂ cone | 1 | 1 | Circle | 3.59e-15 | 3.59e-15 | 1e-7 |
+| plane ∠ cone | 1 | 1 | Ellipse | 2.44e-15 | 5.37e-15 | 1e-6 |
+| plane ∥ gen cone | 1 | 1 | Parabola | 2.03e-15 | 9.74e-16 | 1e-6 |
+| plane steep cone | 2 | 2 | Hyperbola×2 | 5.61e-16 | 4.45e-16 | 1e-6 |
+| plane ⟂ torus | 2 | 2 | Circle/Circle | 2.84e-15 | 2.84e-15 | 1e-9 |
+| plane ∋ axis torus | 2 | 2 | Circle/Circle | 9.93e-16 | 1.67e-15 | 1e-8 |
+| sphere ∩ sphere | 1 | 2 | Circle (OCCT arc-splits) | 4.12e-15 | 3.82e-15 | 1e-9 |
+| coaxial sphere ∩ cyl | 2 | 2 | Circle/Circle | 1.88e-15 | 2.39e-15 | 1e-9 |
+| coaxial sphere ∩ cone | 2 | 3 | Circle/Circle (OCCT arc-split) | 3.14e-15 | 2.78e-15 | 1e-7 |
+| coaxial cyl ∩ cone | 2 | 3 | Circle/Circle (OCCT arc-split) | 1.79e-15 | 1.52e-15 | 1e-7 |
+| parallel cyl ∩ cyl | 2 | 2 | Line/Line | 1.26e-15 | 0 | 1e-9 |
+| coaxial cyl ∩ cyl | 0 | 0 | coincident (detected) | 0 | 0 | 1e-9 |
+
+Curve-count deltas (sphere∩sphere, coaxial sphere∩cone/cyl, coaxial cyl∩cone) are
+OCCT arc-splitting the SAME conic — curve TYPES match on every analytic pair.
+
+**Deferred at S1 (honest `NotAnalytic`, verified — not faked):** **skew cyl∩cyl**
+(native `NotAnalytic`; OCCT emits 7 Ellipse curves — general skew cyl/cyl is a
+planar quartic, no degree-≤2 closed-form reduction), and by the same rule general
+cone∩cone, non-coaxial cone∩cyl / sphere∩cyl / sphere∩cone, oblique plane∩torus
+(spiric quartic), torus∩curved, and all freeform pairs. These route to S2/S3 below.
+
+### S2 — Subdivision seeding · **← NEXT** · (~weeks–months)
 Find ≥1 seed point per intersection branch for **freeform** (NURBS) pairs:
 recursive patch bounding-box-overlap subdivision → candidate regions → refine to a
 point with `least_squares(S1(u1,v1) − S2(u2,v2) = 0)` (substrate). Must find *all*
@@ -87,14 +125,14 @@ mesher). Extends `src/native/boolean/` from planar/axis-aligned to general curve
 ## Sequencing & effort
 
 ```
-substrate (#2 DONE) ──► S1 analytic ──► S2 seeding ──► S3 marching ──► S4 robustness (moat)
+substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (NEXT) ──► S3 marching ──► S4 robustness (moat)
                              │                                    │
                              └──────────────► S5 curved booleans ◄─┘  ──► #6 blends ──► #7 wrap-emboss
 ```
 
 | Stage | Effort (robust) | Nature |
 |---|---|---|
-| S1 analytic SSI | ~weeks | bounded, closed-form — workflow-achievable |
+| S1 analytic SSI | ✅ DONE at the bar | bounded, closed-form — 17 analytic pairs verified vs OCCT |
 | S2 seeding | ~weeks–months | subdivision + substrate refine |
 | S3 marching | ~months | core algorithm on substrate |
 | S4 tangent robustness | multi-year, ongoing | the moat — best-effort + fallback |

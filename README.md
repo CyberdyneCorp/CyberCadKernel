@@ -47,7 +47,7 @@ flowchart TD
     end
 
     Engine -->|"default"| OCCT["OCCT adapter<br/>(exact B-rep, fp64, CPU)"]
-    Engine -->|"cc_set_engine(1)"| Native["NativeEngine (C++20)<br/>native: math · topology · tessellation ·<br/>construction (extrude / revolve / spline extrude / torus revolve / 2- &amp; N-section loft / straight+planar+RMF sweep / tapered-shank / helical+tapered thread) ·<br/>booleans (planar-polyhedron + axis-aligned box-cylinder fuse/cut/common) ·<br/>STEP export (in-scope native solids)"]
+    Engine -->|"cc_set_engine(1)"| Native["NativeEngine (C++20)<br/>native: math · topology · tessellation ·<br/>construction (extrude / revolve / spline extrude / torus revolve / 2- &amp; N-section loft / straight+planar+RMF sweep / tapered-shank / helical+tapered thread) ·<br/>booleans (planar-polyhedron + axis-aligned box-cylinder fuse/cut/common) ·<br/>analytic SSI S1 (elementary-pair intersection curves, internal) ·<br/>STEP export (in-scope native solids)"]
     Engine -.->|"no-OCCT host build"| Stub["Stub engine"]
 
     Native -.->|"fallthrough (still OCCT, all SSI/Tier-4):<br/>general curved booleans · curved/concave/variable blends · features ·<br/>STEP import · IGES export/import · fine-pitch (self-intersecting) thread · wrap-emboss ·<br/>self-intersecting/tight/real-twist/guided/rail sweep · mismatched/guided/hard-rail loft · spindle torus · healing"| OCCT
@@ -81,7 +81,9 @@ the rest, so OCCT remains a required dependency until Phase 4 completes.
   2- &amp; N-section ruled loft/straight+planar+RMF sweep/tapered-shank/helical+tapered thread),
   `boolean` (planar-polyhedron fuse/cut/common
   via BSP-CSG + axis-aligned box-cylinder curved analytic fuse/cut/common, self-verified),
-  `exchange` (native STEP AP203 EXPORT for in-scope native solids), and `numerics`
+  `exchange` (native STEP AP203 EXPORT for in-scope native solids), `ssi` (analytic
+  surface-surface intersection for elementary-surface pairs — the internal SSI-ROADMAP
+  S1 slice, closed-form conics vs OCCT `GeomAPI_IntSS`), and `numerics`
   (OCCT-free numeric facade — generic solvers + closest-point/projection over the
   **NumPP + SciPP** substrate, guarded by `CYBERCAD_HAS_NUMSCI`). Host-buildable and
   unit-tested with no OCCT.
@@ -119,6 +121,7 @@ linked until it is complete. Current split:
 | construction: typed-profile revolve (line, on-axis arc → sphere) + off-axis-arc → TORUS | `cc_helical_thread` / `cc_tapered_thread` FINE-PITCH / self-intersecting (non-manifold → self-verify defers to OCCT `MakePipeShell`) |
 | construction: 2-section AND N-section (3+) ruled loft (equal-count planar sections) | wrap-emboss: general curved-surface (planar-target reachable via native `cc_offset_face` #6 + native planar boolean #5; axis-aligned-cylinder-target boolean step now native via #5 curved slice) |
 | construction: sweep (straight / smooth-planar / NON-PLANAR (RMF) spine) | general SPLINE surface-of-revolution; SPINDLE torus (off-axis arc crossing the axis — self-intersecting SoR) |
+| **internal SSI (S1): analytic surface-surface intersection** — plane∩{plane/sphere/cyl/cone/torus}, sphere∩sphere, coaxial sphere∩cyl / sphere∩cone / cyl∩cone, coaxial+parallel cyl∩cyl (17 pairs, closed-form Line/Circle/Ellipse/Parabola/Hyperbola, verified vs OCCT `GeomAPI_IntSS`) | **SSI: general / freeform** — skew cyl∩cyl (planar quartic), general cone∩cone, non-coaxial quadric pairs, oblique plane∩torus, torus∩curved, all NURBS/freeform pairs, near-tangent (SSI-ROADMAP S2 seeding NEXT → S3 marching → S4 robustness) |
 | construction: `cc_tapered_shank` (silhouette revolved 360° about Z) | shape healing |
 | **construction: `cc_helical_thread` / `cc_tapered_thread`** (well-formed radial-V helical tiling — per-turn seams weld watertight `boundaryEdges==0` at every deflection, verified vs OCCT `MakePipeShell`) | |
 

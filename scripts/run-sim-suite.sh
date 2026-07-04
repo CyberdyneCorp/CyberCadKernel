@@ -71,6 +71,13 @@ SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 # GeomAPI_ProjectPointOnSurf / GeomAPI_ProjectPointOnCurve; compiled under
 # -DCYBERCAD_HAS_NUMSCI with src/native/numerics/numerics.cpp linking the NumPP/SciPP
 # substrate archive + the OCCT geometry-oracle slice, NOT the whole kernel), and the
+# SSI Stage-S1 analytic-SSI native-vs-OCCT parity harness native_ssi_parity.mm
+# (run-sim-native-ssi.sh — its own main(); builds each supported elementary-surface
+# pair natively AND as an OCCT Geom_Surface, compares native intersect_surfaces vs
+# GeomAPI_IntSS for curve count/type + densely-sampled on-surface & curve-coincidence
+# deltas, and asserts the honest NotAnalytic deferral on skew cylinder∩cylinder while
+# OCCT still produces a curve; header-only SSI over src/native/math, links the OCCT
+# GeomAPI_IntSS oracle slice, NOT the whole kernel),
 # Phase-3 suite — phase3_suite.cpp
 # (its own main()) plus its checks_*.cpp modules (which record against
 # phase3_checks.h's Ctx, not checks.h's) — has run-sim-phase3-suite.sh. What remains
@@ -84,6 +91,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_curved_boolean_parity.mm \
       native_blend_parity.mm native_step_parity.mm \
       native_geomcompletion_parity.mm native_numerics_parity.mm \
+      native_ssi_parity.mm \
       phase3_suite.cpp checks_reference_geometry.cpp checks_wrap_emboss.cpp \
       checks_thread_boolean.cpp checks_full_round_fillet.cpp checks_g2_fillet.cpp"
 SRCS=()

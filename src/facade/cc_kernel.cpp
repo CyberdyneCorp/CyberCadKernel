@@ -18,6 +18,7 @@
 #include "engine/IEngine.h"
 #include "engine/native/native_engine.h"
 #include "native/exchange/native_exchange.h"
+#include "native/mesh/native_mesh.h"
 
 namespace {
 
@@ -57,6 +58,17 @@ CCMesh empty_mesh() {
     return m;
 }
 
+CCTetMesh empty_tet_mesh() {
+    CCTetMesh m;
+    m.nodes = nullptr;
+    m.nodeCount = 0;
+    m.elements = nullptr;
+    m.elementCount = 0;
+    m.nodesPerElement = 0;
+    m.order = 0;
+    return m;
+}
+
 double* copy_doubles(const std::vector<double>& src) {
     if (src.empty()) {
         return nullptr;
@@ -86,6 +98,46 @@ CCMesh alloc_mesh(const MeshData& data) {
     out.triangles = copy_ints(data.triangles);
     out.triangleCount = static_cast<int>(data.triangles.size() / 3);
     return out;
+}
+
+// Shared body of cc_tet_mesh / cc_tet_mesh_surface: fill a closed triangle surface
+// with tetrahedra via the optional AGPL TetGen backend. When the backend is not
+// compiled in (default MIT build), records a clean "unavailable" error and returns
+// an empty mesh — never links AGPL code, never crashes.
+CCTetMesh tet_mesh_from_surface(const std::vector<double>& verts,
+                                const std::vector<int>& tris,
+                                CCVolumeMeshOptions opts) {
+#ifdef CYBERCAD_HAS_TETGEN
+    namespace mesh = cybercad::native::mesh;
+    mesh::VolumeMeshOptions mopts;
+    mopts.order = (opts.order == 4) ? mesh::MeshOrder::Linear : mesh::MeshOrder::Quadratic;
+    mopts.target_element_size = opts.target_element_size;
+    mopts.grading = opts.grading;
+    if (opts.grading >= 1.0) {
+        mopts.radius_edge_ratio = opts.grading;
+    }
+    const mesh::TetMeshResult res = mesh::tetrahedralize_surface(verts, tris, mopts);
+    if (!res.ok) {
+        set_last_error(res.message);
+        return empty_tet_mesh();
+    }
+    CCTetMesh out = empty_tet_mesh();
+    out.nodes = copy_doubles(res.mesh.nodes);
+    out.nodeCount = res.mesh.node_count;
+    out.elements = copy_ints(res.mesh.connectivity);
+    out.elementCount = res.mesh.element_count;
+    out.nodesPerElement = res.mesh.nodes_per_elem;
+    out.order = res.mesh.order;
+    return out;
+#else
+    (void)verts;
+    (void)tris;
+    (void)opts;
+    set_last_error(
+        "tet meshing unavailable (build with CYBERCAD_HAS_TETGEN=ON — optional, "
+        "external AGPL TetGen backend)");
+    return empty_tet_mesh();
+#endif
 }
 
 // Collapse a Result<EngineShape> to a CCShapeId (0 on failure, recording why).
@@ -838,6 +890,75 @@ CCShapeId cc_stl_import(const char* path) {
             return finish_shape(r);
         },
         CCShapeId{0});
+}
+
+// ── tetrahedral volume meshing (Phase-4 additive; TetGen backend optional) ─────
+
+CCTetMesh cc_tet_mesh(CCShapeId body, double deflection, CCVolumeMeshOptions opts) {
+    return cyber::guard(
+        [&]() -> CCTetMesh {
+            // Reuse the neutral tessellation path (no duplicated meshing), then fill
+            // the resulting closed triangle surface with tetrahedra.
+            auto r = active_engine()->tessellate(resolve(body), deflection);
+            if (!r) {
+                set_last_error(r.error().message);
+                return empty_tet_mesh();
+            }
+            const MeshData& m = r.value();
+            return tet_mesh_from_surface(m.vertices, m.triangles, opts);
+        },
+        empty_tet_mesh());
+}
+
+CCTetMesh cc_tet_mesh_surface(const double* verticesXYZ, int vertexCount,
+                              const int* trianglesIJK, int triangleCount,
+                              CCVolumeMeshOptions opts) {
+    return cyber::guard(
+        [&]() -> CCTetMesh {
+            if (verticesXYZ == nullptr || trianglesIJK == nullptr || vertexCount <= 0 ||
+                triangleCount <= 0) {
+                set_last_error("cc_tet_mesh_surface: null or empty surface input");
+                return empty_tet_mesh();
+            }
+            std::vector<double> verts(verticesXYZ,
+                                      verticesXYZ + static_cast<long>(vertexCount) * 3);
+            std::vector<int> tris(trianglesIJK,
+                                  trianglesIJK + static_cast<long>(triangleCount) * 3);
+            return tet_mesh_from_surface(verts, tris, opts);
+        },
+        empty_tet_mesh());
+}
+
+void cc_tet_mesh_free(CCTetMesh mesh) {
+    std::free(mesh.nodes);
+    std::free(mesh.elements);
+}
+
+CCQualityReport cc_mesh_quality(CCTetMesh mesh, double min_scaled_jacobian) {
+    return cyber::guard(
+        [&]() -> CCQualityReport {
+            const auto rep = cybercad::native::mesh::quality(
+                mesh.nodes, mesh.nodeCount, mesh.elements, mesh.elementCount,
+                mesh.nodesPerElement, min_scaled_jacobian);
+            CCQualityReport out;
+            out.min_dihedral_angle = rep.minDihedral;
+            out.max_dihedral_angle = rep.maxDihedral;
+            out.min_scaled_jacobian = rep.minScaledJacobian;
+            out.mean_scaled_jacobian = rep.meanScaledJacobian;
+            out.max_aspect_ratio = rep.maxAspectRatio;
+            out.elements_below_threshold = static_cast<int>(rep.flagged.size());
+            out.flagged_elements = copy_ints(rep.flagged);
+            out.valid = rep.valid ? 1 : 0;
+            if (!rep.valid) {
+                set_last_error("mesh quality: empty or degenerate mesh");
+            }
+            return out;
+        },
+        CCQualityReport{});
+}
+
+void cc_quality_report_free(CCQualityReport report) {
+    std::free(report.flagged_elements);
 }
 
 // ── transforms ────────────────────────────────────────────────────────────────

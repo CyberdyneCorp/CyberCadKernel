@@ -228,6 +228,36 @@ Date: 2026-07-03 · Branch: `main`.
   branch-point / self-intersection deferred to **S4** (the moat). `nearTangentGaps > 0` is the
   honest S4 hand-off signal. Living change `add-native-ssi-marching` **archived**; see the SSI-S3
   result table below and `openspec/SSI-ROADMAP.md` (S4 robustness + S5 curved booleans remain).
+- **Capability `native-meshing` (tetrahedral VOLUME meshing + quality, GitHub #1) —
+  kernel-only slice.** New module `src/native/mesh/` (namespace `cybercad::native::mesh`):
+  `quality.{h,cpp}` (ALWAYS-ON, pure geometry, no OCCT / no TetGen) and
+  `tet_mesher.{h,cpp}` (the SOLE AGPL consumer). Additive `cc_*` surface:
+  `cc_tet_mesh(body, deflection, opts)` (tessellate a B-rep surface → fill the PLC) and
+  `cc_tet_mesh_surface(verts, tris, opts)` (a raw closed TRIANGLE surface, OCCT-free),
+  both emitting CalculiX **C3D4** (linear, 4-node) / **C3D10** (quadratic, 10-node) tets
+  — corners + mid-edge nodes in `shape10tet` order, positive signed volume enforced,
+  mid-edge nodes constructed NATIVELY (no TetGen `-o2`); plus always-on native
+  `cc_mesh_quality` (signed volume, 6 dihedral angles, scaled Jacobian, aspect ratio —
+  a regular tet scores dihedral 70.53° / scaledJ 1). The tet mesher is backed by the
+  **OPTIONAL, EXTERNAL, AGPL-3.0 TetGen** (`/home/leonardo/work/tetgen`, referenced by
+  absolute path, NEVER vendored/committed), gated behind a NEW CMake option
+  `CYBERCAD_HAS_TETGEN` (default OFF, mirroring `CYBERCAD_HAS_NUMSCI`; the define +
+  include dir are per-source-scoped to `tet_mesher.cpp` alone). **The default MIT build
+  compiles/links ZERO AGPL code** — with the flag off, `cc_tet_mesh` /
+  `cc_tet_mesh_surface` return an empty `CCTetMesh` and set `cc_last_error` ("tet
+  meshing unavailable"), never crashing; `cc_mesh_quality` still works. New tests:
+  `test_native_quality` (regular-tet golden, sliver flag, inverted detection, C3D10
+  mid-node consistency, empty/degenerate) runs in EVERY build; `test_native_tet` (a
+  hardcoded unit cube → watertight C3D4/C3D10 at `pq1.4a…`, positive Jacobian, volume
+  conservation via the divergence theorem, face manifoldness, quality gate) is
+  registered only under `CYBERCAD_HAS_TETGEN=ON`. Built via `scripts/build-tetgen.sh`
+  (external sources → `build-tet/host/libtetgen_host.a`; `predicates.cxx` at -O0 for
+  exact-FP robustness, `tetgen.cxx` at -O2, both `-DTETLIBRARY`). **Honest scope:** this
+  is a **kernel-only** delivery — there is NO FE patch test yet; wiring CalculiX++'s
+  `CadMesher` (import / heal / triangulate / tet_mesh / quality / `map_to_model`) is a
+  follow-up, NOT this PR. Shipping a closed-source app that links TetGen requires a
+  **TetGen commercial license**; the default MIT configuration avoids the obligation by
+  not linking it. See the native-meshing result section below.
 - **No regressions.** Host build + CTest **21/21** (incl. `test_native_tessellate`,
   `test_native_boolean`, `test_native_blend`, `test_native_step_writer`, `test_native_step`);
   `scripts/run-sim-suite.sh` stays **221 passed, 0 failed** (re-run against a freshly rebuilt
@@ -1753,6 +1783,78 @@ Tests:
 - **S5 curved booleans** — using the traced WLines to split curved faces, classify fragments, and
   assemble the watertight shell → **S5** (this stage only produces the WLines S5 consumes).
 
+## native-meshing result section (tetrahedral volume meshing + quality, GitHub #1)
+
+Kernel-only slice: a TetGen-backed tetrahedral volume mesher plus always-on native
+mesh-quality reporting, exposed additively on the `cc_*` ABI. TetGen is OPTIONAL,
+EXTERNAL, AGPL-3.0, and default-OFF; the default MIT build links no AGPL code.
+
+### ABI (additive PODs + entry points, `include/cybercadkernel/cc_kernel.h`)
+
+- `CCTetMesh` — `nodes` (x,y,z triplets), `elements` (`nodesPerElement` ints per tet,
+  0-based, CalculiX C3D4/C3D10 order), `nodeCount` / `elementCount` /
+  `nodesPerElement` (4 or 10) / `order`. Caller-owned; freed by `cc_tet_mesh_free`.
+- `CCVolumeMeshOptions` — `order` (4 linear / 10 quadratic, default 10),
+  `target_element_size`, `grading` (radius-edge quality ratio), `min_scaled_jacobian`
+  (reported back, not passed to TetGen). Mirrors CalculiX++ `VolumeMeshOptions`.
+- `CCQualityReport` — `min/max_dihedral_angle`, `min/mean_scaled_jacobian`,
+  `max_aspect_ratio`, `elements_below_threshold`, `flagged_elements` (ids below the
+  threshold), `valid`. Field names align with CalculiX++ `QualityReport` so
+  `map_to_model` is trivial. Freed by `cc_quality_report_free`.
+- `cc_tet_mesh(body, deflection, opts)`, `cc_tet_mesh_surface(verts, vCount, tris,
+  tCount, opts)`, `cc_tet_mesh_free`, `cc_mesh_quality(mesh, min_scaled_jacobian)`,
+  `cc_quality_report_free`.
+
+### Quality metrics (native, pure geometry — always on, TetGen-independent)
+
+All from the 4 corner nodes (so `quality(C3D10) == quality(C3D4)` of its corners):
+
+- **Signed volume** `V = (1/6)·det[e12,e13,e14]`.
+- **Scaled Jacobian** (Verdict / Knupp — Stimpson et al. *Verdict* SAND2007-1751;
+  Knupp, SIAM J. Sci. Comput. 23(1) 2001): `sqrt(2)·min` over corners of the triple
+  product of the 3 outgoing UNIT edge vectors. Regular tet → 1.0; sliver → 0;
+  inverted → < 0.
+- **Dihedral angles** (6/tet, from 4 outward face normals — Shewchuk, *What Is a Good
+  Linear Finite Element?* 2002). Regular tet → all six = `acos(1/3) = 70.5288°`.
+  Stored in degrees.
+- **Aspect ratio** = radius ratio `R·S/(9|V|)` (Verdict "aspect beta" — Liu & Joe,
+  BIT 34(2) 1994). Regular → 1.0; degenerate → ∞.
+
+### Verification (kernel-only)
+
+- **`test_native_quality` — always-on (runs in EVERY build, no TetGen).** Regular-tet
+  golden (`(1,1,1),(1,-1,-1),(-1,1,-1),(-1,-1,1)`): all six dihedrals ≈ 70.5288°,
+  scaledJ ≈ 1.0, aspect ≈ 1.0, V > 0; a sliver flagged below threshold; an inverted
+  tet reports scaledJ < 0; C3D10 mid-node consistency (nodes 5..10 exactly at edge
+  midpoints); empty/degenerate mesh → `valid == 0`.
+- **`test_native_tet` — gated `CYBERCAD_HAS_TETGEN=ON`.** A hardcoded unit cube
+  (8 points + 12 triangular facets) driven through `cc_tet_mesh_surface`: the proven
+  `pq1.4a…` recipe produces a watertight tetrahedralization (TetGen adds Steiner
+  points); C3D4 and C3D10 outputs both have positive signed volume per element,
+  C3D10 mid-nodes lie exactly at edge midpoints in CalculiX order, `Σ|V_e|` equals the
+  enclosed surface volume (divergence theorem), every internal face is shared by
+  exactly two tets and boundary faces match the input surface, and `cc_mesh_quality`
+  reports all elements above a modest `min_scaled_jacobian`.
+
+### License hygiene (AGPL discipline)
+
+- No TetGen source (`tetgen.h`, `tetgen.cxx`, `predicates.cxx`, its `LICENSE`) is
+  copied, vendored, or committed — referenced by absolute path only.
+- `tet_mesher.cpp` is the ONLY translation unit that includes `tetgen.h`; it is
+  excluded from the default source glob and compiled only under `CYBERCAD_HAS_TETGEN`,
+  with `-DTETLIBRARY` + the TetGen include dir per-source-scoped to it.
+- `.gitignore` covers the external archive (`/build-tet/`); no `tetgen.*` /
+  `predicates.*` is ever staged.
+- SPDX banners: `Apache-2.0` on `quality.*` and the aggregate header;
+  `AGPL-3.0` on `tet_mesher.{h,cpp}` (honest about which pair links AGPL).
+
+### Deferred (recorded, not part of this kernel-only PR)
+
+- **FE patch test** and **CalculiX++ `CadMesher` wiring** (import / heal / triangulate
+  / tet_mesh / quality / `map_to_model`) — the follow-up PR.
+- `grading` beyond its mapping to the TetGen quality ratio (a future mtr sizing field).
+- Boundary-layer / anisotropic meshing and Steiner-point control knobs.
+
 ## Phase 4 ceiling — native set vs OCCT-retained set
 
 Phase 4 is **COMPLETE AT ITS ACHIEVABLE NATIVE CEILING**, NOT fully drop-OCCT. The tractable
@@ -1864,4 +1966,5 @@ general-curved and import frontier is explicitly deferred and remains OCCT-backe
 | 5·SSI | `native-ssi` (SSI-ROADMAP **S3** marching) | **done at the bar (transversal)** | Marching-line tracer (WLine): from each S2 seed, predict `t=n₁×n₂` → adaptive step → **re-project** onto BOTH surfaces via the substrate (`least_squares`) → march both directions + stitch → `Closed` / `BoundaryExit` → dedup → fit B-spline. OCCT-free `src/native/ssi/{marching.h,marching.cpp}` (corrector/step/fit behind `CYBERCAD_HAS_NUMSCI`, `marching.cpp` empty TU with NUMSCI off); INTERNAL. Consumes the S2 `SeedSet`, produces a `TraceSet` (WLines with (u1,v1,u2,v2) per node) = the S5 input contract. Both gates green: host `test_native_ssi_marching` **7 cases, 0 failed** (crossing spheres/plane∩sphere/skew-cyl → Closed; ramp B-spline∩plane → BoundaryExit; tangent spheres → no curve; dup seed → 1 WLine; nodes on both surfaces < 1e-6, fit < 1e-3; NUMSCI OFF CTest 23/23 tests ABSENT, NUMSCI ON 26/26) + sim `IntPatch`/`GeomAPI_IntSS` curve parity `native_ssi_marching_parity.mm` **5 pairs / 9 branches, 0 failed — all TRANSVERSAL fully-traced, 0 near-tangent-truncated**; branch counts match OCCT, **5/5 closed loops reproduced**; worst onCurve 1.60e-06, onSurf 6.81e-07, lenΔ 2.28e-03 abs (~0.33% rel). No regressions (`run-sim-suite.sh` 221/221). **Honest scope:** TRANSVERSAL only — near-tangent traced up to the tangent (`NearTangent`, `nearTangentGaps`), coincident / branch-point / self-intersection → **S4 (the moat, NEXT)**. Feeds the S5 curved-boolean payoff. Living change `add-native-ssi-marching` (archived). See the SSI-S3 result table + `openspec/SSI-ROADMAP.md`. |
 | 6 | `native-blends` | ◐ tractable planar slice done at the bar (BOTH gates green); curved/concave/variable/fillet_face OCCT-fallthrough | Native `cc_chamfer_edges` / `cc_fillet_edges` (constant radius) / `cc_offset_face` / `cc_shell` for the tractable PLANAR cases (`src/native/blend/`), each editing the solid's oriented-planar-polygon soup (`boolean/extractPolygons`) and re-welding a watertight solid via `boolean/assembleSolid`, then a MANDATORY engine self-verify (`blendResultVerified` — watertight + sane volume sign: chamfer/fillet/shell shrink, offset grows/shrinks) that DISCARDS a bad candidate (never faked). Native: **chamfer** = slice the convex corner off with the plane through the two setback lines (EXACT for a box); **fillet** = rolling-ball tangent cylinder on a convex planar dihedral (Phase-3 dihedral construction: axis ∥ crease, radius r, tangent to both planes), deflection-bounded facets, blend face a `Cylinder` of radius r, watertight; **offset_face** = slide a planar face along its normal dragging the side faces (EXACT slab); **shell** = inset kept walls inward by thickness + native BSP-cut the cavity (open-top box t=1 → wall vol 424). Both gates green: host `test_native_blend` (10 cases incl. 2-edge chamfer exact + concave-L-prism fallthrough) + 5 new `test_native_engine` facade cases (incl. a native `cc_edge_polylines` regression), host CTest **18/18** (no OCCT); sim native-vs-OCCT parity `native_blend_parity.mm` **[NBLEND] 16/16** — chamfer (vol o=995 n=995 rel 2.29e-16) / offset (1500, rel 4.55e-16) / shell (424, rel 4.02e-16) EXACT + watertight, constant-radius fillet deflection-bounded (o=997.854 n=997.765 rel 8.96e-05, watertight), a curved-rim fillet forwarded to OCCT (rel 0.00e+00), the self-verify rejecting a thickness-6 shell (id 0, honest error). No regressions (`run-sim-suite.sh` 221/221, `test_native_tessellate` 13/13 green). STILL OCCT-fallthrough (builder NULL / self-verify discards → forwarded, never faked): CURVED-face inputs, CONCAVE edges, variable-radius `cc_fillet_edges_variable`, `cc_fillet_face`, ≠2-face edges, multi-edge fillet interference, non-convex shell, oversized thickness. Blend fns 🟢 Excellent (≤10) except drivers `fillet_edges` (13) / `chamfer_edges` (11) 🟡 Acceptable. |
 | 7 | `native-exchange` | ◐ native STEP EXPORT slice done at BOTH gates (host + sim OCCT re-read round-trip); STEP import + IGES stay OCCT (honest, out of scope) | Native `cc_step_export` (engine-wired behind `cc_set_engine(1)`) for a native solid whose every face surface + edge curve is in scope: walks the native B-rep and emits a valid ISO-10303-21 STEP AP203 file in true MILLIMETRES — HEADER (FILE_DESCRIPTION/FILE_NAME/FILE_SCHEMA 'CONFIG_CONTROL_DESIGN') + Part-42 DATA graph (CARTESIAN_POINT/DIRECTION/AXIS2_PLACEMENT_3D, VERTEX_POINT, LINE/CIRCLE/B_SPLINE_CURVE_WITH_KNOTS + EDGE_CURVE, ORIENTED_EDGE→EDGE_LOOP, FACE_OUTER_BOUND/FACE_BOUND, PLANE/CYLINDRICAL/CONICAL/SPHERICAL/B_SPLINE_SURFACE_WITH_KNOTS, ADVANCED_FACE→CLOSED_SHELL→MANIFOLD_SOLID_BREP, ADVANCED_BREP_SHAPE_REPRESENTATION + mm SI_UNIT context + PRODUCT/PRODUCT_DEFINITION/APPLICATION_CONTEXT). Built OCCT-FREE under `src/native/exchange/` (`step_writer.h/.cpp`, `native_exchange.h`). The native builders emit per-face edges (sharing deferred, #4), so the writer DEDUPLICATES geometrically — coincident vertices → one VERTEX_POINT, both faces of a physical edge share ONE EDGE_CURVE (forward on one, reversed on the other via ORIENTED_EDGE) → a properly-sewn manifold CLOSED_SHELL. Native-else-OCCT wiring: `NativeEngine::step_export` runs native for an in-scope native body; an out-of-scope native body → clean error (never a native void to OCCT); an OCCT body → `STEPControl_Writer`. **`cc_step_import` STAYS OCCT** (parsing arbitrary STEP out of scope) and **`cc_iges_export/import` STAY OCCT** — the honest end state (#8 stays blocked). No cc_* ABI change; default engine stays OCCT. Entity arg orders cross-checked against OCCT `RWStep*` writers (EDGE_CURVE/ADVANCED_FACE/CIRCLE/LINE/VECTOR/ORIENTED_EDGE/B_SPLINE_CURVE_WITH_KNOTS all match) so the file parses through `STEPControl_Reader`. Gate 1 (host, no OCCT) GREEN — `test_native_step_writer` (6 cases: canSerialize scope; box AP203 header+wrapper+mm SI_UNIT; box 6 PLANE / 12 shared EDGE_CURVE / 8 VERTEX_POINT; cylinder CYLINDRICAL_SURFACE+CIRCLE; well-formed contiguous `#n=ENTITY(...);`; coords as REALs) + `test_native_engine::native_step_export_writes_valid_ap203_file` (facade `cc_step_export` runs native, returns 1, valid file); host CTest **20/20**, all native suites green. All writer functions 🟢 Excellent (≤7), no systems-band fn. **Gate 2 (sim OCCT re-read round-trip) GREEN** — the native-written file re-reads through `STEPControl_Reader` to the SAME solid within volume/bbox/topology tolerance: box relV 2.27e-16 / area rel 1.89e-16 / centroidΔ 0 / bbox 1.00e-07 (faces 6→6, edges 24→24); cylinder relV 1.27e-03 / area rel 5.97e-04 (faces 9→9, edges 30→30); holed-plate relV 2.90e-04 / area rel 1.09e-04 (faces 7→7, edges 28→30 within tol). Writer parity (native-written vs OCCT-written, both re-read): box/cylinder/holed-plate relV ≤ 4.70e-15, relA ≤ 6.48e-15, bboxΔ 0. Native writer active (native ISO-10303-21 emitted): box 5363 B, cylinder 6893 B, holed-plate 6457 B; a foreign (OCCT-built) body falls through to OCCT `STEPControl_Writer` (15394 B → re-read relV 0.00e+00, faces 6→6). No regressions (host CTest 21/21 incl. `test_native_step_writer` #19 + `test_native_step` #20; `run-sim-suite.sh` 221/221 against a freshly rebuilt SIMULATORARM64 slice carrying the current native STEP sources). STILL OCCT (never faked): STEP import, IGES export/import, and an out-of-scope geometry kind (Ellipse/Bezier curve, rational spline, Bezier surface). Living change: `openspec/changes/add-native-data-exchange` (archived). |
+| — | `native-meshing` (tet volume meshing + quality, GitHub #1) | ◐ kernel-only slice | New module `src/native/mesh/` (namespace `cybercad::native::mesh`): `quality.{h,cpp}` (ALWAYS-ON, pure geometry, no OCCT / no TetGen) + `tet_mesher.{h,cpp}` (the SOLE AGPL consumer). Additive `cc_*`: `cc_tet_mesh(body, deflection, opts)` (tessellate a B-rep → fill the PLC) + `cc_tet_mesh_surface(verts, tris, opts)` (raw closed TRIANGLE surface, OCCT-free), both emitting CalculiX **C3D4/C3D10** tets (corners + mid-edge nodes in `shape10tet` order, positive signed volume enforced, mid-edge nodes built NATIVELY — no TetGen `-o2`); plus always-on native `cc_mesh_quality` (signed volume, 6 dihedral angles, scaled Jacobian, aspect ratio — regular tet 70.53° / scaledJ 1; formulas cited: Verdict SAND2007-1751, Knupp 2001, Shewchuk 2002, Liu & Joe 1994). Tet mesher backed by the **OPTIONAL, EXTERNAL, AGPL-3.0 TetGen** (`/home/leonardo/work/tetgen`, absolute path, NEVER vendored/committed), gated behind a NEW option `CYBERCAD_HAS_TETGEN` (default OFF, mirrors `CYBERCAD_HAS_NUMSCI`; `-DTETLIBRARY` + include dir per-source-scoped to `tet_mesher.cpp` only). **Default MIT build links ZERO AGPL** — flag OFF → `cc_tet_mesh` returns empty `CCTetMesh` + `cc_last_error` ("tet meshing unavailable"), never crashes; `cc_mesh_quality` still works. Tests: `test_native_quality` (regular-tet golden / sliver flag / inverted / C3D10 mid-node consistency / empty-degenerate) runs in EVERY build; `test_native_tet` (unit cube → watertight C3D4/C3D10 at `pq1.4a…`, positive Jacobian, volume conservation, face manifoldness, quality gate) gated `CYBERCAD_HAS_TETGEN=ON`. Built via `scripts/build-tetgen.sh` (external sources → `build-tet/host/libtetgen_host.a`; predicates -O0, tetgen -O2). **Honest scope: kernel-only** — NO FE patch test yet; CalculiX++ `CadMesher` wiring (import / heal / triangulate / tet_mesh / quality / `map_to_model`) is a follow-up. Closed-app shipping that links TetGen needs a TetGen commercial license. See the native-meshing result section. |
 | 8 | `drop-occt` | ☐ planned (blocked) | Unlink OCCT once every capability is native — blocked while STEP import + IGES + curved/general booleans remain OCCT-backed. |

@@ -40,6 +40,24 @@ set(CYBERCAD_NUMPP_DIR "/Users/leonardoaraujo/work/NumPP"
 set(CYBERCAD_SCIPP_DIR "/Users/leonardoaraujo/work/SciPP"
     CACHE PATH "SciPP source root (referenced by absolute path, not vendored)")
 
+# OFF => the tet mesher (src/native/mesh/tet_mesher.cpp) is EXCLUDED and NO AGPL
+# TetGen code is compiled or linked — the default MIT build is unaffected and
+# cc_tet_mesh returns a clean "unavailable" error. ON => compile ONLY that one TU
+# against the external TetGen headers, define CYBERCAD_HAS_TETGEN and link the
+# libtetgen_<target>.a static archive built by scripts/build-tetgen.sh. TetGen is
+# OPTIONAL, EXTERNAL (referenced by absolute path, NEVER vendored) and AGPL-3.0;
+# shipping a closed app that links it requires a TetGen commercial license. The
+# always-on native mesh-quality module (src/native/mesh/quality.cpp) has NO TetGen
+# dependency and is compiled in every configuration.
+option(CYBERCAD_HAS_TETGEN "Build the src/native/mesh tet mesher on TetGen (AGPL, optional)" OFF)
+# Output dir of scripts/build-tetgen.sh: holds libtetgen_<target>.a. Only used when
+# CYBERCAD_HAS_TETGEN=ON.
+set(CYBERCAD_TETGEN_DIR "" CACHE PATH "build-tetgen.sh output dir (libtetgen_*.a)")
+# TetGen source root (its headers are referenced by ABSOLUTE PATH — like OCCT and
+# NumPP/SciPP — and never vendored). Scoped to tet_mesher.cpp only.
+set(CYBERCAD_TETGEN_SRC_DIR "/home/leonardo/work/tetgen"
+    CACHE PATH "TetGen source root (headers referenced by absolute path, not vendored)")
+
 # OFF => unchanged (host stub or iOS cross-compile driven by the options above).
 # ON  => the PROVEN macOS desktop build: a SHARED libcybercadkernel.dylib built
 # from the same sources as the OCCT build (facade + core + engine + engine/occt),
@@ -82,6 +100,11 @@ file(GLOB_RECURSE CYBERCAD_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 list(FILTER CYBERCAD_SOURCES EXCLUDE REGEX "/src/engine/occt/")
 list(FILTER CYBERCAD_SOURCES EXCLUDE REGEX "/src/native/numerics/")
+# src/native/mesh/tet_mesher.cpp is the SOLE TetGen (AGPL) consumer — excluded from
+# the default MIT build glob, added back only under CYBERCAD_HAS_TETGEN below.
+# quality.cpp and any other src/native/mesh/*.cpp stay in the default glob
+# (always-on, TetGen-free). Only the $-anchored basename is filtered.
+list(FILTER CYBERCAD_SOURCES EXCLUDE REGEX "/src/native/mesh/tet_mesher\\.cpp$")
 
 # Static everywhere (host stub, iOS) EXCEPT the macOS desktop build, which links a
 # real shared libcybercadkernel.dylib the Python/ctypes binding loads.
@@ -169,6 +192,39 @@ if(CYBERCAD_HAS_NUMSCI)
     target_link_libraries(cybercadkernel PUBLIC ${CYBERCAD_NUMSCI_ARCHIVE})
 endif()
 
+# ── tet mesher on TetGen (guarded, AGPL) ──────────────────────────────────────
+# Additive AGPL fence: ONLY src/native/mesh/tet_mesher.cpp is compiled (with the
+# TetGen headers + -DTETLIBRARY scoped to that single source via
+# set_source_files_properties), and ONLY this module links libtetgen. No other TU
+# can include <tetgen.h>. quality.cpp (always-on) is untouched. TetGen sources are
+# referenced by absolute path and never vendored.
+if(CYBERCAD_HAS_TETGEN)
+    target_sources(cybercadkernel PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/native/mesh/tet_mesher.cpp")
+    # Per-source AGPL scoping: the TetGen include dir + defines reach ONLY this TU.
+    set_source_files_properties(
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/native/mesh/tet_mesher.cpp"
+        PROPERTIES COMPILE_DEFINITIONS "CYBERCAD_HAS_TETGEN=1;TETLIBRARY")
+    set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/native/mesh/tet_mesher.cpp"
+        APPEND PROPERTY INCLUDE_DIRECTORIES "${CYBERCAD_TETGEN_SRC_DIR}")
+    # The facade TU needs CYBERCAD_HAS_TETGEN too, so its #ifdef call-site gating
+    # compiles the real path. The facade never includes tetgen.h (TETLIBRARY stays
+    # per-source above), it only chooses which native symbol to call.
+    target_compile_definitions(cybercadkernel PRIVATE CYBERCAD_HAS_TETGEN=1)
+
+    if(NOT CYBERCAD_TETGEN_DIR)
+        message(FATAL_ERROR
+            "CYBERCAD_HAS_TETGEN=ON requires -DCYBERCAD_TETGEN_DIR=<build-tetgen output>. "
+            "Run scripts/build-tetgen.sh first.")
+    endif()
+    file(GLOB CYBERCAD_TETGEN_ARCHIVE "${CYBERCAD_TETGEN_DIR}/libtetgen_*.a")
+    if(NOT CYBERCAD_TETGEN_ARCHIVE)
+        message(FATAL_ERROR
+            "No libtetgen_*.a in ${CYBERCAD_TETGEN_DIR}. Run scripts/build-tetgen.sh first.")
+    endif()
+    target_link_libraries(cybercadkernel PUBLIC ${CYBERCAD_TETGEN_ARCHIVE})
+endif()
+
 # ── Metal compute backend (iOS only) ──────────────────────────────────────────
 # Compile the Objective-C++ Metal backend ONLY when CYBERCAD_HAS_METAL=ON. The
 # host build (OFF) never sees these .mm files and stays CPU-only. The GPU modules
@@ -228,6 +284,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_blend
         test_native_step_writer
         test_native_stl
+        test_native_quality
         test_native_step
         test_native_engine)
 
@@ -261,6 +318,15 @@ if(CYBERCAD_BUILD_TESTS)
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_curved_boolean.cpp")
     endif()
 
+    # The tet-mesher test drives the real TetGen backend, so it is added ONLY when
+    # CYBERCAD_HAS_TETGEN=ON. With the option OFF it is never built (the always-on
+    # test_native_quality still covers the OCCT-free quality module).
+    if(CYBERCAD_HAS_TETGEN)
+        list(APPEND CYBERCAD_TESTS test_native_tet)
+        set(test_native_tet_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_tet.cpp")
+    endif()
+
     # Most tests live directly under tests/; native-library tests live under
     # tests/native/. Map the exceptions here (basename → source path).
     set(test_native_topology_SRC
@@ -291,6 +357,8 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step_writer.cpp")
     set(test_native_stl_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_stl.cpp")
+    set(test_native_quality_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_quality.cpp")
     set(test_native_step_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step.cpp")
 

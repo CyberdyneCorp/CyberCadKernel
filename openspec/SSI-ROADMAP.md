@@ -89,13 +89,38 @@ planar quartic, no degree-≤2 closed-form reduction), and by the same rule gene
 cone∩cone, non-coaxial cone∩cyl / sphere∩cyl / sphere∩cone, oblique plane∩torus
 (spiric quartic), torus∩curved, and all freeform pairs. These route to S2/S3 below.
 
-### S2 — Subdivision seeding · **← NEXT** · (~weeks–months)
-Find ≥1 seed point per intersection branch for **freeform** (NURBS) pairs:
-recursive patch bounding-box-overlap subdivision → candidate regions → refine to a
-point with `least_squares(S1(u1,v1) − S2(u2,v2) = 0)` (substrate). Must find *all*
-branches (recall), not just one.
-- **Verify:** every seed lies on both surfaces (≤tol); branch recall vs OCCT on test pairs.
-- **Risk:** completeness (missing a small loop) — the honest failure mode.
+### S2 — Subdivision seeding · ✅ DONE AT THE BAR (transversal)
+Find ≥1 seed point per **transversal** intersection branch for the **freeform**
+(NURBS/Bézier/B-spline) and **non-closed-form quadric** pairs S1 defers: recursive
+patch-AABB-overlap subdivision → candidate regions → refine to a point with
+`least_squares(S1(u1,v1) − S2(u2,v2) = 0)` (substrate) → 3D/param dedup to ~one seed
+per branch. Native, OCCT-free (`cybercad::native::ssi`), refine under
+`CYBERCAD_HAS_NUMSCI`; INTERNAL (no `cc_*`). Change `add-native-ssi-seeding`.
+- **Module:** `src/native/ssi/{seed.h,patch_bounds.h,seeding.h,seeding.cpp}`.
+  Per-patch AABB = **control-net convex hull ∩ sampled-with-Lipschitz-margin** for
+  freeform (both sound; the sampled bound guarantees the box shrinks under
+  subdivision even for a single-span Bézier whose hull does not), **sampled+margin**
+  for elementary+torus. Dedup is **topological** (union candidate regions adjacent in
+  parameter space on both surfaces, periodic-seam aware) — scale-free and immune to
+  the along-branch metric-gap problem — and clusters BEFORE the refine so
+  `least_squares` runs ≈ once per branch, not per candidate.
+- **Verify:** ✅ host `test_native_ssi_seeding` (**6 cases, 0 failed** — skew cyl→2,
+  crossing spheres→1, sphere∩Bézier-bump→1, parallel planes→0, **tangent spheres →
+  `deferredTangent`, no faked seed**, deeper resolution recovers a small loop; NUMSCI
+  OFF CTest **23/23** with the NUMSCI-gated tests correctly ABSENT, NUMSCI ON CTest
+  **25/25**) + ✅ sim native-vs-OCCT recall `native_ssi_seeding_recall.mm` (**3 pairs,
+  recall 1.00**, tangent = 0 everywhere, max per-seed on-both-surfaces residual
+  **3.51e-16** via `GeomAPI_ProjectPointOnSurf::LowerDistance`, well under the 1e-6
+  `onSurfTol`; OCCT arc-splits the same loci — NbLines 3/2/2 ≥ native branch count 2/1/1,
+  exactly as at S1). No regressions (`run-sim-suite.sh` **221/221**, xcframework rebuilt
+  with `seeding.cpp`).
+- **Honest scope / risk:** TRANSVERSAL only. **Near-tangent / coincident / degenerate**
+  seeding ill-conditions the refine → **deferred to S4** (counted in
+  `SeedSet.deferredTangent`, reported not faked). Completeness is a **measured recall**
+  figure, not a blind 100%: too-shallow subdivision can miss a small loop (the
+  acknowledged failure mode); `minPatchFrac` (default 1/32) is the resolution/recall
+  knob — deeper recovers smaller loops at more cost.
+- **Unlocks:** S3 marching — the `SeedSet` is its input contract (one WLine per seed).
 
 ### S3 — Marching-line tracer (WLine) · (~months)
 From each seed, walk the intersection curve: tangent = normalize(n₁×n₂), adaptive
@@ -125,7 +150,7 @@ mesher). Extends `src/native/boolean/` from planar/axis-aligned to general curve
 ## Sequencing & effort
 
 ```
-substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (NEXT) ──► S3 marching ──► S4 robustness (moat)
+substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ──► S3 marching (NEXT) ──► S4 robustness (moat)
                              │                                    │
                              └──────────────► S5 curved booleans ◄─┘  ──► #6 blends ──► #7 wrap-emboss
 ```
@@ -133,7 +158,7 @@ substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (NEXT) ─
 | Stage | Effort (robust) | Nature |
 |---|---|---|
 | S1 analytic SSI | ✅ DONE at the bar | bounded, closed-form — 17 analytic pairs verified vs OCCT |
-| S2 seeding | ~weeks–months | subdivision + substrate refine |
+| S2 seeding | ✅ DONE at the bar (transversal) | subdivision + substrate refine — verified host + sim recall |
 | S3 marching | ~months | core algorithm on substrate |
 | S4 tangent robustness | multi-year, ongoing | the moat — best-effort + fallback |
 | S5 curved booleans | ~months | extends existing assembler |

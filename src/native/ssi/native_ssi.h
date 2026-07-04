@@ -28,6 +28,28 @@
 //                       cylinder∩cone; coaxial/parallel cylinder∩cylinder.
 //   * dispatch.h      — Surface variant + order-independent intersect_surfaces(A,B).
 //
+// STAGE S2 — SUBDIVISION SEEDING (freeform + non-closed-form quadric pairs):
+//   * seed.h          — Seed { (u1,v1),(u2,v2), point, onSurfResidual, branchId } +
+//                       SeedSet { seeds; candidateRegions; refinedAccepted;
+//                       deferredTangent } + RecallReport (sim gate).
+//   * patch_bounds.h  — ParamBox / Aabb, control-net-convex-hull bound (freeform) +
+//                       sampled-with-Lipschitz-margin bound (elementary/torus) +
+//                       disjoint-AABB prune test; SurfaceAdapter (one subdivision
+//                       path for every surface kind).
+//   * seeding.h/.cpp  — seed_intersection(A,B): recursive param-box subdivision +
+//                       AABB-overlap prune → least_squares refine (native-numerics,
+//                       drives A.point−B.point→0, clamped) → 3D-proximity dedup →
+//                       ≈1 seed per transversal branch. Refine (hence a useful
+//                       seeder) is under CYBERCAD_HAS_NUMSCI.
+//
+// S2 IS TRANSVERSAL-ONLY (honest). Near-tangent / coincident / degenerate seeding
+// ill-conditions the refine and is DEFERRED to S4 — counted in SeedSet.deferredTangent,
+// never faked. `deferredTangent > 0` is a first-class "seen but not safely seeded"
+// signal (S4 seam), like S1's NotAnalytic. Completeness is a MEASURED branch-recall
+// figure (RecallReport) vs OCCT GeomAPI_IntSS, not a blind 100% claim: too-shallow
+// subdivision can miss a small loop (the acknowledged failure mode; deeper maxDepth
+// recovers it). The SeedSet is the INPUT CONTRACT for S3 marching (one WLine per seed).
+//
 // SUPPORTED PAIRS (S1 closed-form):
 //   plane∩plane, plane∩sphere, plane∩cylinder, plane∩cone, plane∩torus (⟂/axis),
 //   sphere∩sphere, coaxial sphere∩cylinder, coaxial sphere∩cone,
@@ -56,6 +78,13 @@
 #include "native/ssi/plane_torus.h"
 #include "native/ssi/quadric_pairs.h"
 #include "native/ssi/dispatch.h"
+
+// Stage S2 — subdivision seeding. seed.h / patch_bounds.h are OCCT-free and
+// substrate-free (always available); seeding.h's seed_intersection entry point is
+// compiled only under CYBERCAD_HAS_NUMSCI (the least_squares refine).
+#include "native/ssi/seed.h"
+#include "native/ssi/patch_bounds.h"
+#include "native/ssi/seeding.h"
 
 /// The entire native SSI (Stage S1) API lives in this namespace.
 namespace cybercad::native::ssi {}

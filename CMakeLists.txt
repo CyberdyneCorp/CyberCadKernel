@@ -237,6 +237,11 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_numerics)
         set(test_native_numerics_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_numerics.cpp")
+        # SSI Stage S2 subdivision seeding — the refine (least_squares) is under
+        # CYBERCAD_HAS_NUMSCI, so its host suite builds only in that config.
+        list(APPEND CYBERCAD_TESTS test_native_ssi_seeding)
+        set(test_native_ssi_seeding_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_seeding.cpp")
     endif()
 
     # Most tests live directly under tests/; native-library tests live under

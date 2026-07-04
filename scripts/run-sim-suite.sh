@@ -92,6 +92,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_blend_parity.mm native_step_parity.mm \
       native_geomcompletion_parity.mm native_numerics_parity.mm \
       native_ssi_parity.mm \
+      native_ssi_seeding_recall.mm native_ssi_seeding_parity.mm \
       phase3_suite.cpp checks_reference_geometry.cpp checks_wrap_emboss.cpp \
       checks_thread_boolean.cpp checks_full_round_fillet.cpp checks_g2_fillet.cpp"
 SRCS=()

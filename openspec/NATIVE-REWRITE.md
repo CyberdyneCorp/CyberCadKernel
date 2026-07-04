@@ -78,7 +78,7 @@ Dependency order. Each row is one OpenSpec change (`add-native-*`).
 | 4 | `add-native-swept-solids` | `native-construction` | hard | `BRepPrimAPI`, `BRepBuilderAPI`, `BRepOffsetAPI` |
 | 5 | `add-native-booleans` | `native-booleans` | **research-grade** | `BRepAlgoAPI` (BOPAlgo) |
 
-> #5 SSI → curved-booleans implementation plan: see [SSI-ROADMAP.md](SSI-ROADMAP.md) (staged S1-S5, substrate #2 done).
+> #5 SSI → curved-booleans implementation plan: see [SSI-ROADMAP.md](SSI-ROADMAP.md) (staged S1-S5, substrate #2 done; S1 analytic + S2 seeding done, S3 marching NEXT).
 | 6 | `add-native-fillets-offsets` | `native-blends` | hard | `BRepFilletAPI`, `BRepOffsetAPI` |
 | 7 | `add-native-data-exchange` | `native-exchange` | moderate (external?) | `STEPControl`, `IGESControl` |
 | 8 | `drop-occt` | â | â | unlink OCCT; kernel fully native |
@@ -503,8 +503,8 @@ longest; a native exchange is lower priority than the modelling core.
     quartic, no degree-≤2 reduction) and by the same rule general cone∩cone, non-coaxial
     cone∩cyl / sphere∩cyl / sphere∩cone, oblique plane∩torus (spiric quartic),
     torus∩curved, and all freeform pairs — these route to **S2 subdivision seeding
-    (NEXT)** / S3 marching / S4 robustness. `NotAnalytic` + empty `curves` IS the contract
-    with S2/S3/OCCT. Both gates green: host `test_native_ssi` (**11 cases, 0 failed**;
+    (DONE)** / S3 marching (NEXT) / S4 robustness. `NotAnalytic` + empty `curves` IS the
+    contract with S2/S3/OCCT. Both gates green: host `test_native_ssi` (**11 cases, 0 failed**;
     NUMSCI OFF CTest **23/23**, NUMSCI ON CTest **24/24**) + sim native-vs-OCCT
     `GeomAPI_IntSS` parity `scripts/run-sim-native-ssi.sh` (**18 pairs, 0 failed**). No
     regressions (`run-sim-suite.sh` **221/221**). Files: `src/native/ssi/{curve,tolerance,
@@ -512,6 +512,33 @@ longest; a native exchange is lower priority than the modelling core.
     `tests/native/test_native_ssi.cpp` + `tests/sim/native_ssi_parity.mm`. Living change
     `openspec/changes/add-native-ssi-analytic` **archived**. See
     [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md) SSI-S1 result table.
+  - **SSI Stage S2 (subdivision seeding) — DONE at the verification bar (both gates,
+    TRANSVERSAL); near-tangent / coincident / degenerate seeding is S4 (honest).** Finds ≥1
+    seed point per **transversal** intersection branch for the **freeform** (NURBS / Bézier /
+    B-spline) and **non-closed-form quadric** pairs S1 defers as `NotAnalytic`: recursive
+    patch-AABB-overlap subdivision → candidate regions → refine to a point with
+    `least_squares(S₁(u₁,v₁) − S₂(u₂,v₂) = 0)` on the numerics substrate → 3D/param dedup to
+    ~one seed per branch. OCCT-free in `src/native/ssi/` (`cybercad::native::ssi`); the refine
+    is guarded by `CYBERCAD_HAS_NUMSCI`; INTERNAL (no `cc_*`). Per-patch AABB = control-net
+    convex hull ∩ sampled-with-Lipschitz-margin for freeform, sampled+margin for
+    elementary+torus. Both gates green: host `test_native_ssi_seeding` (**6 cases, 0 failed** —
+    skew cyl→2, crossing spheres→1, sphere∩Bézier-bump→1, parallel planes→0, tangent spheres→
+    `deferredTangent` (no faked seed), deeper resolution recovers a small loop; NUMSCI OFF CTest
+    **23/23** with `test_native_ssi_seeding` + `test_native_numerics` correctly ABSENT, NUMSCI ON
+    CTest **25/25**) + sim native-vs-OCCT `GeomAPI_IntSS` **recall** parity
+    (`tests/sim/native_ssi_seeding_recall.mm`): **3/3 transversal branches recalled at recall
+    1.00**, tangent = 0 everywhere, max seed on-surface residual **3.51e-16** (via
+    `GeomAPI_ProjectPointOnSurf::LowerDistance` on both OCCT surfaces, well under 1e-6). OCCT
+    NbLines (3/2/2) is its arc-split count, not the analytic branch count the recall denominator
+    uses. No regressions (`run-sim-suite.sh` **221/221**, xcframework rebuilt with the new
+    `src/native/ssi/seeding.cpp`). **Honest scope:** TRANSVERSAL only — near-tangent / coincident
+    / degenerate seeding ill-conditions the refine → deferred to **S4** (`SeedSet.deferredTangent`,
+    reported not faked); completeness is a measured recall figure (`minPatchFrac` default 1/32 is
+    the recall/cost knob). Files: `src/native/ssi/{seed.h,patch_bounds.h,seeding.h,seeding.cpp}` +
+    `tests/native/test_native_ssi_seeding.cpp` + `tests/sim/native_ssi_seeding_{recall,parity}.mm`.
+    Living change `openspec/changes/add-native-ssi-seeding`. See
+    [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md) SSI-S2 result table and
+    [`SSI-ROADMAP.md`](SSI-ROADMAP.md) (S3 marching-line tracer is NEXT, consuming these seeds).
 - â **`#4b` Tier E â native `cc_wrap_emboss` â DEFERRED (FUTURE WORK, not scheduled
   yet).** This is the *native* (OCCT-free) rewrite of wrap-emboss; it is distinct from
   the Phase-3 `add-robust-wrap-emboss` change, which is â done and OCCT-backed (the
@@ -686,7 +713,7 @@ LOC are OCCT's (the port/reference size).
 | 2 | ~~**Numeric foundations**~~ â **DONE at the bar.** `math_` solvers (Newton/FunctionSetRoot/BFGS) + `Extrema` (45k) + `Adaptor3d` (7k). **NumPP + SciPP ADOPTED** as the OCCT-free substrate (`add-native-numerics`, archived); generic solvers + native closest-point / projection are NATIVE + verified vs OCCT `Extrema` (22/22 `[NNUM]`, dDist â¤ 1.776e-15); SSI stays #5 | ~55k | â | done | **~0.15â0.35 py REALIZED** (was 0.5â1 py) â *~60â75% saving banked; on-ramp to everything below now native* |
 | 3 | STEP/IGES **import** (full AP203/214/242 + IGES parse + reconstruct) | ~300â600k | needs #4 | narrow (own export): ~w | 2â4 py |
 | 4 | **Shape healing** (`ShapeFix`/`ShapeUpgrade`/`ShapeAnalysis`) | 87,647 | â | n/a | 2â4 py |
-| 5 | **SSI + general curved booleans** (`IntPatch`/`IntWalk` 89k + BOPAlgo 76k). **SSI-ROADMAP S1 analytic slice DONE at the bar** (17 elementary pairs vs OCCT `GeomAPI_IntSS`, `add-native-ssi-analytic` archived); **S2 subdivision seeding is NEXT** | ~165k | #2 | ~w/case | **3â6 py** (clean-room) / ~1.5â3 py (port from OCCT) â *the moat* |
+| 5 | **SSI + general curved booleans** (`IntPatch`/`IntWalk` 89k + BOPAlgo 76k). **SSI-ROADMAP S1 analytic + S2 subdivision seeding DONE at the bar** (S1: 17 elementary pairs vs OCCT `GeomAPI_IntSS`, `add-native-ssi-analytic` archived; S2: transversal branch recall 1.00 on freeform/skew-quadric pairs, seeds on both surfaces ≤ 3.51e-16); **S3 marching-line tracer is NEXT** | ~165k | #2 | ~w/case | **3â6 py** (clean-room) / ~1.5â3 py (port from OCCT) â *the moat* |
 | 6 | Curved / variable-radius / fillet-face / concave **blends** (`ChFi3d`) | 95,710 | #5 | ~w/case | 2â4 py |
 | 7 | Curved **wrap-emboss** | (composition) | #5 + curved offset | ~days | 0.2â0.5 py |
 | 8 | `drop-occt` â unlink + full regression | â | 1â7 | â | small, last |
@@ -694,10 +721,11 @@ LOC are OCCT's (the port/reference size).
 Critical path: **#2 numeric foundations (DONE) â #5 SSI (NEXT) â curved booleans â
 #6 blends â #7 wrap-emboss**, with **#3 import â #4 healing** as a parallel track.
 Both gate **#8**. **#2 is done** â NumPP/SciPP adopted, generic solvers + native
-closest-point verified vs OCCT `Extrema` â so the next critical-path item is **#5 SSI**: its **S1 analytic slice is now DONE**
-(17 elementary pairs closed-form + verified vs OCCT `GeomAPI_IntSS`, `add-native-ssi-analytic`
-archived), and what remains is
-**S2 subdivision seeding (NEXT)** → **S3 marching-line + S4 tangent-robustness (near-tangent
+closest-point verified vs OCCT `Extrema` â so the next critical-path item is **#5 SSI**: its **S1 analytic + S2 subdivision seeding are now DONE**
+(S1: 17 elementary pairs closed-form + verified vs OCCT `GeomAPI_IntSS`, `add-native-ssi-analytic`
+archived; S2: transversal branch recall 1.00 on freeform/skew-quadric pairs, seeds on both
+surfaces ≤ 3.51e-16, `add-native-ssi-seeding`), and what remains is
+**S3 marching-line tracer (NEXT, consuming the S2 seeds)** → **S4 tangent-robustness (near-tangent
 seed) layer** on top of the substrate (the moat NumPP/SciPP does not buy), feeding the S5
 curved-boolean payoff. Total to genuinely drop OCCT â **10â20 py** (a small team, several years); matching
 OCCT means re-earning its person-decades of hardening on real CAD data.

@@ -177,7 +177,27 @@ Date: 2026-07-03 · Branch: `main`.
   CTest **24/24**) + sim native-vs-OCCT `GeomAPI_IntSS` parity `run-sim-native-ssi.sh`
   (**18 pairs, 0 failed**). No regressions (`run-sim-suite.sh` **221/221**). Living
   change `add-native-ssi-analytic` **archived**. See the SSI-S1 result table below and
-  `openspec/SSI-ROADMAP.md` (S1 done; **S2 subdivision seeding is NEXT**).
+  `openspec/SSI-ROADMAP.md` (S1 + S2 done; **S3 marching-line tracer is NEXT**).
+- **SSI Stage S2 (subdivision seeding) — done at the verification bar (BOTH gates green,
+  TRANSVERSAL); near-tangent / coincident / degenerate seeding is S4 (honest).** Finds ≥1 seed
+  point per **transversal** intersection branch for the **freeform** (NURBS / Bézier / B-spline) and
+  **non-closed-form quadric** pairs S1 defers as `NotAnalytic`: recursive patch-AABB-overlap
+  subdivision → candidate regions → `least_squares` refine on the numerics substrate → dedup to
+  ~one seed per branch, OCCT-free in `src/native/ssi/` (refine guarded by `CYBERCAD_HAS_NUMSCI`),
+  INTERNAL (no `cc_*`). Both gates green: host `test_native_ssi_seeding` (**6 cases, 0 failed** —
+  skew cyl→2, crossing spheres→1, sphere∩Bézier-bump→1, parallel planes→0, tangent spheres→
+  `deferredTangent` (no faked seed), deeper resolution recovers a small loop; NUMSCI OFF CTest
+  **23/23** with the NUMSCI-gated tests correctly ABSENT, NUMSCI ON CTest **25/25**) + sim
+  native-vs-OCCT `GeomAPI_IntSS` **recall** parity (`native_ssi_seeding_recall.mm`): **3/3
+  transversal branches recalled at recall 1.00**, tangent = 0 everywhere, max seed on-surface
+  residual **3.51e-16** (via `GeomAPI_ProjectPointOnSurf::LowerDistance` on both OCCT surfaces, well
+  under the 1e-6 tol). OCCT NbLines (3/2/2) is its arc-split count, not the analytic branch count the
+  recall denominator uses. No regressions (`run-sim-suite.sh` **221/221**, xcframework rebuilt with
+  `seeding.cpp`). **Honest scope:** TRANSVERSAL only — near-tangent / coincident / degenerate
+  seeding ill-conditions the refine → deferred to **S4** (`SeedSet.deferredTangent`, never faked);
+  completeness is a measured recall figure (`minPatchFrac` default 1/32 is the recall/cost knob).
+  Living change `add-native-ssi-seeding`; see the SSI-S2 result table below and
+  `openspec/SSI-ROADMAP.md` (S3 marching-line tracer is NEXT, consuming these seeds).
 - **No regressions.** Host build + CTest **21/21** (incl. `test_native_tessellate`,
   `test_native_boolean`, `test_native_blend`, `test_native_step_writer`, `test_native_step`);
   `scripts/run-sim-suite.sh` stays **221 passed, 0 failed** (re-run against a freshly rebuilt
@@ -1494,13 +1514,99 @@ Tests:
   unchanged — it is a `.mm` file already excluded by the `*.cpp` find; the SKIP entry is
   intent-documenting).
 
-### Deferred to S2–S4 (recorded, not blocking the S1 bar)
+### Deferred to S3–S4 (recorded, not blocking the S1/S2 bar)
 
-- **S2 subdivision seeding — NEXT.** Find ≥1 seed point per intersection branch for freeform
-  (NURBS) and the non-closed-form quadric pairs above (recursive patch bbox-overlap subdivision →
-  refine with `least_squares` on the numerics substrate). Must find ALL branches (recall).
-- **S3 marching-line tracer (WLine)**, **S4 tangent / degeneracy robustness (the moat)**, and
-  **S5 curved booleans via SSI** follow, per `openspec/SSI-ROADMAP.md`.
+- **S2 subdivision seeding — DONE at the bar (transversal).** See the SSI-S2 result table below.
+- **S3 marching-line tracer (WLine) — NEXT.** Consumes the S2 `SeedSet` (one WLine per seed).
+- **S4 tangent / degeneracy robustness (the moat)** and **S5 curved booleans via SSI** follow,
+  per `openspec/SSI-ROADMAP.md`.
+
+## SSI-S2 result table (subdivision seeding — SSI-ROADMAP S2)
+
+**Stage S2 of the SSI → curved-booleans sub-roadmap** ([`openspec/SSI-ROADMAP.md`](../openspec/SSI-ROADMAP.md)).
+Finds ≥1 seed point per **transversal** intersection branch for the **freeform**
+(NURBS / Bézier / B-spline) and **non-closed-form quadric** pairs that S1 defers as
+`NotAnalytic`: recursive patch-AABB-overlap subdivision → candidate regions → refine to a
+point with `least_squares(S₁(u₁,v₁) − S₂(u₂,v₂) = 0)` on the numerics substrate → 3D/param
+dedup to ~one seed per branch. OCCT-free in `src/native/ssi/` (`cybercad::native::ssi`); the
+refine is guarded by **`CYBERCAD_HAS_NUMSCI`**. SSI is **INTERNAL** — no `cc_*` entry point;
+asserted at the C++ boundary. **Scope is TRANSVERSAL only** (`n₁ × n₂ ≠ 0`); near-tangent /
+coincident / degenerate configurations are **deferred to S4** (counted in
+`SeedSet.deferredTangent`, reported not faked).
+
+**Host gate (Gate 1):** `test_native_ssi_seeding` (Homebrew clang, `-std=c++20`,
+`CYBERCAD_HAS_NUMSCI=ON`) — **6 cases, 0 failed**: skew (orthogonal, unequal-radius) cylinders →
+**2** transversal loops; two crossing spheres → **1** circle branch; sphere piercing a freeform
+Bézier bump → **1** loop; parallel disjoint planes → **0** branches (pruned, no false seed);
+externally tangent spheres → `deferredTangent ≥ 1` (an S4 gap, **NO fabricated seed**); and a
+deeper-resolution case recovering a small loop that coarse subdivision misses (the recall knob).
+Each seed is asserted on BOTH surfaces (`onSurfResidual ≤ tol`), transversal (`crossingSine >
+0.1`), and dedup'd to the known branch count. **NUMSCI OFF** (default host build): CTest **23/23**,
+`test_native_ssi_seeding` + `test_native_numerics` correctly ABSENT (NUMSCI-gated). **NUMSCI ON**:
+CTest **25/25**, adding `test_native_ssi_seeding` (#25) and `test_native_numerics` (#24);
+`test_native_ssi` (#19) and `test_native_tessellate` (#10) stay green.
+
+**Native-vs-OCCT `GeomAPI_IntSS` recall parity gate (Gate 2)** — `tests/sim/native_ssi_seeding_recall.mm`
+/ `native_ssi_seeding_parity.mm`, booted iOS simulator, arm64: the same operands built as OCCT
+`Geom_*Surface`, run through `GeomAPI_IntSS`; native per-pair **branch recall** =
+(native branches carrying ≥1 seed) ÷ (analytic transversal branch count). All pairs are the
+freeform / skew-quadric cases S1 defers as `NotAnalytic`. Seed on-surface residual measured via
+`GeomAPI_ProjectPointOnSurf::LowerDistance` against BOTH OCCT surfaces. **3/3 transversal branches
+recalled at recall 1.00; 0 branches deferred (tangent = 0 everywhere); max seed on-surface residual
+= 3.51e-16** (well under the 1e-6 `onSurfTol`):
+
+| Pair | native / OCCT NbLines | recall | tangent | worst onSurf | note |
+|---|---|---|---|---|---|
+| skew cyl (unequal) | 2 / 3 | 1.00 | 0 | 3.51e-16 | TRANSVERSAL; 2 loops; OCCT NbLines=3 = arc-split of same locus |
+| crossing spheres | 1 / 2 | 1.00 | 0 | 7.85e-17 | TRANSVERSAL; 1 circle; OCCT NbLines=2 = arc-split |
+| sphere ∩ Bézier bump | 1 / 2 | 1.00 | 0 | 6.50e-16 | TRANSVERSAL; 1 loop; OCCT NbLines=2 = arc-split |
+
+`OCCT NbLines = N` is OCCT's **arc-split** line count, NOT the analytic branch count the recall
+denominator uses — exactly the same arc-split delta seen at S1. No regressions:
+`scripts/run-sim-suite.sh` rebuilt the `CyberCadKernel.xcframework` (both slices, 27 TUs each
+including the new `src/native/ssi/seeding.cpp`; no NUMSCI define so the guarded `seed_intersection`
+body compiles to nothing) and ran **221 passed, 0 failed** in the booted simulator.
+
+**Transversal-native vs near-tangent-deferred (honest).** What S2 delivers native: a seed on both
+surfaces for every TRANSVERSAL branch of the tested freeform / skew-quadric pairs (recall 1.00).
+What S2 defers to S4 (never faked): near-tangent / coincident / degenerate seeding — the refine
+ill-conditions (`‖n₁ × n₂‖ ≈ 0`), so the region increments `SeedSet.deferredTangent` instead of
+emitting a seed (the externally-tangent-spheres host case exercises exactly this). Completeness is a
+**measured recall** figure, not a blind 100%: too-shallow subdivision can miss a small loop — the
+acknowledged failure mode — and `minPatchFrac` (default 1/32) is the resolution/recall knob (the
+deeper-resolution host case demonstrates recovery).
+
+### Files (SSI-S2)
+
+Native library (OCCT-free, `src/native/ssi/`; refine guarded by `CYBERCAD_HAS_NUMSCI`):
+
+- `seed.h` — `Seed { u1,v1,u2,v2; point; onSurfResidual; crossingSine }`,
+  `SeedSet { seeds; candidateRegions; deferredTangent; branchCount() }`, recall-report struct.
+- `patch_bounds.h` — per-patch AABB: freeform = control-net convex hull ∩ sampled-with-Lipschitz-margin
+  (both sound); elementary + torus = sampled + derivative safety margin; disjoint-AABB prune test.
+- `seeding.h` — subdivision + dedup declarations + the S3 hand-off contract doc; DECLARES
+  `seed_intersection` (definition behind `CYBERCAD_HAS_NUMSCI` in `seeding.cpp`).
+- `seeding.cpp` — recursive patch-pair subdivision + prune, candidate regions, `least_squares`
+  refine + clamp + on-surface re-check, near-tangent deferral, spatial/topological branch dedup.
+- `native_ssi.h` — umbrella header now `#include`s `seed.h` / `patch_bounds.h` / `seeding.h`.
+
+Tests:
+
+- `tests/native/test_native_ssi_seeding.cpp` — host Gate-1 (no OCCT; NUMSCI-gated).
+- `tests/sim/native_ssi_seeding_recall.mm` + `native_ssi_seeding_parity.mm` — sim Gate-2 native-vs-OCCT
+  recall parity (own `main()`; `.mm` files already excluded by the `run-sim-suite.sh` `*.cpp` find, so
+  the 221 count is structurally unchanged — the SKIP entries are intent-documenting).
+
+### Deferred to S3–S4 / OCCT (recorded, not blocking the S2 bar)
+
+- **S3 marching-line tracer (WLine) — NEXT.** From each S2 seed, walk the curve (tangent = n₁×n₂,
+  adaptive step, re-project onto both surfaces via the substrate) and fit a B-spline; the `SeedSet` is
+  the input contract (one WLine per seed).
+- **Near-tangent** seeding (`n₁ × n₂ → 0`) → **S4**; S2 reports these as `deferredTangent`, never faked.
+- **Coincident / overlapping-surface** detection and **degenerate** (cusp / singular param) seeding →
+  **S4** + OCCT fallback.
+- **Closing the completeness gap** (guaranteeing every small loop is found) — S2 only **measures**
+  recall; hardening subdivision depth/heuristics is ongoing.
 
 ## Phase 4 ceiling — native set vs OCCT-retained set
 

@@ -246,7 +246,7 @@ verified geometry numbers.
 | **1 — Multi-core** | parallel OCCT booleans + meshing, determinism audit | ✅ complete at the simulator acceptance bar |
 | **2 — GPU (Metal)** | Metal backend, GPU tessellation wired into `cc_tessellate`, BVH + ray/frustum pick | ✅ complete at the simulator acceptance bar |
 | **3 — Missing features** | reference geometry, wrap-emboss, thread boolean, full-round (any planar dihedral) + G2 fillets | ✅ 5/5 (curved-neighbour full-round is the only residual) |
-| **4 — Native rewrite** | replace OCCT capability-by-capability, then drop it | ◐ **complete at its achievable native ceiling** — native math · topology · tessellation · construction · STEP export (#7) done; booleans + blends planar/analytic slices done (general curved OCCT); STEP import + IGES stay OCCT; drop-occt (#8) BLOCKED on a general curved kernel + native import (research-grade) |
+| **4 — Native rewrite** | replace OCCT capability-by-capability, then drop it | ◐ **substantially native (planar/analytic), progressing on the curved tail** — native math · topology · tessellation · construction (incl. spline/torus/N-loft/RMF-sweep/threads) · planar+box∩cyl booleans · planar blends · STEP export; **numeric foundations adopted (NumPP + SciPP)**; **SSI S1** (analytic intersection) + **S2** (subdivision seeding) done vs OCCT. Pending: SSI S3 marching → S4 near-tangent robustness, general curved booleans/blends, STEP/IGES import, shape healing. drop-occt (#8) BLOCKED on these (research-grade, ≈9–18 py). See [openspec/SSI-ROADMAP.md](openspec/SSI-ROADMAP.md). |
 
 The **acceptance bar** is the in-repo iOS-simulator suite (correctness verified
 against analytic references, GPU vs CPU, and B-rep validity/watertightness).
@@ -262,7 +262,8 @@ follow-ups. See [docs/STATUS.md](docs/STATUS.md) and
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — layers, seams, and design decisions.
 - **[docs/python.md](docs/python.md)** — the desktop Python binding (`cybercadkernel`).
 - **[docs/build.md](docs/build.md)** — toolchain and build instructions.
-- **[openspec/NATIVE-REWRITE.md](openspec/NATIVE-REWRITE.md)** — Phase 4 native-rewrite sub-roadmap.
+- **[openspec/NATIVE-REWRITE.md](openspec/NATIVE-REWRITE.md)** — Phase 4 native-rewrite sub-roadmap + drop-OCCT effort table.
+- **[openspec/SSI-ROADMAP.md](openspec/SSI-ROADMAP.md)** — SSI → curved-booleans staged plan (S1–S5).
 - **[openspec/](openspec/)** — spec-driven development: the canonical roadmap,
   per-capability specs, and change proposals.
 

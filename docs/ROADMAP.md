@@ -7,18 +7,21 @@ contract reference, and GitHub issue) is [openspec/ROADMAP.md](../openspec/ROADM
 ```mermaid
 flowchart LR
     P0["Phase 0 · Foundation<br/>wrap OCCT ✅"] --> P1["Phase 1 · Multi-core CPU ✅"]
-    P1 --> P2["Phase 2 · GPU / Metal ◐"]
-    P2 --> P3["Phase 3 · Features OCCT lacks ◐"]
-    P3 --> P4["Phase 4 · Native rewrite<br/>drop OCCT ☐"]
+    P1 --> P2["Phase 2 · GPU / Metal ✅"]
+    P2 --> P3["Phase 3 · Features OCCT lacks ✅"]
+    P3 --> P4["Phase 4 · Native rewrite<br/>drop OCCT ◐"]
 
     style P0 fill:#1b5e20,color:#fff,stroke:#333
     style P1 fill:#1b5e20,color:#fff,stroke:#333
-    style P2 fill:#e65100,color:#fff,stroke:#333
-    style P3 fill:#e65100,color:#fff,stroke:#333
-    style P4 fill:#37474f,color:#fff,stroke:#333
+    style P2 fill:#1b5e20,color:#fff,stroke:#333
+    style P3 fill:#1b5e20,color:#fff,stroke:#333
+    style P4 fill:#e65100,color:#fff,stroke:#333
 ```
 
 Legend: ✅ complete (at the simulator acceptance bar) · ◐ in progress · ☐ planned.
+
+_Status: Phases 0–3 ✅ complete; Phase 4 ◐ in progress (substantially native — see
+below). Cumulative delivered ≈ 0.9–1.3 person-years of native kernel work._
 
 ## Phase 0 — Foundation ✅
 Stand up the library and move CyberCad's OCCT bridge behind the `cc_*` facade,
@@ -30,28 +33,57 @@ Turn on OCCT's existing parallel paths behind the facade — parallel booleans
 (`SetRunParallel` + tuned fuzzy), parallel meshing (`InParallel`), bounded worker
 pool, fine-thread boolean gate. Determinism audit: serial == parallel, bit-identical.
 
-## Phase 2 — GPU acceleration (Metal) ◐
+## Phase 2 — GPU acceleration (Metal) ✅
 fp32-tolerant, data-parallel work through the compute backend; CPU stays the
 source of truth.
 - ✅ **Metal compute backend** — device, unified-memory buffers, runtime MSL, fp32 guard.
 - ✅ **GPU tessellation** — surface-eval wired into `cc_tessellate` (per-face, OCCT fallback).
-- ◐ **Spatial acceleration** — GPU LBVH + ray-pick verified; frustum-pick leg +
-  `cc_*` cull wiring remain.
+- ✅ **Spatial acceleration** — GPU LBVH + ray-pick **and** frustum-pick verified
+  vs CPU on the sim (26/26). *(An app-facing `cc_*` cull entry is an optional
+  additive follow-up, not a gate.)*
 
-## Phase 3 — Missing features OCCT lacks ◐
+## Phase 3 — Missing features OCCT lacks ✅
 Native geometry OCCT can't do, each behind the same facade.
 - ✅ **Reference geometry** — datum planes/axes.
 - ✅ **Robust wrap-emboss** (#290) — cap-and-side + healed sew.
 - ✅ **Robust thread↔shaft boolean** (#286) — feature-based, no minutes-long hang.
 - ✅ **G2 blend fillet** (#284) — measured curvature continuity at straight seams.
-- ◐ **Full-round fillet** (#285) — rolling-ball for parallel walls; else valid fallback.
+- ✅ **Full-round fillet** (#285) — rolling-ball for **all planar dihedrals**
+  (parallel + non-parallel, G1-tangent both walls); truly-curved neighbours fall
+  back by design.
 
-## Phase 4 — Native rewrite → drop OCCT ☐
-Replace the OCCT adapter with native C++20, one capability at a time, each
-validated against the OCCT path behind the same facade call, then OCCT unlinked
-for that capability. Rough order: math/geometry → topology → tessellation →
-swept-solids → **booleans** (the hardest, longest-lived OCCT dependency) →
-fillets/offsets → data-exchange → **drop OCCT** (fully native C++20, cleanly MIT).
+## Phase 4 — Native rewrite → drop OCCT ◐
+Replace the OCCT adapter with native C++20, one capability at a time (opt-in via
+`cc_set_engine`, OCCT fallback for the rest), each validated against the OCCT
+oracle. **Substantially native for planar/analytic geometry; the curved/general
+robustness tail keeps OCCT linked.** Canonical detail:
+[../openspec/NATIVE-REWRITE.md](../openspec/NATIVE-REWRITE.md); SSI plan:
+[../openspec/SSI-ROADMAP.md](../openspec/SSI-ROADMAP.md).
+
+**Native + verified vs OCCT:**
+- ✅ Math/geometry, B-rep topology, watertight tessellation.
+- ✅ Construction — extrude, revolve, holed + typed-profile (incl. spline) extrude,
+  typed-profile + torus revolve, 2- & N-section loft, straight/planar/non-planar
+  (RMF) sweep, tapered-shank, watertight helical/tapered threads.
+- ✅ Booleans — planar-polyhedron fuse/cut/common (BSP-CSG, exact) + axis-aligned
+  box∩cylinder curved slice.
+- ✅ Blends — planar chamfer, constant-radius planar-dihedral fillet, offset-face, shell.
+- ✅ **STEP export** (native AP203; import stays OCCT).
+- ✅ **Numeric foundations (#2)** — adopted **NumPP + SciPP** (MIT C++20 NumPy/SciPy
+  ports) as the OCCT-free numeric substrate + native closest-point (Extrema).
+- ✅ **SSI S1** — analytic surface-surface intersection (elementary pairs, closed-form
+  curves) vs OCCT `GeomAPI_IntSS`; **SSI S2** — subdivision seeding (transversal
+  seeds for freeform/skew-quadric pairs, 100% recall vs OCCT).
+
+**Still OCCT-backed (the tail that keeps OCCT linked):**
+- ☐ SSI **S3 marching** (curve tracing) → **S4 near-tangent robustness** (the moat).
+- ☐ General curved **booleans** & **blends** (sit on SSI); curved **wrap-emboss**.
+- ☐ Non-planar/guided/rail sweep robustness; general loft; fine-pitch threads.
+- ☐ **Shape healing**; **STEP/IGES import**.
+- ☐ **`drop-occt`** — BLOCKED until the above are native (research-grade, multi-year).
+
+**Effort:** ≈ 0.9–1.3 py delivered (planar/analytic breadth); ≈ **9–18 py remaining**
+to genuinely drop OCCT, concentrated in SSI-S4 robustness + healing + import.
 
 ---
 

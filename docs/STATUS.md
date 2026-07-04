@@ -17,12 +17,16 @@ the CyberCad **app link-swap** are optional, deferred follow-ups — not gates.
 
 | Suite | Command | Result |
 |---|---|---|
-| Host unit tests (CPU-only, stub engine) | `ctest` (host build) | **7 / 7** |
+| Host unit tests (CPU-only, stub + native core) | `ctest` (host build) | **22 / 22** (23 with `CYBERCAD_HAS_NUMSCI=ON`) |
 | Full `cc_*` runtime + determinism + benchmark | `scripts/run-sim-suite.sh` | **221 / 221** |
-| GPU-vs-CPU parity (Metal) | `scripts/run-sim-gpu-suite.sh` | **26 / 26** |
+| GPU-vs-CPU parity (Metal), ray + frustum pick | `scripts/run-sim-gpu-suite.sh` | **26 / 26** |
 | GPU tessellation wired into `cc_tessellate` | `scripts/run-sim-integ-suite.sh` | **26 / 26** |
-| Native features (Phase 3) | `scripts/run-sim-phase3-suite.sh` | **70 / 70 (0 deferred)** |
-| Spec validation | `openspec validate --all --strict` | **17 / 17** |
+| Native features (Phase 3) | `scripts/run-sim-phase3-suite.sh` | **70 / 70** |
+| Phase-4 native-vs-OCCT parity (math/topology/tessellation/construct/loft/sweep/thread/boolean/curved-boolean/geomcompletion) | `scripts/run-sim-native-*.sh` | all green |
+| Numeric substrate — closest-point vs OCCT `Extrema` (NumPP/SciPP) | `scripts/run-sim-native-numerics.sh` | **22 / 22** |
+| SSI **S1** analytic intersection vs OCCT `GeomAPI_IntSS` | `scripts/run-sim-native-ssi.sh` | **18 / 18** |
+| SSI **S2** subdivision-seeding recall vs OCCT | `scripts/run-sim-native-ssi-seeding.sh` | **100% transversal** |
+| Spec validation | `openspec validate --all --strict` | **26 / 26** |
 
 Highlights (measured, not asserted-trivially):
 
@@ -43,10 +47,11 @@ Highlights (measured, not asserted-trivially):
 | **1 — Multi-core** | `accelerate-multicore-occt` | ✅ complete at acceptance bar |
 | **2 — GPU (Metal)** | `add-metal-compute-backend` ✅ · `add-gpu-tessellation` ✅ · `add-gpu-spatial-acceleration` ✅ | ✅ complete at acceptance bar; optional `cc_*` pick/cull facade entry deferred |
 | **3 — Missing features** | `add-reference-geometry` ✅ · `add-robust-wrap-emboss` ✅ · `add-robust-thread-boolean` ✅ · `add-g2-blend-fillet` ✅ · `add-full-round-fillet` ✅ | ✅ 5/5 full; full-round covers all planar walls (curved neighbours = documented residual) |
-| **4 — Native rewrite** | (8 changes, planned) | ☐ planned |
+| **4 — Native rewrite** | math · topology · tessellation · construction · planar+box∩cyl booleans · planar blends · STEP export · numeric foundations (NumPP/SciPP) · SSI S1+S2 | ◐ **substantially native (planar/analytic)**; curved tail (SSI S3/S4 · general curved booleans/blends · import · healing) keeps OCCT linked; drop-occt (#8) BLOCKED (≈9–18 py) |
 
 Detail: [STATUS-phase-0-1.md](STATUS-phase-0-1.md) ·
-[STATUS-phase-2.md](STATUS-phase-2.md) · [STATUS-phase-3.md](STATUS-phase-3.md).
+[STATUS-phase-2.md](STATUS-phase-2.md) · [STATUS-phase-3.md](STATUS-phase-3.md) ·
+[STATUS-phase-4.md](STATUS-phase-4.md) · [../openspec/SSI-ROADMAP.md](../openspec/SSI-ROADMAP.md).
 
 ## Open / deferred (honest)
 

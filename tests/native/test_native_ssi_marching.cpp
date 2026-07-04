@@ -308,16 +308,18 @@ CC_TEST(march_plane_wavy_bspline_open_segments) {
   }
 }
 
-// ── NEAR-TANGENT march → TRUNCATED (NearTangent), traced only up to the tangency ──
+// ── S4-c: NEAR-TANGENT TRANSVERSAL graze → MARCHED THROUGH (full curve, not truncated) ─
 // An OFFSET (non-coaxial) cylinder GRAZES a unit sphere: axis shifted +x by 0.585 with
 // R=0.4, so the wall very nearly touches the sphere on the +x side (r+dx = 0.985). The
-// intersection curve is transversal over most of its length but its normal-cross-product
-// sine dips to ≈0.17 near the grazing pinch. With tangentSinTol set to 0.25 — ABOVE that
-// dip, BELOW the transversal maximum — the march traces the well-conditioned arc and
-// STOPS at the near-tangent region: TraceStatus::NearTangent, counted in
-// nearTangentGaps, with the nodes reached BEFORE the tangency (never fabricated past it).
-// The truncated arc's nodes still lie exactly on both surfaces.
-CC_TEST(march_near_tangent_truncated) {
+// intersection is a SINGLE closed loop whose normal-cross-product sine dips to ≈0.10 near
+// the grazing pinches but the curve GENUINELY CONTINUES through them (transversally). With
+// tangentSinTol = 0.25 — ABOVE the dip — the S3 marcher STOPS (this used to be the honest
+// `march_near_tangent_truncated` gap). S4-c recognizes the graze as NearTangentTransversal
+// and MARCHES THROUGH it with the fixed-plane-cut corrector, producing the FULL loop:
+// nearTangentGaps == 0, nearTangentCrossed ≥ 1, every node still exactly on both surfaces,
+// and the traced curve matches the one the marcher gets when the tolerance is loosened
+// below the dip (the honest ground truth — the crossing did not fabricate a new shape).
+CC_TEST(march_near_tangent_crossed_s4c) {
   nmath::Sphere sp{frameZ({0, 0, 0}), 1.0};
   nmath::Cylinder cy{frameZ({0.585, 0, 0}), 0.4};  // r+dx = 0.985 → near-tangent graze
   ssi::ParamBox sd{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
@@ -328,34 +330,83 @@ CC_TEST(march_near_tangent_truncated) {
   ssi::SeedOptions so;
   so.initialGridU = 4;
   so.initialGridV = 4;
-  so.minPatchFrac = 1.0 / 32;  // enough to seed the grazing branch without over-refining
+  so.minPatchFrac = 1.0 / 32;
+
+  // Ground truth: with the tolerance BELOW the dip the S3 marcher already crosses the
+  // graze transversally and closes the loop. That is the shape S4-c must reproduce.
+  ssi::MarchOptions ctrl;
+  ctrl.tangentSinTol = 1e-3;
+  auto ref = ssi::trace_intersection(A, B, so, ctrl);
+  CC_CHECK(ref.closedCurves == 1);
+  CC_CHECK(ref.nearTangentGaps == 0);
+  double refLen = 0.0;
+  if (ref.curveCount() >= 1) refLen = polylineLength(ref.lines[0]);
+
+  // S4-c: tolerance ABOVE the dip — S3 would truncate; S4-c must march THROUGH.
+  ssi::MarchOptions mo;
+  mo.tangentSinTol = 0.25;
+  auto tr = ssi::trace_intersection(A, B, so, mo);
+  CC_CHECK(tr.curveCount() == 1);
+  if (tr.curveCount() != 1) return;
+
+  const ssi::WLine& w = tr.lines[0];
+  CC_CHECK(tr.nearTangentGaps == 0);          // the graze was crossed, not truncated
+  CC_CHECK(tr.nearTangentCrossed >= 1);       // and it is REPORTED as a crossing
+  CC_CHECK(w.nearTangentCrossed >= 1);
+  CC_CHECK(w.isClosed());                      // full closed loop, not an open truncation
+  CC_CHECK(!w.truncated());
+  CC_CHECK(w.points.size() >= 2);
+  // Every node — including the ones spliced across the graze — lies on BOTH surfaces
+  // within the corrector tolerance (never a fabricated point off the geometry).
+  for (const auto& nd : w.points) {
+    CC_CHECK(distToSphere(sp, nd.point) < 1e-6);
+    CC_CHECK(distToCylinder(cy, nd.point) < 1e-6);
+  }
+  CC_CHECK(w.crossMaxResidual < 1e-6);         // the crossed arc stayed on both surfaces
+  // The crossed loop reproduces the ground-truth loop: same closed shape, arc length
+  // within a step-bounded window (the crossing takes larger chords through the graze so
+  // its polyline underestimates the arc a touch more — a few percent, never longer).
+  const double len = polylineLength(w);
+  if (refLen > 0.0) {
+    CC_CHECK(len <= refLen + 1e-4);            // never longer than the ground-truth arc
+    CC_CHECK(len >= refLen * 0.90);            // within a step-bounded under-estimate
+  }
+}
+
+// ── GENUINE tangency the MARCHER REACHES must STILL STOP (not be crossed) ──────────
+// A cylinder (axis Z, R=1) meets a sphere (R=1) centred on that axis at (0,0,0): they are
+// tangent ALONG the whole equator circle z=0 (a TangentCurve — the surfaces coincide to
+// first order along a 1-D locus, not a transversal crossing). Unlike the sphere/graze
+// above, the curve does NOT continue transversally through it. If the seeder hands the
+// marcher a near-tangent seed here, S4-c's crossable gate must classify it (TangentCurve /
+// not NearTangentTransversal) and REFUSE to cross: no fabricated loop, nearTangentCrossed
+// stays 0. Any emitted curve must be an honest NearTangent truncation, never a full loop
+// stitched across the tangency.
+CC_TEST(march_tangent_curve_not_crossed_s4c) {
+  nmath::Sphere sp{frameZ({0, 0, 0}), 1.0};
+  nmath::Cylinder cy{frameZ({0, 0, 0}), 1.0};  // coaxial: tangent along the equator z=0
+  ssi::ParamBox sd{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
+  ssi::ParamBox cd{0.0, 2.0 * kPi, -1.5, 1.5};
+  auto A = ssi::makeSphereAdapter(sp, sd);
+  auto B = ssi::makeCylinderAdapter(cy, cd);
+
+  ssi::SeedOptions so;
+  so.initialGridU = 4;
+  so.initialGridV = 4;
 
   ssi::MarchOptions mo;
-  mo.tangentSinTol = 0.25;  // stop where transversality drops below 0.25 (the grazing dip)
-
+  mo.tangentSinTol = 0.25;
   auto tr = ssi::trace_intersection(A, B, so, mo);
-  CC_CHECK(tr.curveCount() >= 1);
-  if (tr.curveCount() < 1) return;
 
-  // Every emitted branch is a truncated near-tangent trace (NOT a fabricated full loop).
-  CC_CHECK(tr.nearTangentGaps >= 1);
-  CC_CHECK(tr.closedCurves == 0);       // did NOT fake a closed loop past the tangency
+  // The honesty invariant: NO node is fabricated across the tangency. Either the pair is
+  // deferred with no curve, or any emitted curve is a NearTangent truncation — but NEVER
+  // a crossing (nearTangentCrossed == 0) and NEVER a fabricated closed loop.
+  CC_CHECK(tr.nearTangentCrossed == 0);
   for (const auto& w : tr.lines) {
-    CC_CHECK(w.truncated());
-    CC_CHECK(w.status == ssi::TraceStatus::NearTangent);
-    CC_CHECK(w.points.size() >= 2);
-    // nodes traced up to the tangency still lie on both surfaces …
-    for (const auto& nd : w.points) {
-      CC_CHECK(distToSphere(sp, nd.point) < 1e-6);
-      CC_CHECK(distToCylinder(cy, nd.point) < 1e-6);
-    }
-    // … and the march genuinely STOPPED short — the last node's transversality has
-    // decayed toward the tolerance (it did not sail through the tangency).
-    const ssi::WLinePoint& last = w.points.back();
-    const Vec3 nA = A.normal(last.u1, last.v1).vec();
-    const Vec3 nB = B.normal(last.u2, last.v2).vec();
-    const double endSine = nmath::norm(nmath::cross(nA, nB));
-    CC_CHECK(endSine < 0.35);  // near the tangent band, not out on the transversal arc
+    CC_CHECK(w.nearTangentCrossed == 0);
+    CC_CHECK(!w.isClosed());  // no full loop stitched across the tangent-curve contact
+    if (w.stopReason)
+      CC_CHECK(w.stopReason->type != ssi::TangentContactType::NearTangentTransversal);
   }
 }
 

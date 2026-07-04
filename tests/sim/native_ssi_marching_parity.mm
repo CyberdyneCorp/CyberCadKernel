@@ -586,10 +586,92 @@ void pairSphereBezier() {
              1e-6, 1e-4, 1e-2, 3e-2, sopt, mopt);
 }
 
+// ── S4-c: NEAR-TANGENT TRANSVERSAL graze MARCHED THROUGH, vs OCCT ─────────────────
+// An offset cylinder (axis +x by 0.585, R=0.4) grazes a unit sphere: the intersection is
+// a SINGLE closed loop whose transversality sine dips to ≈0.10 at the grazing pinches but
+// the curve genuinely CONTINUES through them. With tangentSinTol raised ABOVE that dip the
+// S3 marcher truncates (NearTangent); S4-c recognizes the graze as NearTangentTransversal
+// and MARCHES THROUGH it, producing the FULL loop.
+//
+// PARITY (honest): at the graze OCCT's GeomAPI_IntSS and the native marcher legitimately
+// disagree on CONNECTIVITY — OCCT tolerance-splits the loop at the tangency, native crosses
+// it as one loop. So this gate asserts the strong, uncontested facts: (a) every densely-
+// sampled point of the crossed native curve lies ON the OCCT intersection locus AND on BOTH
+// surfaces within tol — i.e. the crossed curve IS the true intersection, not a fabricated
+// path; and (b) it was a genuine S4-c crossing (nearTangentGaps → 0, nearTangentCrossed ≥ 1,
+// one Closed loop, the crossed arc on both surfaces ≤ onSurfTol) — not an honest truncation.
+void pairNearTangentCrossedS4c() {
+  nm::Sphere sph{frameZ(), 1.0};
+  nm::Cylinder cyl{frameZ({0.585, 0, 0}), 0.4};  // r+dx = 0.985 → near-tangent graze
+  ssi::ParamBox sdom{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
+  ssi::ParamBox cdom{0.0, 2.0 * kPi, -1.5, 1.5};
+  auto A = ssi::makeSphereAdapter(sph, sdom);
+  auto B = ssi::makeCylinderAdapter(cyl, cdom);
+  Handle(Geom_Surface) sa = new Geom_SphericalSurface(toOcctAx3(frameZ()), 1.0);
+  Handle(Geom_Surface) sb = new Geom_CylindricalSurface(toOcctAx3(frameZ({0.585, 0, 0})), 0.4);
+
+  ssi::SeedOptions sopt; sopt.initialGridU = 4; sopt.initialGridV = 4; sopt.minPatchFrac = 1.0 / 32.0;
+  ssi::MarchOptions mopt; mopt.tangentSinTol = 0.25;  // ABOVE the dip: S3 would truncate, S4-c crosses
+
+  const ssi::TraceSet ts = ssi::trace_intersection(A, B, sopt, mopt);
+
+  // OCCT locus (all branches — the graze may split it) for the on-curve oracle.
+  GeomAPI_IntSS iss(sa, sb, 1e-7);
+  const int occtN = iss.IsDone() ? iss.NbLines() : 0;
+  std::vector<OcctBranch> occtBr;
+  for (int i = 1; i <= occtN; ++i) occtBr.push_back(classifyBranch(iss.Line(i), sa, sb, 1e-2));
+
+  const double onCurveTol = 5e-4, onSurfTol = 1e-4;
+  double maxOnCurve = 0.0, maxOnSurf = 0.0, crossResid = 0.0;
+  for (const auto& w : ts.lines) {
+    crossResid = std::max(crossResid, w.crossMaxResidual);
+    for (const Point3& p : sampleWLine(w)) {
+      double best = 1e30;
+      for (const auto& b : occtBr) best = std::min(best, distToOcctCurve(b.curve, p));
+      maxOnCurve = std::max(maxOnCurve, best);
+      maxOnSurf = std::max(maxOnSurf, std::max(distToOcctSurface(sa, p), distToOcctSurface(sb, p)));
+    }
+  }
+
+  const bool ok = ts.nearTangentGaps == 0 && ts.nearTangentCrossed >= 1 &&
+                  ts.closedCurves == 1 && occtN > 0 && crossResid <= onSurfTol &&
+                  maxOnCurve <= onCurveTol && maxOnSurf <= onSurfTol;
+  if (ok) ++g_pass; else ++g_fail;
+  std::printf("[NMARCH] %-4s %-18s NTgaps=%d crossed=%d closed=%d onCurve=%.2e onSurf=%.2e "
+              "crossResid=%.2e occtBr=%d\n",
+              ok ? "PASS" : "FAIL", "nt-cross s4c", ts.nearTangentGaps, ts.nearTangentCrossed,
+              ts.closedCurves, maxOnCurve, maxOnSurf, crossResid, occtN);
+  std::fflush(stdout);
+}
+
+// ── S4-c: a GENUINE tangency the marcher reaches must STILL STOP (not be crossed) ─────
+// Two equal cylinders crossing at 90° (axes Z and X, both R=1) meet TANGENTIALLY at the
+// saddle points — a BRANCH crossing (S4-d), where the intersection self-crosses and the
+// transversality sine → 0. S4-c's crossable gate must REFUSE it: no fabricated crossing
+// (nearTangentCrossed == 0), the region honestly reported as a near-tangent gap
+// (nearTangentGaps ≥ 1) — deferred to OCCT, never faked. (OCCT resolves the figure-8; the
+// native honest outcome is to decline, which S5 turns into an OCCT fallback.)
+void pairEqualCylindersDefer() {
+  nm::Cylinder cz{frameZ(), 1.0};
+  nm::Cylinder cx{Ax3{{0, 0, 0}, {0, 0, 1}, {0, 1, 0}, {1, 0, 0}}, 1.0};
+  ssi::ParamBox dom{0.0, 2.0 * kPi, -3.0, 3.0};
+  auto A = ssi::makeCylinderAdapter(cz, dom);
+  auto B = ssi::makeCylinderAdapter(cx, dom);
+
+  const ssi::TraceSet ts = ssi::trace_intersection(A, B);
+  const bool ok = ts.nearTangentCrossed == 0 && ts.nearTangentGaps >= 1 &&
+                  ts.closedCurves == 0;
+  if (ok) ++g_pass; else ++g_fail;
+  std::printf("[NMARCH] %-4s %-18s NTgaps=%d crossed=%d closed=%d (branch saddle → defer)\n",
+              ok ? "PASS" : "FAIL", "eq-cyl defer", ts.nearTangentGaps,
+              ts.nearTangentCrossed, ts.closedCurves);
+  std::fflush(stdout);
+}
+
 }  // namespace
 
 int main() {
-  std::printf("== SSI Stage S3 marching-line tracer native-vs-OCCT parity ==\n");
+  std::printf("== SSI Stage S3/S4-c marching-line tracer native-vs-OCCT parity ==\n");
   std::fflush(stdout);
 
   pairBSplineBSpline();
@@ -597,6 +679,8 @@ int main() {
   pairSkewCylinders();
   pairCrossingSpheres();
   pairSphereBezier();
+  pairNearTangentCrossedS4c();   // S4-c: graze marched through, full curve vs OCCT
+  pairEqualCylindersDefer();     // S4-c: branch saddle still deferred (not crossed)
 
   std::printf("== %d passed, %d failed ==\n", g_pass, g_fail);
   std::fflush(stdout);

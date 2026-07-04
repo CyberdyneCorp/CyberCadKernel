@@ -169,7 +169,7 @@ gap, within the deflection/step tol).
 - **Unlocks:** S5 curved booleans — the `TraceSet` (WLines with (u1,v1,u2,v2) per node) is
   its input contract.
 
-### S4 — Tangent / degeneracy robustness · ◐ CLASSIFICATION LAYER (S4-a/b) DONE AT THE BAR; marching-core (S4-c…f) pending
+### S4 — Tangent / degeneracy robustness · ◐ CLASSIFICATION LAYER (S4-a/b) + FIRST MARCHING-CORE SLICE (S4-c) DONE AT THE BAR; S4-d…f pending
 Near-tangent stepping (n₁×n₂→0: step control, higher-order predictor),
 coincident/overlapping-surface detection, branch points & singularities,
 self-intersection guards. **This is the moat** — OCCT's decades of tuning. Lands
@@ -246,10 +246,45 @@ with OCCT.
   (overlap handling, tangent-seam trimming) — a later S5 slice; and the marching
   core (S4-c) has a typed reason feeding it.
 
-#### S4-c — Marching THROUGH a tangency · ✗ PENDING (the hard core of the moat)
-Near-tangent stepping, higher-order predictor across the degeneracy,
-fabricating the curve where the two surfaces graze-and-cross. `NearTangentTransversal`
-is currently classified and handed to OCCT; S4-c is what would trace it natively.
+#### S4-c — Marching THROUGH a tangency · ◐ FIRST HONEST SLICE DONE AT THE BAR (grazing-but-continuous curves); deeper bands + branch crossings remain
+The hard core of the moat: MARCH THROUGH a near-tangency **when the curve genuinely
+continues**, rather than truncating. The first slice (`add-native-ssi-s4c-near-tangent-marching`,
+gated `CYBERCAD_HAS_NUMSCI`, additive to `marching.cpp`) crosses a **NearTangentTransversal
+single-branch graze** with four levers:
+- **Fixed-plane-cut corrector** — the S3 corrector's along-`t` advance residual `r₃ =
+  dot(A.point−Pprev, t) − h` ill-conditions as `t = normalize(nA×nB)` degenerates
+  (`sine → 0`). Inside the crossing band `t` is replaced by the **last-good FORWARD
+  tangent `t★`**, a hyperplane the curve crosses transversally even where the local
+  surface tangent degenerates, so the `least_squares` solve stays well-posed.
+- **Curvature-aware predictor** — bends `P + h·t★` by the discrete curvature of the last
+  two nodes so the corrector starts in-basin across the sharp bend.
+- **Step control** — enters the band at `sine < tangentSinTol`, steps FINELY (capped at
+  `h₀/16`, deflection-bounded) so it RESOLVES the region instead of leaping it, exits once
+  `sine ≥ 1.5·tangentSinTol` on the far side; `crossMaxSteps` budget + `minStep` floor.
+- **Crossable gate (the honesty core)** — crosses ONLY when S4-b
+  `classify_tangent_contact_seeded` types the stall `NearTangentTransversal` AND it is a
+  genuine single-branch graze. Two witnesses force a defer: a **steep sine collapse**
+  (stall sine < ¼ of the last-good sine ⇒ a tangency/branch drives `sine → 0`) and a
+  **band-minimum floor** (a fine look-ahead scan whose minimum sine drops below
+  `0.3·tangentSinTol`). A **branch crossing** (the equal-cylinder saddle — two branches
+  meet, S4-d), a `TangentPoint`/`TangentCurve`/`Undecided`, non-convergence at `minStep`,
+  or any node failing the on-both-surfaces / monotone-advance verification ⇒ the arc is
+  **discarded** and the march still STOPS + classifies + defers → OCCT. No point is ever
+  fabricated past a degeneracy; a crossed arc is emitted only if every node verified on
+  both surfaces ≤ `onSurfTol`. Crossed grazes are counted in
+  `TraceSet.nearTangentCrossed`; `nearTangentGaps` now counts only the regions that could
+  NOT be crossed.
+
+**At the bar (host + sim, `CYBERCAD_HAS_NUMSCI` ON):** a sphere grazed by an offset
+cylinder that S3 TRUNCATES at `tangentSinTol=0.25` (sine dip ≈ 0.10) now traces the FULL
+closed loop (`nearTangentGaps → 0`, `nearTangentCrossed ≥ 1`, every node on both surfaces
+≤ 1e-6, crossed arc on the OCCT `GeomAPI_IntSS` locus ≤ 5e-4); the equal-radius
+orthogonal cylinder **saddle (a branch crossing) STILL DEFERS** (`nearTangentCrossed = 0`,
+`nearTangentGaps ≥ 1`), as do genuine `TangentPoint`/`TangentCurve` contacts. Every S3
+transversal fixture traces bit-identically (the corrector/step outside the band is
+unchanged). Deeper near-coincident bands, branch crossings (S4-d), singularities (S4-e)
+and self-intersection (S4-f) remain the tail: anything not robustly crossable is still an
+honest `NearTangent` gap deferred to OCCT.
 
 #### S4-d — Branch points · ✗ PENDING
 Splitting the trace where intersection branches meet/cross (a point where n₁×n₂→0
@@ -304,7 +339,8 @@ substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ─
                              │                                    │                          │
                              │                                    │                          ├─ S4-a coincident-region (DONE)
                              │                                    │                          ├─ S4-b tangent-classify (DONE)
-                             │                                    │                          └─ S4-c…f marching-core (PENDING)
+                             │                                    │                          ├─ S4-c near-tangent march-through (FIRST SLICE DONE)
+                             │                                    │                          └─ S4-d…f marching-core tail (PENDING)
                              └──────────────► S5 curved booleans ◄─┘  ──► #6 blends ──► #7 wrap-emboss
                                               (S5-a/b/c: drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON native ✓)
 ```
@@ -316,7 +352,8 @@ substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ─
 | S3 marching | ✅ DONE at the bar (transversal) | tangent-step + substrate re-projection — 5 pairs / 9 branches vs OCCT |
 | S4-a coincident-region | ✅ DONE at the bar | typed `CoincidentRegion` (analytic + seeded); classification vs OCCT `IntAna_Same` |
 | S4-b tangent-classify | ✅ DONE at the bar | typed `TangentContact` (point/curve/near-tangent/undecided) — 8 pairs vs OCCT, 0 deferred |
-| S4-c…f marching-core | multi-year, ongoing | the moat tail — march-through-tangency, branch points, singularities, self-intersect; best-effort + fallback |
+| S4-c near-tangent march-through | ◐ FIRST SLICE DONE at the bar | fixed-plane-cut corrector marches a single-branch graze the S3 truncated (sphere∩offset-cyl: `nearTangentGaps → 0`, full loop on OCCT locus); branch saddle still defers |
+| S4-d…f marching-core tail | multi-year, ongoing | the moat tail — branch points, singularities, self-intersect, deeper near-coincident bands; best-effort + fallback |
 | S5 curved booleans | ◐ slices S5-a/b/c DONE at the bar (~months for full) | through-drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON native vs OCCT (wt, ΔV ≤ 8e-4); sphere fuse/cut + more families + near-tangent gate remain |
 
 SSI + curved booleans total ≈ **1.5–3 py** (substrate-accelerated) for *usable*

@@ -44,12 +44,38 @@
 //     a bogus point past a tangency. Open curves march BOTH directions from the seed
 //     and are stitched (reverse of the backward half + forward half).
 //
-// HONEST SCOPE (S3 = TRANSVERSAL). Near-tangent / coincident / degenerate marching,
-// branch-point splitting and self-intersection resolution are DEFERRED to S4. If a
-// march enters a near-tangent region it traces UP TO it and reports the remainder as a
-// NearTangent gap — it does not fabricate curve points or claim a full trace that
-// stopped short. Coverage is reported per WLine (Closed / BoundaryExit / NearTangent),
-// not asserted complete.
+// HONEST SCOPE (S3 = TRANSVERSAL; S4-c = near-tangent MARCHING, first slice). A pure
+// transversal march is bit-identical to S3. When a march reaches a near-tangent region
+// (‖nA×nB‖ < tangentSinTol) the S4-c logic (CYBERCAD_HAS_NUMSCI) tries to MARCH THROUGH
+// it — but only when it is genuinely CROSSABLE:
+//
+//   FIXED-PLANE-CUT CORRECTOR. The S3 corrector pins the step with an ALONG-t advance
+//     residual r₃ = dot(A.point−Pprev, t) − h, where t = normalize(nA×nB) ILL-CONDITIONS
+//     as sine→0 — the root cause of the near-tangent stop. Inside the crossing band S4-c
+//     replaces t in that residual with the LAST-GOOD (pre-band) tangent t★: a hyperplane
+//     perpendicular to t★ at arc-distance h that the curve crosses transversally even
+//     where the local surface tangent degenerates, so the least_squares solve stays
+//     well-posed. Outside the band the corrector is the S3 along-local-t solve, unchanged.
+//
+//   CROSSABLE GATE (the honesty core). A crossing is ATTEMPTED only when S4-b
+//     classify_tangent_contact_seeded types the stall NearTangentTransversal AND it is a
+//     genuine SINGLE-branch graze, decided by two witnesses: the transversality sine must
+//     NOT steeply collapse into the band (a stall sine < ¼ of the last-good sine signals a
+//     tangency/branch driving sine→0), and a FINE look-ahead scan's minimum sine must stay
+//     ≥ a fraction of the enter threshold (a measure-zero dip a coarse step would leap is
+//     resolved). Per crossing step the corrected node must stay on both surfaces, advance
+//     monotonically along t★, keep sine above the floor, and keep its raw tangent aligned
+//     by continuity (no ≥60° turn / reversal — a flip means two branches meet, S4-d). A
+//     genuine tangency (TangentPoint / TangentCurve), an Undecided jet, a branch crossing,
+//     non-convergence at minStep, or any failed verification ⇒ the arc is DISCARDED and the
+//     march STILL STOPS + classifies + defers (→ OCCT). No point is ever fabricated past a
+//     degeneracy; a crossed arc is emitted only if every node verified on both surfaces
+//     ≤ onSurfTol.
+//
+// Branch-point splitting (S4-d), surface-singularity (S4-e), self-intersection (S4-f)
+// and whole-tangent-seam / coincident-region marching stay DEFERRED. Coverage is
+// reported per WLine (Closed / BoundaryExit / NearTangent) with nearTangentCrossed for a
+// crossed graze; a region not robustly crossable is still an honest NearTangent gap.
 //
 // SSI is INTERNAL — no cc_* entry point, no ABI change. Verified at the
 // cybercad::native::ssi C++ boundary (host: sampled WLine points on both surfaces ≤
@@ -127,6 +153,16 @@ struct WLine {
   int branchId = 0;                   ///< echoes the S2 seed branch id
   double onSurfResidual = 0.0;        ///< max ‖node − surface‖ over BOTH surfaces (≤ tol)
 
+  /// S4-c: how many NEAR-TANGENT TRANSVERSAL grazes this branch MARCHED THROUGH (a
+  /// crossable graze recognized `NearTangentTransversal` by S4-b and verified single-
+  /// branch — see marching.cpp). 0 for a pure S3 transversal trace. A branch with
+  /// `nearTangentCrossed > 0` that is `Closed`/`BoundaryExit` is a FULL curve the S3
+  /// marcher would have truncated. `crossMaxResidual` is the worst on-both-surfaces
+  /// residual over the crossed arc(s) (≤ onSurfTol — a crossing is accepted only if
+  /// every node verifies), an honest witness the crossing stayed on both surfaces.
+  int nearTangentCrossed = 0;
+  double crossMaxResidual = 0.0;
+
   /// S4-b: WHY the march stopped, TYPED, when it stopped at a tangency
   /// (`status == NearTangent`). Carries the classified `TangentContact` at the stop
   /// point (TangentPoint / TangentCurve / NearTangentTransversal / Undecided) so the
@@ -149,8 +185,14 @@ struct MarchOptions {
   double maxStep = -1.0;       ///< largest h a grow may reach (≤ 0 → scale · 1/8)
   double onSurfTol = -1.0;     ///< corrector accept residual ‖A−B‖ (≤ 0 → scale · 1e-7)
   double maxDeflection = -1.0; ///< max chord/arc bow per step before shrinking (≤ 0 → scale · 1e-3)
-  double tangentSinTol = 1e-3; ///< ‖nA×nB‖ below this ⇒ near-tangent → truncate (S4)
+  double tangentSinTol = 1e-3; ///< ‖nA×nB‖ below this ⇒ near-tangent → truncate/cross (S4)
   double loopCloseFrac = 2.0;  ///< loop-closure proximity = loopCloseFrac · current step
+
+  // ── S4-c near-tangent MARCHING band (all tangentSinTol-derived; no tolerance is
+  // weakened — these only decide WHERE the fixed-plane crossing corrector engages) ──
+  double bandEnterSin = -1.0;  ///< sine below this ⇒ enter the crossing band (≤ 0 → tangentSinTol)
+  double bandExitSin  = -1.0;  ///< sine above this on the far side ⇒ band exit, resume S3 (≤ 0 → 1.5·tangentSinTol)
+  int    crossMaxSteps = 256;  ///< max fixed-plane steps spent crossing one graze before deferring
   int maxPoints = 20000;       ///< hard cap on nodes per direction (termination safety)
   int fitDegree = 3;           ///< B-spline fit degree (cubic default)
   int fitMaxPoles = 64;        ///< max poles the least-squares fit uses (0 → interpolate every node)
@@ -165,7 +207,8 @@ struct TraceSet {
   std::vector<WLine> lines{};   ///< one WLine per distinct traced transversal branch
 
   int tracedBranches = 0;       ///< WLines produced (Closed | BoundaryExit)
-  int nearTangentGaps = 0;      ///< marches stopped at a near-tangent region → S4 (reported)
+  int nearTangentGaps = 0;      ///< marches stopped at a near-tangent region that could NOT be crossed → S4 (reported)
+  int nearTangentCrossed = 0;   ///< S4-c: near-tangent TRANSVERSAL grazes MARCHED THROUGH (would have truncated in S3)
   int dedupedRetraces = 0;      ///< seeds whose march retraced an already-traced branch
 
   // Extra diagnostics (kept for verification/reporting; not in the minimal contract).

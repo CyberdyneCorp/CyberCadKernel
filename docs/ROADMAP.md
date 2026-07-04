@@ -82,8 +82,17 @@ robustness tail keeps OCCT linked.** Canonical detail:
   `TangentContact` (`TangentPoint` / `TangentCurve` / `NearTangentTransversal` /
   `Undecided`), on both the analytic and seeded paths, verified vs OCCT
   `IntAna_QuadQuadGeo` / `IntPatch` (8 pairs, 0 failed, 0 deferred; emitted point/curve
-  on both surfaces ≤ ~1e-16). DETECTION + CLASSIFICATION only — a `NearTangentTransversal`
-  is typed and handed to OCCT, never marched through (that is the S4-c core, pending).
+  on both surfaces ≤ ~1e-16). DETECTION + CLASSIFICATION only.
+- ✅ **SSI S4-c FIRST MARCHING-CORE SLICE (near-tangent MARCH-THROUGH)** — the marcher now
+  crosses a `NearTangentTransversal` single-branch graze that S3 truncated, instead of
+  stopping: a fixed-plane-cut corrector + curvature-aware predictor + fine deflection-bounded
+  step, gated by an honesty-preserving crossable gate. A sphere grazed by an offset cylinder
+  that S3 truncated at `tangentSinTol=0.25` now traces the FULL closed loop
+  (`nearTangentGaps → 0`, 22 near-tangent nodes crossed, every node on both surfaces ≤ 1e-6,
+  crossed arc on the OCCT `GeomAPI_IntSS` locus onCurve ≤ 5.6e-5); the equal-cylinder branch
+  saddle and genuine `TangentPoint`/`TangentCurve` contacts STILL defer (`nearTangentCrossed
+  = 0`) — no point fabricated past a degeneracy. Deeper bands / branch points / singularities
+  (S4-d…f) remain the tail.
 - ◐ **SSI S5-a/b/c (curved-boolean slices)** — the SSI-curve-driven
   split→classify→weld pipeline (`src/native/boolean/ssi_boolean.{h,cpp}`, consumes the
   S3 `TraceSet`) produces **five native curved-boolean sub-cases verified vs OCCT
@@ -93,8 +102,9 @@ robustness tail keeps OCCT linked.** Canonical detail:
   pairs (incl. Steinmetz) still decline to OCCT — honest, measured fallbacks.
 
 **Still OCCT-backed (the tail that keeps OCCT linked):**
-- ☐ SSI **S4-c…f marching core** (the moat tail: march-through-tangency, branch points,
-  singularities, self-intersection — S4-a/b classification already landed) → **wider S5
+- ☐ SSI **S4-d…f marching core** (the moat tail: branch points, singularities,
+  self-intersection, deeper near-coincident bands — S4-a/b classification + the S4-c
+  first near-tangent march-through slice already landed) → **wider S5
   curved booleans** (fuse/cut caps, more families, lifting the near-tangent gate,
   consuming the S3 WLines + the S4 typed regions/contacts).
 - ☐ General curved **booleans** & **blends** (sit on SSI); curved **wrap-emboss**.
@@ -103,7 +113,7 @@ robustness tail keeps OCCT linked.** Canonical detail:
 - ☐ **`drop-occt`** — BLOCKED until the above are native (research-grade, multi-year).
 
 **Effort:** ≈ 0.9–1.3 py delivered (planar/analytic breadth); ≈ **9–18 py remaining**
-to genuinely drop OCCT, concentrated in SSI-S4-c…f marching robustness + healing + import.
+to genuinely drop OCCT, concentrated in SSI-S4-d…f marching robustness + healing + import.
 
 ---
 

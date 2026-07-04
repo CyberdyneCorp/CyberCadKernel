@@ -409,8 +409,9 @@ longest; a native exchange is lower priority than the modelling core.
   fully bought by this adoption â the substrate provides the re-projection corrector
   the S2 seeding + S3 marching layers are built on (both now DONE for transversal pairs), but
   the near-tangent / coincident / branch-point surface-surface-intersection moat stays
-  capability #5 as S4 (its DETECTION + CLASSIFICATION layer S4-a/b now DONE at the bar;
-  the marching core S4-c…f is the remaining tail), written on top of this substrate + the
+  capability #5 as S4 (its DETECTION + CLASSIFICATION layer S4-a/b + the first
+  near-tangent MARCH-THROUGH slice S4-c now DONE at the bar; the deeper marching core
+  S4-d…f is the remaining tail), written on top of this substrate + the
   S3 tracer.** Change `add-native-numerics` **archived**. See
   [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md) numeric-foundations result table.
 - â **#5 `native-booleans` â PLANAR-polyhedron slice DONE at the verification bar;
@@ -570,17 +571,20 @@ longest; a native exchange is lower priority than the modelling core.
     TRANSVERSAL only â near-tangent branches are traced *up to* the tangent, marked `NearTangent`,
     counted in `nearTangentGaps` (never a point past it); coincident / branch-point / self-intersection
     marching is deferred to **S4** (the moat). `nearTangentGaps > 0` is the honest S4 hand-off signal.
+    (**Update:** S4-c since MARCHES THROUGH a `NearTangentTransversal` single-branch graze — see the
+    S4-c bullet above; branch / coincident / singular regions still defer here.)
     Files: `src/native/ssi/{marching.h,marching.cpp}` + `tests/native/test_native_ssi_marching.cpp` +
     `tests/sim/native_ssi_marching_parity.mm`. Living change `openspec/changes/add-native-ssi-marching`
     **archived**. See [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md) SSI-S3 result table and
     [`SSI-ROADMAP.md`](SSI-ROADMAP.md) (S4 robustness + S5 curved booleans remain).
   - **SSI Stage S4-a + S4-b (coincident-region detection + tangent-contact
-    CLASSIFICATION) — DONE at the verification bar (both gates); the marching core
-    (S4-c…f) is the remaining moat tail (honest).** These are DETECTION + CLASSIFICATION
-    layers: they TYPE the degeneracy and emit the point/curve/region where determinable —
-    they do NOT march through a tangency or fabricate a curve across a degeneracy (that is
-    S4-c, out of scope; a `NearTangentTransversal` is classified and handed to OCCT, never
-    traced). **S4-a** — robust coincidence on both the analytic and seeded paths + a typed
+    CLASSIFICATION) + S4-c FIRST MARCHING-CORE SLICE — DONE at the verification bar; the
+    deeper marching core (S4-d…f) is the remaining moat tail (honest).** S4-a/b are
+    DETECTION + CLASSIFICATION layers: they TYPE the degeneracy and emit the point/curve/
+    region where determinable. S4-c is the first slice that MARCHES THROUGH a tangency when
+    the curve genuinely continues (a `NearTangentTransversal` single-branch graze), verified
+    node-by-node on both surfaces vs OCCT — see the S4-c bullet below. **S4-a** — robust
+    coincidence on both the analytic and seeded paths + a typed
     `CoincidentRegion` (`FullSurfaceSame` closed-form for all elementary families: plane,
     coaxial-equal cyl/cone, same sphere, same torus; seeded `OverlapSubRegion` with
     delimited param bounds via grid-agreement + boundary growth; `Undecided` → OCCT when
@@ -611,7 +615,44 @@ longest; a native exchange is lower priority than the modelling core.
     tangent_seeded.h}` + `tests/native/test_native_ssi_s4_classification.cpp` +
     `tests/sim/native_ssi_s4_classification_parity.mm` + `scripts/run-sim-native-ssi-s4.sh`.
     Living change `openspec/changes/add-native-ssi-s4-classification` **archived**
-    (`2026-07-04`). See [`SSI-ROADMAP.md`](SSI-ROADMAP.md) (S4-c…f marching-core remain).
+    (`2026-07-04`). See [`SSI-ROADMAP.md`](SSI-ROADMAP.md) (S4-d…f marching-core remain).
+  - **SSI Stage S4-c (near-tangent MARCH-THROUGH) — FIRST HONEST SLICE DONE at the
+    verification bar (both gates).** The hard core of the moat: MARCH THROUGH a
+    near-tangency **when the curve genuinely continues** instead of truncating, verified vs
+    OCCT `GeomAPI_IntSS`. Additive to `marching.cpp`, gated `CYBERCAD_HAS_NUMSCI`; no `cc_*`.
+    Four levers: **(1) fixed-plane-cut corrector** — inside the band the S3 along-`t`
+    advance residual (`t = normalize(nA×nB)` ill-conditions as `sine → 0`) is replaced by a
+    cut on the plane perpendicular to the **last-good forward tangent `t★`**, so the
+    `least_squares` solve stays well-posed where the local surface tangent degenerates;
+    **(2) curvature-aware predictor** — bends `P + h·t★` by the discrete two-node curvature
+    so the corrector starts in-basin across the sharp bend; **(3) fine deflection-bounded
+    step** through the low-sine band (capped `h₀/16`, `minStep` floor, `crossMaxSteps`
+    budget) so it RESOLVES the region rather than leaping it; **(4) crossable gate (honesty
+    core)** — crosses ONLY a `NearTangentTransversal` single-branch graze; a steep-sine-
+    collapse witness (stall sine < ¼ last-good) OR a band-minimum-floor scan (fine
+    look-ahead min sine < `0.3·tangentSinTol`) forces a DEFER, so a branch saddle / genuine
+    `TangentPoint`/`TangentCurve`/`Undecided` STILL stops + classifies + defers → OCCT. No
+    point is fabricated past a degeneracy: a crossed arc is emitted only if EVERY node
+    verified on both surfaces ≤ `onSurfTol`, else the whole arc is discarded (rollback).
+    **At the bar:** a sphere grazed by an offset cylinder that S3 TRUNCATES at
+    `tangentSinTol=0.25` now traces the FULL closed loop (`nearTangentGaps → 0`,
+    `nearTangentCrossed = 22` nodes, every node on both surfaces ≤ 1e-6, crossed arc on the
+    OCCT locus onCurve ≤ 5.6e-5 / onSurf ≤ 1.3e-5 / crossResid ≤ 4.1e-11); the equal-radius
+    orthogonal-cylinder **saddle (a branch crossing) STILL DEFERS** (`nearTangentCrossed=0`,
+    `nearTangentGaps ≥ 1`), as do genuine `TangentPoint`/`TangentCurve` contacts. All 5 S3
+    transversal fixtures trace bit-identically (corrector/step outside the band unchanged).
+    Both gates green: host `test_native_ssi_marching` (**10 cases, 0 failed**; NUMSCI OFF
+    CTest **26/26**, NUMSCI ON **31/31**) + sim `scripts/run-sim-native-ssi-s4c.sh`
+    (**7 passed, 0 failed** — `nt-cross s4c` crossed, `eq-cyl defer` deferred, 5 transversal
+    pairs `nt=0`). No regressions (S5 `native-pass=5` persists, tessellator byte-identical).
+    **Honest scope — what S4-c does NOT do:** deeper near-coincident bands, branch crossings
+    (S4-d), singularities (S4-e), self-intersection repair (S4-f), and any near-tangent
+    region not robustly crossable stay an honest `NearTangent` gap deferred to OCCT.
+    Files: `src/native/ssi/marching.{h,cpp}` +
+    `tests/native/test_native_ssi_marching.cpp` +
+    `tests/sim/native_ssi_marching_parity.mm` + `scripts/run-sim-native-ssi-s4c.sh`.
+    Living change `openspec/changes/add-native-ssi-s4c-near-tangent-marching` **archived**
+    (`2026-07-04`).
 - â **`#4b` Tier E â native `cc_wrap_emboss` â DEFERRED (FUTURE WORK, not scheduled
   yet).** This is the *native* (OCCT-free) rewrite of wrap-emboss; it is distinct from
   the Phase-3 `add-robust-wrap-emboss` change, which is â done and OCCT-backed (the

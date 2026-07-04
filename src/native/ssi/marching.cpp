@@ -48,7 +48,9 @@ inline double clampd(double x, double lo, double hi) noexcept {
 // ─────────────────────────────────────────────────────────────────────────────
 struct Tuned {
   double h0, minStep, maxStep, onSurfTol, maxDeflection, tangentSinTol, loopClose;
-  int maxPoints;
+  double bandEnterSin, bandExitSin;   ///< S4-c crossing-band thresholds (tangentSinTol-derived)
+  double minCrossSine;                ///< S4-c floor: sine below this mid-crossing ⇒ genuine tangency/branch, defer
+  int maxPoints, crossMaxSteps;
 };
 
 Tuned tune(const MarchOptions& o, double scale) {
@@ -60,7 +62,22 @@ Tuned tune(const MarchOptions& o, double scale) {
   t.maxDeflection = o.maxDeflection> 0 ? o.maxDeflection: scale * 1e-3;
   t.tangentSinTol = o.tangentSinTol;
   t.loopClose     = std::max(1.0, o.loopCloseFrac);
+  // S4-c band: ENTER the fixed-plane crossing exactly where the S3 gate would STOP
+  // (sine < tangentSinTol) — the crossing takes over the same near-tangent region S3
+  // truncates — and EXIT once the far side recovers safely above that stop threshold
+  // (1.5·tangentSinTol). Both derive from tangentSinTol — no independent tolerance is
+  // introduced or weakened; the band only decides WHERE the fixed-plane corrector runs.
+  t.bandEnterSin  = o.bandEnterSin > 0 ? o.bandEnterSin : o.tangentSinTol;
+  t.bandExitSin   = o.bandExitSin  > 0 ? o.bandExitSin  : 1.5 * o.tangentSinTol;
+  if (t.bandExitSin <= t.bandEnterSin) t.bandExitSin = t.bandEnterSin * 1.5;
+  // A CROSSABLE single-branch graze keeps a bounded minimum sine (it grazes but never
+  // truly touches — its dip is a fair fraction of the band-enter threshold); a genuine
+  // tangency / BRANCH POINT drives sine → 0. So a band whose MINIMUM sine falls below this
+  // fraction of the enter threshold is NOT a crossable graze — defer (honest S4-d/tangency
+  // handoff). 0.3·enter sits below a real graze's dip yet far above a true tangency's 0.
+  t.minCrossSine  = 0.3 * t.bandEnterSin;
   t.maxPoints     = std::max(16, o.maxPoints);
+  t.crossMaxSteps = std::max(1, o.crossMaxSteps);
   return t;
 }
 
@@ -227,6 +244,8 @@ struct DirResult {
   DirEnd end = DirEnd::Boundary;
   double sineAtStop = 0.0;
   State stopState{};   ///< the on-curve state where the march stopped (for S4-b typing)
+  int crossed = 0;             ///< S4-c: near-tangent grazes marched through this direction
+  double maxCrossResid = 0.0;  ///< worst on-both-surfaces residual over the crossed arcs
 };
 
 // One PREDICTED-then-CORRECTED step with deflection-driven shrink. Halves `h` (in/out)
@@ -255,43 +274,355 @@ CorrectorOut tryStep(const SurfaceAdapter& A, const SurfaceAdapter& B, const Sta
   return c;
 }
 
+// ── S4-c: curvature-aware predictor ─────────────────────────────────────────────
+//
+// Across a sharp near-tangent bend the first-order guess P + h·t★ overshoots off the
+// curve, so the fixed-plane corrector can start out of basin. Bend it by the DISCRETE
+// CURVATURE of the last two accepted nodes: with unit tangents t_{k-1}, t_k and node
+// spacing Δs, κ̂·N̂ ≈ (t_k − t_{k-1})/Δs, and the second-order guess is
+// P + h·t★ + ½·h²·(κ̂·N̂). Falls back to first-order when there are < 2 prior nodes, Δs
+// is degenerate, or κ̂ is non-finite — never worse than the S3 predictor.
+Point3 curvaturePredict(const State* prevPrev, const State& prev, double h, const Vec3& tStar) {
+  const Point3 first = prev.p + tStar * h;
+  if (prevPrev == nullptr) return first;
+  const double ds = math::distance(prev.p, prevPrev->p);
+  if (!(ds > 1e-12)) return first;
+  const Vec3 seg = (prev.p - prevPrev->p) / ds;              // chord tangent of the last step
+  const Vec3 kN = (tStar - seg) / ds;                        // (t_k − t_{k-1})/Δs ≈ κ̂·N̂
+  const Vec3 bend = kN * (0.5 * h * h);
+  const Point3 guess = first + bend;
+  if (!(std::isfinite(guess.x) && std::isfinite(guess.y) && std::isfinite(guess.z))) return first;
+  return guess;
+}
+
+// ── S4-c: fine look-ahead scan of the near-tangent band minimum sine ────────────
+//
+// The marching step is far coarser than the near-tangent region, so a genuine
+// (measure-zero) tangency / branch point — where sine → 0 — can be LEAPT OVER by one
+// step and mistaken for a graze. Before committing to a crossing we SCAN the band along
+// the fixed crossing direction `dirStar` in FINE increments (fixed-plane cuts), tracking
+// the minimum sine until it recovers above `bandExitSin` or a bounded look-ahead is
+// exhausted. A crossable graze bottoms out at a bounded sine; a tangency/branch dips to
+// ~0. Returns that minimum (∞ if the scan never lands on both surfaces — treated as
+// non-crossable). Pure look-ahead — appends nothing; the caller decides on the result.
+double bandMinSine(const SurfaceAdapter& A, const SurfaceAdapter& B, const State& stall,
+                   const Vec3& dirStar, const Tuned& t) {
+  const double hFine = std::max(t.minStep, t.h0 / 64.0);     // fine sampling step
+  const double reach = t.h0 * 4.0;                           // bounded look-ahead distance
+  const int maxScan = 512;
+  double minSine = intersectionTangent(A, B, stall).sine;
+  // Scan BOTH ways along the crossing direction: the marcher enters the band only after
+  // OVERSHOOTING the minimum (its last-good node was above the enter threshold, then one
+  // step dropped below), so the sine → 0 dip of a true tangency sits BEHIND the stall as
+  // often as ahead. Sampling ±dirStar captures it either way.
+  for (int dir = -1; dir <= 1; dir += 2) {
+    const Vec3 step = dirStar * (hFine * static_cast<double>(dir));
+    State cur = stall;
+    double travelled = 0.0;
+    for (int i = 0; i < maxScan && travelled < reach; ++i) {
+      State guess = cur;
+      guess.p = cur.p + step;
+      advanceParams(A, cur.u1, cur.v1, A.uPeriod, step, A.domain, guess.u1, guess.v1);
+      advanceParams(B, cur.u2, cur.v2, B.uPeriod, step, B.domain, guess.u2, guess.v2);
+      // reproject onto both surfaces holding the fine advance along `step` (no branch pin)
+      const CorrectorOut c = correct(A, B, cur, dirStar, hFine * static_cast<double>(dir),
+                                     guess, t.onSurfTol);
+      if (!c.ok) break;  // cannot resolve this side → stop scanning this direction
+      const Tangent tn = intersectionTangent(A, B, c.s);
+      minSine = std::min(minSine, tn.sine);
+      travelled += math::distance(cur.p, c.s.p);
+      cur = c.s;
+      if (tn.sine >= t.bandExitSin && travelled > hFine) break;  // recovered on this side
+    }
+  }
+  return minSine;
+}
+
+// ── S4-c: the crossable-graze driver (fixed-plane cut) ──────────────────────────
+//
+// Called from marchDir when the march reaches the crossing band (sine < bandEnterSin).
+// Attempts to MARCH THROUGH the near-tangency, appending verified nodes to `out`, and
+// returns true iff it crossed to the far side (sine ≥ bandExitSin with the tangent still
+// consistent with t★). On ANY failure — a genuine tangency / undecided jet at the stall,
+// a branch flip, a node off either surface, a non-monotone step, or the step budget /
+// minStep floor exhausted — it appends NOTHING new (the caller keeps only the pre-band
+// nodes) and returns false so the caller STOPS + defers. Never fabricates a point.
+//
+// COMPLEXITY NOTE: this is the isolated near-tangent corrector the design flags as a
+// systems-band function (guarded crossing loop + verification); it is deliberately kept
+// in one place rather than spread through marchDir.
+struct CrossOut {
+  bool crossed = false;
+  State end{};          ///< the far-side state to resume the normal march from
+  int count = 0;        ///< nodes appended (for nearTangentCrossed accounting)
+  double maxResid = 0.0;
+};
+
+// Per-node crossability verdict for a corrected crossing node with tangent `tanNew`.
+// Two guards, EITHER of which rejects (→ discard + defer):
+//  * GENUINE-TANGENCY / BRANCH floor — a crossable graze keeps a bounded minimum sine; a
+//    true tangency / branch point drives sine → 0. A node whose sine collapsed below the
+//    floor is not a single-branch graze.
+//  * BRANCH-FLIP witness — the RAW cross-product tangent field is smooth along a single
+//    branch (successive raw tangents stay aligned once continuity-oriented); at a branch
+//    point it turns sharply / reverses. A ≥60° turn in one step, or a continuity-oriented
+//    tangent that no longer heads the crossing way, means two branches meet (S4-d).
+// On accept, `rawOut` is the continuity-oriented raw tangent to carry to the next step.
+bool crossNodeCrossable(const Tangent& tanNew, const Vec3& rawPrev, const Vec3& dirStar,
+                        const Tuned& t, Vec3& rawOut) {
+  if (!tanNew.valid || tanNew.sine < t.minCrossSine) return false;
+  Vec3 rawNew = tanNew.dir;
+  const double contDot = math::dot(rawNew, rawPrev);
+  if (std::fabs(contDot) < 0.5) return false;              // turned ≥60° in one step
+  if (contDot < 0.0) rawNew = rawNew * -1.0;               // orient by continuity
+  if (math::dot(rawNew, dirStar) <= 0.0) return false;     // U-turn off the crossing way
+  rawOut = rawNew;
+  return true;
+}
+
+// `tStarFwd` is the last-good FORWARD unit tangent (already oriented toward the march
+// direction), used directly as the fixed crossing direction — the raw cross-product sign
+// is unreliable through the near-tangency, so orientation is carried in, not re-derived.
+// `lastGoodSine` is ‖nA×nB‖ at the last pre-band node (the transversality just before the
+// dip) — the crossable-vs-branch discriminator below.
+CrossOut crossNearTangent(const SurfaceAdapter& A, const SurfaceAdapter& B,
+                          const State& stall, const Vec3& tStarFwd, double lastGoodSine,
+                          const Tuned& t, double scale, std::vector<WLinePoint>& out) {
+  CrossOut r;
+
+  // Crossable GATE (S4-b): only a NearTangentTransversal graze may be crossed.
+  const Dir3 nA = A.normal(stall.u1, stall.v1);
+  const Dir3 nB = B.normal(stall.u2, stall.v2);
+  const double sine0 = math::norm(math::cross(nA.vec(), nB.vec()));
+  const TangentContact tc = classify_tangent_contact_seeded(
+      A, B, stall.u1, stall.v1, stall.u2, stall.v2, stall.p, nA, nB, sine0, scale);
+  if (tc.type != TangentContactType::NearTangentTransversal) return r;  // tangent/undecided → defer
+
+  const Vec3 dirStar = tStarFwd;        // oriented crossing direction (fixed for the whole band)
+
+  // BRANCH / GENUINE-TANGENCY reject — the honesty core. Two independent witnesses, EITHER
+  // of which forces a defer:
+  //
+  //  (1) STEEP COLLAPSE. A crossable graze bends GENTLY — the transversality sine eases
+  //      down from its last-good value to a bounded dip (the sphere/graze drops only
+  //      0.266 → 0.247 into the band, a ~0.9 ratio). A true tangency / S4-d branch point
+  //      COLLAPSES sine by orders of magnitude in one step (the equal-cylinder saddle
+  //      drops 0.031 → 3e-5, a ~0.001 ratio). So if the stall sine fell to a small
+  //      fraction of the last-good sine, the region is a tangency/branch → defer.
+  //  (2) BAND-MINIMUM FLOOR. A fine look-ahead scan of the band (finer than the marching
+  //      step, so it cannot leap over a measure-zero dip) must keep its minimum sine at or
+  //      above a fraction of the enter threshold; a sine → 0 dip ⇒ defer.
+  const bool steepCollapse = lastGoodSine > 0.0 && sine0 < 0.25 * lastGoodSine;
+  if (steepCollapse) return r;
+
+  const double bandMin = bandMinSine(A, B, stall, dirStar, t);
+  if (!(bandMin >= t.minCrossSine)) return r;  // (also catches inf / NaN → defer)
+
+  const std::size_t base = out.size();  // rollback marker: discard all crossing nodes on failure
+  State cur = stall;
+  State prev = stall;
+  bool havePrev = false;                // a within-band prior node feeds the curvature predictor
+  Vec3 rawPrev = tStarFwd;              // previous CONTINUITY-oriented raw tangent (flip witness)
+  // Enter with a FINE step so the crossing RESOLVES the near-tangent region instead of
+  // leaping over it. A big step from the stall would land straight on the far side and
+  // look transversal even at a true tangency/branch (the sine → 0 dip skipped); a fine
+  // step samples the dip so the sine floor + tangent-flip guards below can see it. The
+  // cap is generous enough that a genuine graze still crosses in a bounded node count.
+  const double hCrossCap = std::max(t.minStep, t.h0 / 16.0);
+  double h = hCrossCap;
+
+  for (int i = 0; i < t.crossMaxSteps; ++i) {
+    // Curvature-aware guess along the FIXED t★, then fixed-plane-cut correct: the
+    // corrector's advance residual uses dirStar (well-posed as local sine → 0), NOT the
+    // degenerating local tangent.
+    State guess = cur;
+    guess.p = curvaturePredict(havePrev ? &prev : nullptr, cur, h, dirStar);
+    advanceParams(A, cur.u1, cur.v1, A.uPeriod, dirStar * h, A.domain, guess.u1, guess.v1);
+    advanceParams(B, cur.u2, cur.v2, B.uPeriod, dirStar * h, B.domain, guess.u2, guess.v2);
+    const CorrectorOut c = correct(A, B, cur, dirStar, h, guess, t.onSurfTol);
+
+    // VERIFY: on both surfaces, advanced along t★, and the chord/arc DEFLECTION is within
+    // budget. The deflection cap is what forces the crossing to RESOLVE the near-tangent
+    // region rather than leap across it: at a true tangency / branch point the curve bows
+    // sharply, so a big step has huge deflection → shrink until it SAMPLES the sine → 0
+    // dip, where the floor/flip guards below abort. A genuine graze bows gently and is
+    // accepted at a healthy step.
+    const double advance = math::dot(c.s.p - cur.p, dirStar);
+    const bool advanced = advance >= 0.25 * h;
+    const double defl = c.ok ? stepDeflection(A, B, cur, c.s, dirStar, t.onSurfTol)
+                             : std::numeric_limits<double>::infinity();
+    if (!c.ok || !advanced || defl > t.maxDeflection) {
+      if (h <= t.minStep) { out.resize(base); return r; }  // stuck at the floor → defer
+      h *= 0.5;                                            // shrink and retry the same node
+      continue;
+    }
+
+    const Tangent tanNew = intersectionTangent(A, B, c.s);
+    Vec3 rawNew{};
+    if (!crossNodeCrossable(tanNew, rawPrev, dirStar, t, rawNew)) { out.resize(base); return r; }
+
+    out.push_back(toNode(c.s, c.resid));
+    prev = cur; havePrev = true;
+    cur = c.s;
+    rawPrev = rawNew;
+    r.maxResid = std::max(r.maxResid, c.resid);
+    ++r.count;
+
+    // Recovered on the far side: transversality back above the exit threshold → crossed.
+    if (tanNew.sine >= t.bandExitSin) {
+      r.crossed = true;
+      r.end = cur;
+      return r;
+    }
+    // still deep in the band: keep the step fine (bounded by the crossing cap / minStep).
+    h = std::max(t.minStep, std::min(h, hCrossCap));
+  }
+
+  out.resize(base);  // budget exhausted without recovering → discard, defer
+  return r;
+}
+
+// The mutable state carried through one direction's walk. Bundled so the walk loop can
+// hand it to small helpers (band entry, node acceptance) instead of inlining every branch
+// — keeping marchDir a flat dispatch (see the S4-c helpers below).
+struct Walk {
+  State cur;
+  double h;
+  double sign;
+  Vec3 tStar{};              // last-good FORWARD unit tangent (fixed-plane normal on a band entry)
+  double lastGoodSine = 0.0; // ‖nA×nB‖ at the last pre-band node (crossable discriminator)
+  bool haveStar = false;
+  bool crossedAny = false;   // has this direction marched through a graze?
+  Vec3 seedFwd{};            // seed's outgoing FORWARD tangent (closure-direction gate)
+  bool haveSeedFwd = false;
+};
+
+// Loop-closure proximity. In a pure S3 transversal trace this is exactly `loopClose·h`
+// (bit-identical to S3). Once a graze has been CROSSED the step h collapses to near
+// minStep through the band, which would make `loopClose·h` too tight to detect the loop
+// returning to the seed (the seed can sit right at a graze); after a crossing we floor
+// the radius at the NOMINAL step so closure stays detectable.
+double closeRadius(const Walk& w, const Tuned& t) {
+  return w.crossedAny ? t.loopClose * std::max(w.h, 0.5 * t.h0) : t.loopClose * w.h;
+}
+// DIRECTION-CONSISTENT closure (only meaningful once a graze was crossed and the radius
+// floored). A near-tangent loop can pass CLOSE TO the seed at a mid-loop junction while
+// running the OTHER way; the inflated radius would false-close there. Require the current
+// forward tangent to agree with the seed's outgoing tangent. Pure S3 (crossedAny==false)
+// keeps its exact tight-radius behaviour (returns true unconditionally).
+bool closeAligned(const Walk& w, const Vec3& fwdNow) {
+  if (!w.crossedAny || !w.haveSeedFwd) return true;
+  return math::dot(fwdNow, w.seedFwd) > 0.0;
+}
+bool atBoundary(const SurfaceAdapter& A, const SurfaceAdapter& B, const State& s) {
+  return onBoundary(A, s.u1, s.v1, A.uPeriod > 0.0, A.vPeriod > 0.0) ||
+         onBoundary(B, s.u2, s.v2, B.uPeriod > 0.0, B.vPeriod > 0.0);
+}
+
+// S4-c band-entry handler: at a near-tangent stall (sine < bandEnterSin, with a last-good
+// tangent), try to MARCH THROUGH via crossNearTangent. On success it updates `w` to the
+// recovered far side and returns nullopt (the caller CONTINUES the walk after re-checking
+// closure/boundary here); on a non-crossable region it returns a NearTangent DirResult
+// (the caller STOPS + defers). Isolating this keeps marchDir flat.
+std::optional<DirResult> tryBandEntry(const SurfaceAdapter& A, const SurfaceAdapter& B,
+                                      const State& start, int step, const Tuned& t,
+                                      double scale, Walk& w, std::vector<WLinePoint>& out,
+                                      DirResult& res) {
+  const CrossOut cx = crossNearTangent(A, B, w.cur, w.tStar, w.lastGoodSine, t, scale, out);
+  if (!cx.crossed) {  // genuine tangency / branch / unverifiable → honest S4 stop
+    DirResult stop;
+    stop.end = DirEnd::NearTangent;
+    stop.sineAtStop = intersectionTangent(A, B, w.cur).sine;
+    stop.stopState = w.cur;
+    return stop;
+  }
+  res.crossed += cx.count;
+  res.maxCrossResid = std::max(res.maxCrossResid, cx.maxResid);
+  const Vec3 fwd = cx.end.p - w.cur.p;               // forward chord across the graze
+  w.cur = cx.end;
+  w.crossedAny = true;
+  w.h = std::max(t.minStep, 0.5 * t.h0);             // resume with a modest step
+  // Re-derive the forward SIGN so `tan.dir · sign` keeps going the way the crossing went
+  // (the raw cross-product sign may have flipped through the near-tangency), refreshing
+  // the FORWARD tStar / lastGoodSine for any subsequent band entry.
+  const Tangent rec = intersectionTangent(A, B, w.cur);
+  double recSine = 0.0;
+  if (rec.valid) {
+    const bool fwdAligned = math::dot(rec.dir, fwd) >= 0.0;
+    w.sign = fwdAligned ? 1.0 : -1.0;
+    w.tStar = fwdAligned ? rec.dir : rec.dir * -1.0;
+    w.lastGoodSine = rec.sine;
+    w.haveStar = true;
+    recSine = rec.sine;
+  }
+  if (step > 2 && math::distance(w.cur.p, start.p) <= closeRadius(w, t) && closeAligned(w, w.tStar)) {
+    DirResult done; done.end = DirEnd::LoopClosed; done.crossed = res.crossed;
+    done.maxCrossResid = res.maxCrossResid; done.sineAtStop = recSine; return done;
+  }
+  if (atBoundary(A, B, w.cur)) {
+    DirResult done; done.end = DirEnd::Boundary; done.crossed = res.crossed;
+    done.maxCrossResid = res.maxCrossResid; done.sineAtStop = recSine; return done;
+  }
+  return std::nullopt;  // crossed → continue the walk
+}
+
 DirResult marchDir(const SurfaceAdapter& A, const SurfaceAdapter& B,
-                  const State& start, double sign, const Tuned& t,
+                  const State& start, double sign, const Tuned& t, double scale,
                   std::vector<WLinePoint>& out) {
-  State cur = start;
-  double h = t.h0;
+  Walk w{start, t.h0, sign};
   DirResult res;
   for (int step = 0; step < t.maxPoints; ++step) {
-    const Tangent tan = intersectionTangent(A, B, cur);
-    if (!tan.valid || tan.sine < t.tangentSinTol) {  // near-tangent → S4 stop
-      res.end = DirEnd::NearTangent; res.sineAtStop = tan.sine; res.stopState = cur; return res;
+    const Tangent tan = intersectionTangent(A, B, w.cur);
+
+    // Loop closure at the current node (checked before a possible band entry so a loop
+    // whose seed lies inside a graze still closes rather than crossing forever).
+    if (step > 2 && w.crossedAny && math::distance(w.cur.p, start.p) <= closeRadius(w, t) &&
+        closeAligned(w, w.tStar)) {
+      res.end = DirEnd::LoopClosed; res.sineAtStop = tan.sine; return res;
     }
-    const Vec3 dir = tan.dir * sign;
+
+    // S4-c crossing band: try to MARCH THROUGH a near-tangency instead of stopping — only
+    // with a valid last-good tangent and if the S4-b classification + single-branch checks
+    // pass (see tryBandEntry / crossNearTangent).
+    if ((!tan.valid || tan.sine < t.bandEnterSin) && w.haveStar) {
+      if (auto done = tryBandEntry(A, B, start, step, t, scale, w, out, res)) return *done;
+      continue;  // crossed → resume the normal walk on the far side
+    }
+    if (!tan.valid || tan.sine < t.tangentSinTol) {  // near-tangent, no last-good tangent → S4 stop
+      res.end = DirEnd::NearTangent; res.sineAtStop = tan.sine; res.stopState = w.cur; return res;
+    }
+    const Vec3 dir = tan.dir * w.sign;
 
     bool ok = false;
-    const CorrectorOut c = tryStep(A, B, cur, dir, t, h, ok);
+    const CorrectorOut c = tryStep(A, B, w.cur, dir, t, w.h, ok);
     if (!ok) {  // corrector could not take even a minStep transversally → S4 stop
-      res.end = DirEnd::NearTangent; res.sineAtStop = intersectionTangent(A, B, cur).sine;
-      res.stopState = cur; return res;
+      res.end = DirEnd::NearTangent; res.sineAtStop = intersectionTangent(A, B, w.cur).sine;
+      res.stopState = w.cur; return res;
     }
 
-    // Loop closure: back near the seed after real progress, moving consistently.
-    if (step > 2 && math::distance(c.s.p, start.p) <= t.loopClose * h) {
+    // Forward tangent (oriented by the step just taken) — the raw cross-product sign is
+    // not reliable across a coming near-tangency, so a later band entry crosses this way.
+    const Vec3 chord = c.s.p - w.cur.p;
+    Vec3 fwd = dir;
+    if (math::norm(chord) > 1e-14 && math::dot(dir, chord) < 0.0) fwd = dir * -1.0;
+
+    // Loop closure: back near the seed after real progress, moving consistently (a crossed
+    // loop must also return in the seed's outgoing direction — see closeAligned).
+    if (step > 2 && math::distance(c.s.p, start.p) <= closeRadius(w, t) && closeAligned(w, fwd)) {
       out.push_back(toNode(c.s, c.resid));
       res.end = DirEnd::LoopClosed; res.sineAtStop = tan.sine; return res;
     }
 
+    w.tStar = fwd; w.haveStar = true;
+    w.lastGoodSine = tan.sine;                                  // transversality just before any dip
+    if (!w.haveSeedFwd) { w.seedFwd = fwd; w.haveSeedFwd = true; }
     out.push_back(toNode(c.s, c.resid));
-    cur = c.s;
+    w.cur = c.s;
 
-    // Boundary exit (non-periodic edge reached).
-    if (onBoundary(A, cur.u1, cur.v1, A.uPeriod > 0.0, A.vPeriod > 0.0) ||
-        onBoundary(B, cur.u2, cur.v2, B.uPeriod > 0.0, B.vPeriod > 0.0)) {
+    if (atBoundary(A, B, w.cur)) {  // boundary exit (non-periodic edge reached)
       res.end = DirEnd::Boundary; res.sineAtStop = tan.sine; return res;
     }
-
-    // Smooth + cheap step → grow h (bounded). Cheap ≈ few corrector evals.
-    if (c.nfev <= 40) h = std::min(h * 1.5, t.maxStep);
+    if (c.nfev <= 40) w.h = std::min(w.h * 1.5, t.maxStep);  // smooth + cheap → grow h (bounded)
   }
   res.end = DirEnd::Boundary;  // ran out of budget → treat as an (unfinished) open end
   return res;
@@ -408,7 +739,7 @@ WLine march_branch(const SurfaceAdapter& A, const SurfaceAdapter& B, const Seed&
   const State seedState{seed.u1, seed.v1, seed.u2, seed.v2, seed.point};
 
   std::vector<WLinePoint> fwd, bwd;
-  const DirResult f = marchDir(A, B, seedState, +1.0, t, fwd);
+  const DirResult f = marchDir(A, B, seedState, +1.0, t, scale, fwd);
 
   WLine line;
   line.branchId = seed.branchId;
@@ -418,13 +749,17 @@ WLine march_branch(const SurfaceAdapter& A, const SurfaceAdapter& B, const Seed&
     line.points.push_back(toNode(seedState, seed.onSurfResidual));
     line.points.insert(line.points.end(), fwd.begin(), fwd.end());
     line.status = TraceStatus::Closed;
+    line.nearTangentCrossed = f.crossed;                       // S4-c: grazes marched through
+    line.crossMaxResidual   = f.maxCrossResid;
   } else {
     // Open (or truncated forward). March the other way too and stitch:
     //   [reversed backward half]  seed  [forward half].
-    const DirResult b = marchDir(A, B, seedState, -1.0, t, bwd);
+    const DirResult b = marchDir(A, B, seedState, -1.0, t, scale, bwd);
     for (auto it = bwd.rbegin(); it != bwd.rend(); ++it) line.points.push_back(*it);
     line.points.push_back(toNode(seedState, seed.onSurfResidual));
     line.points.insert(line.points.end(), fwd.begin(), fwd.end());
+    line.nearTangentCrossed = f.crossed + b.crossed;           // S4-c: grazes marched through
+    line.crossMaxResidual   = std::max(f.maxCrossResid, b.maxCrossResid);
     // Failed: neither direction advanced past the seed (no real curve). NearTangent: at
     // least one end stopped at a tangency (traced up to it — honest S4 gap). Otherwise
     // both ends left a domain boundary → a clean open branch.
@@ -486,6 +821,7 @@ TraceSet trace_from_seeds(const SurfaceAdapter& A, const SurfaceAdapter& B,
     WLine w = march_branch(A, B, s, opts);
     if (w.points.size() < 2 || w.status == TraceStatus::Failed) continue;  // no real curve
     if (retraces(w, res.lines, dedupRadius)) { ++res.dedupedRetraces; continue; }
+    res.nearTangentCrossed += w.nearTangentCrossed;  // S4-c grazes marched through this branch
     switch (w.status) {
       case TraceStatus::Closed:       ++res.closedCurves; ++res.tracedBranches; break;
       case TraceStatus::BoundaryExit: ++res.openCurves;   ++res.tracedBranches; break;

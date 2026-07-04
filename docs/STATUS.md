@@ -26,8 +26,9 @@ the CyberCad **app link-swap** are optional, deferred follow-ups — not gates.
 | Numeric substrate — closest-point vs OCCT `Extrema` (NumPP/SciPP) | `scripts/run-sim-native-numerics.sh` | **22 / 22** |
 | SSI **S1** analytic intersection vs OCCT `GeomAPI_IntSS` | `scripts/run-sim-native-ssi.sh` | **18 / 18** |
 | SSI **S2** subdivision-seeding recall vs OCCT | `scripts/run-sim-native-ssi-seeding.sh` | **100% transversal** |
-| SSI **S3** marching tracer vs OCCT `IntPatch` | `scripts/run-sim-native-ssi-marching.sh` | **5 / 5** (9/9 branches) |
+| SSI **S3** marching tracer vs OCCT `IntPatch` | `scripts/run-sim-native-ssi-marching.sh` | **5 / 5** transversal (9/9 branches) + 2 S4-c cases = **7 / 7** |
 | SSI **S4-a/b** coincident + tangent CLASSIFICATION vs OCCT `IntAna_QuadQuadGeo`/`IntPatch` | `scripts/run-sim-native-ssi-s4.sh` | **8 / 8** (0 deferred; `FullSurfaceSame`/`TangentPoint`/`TangentCurve`/`Transversal`, on-surface ≤ ~1e-16) |
+| SSI **S4-c** near-tangent MARCH-THROUGH vs OCCT `GeomAPI_IntSS` | `scripts/run-sim-native-ssi-s4c.sh` | **7 / 7** (sphere∩offset-cyl graze S3 truncated now FULLY traced: `nearTangentGaps → 0`, 22 nodes crossed, on OCCT locus onCurve ≤ 5.6e-5 / onSurf ≤ 1.3e-5; equal-cyl branch saddle STILL defers, `crossed=0`; 5 transversal pairs `nt=0`) |
 | SSI **S5-a/b/c** curved boolean vs OCCT `BRepAlgoAPI` | `scripts/run-sim-native-ssi-curved-boolean.sh` | **18 / 18** (native-pass=5: drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON eq/uneq, all wt, ΔV ≤ 8e-4; 13 honest fallbacks) |
 | Spec validation | `openspec validate --all --strict` | **28 / 28** |
 
@@ -50,7 +51,7 @@ Highlights (measured, not asserted-trivially):
 | **1 — Multi-core** | `accelerate-multicore-occt` | ✅ complete at acceptance bar |
 | **2 — GPU (Metal)** | `add-metal-compute-backend` ✅ · `add-gpu-tessellation` ✅ · `add-gpu-spatial-acceleration` ✅ | ✅ complete at acceptance bar; optional `cc_*` pick/cull facade entry deferred |
 | **3 — Missing features** | `add-reference-geometry` ✅ · `add-robust-wrap-emboss` ✅ · `add-robust-thread-boolean` ✅ · `add-g2-blend-fillet` ✅ · `add-full-round-fillet` ✅ | ✅ 5/5 full; full-round covers all planar walls (curved neighbours = documented residual) |
-| **4 — Native rewrite** | math · topology · tessellation · construction · planar+box∩cyl booleans · planar blends · STEP export · numeric foundations (NumPP/SciPP) · SSI S1+S2+S3 · SSI S4-a/b (coincident-region + tangent-contact classification) · SSI S5-a/b/c (curved booleans: drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON) | ◐ **substantially native (planar/analytic + SSI-driven curved booleans + S4 degeneracy classification)**; curved tail (SSI S4-c…f marching core · wider curved booleans/blends · import · healing) keeps OCCT linked; drop-occt (#8) BLOCKED (≈9–18 py) |
+| **4 — Native rewrite** | math · topology · tessellation · construction · planar+box∩cyl booleans · planar blends · STEP export · numeric foundations (NumPP/SciPP) · SSI S1+S2+S3 · SSI S4-a/b (coincident-region + tangent-contact classification) · SSI S4-c (first near-tangent MARCH-THROUGH slice) · SSI S5-a/b/c (curved booleans: drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON) | ◐ **substantially native (planar/analytic + SSI-driven curved booleans + S4 degeneracy classification + first near-tangent march-through)**; curved tail (SSI S4-d…f marching core · wider curved booleans/blends · import · healing) keeps OCCT linked; drop-occt (#8) BLOCKED (≈9–18 py) |
 
 Detail: [STATUS-phase-0-1.md](STATUS-phase-0-1.md) ·
 [STATUS-phase-2.md](STATUS-phase-2.md) · [STATUS-phase-3.md](STATUS-phase-3.md) ·

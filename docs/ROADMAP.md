@@ -77,6 +77,13 @@ robustness tail keeps OCCT linked.** Canonical detail:
   marching-line tracer (WLine): full transversal intersection curves traced from the
   S2 seeds vs OCCT `IntPatch` (5 pairs / 9 branches, all fully-traced, 0 near-tangent-
   truncated; onSurf ≤ 6.81e-07, length within the step tol).
+- ✅ **SSI S4-a/b (coincident-region + tangent-contact CLASSIFICATION)** — typed
+  `CoincidentRegion` (`FullSurfaceSame` / `OverlapSubRegion` / `Undecided`) and typed
+  `TangentContact` (`TangentPoint` / `TangentCurve` / `NearTangentTransversal` /
+  `Undecided`), on both the analytic and seeded paths, verified vs OCCT
+  `IntAna_QuadQuadGeo` / `IntPatch` (8 pairs, 0 failed, 0 deferred; emitted point/curve
+  on both surfaces ≤ ~1e-16). DETECTION + CLASSIFICATION only — a `NearTangentTransversal`
+  is typed and handed to OCCT, never marched through (that is the S4-c core, pending).
 - ◐ **SSI S5-a/b/c (curved-boolean slices)** — the SSI-curve-driven
   split→classify→weld pipeline (`src/native/boolean/ssi_boolean.{h,cpp}`, consumes the
   S3 `TraceSet`) produces **five native curved-boolean sub-cases verified vs OCCT
@@ -86,15 +93,17 @@ robustness tail keeps OCCT linked.** Canonical detail:
   pairs (incl. Steinmetz) still decline to OCCT — honest, measured fallbacks.
 
 **Still OCCT-backed (the tail that keeps OCCT linked):**
-- ☐ SSI **S4 near-tangent robustness** (the moat) → **wider S5 curved booleans**
-  (fuse/cut caps, more families, lifting the near-tangent gate — consuming the S3 WLines).
+- ☐ SSI **S4-c…f marching core** (the moat tail: march-through-tangency, branch points,
+  singularities, self-intersection — S4-a/b classification already landed) → **wider S5
+  curved booleans** (fuse/cut caps, more families, lifting the near-tangent gate,
+  consuming the S3 WLines + the S4 typed regions/contacts).
 - ☐ General curved **booleans** & **blends** (sit on SSI); curved **wrap-emboss**.
 - ☐ Non-planar/guided/rail sweep robustness; general loft; fine-pitch threads.
 - ☐ **Shape healing**; **STEP/IGES import**.
 - ☐ **`drop-occt`** — BLOCKED until the above are native (research-grade, multi-year).
 
 **Effort:** ≈ 0.9–1.3 py delivered (planar/analytic breadth); ≈ **9–18 py remaining**
-to genuinely drop OCCT, concentrated in SSI-S4 robustness + healing + import.
+to genuinely drop OCCT, concentrated in SSI-S4-c…f marching robustness + healing + import.
 
 ---
 

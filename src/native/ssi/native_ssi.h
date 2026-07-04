@@ -26,7 +26,46 @@
 //                       (oblique = planar quartic, deferred per S1 scope).
 //   * quadric_pairs.h — sphere∩sphere; coaxial sphere∩cylinder, sphere∩cone,
 //                       cylinder∩cone; coaxial/parallel cylinder∩cylinder.
-//   * dispatch.h      — Surface variant + order-independent intersect_surfaces(A,B).
+//   * dispatch.h      — Surface variant + order-independent intersect_surfaces(A,B) +
+//                       classify_degeneracy(A,B) (S4-a analytic coincidence classifier).
+//
+// STAGE S4-a — COINCIDENT / OVERLAPPING-SURFACE DETECTION (typed region):
+//   * coincidence.h   — CoincidentRegion { None | FullSurfaceSame | OverlapSubRegion
+//                       {ParamBox regionA, regionB} | Undecided } — the typed shared-locus
+//                       descriptor downstream booleans/queries consume instead of a flag.
+//   * same_surface.h  — closed-form "same locus?" predicates per elementary family (same
+//                       plane / coaxial-equal cyl / same cone / same sphere / same torus),
+//                       backing classify_degeneracy's FullSurfaceSame verdict. The shipped
+//                       IntersectionStatus::Coincident results are UNCHANGED (additive).
+//   * seeding.cpp     — the SEEDED coincident-patch detector (under CYBERCAD_HAS_NUMSCI):
+//                       a candidate cluster whose interior grid coincides (point-on-both +
+//                       aligned normals) is grown to its agreement boundary and returned as
+//                       an OverlapSubRegion on SeedSet.coincidentRegions (seeds/march inside
+//                       SUPPRESSED); an undelimitable overlap (runs to a domain edge / fuzzy
+//                       boundary) is Undecided → OCCT, NEVER a fabricated region.
+//
+// UNDECIDED → OCCT (honest). src/native never links OCCT; the S4-a detector returns
+// Undecided/None on any non-robust decision and the ENGINE owns the OCCT fallback +
+// self-verify. A correct "Undecided → OCCT" is first-class; a fabricated region is a bug.
+//
+// STAGE S4-b — TYPED TANGENT-CONTACT CLASSIFICATION:
+//   * tangent_contact.h  — TangentContact { TransversalOnly | TangentPoint {point} |
+//                        TangentCurve {curve} | NearTangentTransversal | Undecided } — the
+//                        typed degeneracy descriptor replacing the blunt deferredTangent flag.
+//                        Built on the EXISTING CurveKind::Point / IntersectionCurve seams.
+//   * tangent_analytic.h — closed-form analytic tangent classifiers (sphere∩sphere at
+//                        d=R₁+R₂ → TangentPoint; coaxial sphere∩cyl equator, plane∩cyl
+//                        ruling → TangentCurve; …). Exact and decidable — never
+//                        NearTangentTransversal / Undecided. Wired via classify_tangency(A,B)
+//                        in dispatch.h (sibling to intersect_surfaces / classify_degeneracy).
+//   * tangent_seeded.h   — the seeded classifier (under CYBERCAD_HAS_NUMSCI): at a near-tangent
+//                        refined solution it types the contact by the RELATIVE SECOND
+//                        FUNDAMENTAL FORM H = II_A − II_B in the shared tangent plane
+//                        (definite → TangentPoint, rank-1 → TangentCurve, indefinite →
+//                        NearTangentTransversal, within noise → Undecided). Populates
+//                        SeedSet.tangentContacts (deferredTangent kept as a compatibility
+//                        count) and types the S3 marcher's NearTangent stop (WLine.stopReason).
+//                        NearTangentTransversal is handed on to S4-c → OCCT, NEVER traced.
 //
 // STAGE S2 — SUBDIVISION SEEDING (freeform + non-closed-form quadric pairs):
 //   * seed.h          — Seed { (u1,v1),(u2,v2), point, onSurfResidual, branchId } +
@@ -88,6 +127,11 @@
 #include "native/ssi/plane_conics.h"
 #include "native/ssi/plane_torus.h"
 #include "native/ssi/quadric_pairs.h"
+#include "native/ssi/coincidence.h"
+#include "native/ssi/same_surface.h"
+#include "native/ssi/tangent_contact.h"
+#include "native/ssi/tangent_analytic.h"
+#include "native/ssi/tangent_seeded.h"
 #include "native/ssi/dispatch.h"
 
 // Stage S2 — subdivision seeding. seed.h / patch_bounds.h are OCCT-free and

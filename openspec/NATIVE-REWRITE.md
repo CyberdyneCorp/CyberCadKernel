@@ -409,7 +409,9 @@ longest; a native exchange is lower priority than the modelling core.
   fully bought by this adoption â the substrate provides the re-projection corrector
   the S2 seeding + S3 marching layers are built on (both now DONE for transversal pairs), but
   the near-tangent / coincident / branch-point surface-surface-intersection moat stays
-  capability #5 as S4, which is NEXT and is written on top of this substrate + the S3 tracer.** Change `add-native-numerics` **archived**. See
+  capability #5 as S4 (its DETECTION + CLASSIFICATION layer S4-a/b now DONE at the bar;
+  the marching core S4-c…f is the remaining tail), written on top of this substrate + the
+  S3 tracer.** Change `add-native-numerics` **archived**. See
   [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md) numeric-foundations result table.
 - â **#5 `native-booleans` â PLANAR-polyhedron slice DONE at the verification bar;
   curved / general still OCCT-fallthrough (not faked).** `cc_boolean` (fuse / cut /
@@ -572,6 +574,44 @@ longest; a native exchange is lower priority than the modelling core.
     `tests/sim/native_ssi_marching_parity.mm`. Living change `openspec/changes/add-native-ssi-marching`
     **archived**. See [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md) SSI-S3 result table and
     [`SSI-ROADMAP.md`](SSI-ROADMAP.md) (S4 robustness + S5 curved booleans remain).
+  - **SSI Stage S4-a + S4-b (coincident-region detection + tangent-contact
+    CLASSIFICATION) — DONE at the verification bar (both gates); the marching core
+    (S4-c…f) is the remaining moat tail (honest).** These are DETECTION + CLASSIFICATION
+    layers: they TYPE the degeneracy and emit the point/curve/region where determinable —
+    they do NOT march through a tangency or fabricate a curve across a degeneracy (that is
+    S4-c, out of scope; a `NearTangentTransversal` is classified and handed to OCCT, never
+    traced). **S4-a** — robust coincidence on both the analytic and seeded paths + a typed
+    `CoincidentRegion` (`FullSurfaceSame` closed-form for all elementary families: plane,
+    coaxial-equal cyl/cone, same sphere, same torus; seeded `OverlapSubRegion` with
+    delimited param bounds via grid-agreement + boundary growth; `Undecided` → OCCT when
+    the region cannot be robustly delimited). **S4-b** — a typed `TangentContact` replacing
+    the blunt `SeedSet.deferredTangent` counter: `TransversalOnly` / `TangentPoint`
+    (isolated, emits the point) / `TangentCurve` (tangent along a curve, emits it) /
+    `NearTangentTransversal` (grazes-and-crosses → S4-c gap, handed on) / `Undecided`;
+    analytic configs decided in closed form, seeded solutions by the relative second
+    fundamental form `H = II_A − II_B` (sign-definite → point, rank-1 → curve, indefinite →
+    near-tangent, within the model-scale curvature-noise band → undecided, never hand-tuned).
+    Marching (`WLine`) carries an additive typed `stopReason` at a `NearTangent` stop — the
+    tracer still STOPS at the tangency, never steps through. OCCT-free in
+    `src/native/ssi/{coincidence.h,same_surface.h,tangent_contact.h,tangent_analytic.h,
+    tangent_seeded.h}` (`cybercad::native::ssi`); the seeded-path parts guarded by
+    `CYBERCAD_HAS_NUMSCI`; INTERNAL (no `cc_*`). Both gates green: host
+    `test_native_ssi_s4_classification` (**14 analytic + 8 seeded cases, 0 failed**; NUMSCI
+    OFF CTest **26/26** with the 8 seeded cases correctly ABSENT, NUMSCI ON CTest **31/31**)
+    + sim native-vs-OCCT classification parity (`tests/sim/native_ssi_s4_classification_parity.mm`,
+    `scripts/run-sim-native-ssi-s4.sh`): **8 pairs, 0 failed, 0 deferred** — `FullSurfaceSame`
+    ↔ `IntAna_Same`, `TangentPoint` ↔ `IntAna_Point`, `TangentCurve` ↔ tangent Line/Circle,
+    `TransversalOnly` ↔ proper section; emitted point/curve on both surfaces ≤ ~1e-16.
+    No regressions (`run-sim-suite.sh` **221/221**, all six pre-S4 parity scripts green,
+    S5 `native-pass=5` persists; additive/guarded, tessellator byte-identical). **Honest
+    scope:** the opposite-saddle patch (indefinite relative II) types `NearTangentTransversal`
+    → S4-c → OCCT, and a matched-curvature contact below the curvature-noise floor types
+    `Undecided` → OCCT — both asserted in the seeded suite, never faked. Files:
+    `src/native/ssi/{coincidence.h,same_surface.h,tangent_contact.h,tangent_analytic.h,
+    tangent_seeded.h}` + `tests/native/test_native_ssi_s4_classification.cpp` +
+    `tests/sim/native_ssi_s4_classification_parity.mm` + `scripts/run-sim-native-ssi-s4.sh`.
+    Living change `openspec/changes/add-native-ssi-s4-classification` **archived**
+    (`2026-07-04`). See [`SSI-ROADMAP.md`](SSI-ROADMAP.md) (S4-c…f marching-core remain).
 - â **`#4b` Tier E â native `cc_wrap_emboss` â DEFERRED (FUTURE WORK, not scheduled
   yet).** This is the *native* (OCCT-free) rewrite of wrap-emboss; it is distinct from
   the Phase-3 `add-robust-wrap-emboss` change, which is â done and OCCT-backed (the

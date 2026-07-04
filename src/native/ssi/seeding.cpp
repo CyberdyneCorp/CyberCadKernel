@@ -15,6 +15,8 @@
 //
 #include "native/ssi/seeding.h"
 
+#include "native/ssi/tangent_seeded.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -183,14 +185,26 @@ void subdivide(const SurfaceAdapter& A, const SurfaceAdapter& B,
   }
 }
 
+// A near-tangent refined solution the seeder dropped: enough to run the S4-b
+// differential-geometry classifier (params on both surfaces, the base point, both
+// normals, and the measured crossing sine).
+struct NearTangentSolution {
+  double u1 = 0.0, v1 = 0.0, u2 = 0.0, v2 = 0.0;
+  Point3 point{};
+  Dir3 nA{}, nB{};
+  double crossingSine = 0.0;
+};
+
 // ── refine one candidate region with least_squares ─────────────────────────────
 //
 // Returns true and fills `seed` on a converged, on-both-surfaces, transversal
 // result; returns false (and sets `nearTangent`) when the region is near-tangent /
-// degenerate (→ deferredTangent) or the refine simply did not converge.
+// degenerate (→ deferredTangent) or the refine simply did not converge. When
+// `nearTangent` is set, `ntSol` carries the dropped solution for S4-b classification.
 bool refineRegion(const SurfaceAdapter& A, const SurfaceAdapter& B,
                   const CandidateRegion& reg, const SeedOptions& opts,
-                  double onSurfTol, Seed& seed, bool& nearTangent) {
+                  double onSurfTol, Seed& seed, bool& nearTangent,
+                  NearTangentSolution& ntSol) {
   nearTangent = false;
   // residual r(x) = A.point(u1,v1) − B.point(u2,v2), clamped into both domains.
   const ParamBox& da = A.domain;
@@ -221,13 +235,341 @@ bool refineRegion(const SurfaceAdapter& A, const SurfaceAdapter& B,
   const Dir3 nA = A.normal(c[0], c[1]);
   const Dir3 nB = B.normal(c[2], c[3]);
   const double sinAngle = math::norm(math::cross(nA.vec(), nB.vec()));
-  if (sinAngle < opts.tangentSinTol) { nearTangent = true; return false; }
+  if (sinAngle < opts.tangentSinTol) {
+    nearTangent = true;
+    ntSol = {c[0], c[1], c[2], c[3], pa, nA, nB, sinAngle};  // hand to the S4-b classifier
+    return false;
+  }
 
   seed.u1 = c[0]; seed.v1 = c[1]; seed.u2 = c[2]; seed.v2 = c[3];
   seed.point = pa;
   seed.onSurfResidual = gapDist;   // A/B agree at pa≈pb; gap is the on-both residual
   seed.crossingSine = sinAngle;
   return true;
+}
+
+// ── S4-a: seeded coincident-patch detection ─────────────────────────────────────
+//
+// Two surfaces can COINCIDE OVER A REGION (not just cross): every point of a patch of A
+// also lies on B, with the two normals aligned there. That is a 2D shared locus, NOT a
+// transversal branch — seeding/marching it would emit spurious "branches" all over the
+// overlap. S4-a detects it and returns a delimited `OverlapSubRegion` (or `Undecided`
+// when the boundary cannot be pinned down), so the seeder can SUPPRESS the spurious work.
+//
+// The test is HONEST: a sample (uA,vA) on A AGREES with B iff, projecting A.point(uA,vA)
+// onto B by least_squares, the on-both residual ≤ onSurfTol AND the normals align
+// (‖nA×nB‖ ≤ tangentSinTol). A candidate region is a coincident patch only if a whole
+// interior grid agrees; we then GROW the A-box to the agreement boundary by edge
+// bisection and read the matching B-box off the projected corners. If the agreement runs
+// to a domain edge (can't tell whether the overlap truly stops there or the surface is
+// merely trimmed) or the boundary will not bisect cleanly, we return `Undecided` — never
+// a fabricated rectangle.
+
+// Project a 3D point onto surface B: least_squares over (u2,v2) minimising ‖p − B(u2,v2)‖,
+// clamped to B's domain, seeded at (su,sv). Returns the clamped params + the residual +
+// whether the surface normals at (uA,vA) on A and the projection on B ALIGN.
+struct ProjResult {
+  double u2 = 0.0, v2 = 0.0;
+  double residual = 0.0;
+  double normalSine = 1.0;  // ‖nA × nB‖ at the matched points
+};
+
+ProjResult projectOntoB(const SurfaceAdapter& B, const Point3& p, const Dir3& nA,
+                        double su, double sv) {
+  const ParamBox& db = B.domain;
+  auto clampUV = [&](const nn::Vector& x) {
+    return std::array<double, 2>{clampd(x[0], db.u0, db.u1), clampd(x[1], db.v0, db.v1)};
+  };
+  nn::VecFn resid = [&](const nn::Vector& x) -> nn::Vector {
+    const auto c = clampUV(x);
+    const Vec3 d = p - B.point(c[0], c[1]);
+    return {d.x, d.y, d.z};
+  };
+  // Robust seed: a coarse grid scan of B for the nearest starting param, so the
+  // least_squares refine converges to the TRUE nearest point regardless of the caller's
+  // hint (which may be far off when sampling across a grown region). `su,sv` bias the
+  // scan's tie-break toward the caller's expected match but never override a closer grid
+  // point. Cost is a fixed small grid, run only inside the coincidence detector.
+  double bu = clampd(su, db.u0, db.u1), bv = clampd(sv, db.v0, db.v1);
+  double best = math::distance(p, B.point(bu, bv));
+  constexpr int kScan = 8;
+  for (int i = 0; i <= kScan; ++i)
+    for (int j = 0; j <= kScan; ++j) {
+      const double cu = db.u0 + db.du() * (double(i) / kScan);
+      const double cv = db.v0 + db.dv() * (double(j) / kScan);
+      const double d = math::distance(p, B.point(cu, cv));
+      if (d < best) { best = d; bu = cu; bv = cv; }
+    }
+  const nn::SolveResult r = nn::least_squares(resid, nn::Vector{bu, bv});
+  const auto c = clampUV(r.x);
+  ProjResult out;
+  out.u2 = c[0];
+  out.v2 = c[1];
+  out.residual = math::distance(p, B.point(c[0], c[1]));
+  const Dir3 nB = B.normal(c[0], c[1]);
+  out.normalSine = math::norm(math::cross(nA.vec(), nB.vec()));
+  return out;
+}
+
+// Does surface A at (uA,vA) coincide with surface B (point on B + normals aligned)?
+// `su,sv` seed the projection near the expected match. On agreement, writes the matched
+// B params into `bu,bv` for boundary delimiting.
+bool sampleAgrees(const SurfaceAdapter& A, const SurfaceAdapter& B, double uA, double vA,
+                  double onSurfTol, double tangentSinTol, double su, double sv,
+                  double& bu, double& bv) {
+  const Point3 pa = A.point(uA, vA);
+  const Dir3 nA = A.normal(uA, vA);
+  const ProjResult pr = projectOntoB(B, pa, nA, su, sv);
+  bu = pr.u2;
+  bv = pr.v2;
+  return pr.residual <= onSurfTol && pr.normalSine <= tangentSinTol;
+}
+
+// Grow one A-domain interval endpoint toward `limit` by bisection until the agreement
+// boundary is located, holding the OTHER axis fixed at (fixU,fixV). `along` picks the
+// axis (0 = u, 1 = v). Returns the boundary coordinate; sets `hitDomainEdge` if agreement
+// persisted all the way to `limit` (ambiguous → Undecided).
+struct GrowCtx {
+  const SurfaceAdapter& A;
+  const SurfaceAdapter& B;
+  double onSurfTol, tangentSinTol;
+  double projSeedU, projSeedV;  // B-projection scan seed (a param on B, near the match)
+};
+
+double growEdge(const GrowCtx& g, int along, double fixU, double fixV,
+                double start, double limit, bool& hitDomainEdge) {
+  hitDomainEdge = false;
+  auto agreesAt = [&](double coord) {
+    const double uA = (along == 0) ? coord : fixU;
+    const double vA = (along == 0) ? fixV : coord;
+    double bu, bv;
+    return sampleAgrees(g.A, g.B, uA, vA, g.onSurfTol, g.tangentSinTol,
+                        g.projSeedU, g.projSeedV, bu, bv);
+  };
+  // Agreement right at the domain limit ⇒ the overlap is not interior-delimited (runs
+  // into the domain edge, ambiguous). Report it (→ Undecided).
+  if (agreesAt(limit)) { hitDomainEdge = true; return limit; }
+  double lo = start, hi = limit;  // lo agrees, hi disagrees
+  for (int it = 0; it < 40; ++it) {
+    const double mid = 0.5 * (lo + hi);
+    if (agreesAt(mid)) lo = mid; else hi = mid;
+  }
+  return 0.5 * (lo + hi);  // the agreement/disagreement boundary estimate
+}
+
+// Grow all four edges of an A-box, holding each grow's opposite axis fixed at the box
+// CENTRE. Returns the grown box; sets `hitDomainEdge` if any side ran to a domain edge.
+ParamBox growBox(const GrowCtx& g, const SurfaceAdapter& A, const ParamBox& seed,
+                 bool& hitDomainEdge) {
+  const double cu = seed.uMid(), cv = seed.vMid();
+  bool e0 = false, e1 = false, e2 = false, e3 = false;
+  ParamBox a;
+  a.u1 = growEdge(g, 0, cu, cv, seed.u1, A.domain.u1, e1);
+  a.u0 = growEdge(g, 0, cu, cv, seed.u0, A.domain.u0, e0);
+  a.v1 = growEdge(g, 1, cu, cv, seed.v1, A.domain.v1, e3);
+  a.v0 = growEdge(g, 1, cu, cv, seed.v0, A.domain.v0, e2);
+  hitDomainEdge = e0 || e1 || e2 || e3;
+  return a;
+}
+
+// Attempt to detect a coincident overlap patch seeded at candidate region `reg`. Returns
+// a CoincidentRegion of kind OverlapSubRegion (delimited), Undecided (suspected, not
+// robustly delimitable), or None (no coincident patch here).
+CoincidentRegion detectOverlap(const SurfaceAdapter& A, const SurfaceAdapter& B,
+                               const CandidateRegion& reg, double onSurfTol,
+                               double tangentSinTol) {
+  // (1) whole-interior-grid agreement over reg.a. A 3×3 interior grid: if any sample
+  //     disagrees, this is not a coincident patch (fall through to normal seeding).
+  const double su = reg.b.uMid(), sv = reg.b.vMid();
+  for (int i = 1; i <= 3; ++i)
+    for (int j = 1; j <= 3; ++j) {
+      const double uA = reg.a.u0 + reg.a.du() * (i / 4.0);
+      const double vA = reg.a.v0 + reg.a.dv() * (j / 4.0);
+      double bu, bv;
+      if (!sampleAgrees(A, B, uA, vA, onSurfTol, tangentSinTol, su, sv, bu, bv))
+        return CoincidentRegion::none();
+    }
+
+  // (2) grow the A-box to the agreement boundary in TWO passes: pass 1 from the small
+  //     candidate box gives a rough box; pass 2 re-grows each edge holding the OTHER axis
+  //     at the rough box's CENTRE, so the boundary estimate is decoupled from the
+  //     arbitrary candidate location (a corner-anchored first pass otherwise under-grows).
+  const GrowCtx g{A, B, onSurfTol, tangentSinTol, reg.b.uMid(), reg.b.vMid()};
+  bool edge1 = false, edge2 = false;
+  const ParamBox rough = growBox(g, A, reg.a, edge1);
+  const ParamBox a = growBox(g, A, rough, edge2);
+
+  // (3) honesty: if agreement ran to a domain edge on ANY side (either pass), the overlap
+  //     boundary is not interior-delimited (could be the true overlap edge, or just the
+  //     trimmed domain). We CANNOT robustly delimit it → Undecided (→ OCCT), not guessed.
+  if (edge1 || edge2) return CoincidentRegion::undecided();
+  if (a.du() <= 0.0 || a.dv() <= 0.0) return CoincidentRegion::undecided();
+
+  // (4) delimit the matching B-box: project a grid over the grown A-box onto B and take
+  //     the param bounds of the projections. We INSET the grid off the box edges by 10%:
+  //     the grown edges sit exactly on the agree/disagree boundary (grow returns the
+  //     bracket midpoint), where a sample can fall just outside the overlap. Sampling the
+  //     solid interior confirms the region and reads clean B bounds. A disagreement here
+  //     means the agreement is not solid across the grown box → Undecided (honest).
+  ParamBox b;
+  bool first = true;
+  for (int i = 0; i <= 4; ++i)
+    for (int j = 0; j <= 4; ++j) {
+      const double fu = 0.1 + 0.8 * (i / 4.0);  // inset ∈ [0.1, 0.9]
+      const double fv = 0.1 + 0.8 * (j / 4.0);
+      const double uA = a.u0 + a.du() * fu;
+      const double vA = a.v0 + a.dv() * fv;
+      double bu, bv;
+      if (!sampleAgrees(A, B, uA, vA, onSurfTol, tangentSinTol, su, sv, bu, bv))
+        return CoincidentRegion::undecided();  // agreement not solid across grown box
+      if (first) { b.u0 = b.u1 = bu; b.v0 = b.v1 = bv; first = false; }
+      else {
+        b.u0 = std::min(b.u0, bu); b.u1 = std::max(b.u1, bu);
+        b.v0 = std::min(b.v0, bv); b.v1 = std::max(b.v1, bv);
+      }
+    }
+  return CoincidentRegion::overlap(a, b);
+}
+
+// Is candidate region `reg` covered by an already-delimited overlap on surface A? A
+// candidate is covered iff its A-box INTERSECTS a recorded OverlapSubRegion (not merely
+// centre-inside) — so the boundary-straddling candidates around one overlap are all
+// suppressed by the first detection, and the same shared locus is not re-detected (or
+// spuriously re-classified `Undecided`) once per candidate.
+bool insideOverlap(const CandidateRegion& reg, const std::vector<CoincidentRegion>& regions) {
+  const ParamBox& q = reg.a;
+  for (const auto& cr : regions) {
+    if (cr.kind != CoincidenceKind::OverlapSubRegion) continue;
+    const ParamBox& r = cr.regionA;
+    const bool disjoint = q.u1 < r.u0 || q.u0 > r.u1 || q.v1 < r.v0 || q.v0 > r.v1;
+    if (!disjoint) return true;
+  }
+  return false;
+}
+
+// ── S4-b: seeded tangent-contact classification (differential geometry) ─────────
+//
+// At a near-tangent refined solution (‖n_A × n_B‖ < tangentSinTol) the intersection is
+// degenerate — S2 previously just did `++deferredTangent`. S4-b types WHAT it is by the
+// RELATIVE SECOND FUNDAMENTAL FORM of the two surfaces in their shared tangent plane.
+//
+// Around the contact, each surface is a graph height_S(x,y) over the shared tangent plane
+// (basis e1,e2 ⟂ the shared normal n), with height_S = ½·II_S(x,y) + O(³) (first order
+// vanishes — the plane is tangent to BOTH). The GAP h(x,y) = height_A − height_B is then
+// ½·(II_A − II_B) to leading order: a 2×2 symmetric quadratic form H whose eigenstructure
+// classifies the contact:
+//   * H sign-definite (both eigenvalues same sign, both |λ| above the noise floor)
+//     → the surfaces separate on all sides → ISOLATED TangentPoint.
+//   * H rank-1 (one eigenvalue ≈ 0, the other above the floor) → the gap is flat along one
+//     tangent direction → the surfaces stay in contact ALONG A CURVE → TangentCurve.
+//   * H indefinite (eigenvalues of OPPOSITE sign, both above the floor) → the gap changes
+//     sign around the contact → the surfaces GRAZE AND CROSS → NearTangentTransversal
+//     (the S4-c gap: handed on, NEVER traced through here).
+//   * both eigenvalues within the curvature-noise band → the jet is not robust → Undecided
+//     (→ OCCT). Honest: the native layer does not guess a definite/rank-1/indefinite call
+//     it cannot support.
+//
+// h(x,y) is sampled by projecting probe points P + (x·e1 + y·e2) onto EACH surface (native
+// closest_point_on_surface) and taking the signed height difference along n. The Hessian is
+// read by central finite differences on a small stencil at a curvature-resolving step. This
+// is OCCT-free (projection is native-numerics) and returns Undecided rather than a fabricated
+// verdict when the samples are too noisy to resolve.
+
+// A unit vector ⟂ `n` (completes a tangent-plane basis). Picks the world axis least aligned
+// with n to avoid a near-null cross product.
+Dir3 tangentBasis1(const Dir3& n) noexcept {
+  const double ax = std::fabs(n.x()), ay = std::fabs(n.y()), az = std::fabs(n.z());
+  const Vec3 pick = (ax <= ay && ax <= az) ? Vec3{1, 0, 0}
+                                           : (ay <= az) ? Vec3{0, 1, 0} : Vec3{0, 0, 1};
+  return Dir3{math::cross(n.vec(), pick)};
+}
+
+// Signed height of surface S above the tangent plane {P; n} at the tangent-plane probe
+// offset (x·e1 + y·e2): project the probe onto S and dot the displacement with n. `su,sv`
+// seed the projection near the contact.
+double surfaceHeight(const SurfaceAdapter& S, const Point3& P, const Dir3& n,
+                     const Dir3& e1, const Dir3& e2, double x, double y,
+                     double su, double sv) {
+  const Point3 probe = P + e1.vec() * x + e2.vec() * y;
+  const ParamBox& d = S.domain;
+  const nn::SurfaceProjection pr = nn::closest_point_on_surface(
+      [&](double u, double v) { return S.point(u, v); },
+      d.u0, d.u1, d.v0, d.v1, probe, 12, 12);
+  (void)su; (void)sv;
+  return math::dot(pr.point - P, n.vec());
+}
+
+// Classify a near-tangent contact at the seed (params on A/B, base point, shared normal
+// nA and the crossing sine already measured). Returns the typed TangentContact.
+TangentContact classifyTangentContact(const SurfaceAdapter& A, const SurfaceAdapter& B,
+                                      double uA, double vA, double uB, double vB,
+                                      const Point3& P, const Dir3& nA, const Dir3& nB,
+                                      double crossingSine, double scale) {
+  // Shared tangent-plane basis from A's normal (nA and nB are ~parallel here).
+  const Dir3 e1 = tangentBasis1(nA);
+  const Dir3 e2{math::cross(nA.vec(), e1.vec())};
+
+  // Finite-difference step: a curvature-resolving fraction of model scale. Too small and
+  // projection noise dominates; too large and higher-order terms leak in. 1/64 of scale
+  // matches the marcher's default step band.
+  const double hStep = std::max(scale * (1.0 / 64.0), 1e-9);
+
+  // Relative-height gap h(x,y) = height_A(x,y) − height_B(x,y), both measured along nA.
+  auto gap = [&](double x, double y) {
+    return surfaceHeight(A, P, nA, e1, e2, x, y, uA, vA) -
+           surfaceHeight(B, P, nA, e1, e2, x, y, uB, vB);
+  };
+
+  // Central second differences → the symmetric Hessian H = [[hxx, hxy],[hxy, hyy]] of the
+  // gap at the origin (the leading-order relative second fundamental form).
+  const double h00 = gap(0.0, 0.0);
+  const double hpx = gap(+hStep, 0.0), hmx = gap(-hStep, 0.0);
+  const double hpy = gap(0.0, +hStep), hmy = gap(0.0, -hStep);
+  const double hpp = gap(+hStep, +hStep), hmm = gap(-hStep, -hStep);
+  const double hpm = gap(+hStep, -hStep), hmp = gap(-hStep, +hStep);
+  const double inv = 1.0 / (hStep * hStep);
+  const double hxx = (hpx - 2.0 * h00 + hmx) * inv;
+  const double hyy = (hpy - 2.0 * h00 + hmy) * inv;
+  const double hxy = (hpp - hpm - hmp + hmm) * (0.25 * inv);
+
+  // Eigenvalues of the symmetric 2×2 form. Order them by MAGNITUDE: `big` is the dominant
+  // principal curvature-difference, `small` the other — the classification looks at whether
+  // `small` is negligible (rank-1) and, if both resolve, at their sign agreement.
+  const double tr = hxx + hyy;
+  const double det = hxx * hyy - hxy * hxy;
+  const double rad = std::sqrt(std::max(0.0, 0.25 * tr * tr - det));
+  const double lA = 0.5 * tr + rad;
+  const double lB = 0.5 * tr - rad;
+  const double big   = std::fabs(lA) >= std::fabs(lB) ? lA : lB;
+  const double small = std::fabs(lA) >= std::fabs(lB) ? lB : lA;
+  const double amax = std::fabs(big);
+
+  // Consistent normal orientation: nA and nB may be parallel OR antiparallel. The height
+  // gap's sign convention only flips the OVERALL sign of H (which we do not use — we look at
+  // eigenvalue-sign AGREEMENT/OPPOSITION and negligibility), so no reorientation is needed.
+  (void)nB;
+
+  // Curvature-noise floor: an eigenvalue is a curvature difference (~1/length). If even the
+  // DOMINANT eigenvalue is below a small fraction of 1/scale, the relative second form is
+  // flat to our stencil's resolution — the point/curve/cross call is not robust → Undecided
+  // (honest → OCCT), never a guessed verdict.
+  const double absFloor = (1.0 / std::max(scale, 1e-12)) * 1e-4;
+  if (amax <= absFloor)
+    return TangentContact::undecided(P, crossingSine);
+
+  // Rank test: the SMALLER-magnitude eigenvalue below 1% of the dominant one reads as a true
+  // zero → the gap is flat along that principal direction → the surfaces stay in contact
+  // ALONG A CURVE (rank-1 relative second form).
+  const double relFloor = amax * 1e-2;
+  if (std::fabs(small) <= relFloor)
+    return TangentContact::tangentCurveAt(P, crossingSine);   // rank-1: tangent along a curve
+
+  // Both eigenvalues resolved and non-zero: same sign → the gap keeps one sign all around →
+  // the surfaces separate → ISOLATED point; opposite signs → the gap changes sign → the
+  // surfaces graze AND cross → NearTangentTransversal (S4-c gap, handed on, NOT traced here).
+  if ((big > 0.0) == (small > 0.0))
+    return TangentContact::tangentPoint(P, crossingSine);     // sign-definite: isolated touch
+  return TangentContact::nearTangentTransversal(P, crossingSine);  // indefinite: grazes+crosses
 }
 
 struct DisjointSet {
@@ -302,43 +644,81 @@ std::vector<int> clusterRegions(const std::vector<CandidateRegion>& regs,
 // (and deferred-tangent count) to `out`. For each cluster, try its candidate regions
 // until one refines to an on-both-surfaces TRANSVERSAL point, keeping the tightest;
 // a cluster that only ever ill-conditions (near-tangent at the solution) becomes a
-// deferred-to-S4 gap; a cluster where no region converges to a crossing is a refine
-// miss (dropped, never faked). Running the expensive least_squares ≈ once per branch
-// (not once per candidate region) is the key performance decision.
+// deferred-to-S4 gap — S4-b then TYPES that gap by the local differential geometry
+// (TangentPoint / TangentCurve / NearTangentTransversal / Undecided) instead of the
+// blunt counter (which is kept as a compatibility summary). A cluster where no region
+// converges to a crossing is a refine miss (dropped, never faked). Running the expensive
+// least_squares ≈ once per branch (not once per candidate region) is the key perf choice.
+// Per-cluster accumulators for the refine pass.
+struct ClusterAcc {
+  std::vector<Seed> best;
+  std::vector<char> haveSeed, sawTangent;
+  std::vector<NearTangentSolution> ntBest;  // flattest near-tangent solution per cluster
+  explicit ClusterAcc(std::size_t k) : best(k), haveSeed(k, 0), sawTangent(k, 0), ntBest(k) {}
+};
+
+// Fold one refined region into its cluster's accumulator: keep the tightest transversal
+// seed, else keep the flattest (most degenerate) near-tangent solution for S4-b typing.
+void accumulateRegion(const SurfaceAdapter& A, const SurfaceAdapter& B,
+                      const CandidateRegion& reg, const SeedOptions& opts, double onSurfTol,
+                      int cid, ClusterAcc& acc) {
+  Seed s;
+  bool nearTangent = false;
+  NearTangentSolution ntSol;
+  if (refineRegion(A, B, reg, opts, onSurfTol, s, nearTangent, ntSol)) {
+    if (!acc.haveSeed[cid] || s.onSurfResidual < acc.best[cid].onSurfResidual) {
+      acc.best[cid] = s;
+      acc.haveSeed[cid] = 1;
+    }
+  } else if (nearTangent) {
+    if (!acc.sawTangent[cid] || ntSol.crossingSine < acc.ntBest[cid].crossingSine)
+      acc.ntBest[cid] = ntSol;
+    acc.sawTangent[cid] = 1;
+  }
+}
+
 void refineClusters(const SurfaceAdapter& A, const SurfaceAdapter& B,
                     const std::vector<CandidateRegion>& regs,
                     const std::vector<int>& cluster, int numClusters,
-                    const SeedOptions& opts, double onSurfTol, SeedSet& out) {
-  const auto k = static_cast<std::size_t>(std::max(0, numClusters));
-  std::vector<Seed> best(k);
-  std::vector<char> haveSeed(k, 0), sawTangent(k, 0);
+                    const SeedOptions& opts, double onSurfTol, double scale,
+                    const std::vector<char>& suppressed, SeedSet& out) {
+  ClusterAcc acc(static_cast<std::size_t>(std::max(0, numClusters)));
   for (std::size_t i = 0; i < regs.size(); ++i) {
     const int cid = cluster[i];
     if (cid < 0) continue;
-    Seed s;
-    bool nearTangent = false;
-    if (refineRegion(A, B, regs[i], opts, onSurfTol, s, nearTangent)) {
-      if (!haveSeed[cid] || s.onSurfResidual < best[cid].onSurfResidual) {
-        best[cid] = s;
-        haveSeed[cid] = 1;
-      }
-    } else if (nearTangent) {
-      sawTangent[cid] = 1;
-    }
+    if (!suppressed.empty() && suppressed[cid]) continue;  // S4-a coincident cluster
+    accumulateRegion(A, B, regs[i], opts, onSurfTol, cid, acc);
   }
   int branchId = 0;
   for (int cid = 0; cid < numClusters; ++cid) {
-    if (haveSeed[cid]) {
+    if (acc.haveSeed[cid]) {
       ++out.refinedAccepted;
-      best[cid].branchId = branchId++;
-      out.seeds.push_back(best[cid]);
-    } else if (sawTangent[cid]) {
-      ++out.deferredTangent;  // seen but not safely seeded → S4 (honest, not faked)
+      acc.best[cid].branchId = branchId++;
+      out.seeds.push_back(acc.best[cid]);
+    } else if (acc.sawTangent[cid]) {
+      // A near-tangent cluster with no transversal seed: TYPE the contact (S4-b) and keep the
+      // compatibility counter. NearTangentTransversal is handed on to S4-c (never traced here);
+      // Undecided → OCCT. deferredTangent stays the per-cluster count for pre-S4-b callers.
+      ++out.deferredTangent;
+      const NearTangentSolution& nt = acc.ntBest[cid];
+      out.tangentContacts.push_back(classifyTangentContact(
+          A, B, nt.u1, nt.v1, nt.u2, nt.v2, nt.point, nt.nA, nt.nB, nt.crossingSine, scale));
     }
   }
 }
 
 }  // namespace
+
+// Public S4-b seeded classifier (declared in tangent_seeded.h) — delegates to the
+// anonymous-namespace implementation so the S3 marcher can type its near-tangent stops
+// with the SAME differential-geometry classifier the seeder uses.
+TangentContact classify_tangent_contact_seeded(
+    const SurfaceAdapter& A, const SurfaceAdapter& B,
+    double u1, double v1, double u2, double v2,
+    const Point3& P, const Dir3& nA, const Dir3& nB,
+    double crossingSine, double scale) {
+  return classifyTangentContact(A, B, u1, v1, u2, v2, P, nA, nB, crossingSine, scale);
+}
 
 SeedSet seed_intersection(const SurfaceAdapter& A, const SurfaceAdapter& B,
                           const SeedOptions& opts) {
@@ -388,7 +768,42 @@ SeedSet seed_intersection(const SurfaceAdapter& A, const SurfaceAdapter& B,
       A.uPeriod, A.vPeriod, B.uPeriod, B.vPeriod};
   int numClusters = 0;
   const std::vector<int> cluster = clusterRegions(candidates, dp, numClusters);
-  refineClusters(A, B, candidates, cluster, numClusters, opts, onSurfTol, result);
+
+  // S4-a: detect coincident OVERLAP patches PER CLUSTER, before refining. A cluster whose
+  // representative candidate coincides with the other surface over a patch (point-on-both
+  // + normals aligned across an interior grid) is a shared 2D locus, not a transversal
+  // branch — we delimit it and SUPPRESS its seeds/march. Running the detector ONCE per
+  // cluster (not per candidate) is the same "expensive work once per branch" decision the
+  // refine makes. A cluster inside an already-delimited overlap is skipped; an overlap
+  // that cannot be robustly delimited is recorded as Undecided (→ OCCT), never fabricated.
+  const double tangentSinTol = opts.tangentSinTol;
+  const auto nc = static_cast<std::size_t>(std::max(0, numClusters));
+  std::vector<char> suppressed(nc, 0), clusterDecided(nc, 0);
+  for (std::size_t i = 0; i < candidates.size(); ++i) {
+    const int cid = cluster[i];
+    if (cid < 0 || clusterDecided[cid]) continue;
+    // Skip candidates already covered by a delimited overlap (found via another cluster).
+    if (insideOverlap(candidates[i], result.coincidentRegions)) {
+      suppressed[cid] = 1;
+      clusterDecided[cid] = 1;
+      continue;
+    }
+    // Try this cluster's candidates until one is a coincident patch (interior grid agrees)
+    // or is undecided; a transversal candidate fails step (1) on its first sample (cheap),
+    // so we scan the cluster to find a well-interior representative for a real overlap.
+    const CoincidentRegion cr = detectOverlap(A, B, candidates[i], onSurfTol, tangentSinTol);
+    if (cr.kind == CoincidenceKind::OverlapSubRegion) {
+      result.coincidentRegions.push_back(cr);
+      suppressed[cid] = 1;
+      clusterDecided[cid] = 1;                       // delimited → suppress this cluster
+    } else if (cr.kind == CoincidenceKind::Undecided) {
+      result.coincidentRegions.push_back(cr);        // suspected but not delimitable → OCCT
+      clusterDecided[cid] = 1;                       // NOT suppressed: let normal seeding try
+    }
+    // else None: keep scanning the cluster's remaining candidates (do NOT mark decided).
+  }
+
+  refineClusters(A, B, candidates, cluster, numClusters, opts, onSurfTol, scale, suppressed, result);
   return result;
 }
 

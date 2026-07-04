@@ -47,7 +47,7 @@ flowchart TD
     end
 
     Engine -->|"default"| OCCT["OCCT adapter<br/>(exact B-rep, fp64, CPU)"]
-    Engine -->|"cc_set_engine(1)"| Native["NativeEngine (C++20)<br/>native: math · topology · tessellation ·<br/>construction (extrude / revolve / spline extrude / torus revolve / 2- &amp; N-section loft / straight+planar+RMF sweep / tapered-shank / helical+tapered thread) ·<br/>booleans (planar-polyhedron + axis-aligned box-cylinder fuse/cut/common) ·<br/>analytic SSI S1 (elementary-pair intersection curves) + S2 seeding + S3 marching (transversal intersection curves / WLines traced for freeform/skew-quadric pairs, internal) + S5-a/b/c (SSI-driven curved booleans: through-drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON) ·<br/>STEP export (in-scope native solids)"]
+    Engine -->|"cc_set_engine(1)"| Native["NativeEngine (C++20)<br/>native: math · topology · tessellation ·<br/>construction (extrude / revolve / spline extrude / torus revolve / 2- &amp; N-section loft / straight+planar+RMF sweep / tapered-shank / helical+tapered thread) ·<br/>booleans (planar-polyhedron + axis-aligned box-cylinder fuse/cut/common) ·<br/>analytic SSI S1 (elementary-pair intersection curves) + S2 seeding + S3 marching (transversal intersection curves / WLines traced for freeform/skew-quadric pairs, internal) + S4-a/b (coincident-region + tangent-contact classification) + S5-a/b/c (SSI-driven curved booleans: through-drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON) ·<br/>STEP export (in-scope native solids)"]
     Engine -.->|"no-OCCT host build"| Stub["Stub engine"]
 
     Native -.->|"fallthrough (still OCCT, all SSI/Tier-4):<br/>general curved booleans · curved/concave/variable blends · features ·<br/>STEP import · IGES export/import · fine-pitch (self-intersecting) thread · wrap-emboss ·<br/>self-intersecting/tight/real-twist/guided/rail sweep · mismatched/guided/hard-rail loft · spindle torus · healing"| OCCT
@@ -87,11 +87,18 @@ the rest, so OCCT remains a required dependency until Phase 4 completes.
   TRANSVERSAL branch for the freeform / skew-quadric pairs S1 defers (recall 1.00 vs
   OCCT), plus **S3** marching-line tracer that walks each seed into a full transversal
   intersection curve (WLine) vs OCCT `IntPatch` — 5 pairs / 9 branches, all fully-traced,
-  0 near-tangent-truncated, onSurf ≤ 6.81e-07; plus **S5-a/b/c** — SSI-curve-driven
+  0 near-tangent-truncated, onSurf ≤ 6.81e-07; plus **S4-a/b** — coincident-region +
+  tangent-contact CLASSIFICATION: typed `CoincidentRegion` (`FullSurfaceSame` /
+  `OverlapSubRegion` / `Undecided`) and typed `TangentContact` (`TangentPoint` /
+  `TangentCurve` / `NearTangentTransversal` / `Undecided`), verified vs OCCT
+  `IntAna_QuadQuadGeo` / `IntPatch` (8 pairs, 0 deferred, emitted point/curve on both
+  surfaces ≤ ~1e-16) — DETECTION + CLASSIFICATION only, a near-tangent transversal is
+  typed and handed to OCCT never marched through; plus **S5-a/b/c** — SSI-curve-driven
   curved booleans, the through-drill cyl∩cyl COMMON/FUSE/CUT + the sphere∩sphere COMMON lens
   verified watertight vs OCCT `BRepAlgoAPI_{Fuse,Cut,Common}` (ΔV ≤ 8e-04, sim native-pass=5);
-  near-tangent / coincident robustness is the pending S4 moat, and sphere fuse/cut + wider
-  curved-curved families consuming these WLines the pending S5 payoff), `numerics`
+  the **S4-c…f marching core** (march-through-tangency, branch points, singularities,
+  self-intersection) is the pending moat, and sphere fuse/cut + wider curved-curved families
+  consuming these WLines the pending S5 payoff), `numerics`
   (OCCT-free numeric facade — generic solvers + closest-point/projection over the
   **NumPP + SciPP** substrate, guarded by `CYBERCAD_HAS_NUMSCI`), and `mesh`
   (tetrahedral VOLUME meshing — `cc_tet_mesh` / `cc_tet_mesh_surface` emit CalculiX
@@ -133,8 +140,9 @@ linked until it is complete. Current split:
 | construction: typed-profile revolve (line, on-axis arc → sphere) + off-axis-arc → TORUS | `cc_helical_thread` / `cc_tapered_thread` FINE-PITCH / self-intersecting (non-manifold → self-verify defers to OCCT `MakePipeShell`) |
 | construction: 2-section AND N-section (3+) ruled loft (equal-count planar sections) | wrap-emboss: general curved-surface (planar-target reachable via native `cc_offset_face` #6 + native planar boolean #5; axis-aligned-cylinder-target boolean step now native via #5 curved slice) |
 | construction: sweep (straight / smooth-planar / NON-PLANAR (RMF) spine) | general SPLINE surface-of-revolution; SPINDLE torus (off-axis arc crossing the axis — self-intersecting SoR) |
-| **internal SSI (S1): analytic surface-surface intersection** — plane∩{plane/sphere/cyl/cone/torus}, sphere∩sphere, coaxial sphere∩cyl / sphere∩cone / cyl∩cone, coaxial+parallel cyl∩cyl (17 pairs, closed-form Line/Circle/Ellipse/Parabola/Hyperbola, verified vs OCCT `GeomAPI_IntSS`) | **SSI: near-tangent + coincident + branch-point (S4)** — near-tangent (`n₁×n₂→0`), coincident / overlapping surfaces, and branch-point / self-intersection *marching* still route to OCCT (SSI-ROADMAP S4 robustness NEXT — the moat), **wider curved boolean *output* (S5)** — sphere fuse/cut, more curved-curved families, and near-tangent pairs consuming the S3 WLines are still OCCT (the through-drill cyl∩cyl COMMON/FUSE/CUT and the sphere∩sphere COMMON are now native, see S5-a/b/c below) |
-| **internal SSI (S3): marching-line tracer (transversal)** — walks each S2 seed into a full transversal intersection curve (WLine): predictor `t = n₁×n₂`, adaptive step, re-project onto both surfaces via the substrate, march both directions + stitch → `Closed`/`BoundaryExit`, dedup, fit a B-spline (guarded by `CYBERCAD_HAS_NUMSCI`). 5 pairs / 9 branches vs OCCT `IntPatch` — all fully-traced, 0 near-tangent-truncated, branch counts + 5/5 closed loops match OCCT, onSurf ≤ 6.81e-07, length within the step tol | **SSI: near-tangent-truncated marching** — a near-tangent branch is traced only *up to* the tangent (`NearTangent`, counted in `nearTangentGaps`, never a point past it) and the remainder + coincident / branch-point cases route to S4 + OCCT, never faked |
+| **internal SSI (S1): analytic surface-surface intersection** — plane∩{plane/sphere/cyl/cone/torus}, sphere∩sphere, coaxial sphere∩cyl / sphere∩cone / cyl∩cone, coaxial+parallel cyl∩cyl (17 pairs, closed-form Line/Circle/Ellipse/Parabola/Hyperbola, verified vs OCCT `GeomAPI_IntSS`) | **SSI: marching THROUGH a degeneracy (S4-c…f)** — near-tangent *stepping* (`n₁×n₂→0`), branch-point splitting, singularities, self-intersection *marching* still route to OCCT (SSI-ROADMAP S4-c…f — the moat tail; the S4-a/b coincident-region + tangent-contact *classification* is now native, see the S4-a/b row below), **wider curved boolean *output* (S5)** — sphere fuse/cut, more curved-curved families, and near-tangent pairs consuming the S3 WLines are still OCCT (the through-drill cyl∩cyl COMMON/FUSE/CUT and the sphere∩sphere COMMON are now native, see S5-a/b/c below) |
+| **internal SSI (S3): marching-line tracer (transversal)** — walks each S2 seed into a full transversal intersection curve (WLine): predictor `t = n₁×n₂`, adaptive step, re-project onto both surfaces via the substrate, march both directions + stitch → `Closed`/`BoundaryExit`, dedup, fit a B-spline (guarded by `CYBERCAD_HAS_NUMSCI`). 5 pairs / 9 branches vs OCCT `IntPatch` — all fully-traced, 0 near-tangent-truncated, branch counts + 5/5 closed loops match OCCT, onSurf ≤ 6.81e-07, length within the step tol | **SSI: near-tangent-truncated marching** — a near-tangent branch is traced only *up to* the tangent (`NearTangent`, counted in `nearTangentGaps`, never a point past it) and the remainder + coincident / branch-point cases route to S4-c…f + OCCT, never faked |
+| **internal SSI (S4-a/b): coincident-region + tangent-contact CLASSIFICATION** — typed `CoincidentRegion` (`FullSurfaceSame` closed-form for all elementary families + seeded `OverlapSubRegion` with delimited param bounds; `Undecided`→OCCT) and typed `TangentContact` (`TangentPoint`/`TangentCurve`/`NearTangentTransversal`/`Undecided`), analytic in closed form + seeded via the relative second fundamental form (guarded by `CYBERCAD_HAS_NUMSCI`). 8 pairs vs OCCT `IntAna_QuadQuadGeo`/`IntPatch` — 0 deferred, `Same`/`Point`/tangent `Line`/`Circle`/proper-section agree, emitted point/curve on both surfaces ≤ ~1e-16 | **SSI: S4-c…f marching core** — this layer only TYPES the degeneracy; it does NOT march through a tangency or fabricate a curve across it. A `NearTangentTransversal` (indefinite relative II) and an ambiguous/within-noise contact type as such and route to OCCT (self-verify), never traced natively — the S4-c…f marching core is the pending moat tail |
 | **internal SSI (S5-a/b/c): SSI-curve-driven curved booleans** — the split→classify→select→weld pipeline (`ssi_boolean.{h,cpp}`, consumes the S3 `TraceSet`, guarded by `CYBERCAD_HAS_NUMSCI`) produces the **through-drill cylinder∩cylinder COMMON/FUSE/CUT** (unequal radii, transversal two-loop trace) and the **sphere∩sphere COMMON lens** (single closed seam; the two inside-the-other spherical caps welded along the one seam, direction-slerp facets robust at the parametric pole): all watertight, ΔV ≤ 8e-04, ΔA ≤ 3e-04 vs OCCT `BRepAlgoAPI_{Fuse,Cut,Common}` (sim parity native-pass=5) | **SSI: wider S5 curved booleans** — sphere fuse/cut (outer-cap union + re-trimmed remainder weld), other curved-curved families (cyl∩cone, cyl∩sphere, cone∩cone, sphere∩box, freeform), and near-tangent / coincident pairs (incl. the equal-radius **Steinmetz** config → S4) decline to OCCT — honest NULL→OCCT fallbacks, never faked |
 | **internal SSI (S2): subdivision seeding (transversal)** — ≥1 seed per TRANSVERSAL branch for the freeform (NURBS/Bézier/B-spline) and skew/non-closed-form quadric pairs S1 defers (skew cyl∩cyl, general cone∩cone, non-coaxial quadric pairs, oblique plane∩torus, sphere∩freeform): recursive patch-AABB subdivision + `least_squares` refine + branch dedup, verified at recall 1.00 vs OCCT `GeomAPI_IntSS`, seeds on both surfaces ≤ 3.51e-16 (guarded by `CYBERCAD_HAS_NUMSCI`) | **SSI: near-tangent / coincident seeding** — near-tangent (`n₁×n₂→0`), coincident / overlapping surfaces, degenerate (cusp / singular param) seeding are reported as `deferredTangent` and routed to S4 + OCCT, never faked |
 | construction: `cc_tapered_shank` (silhouette revolved 360° about Z) | shape healing |
@@ -189,7 +197,7 @@ cmake -S . -B build \
   -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++ \
   -DCYBERCAD_HAS_OCCT=OFF -DCYBERCAD_HAS_METAL=OFF
 cmake --build build
-cd build && ctest --output-on-failure          # -> 22/22 pass (incl. native math/topology/tessellate/construct/profile/residuals/loft/sweep/thread/boolean (planar + curved box-cylinder)/blend/step/engine)
+cd build && ctest --output-on-failure          # -> 26/26 pass (incl. native math/topology/tessellate/construct/profile/residuals/loft/sweep/thread/boolean (planar + curved box-cylinder)/blend/step/engine/ssi/ssi-s4-classification)
 ```
 
 ```sh
@@ -212,6 +220,10 @@ bash scripts/run-sim-native-boolean.sh       # 25/25 — planar-polyhedron fuse/
 bash scripts/run-sim-curved-boolean.sh       # 18/18 — axis-aligned box-cylinder cut/fuse/common (native) + fallback vs OCCT BOPAlgo
 bash scripts/run-sim-native-geomcompletion.sh # spline extrude / off-axis-arc torus revolve / N-section loft / non-planar (RMF) sweep (native) + SSI/Tier-4 fall-through vs OCCT
 bash scripts/run-sim-native-numerics.sh      # 22/22 [NNUM] — native closest-point/projection vs OCCT Extrema (dDist ≤ 1.776e-15)
+bash scripts/run-sim-native-ssi.sh           # 18/18 — SSI S1 analytic intersection curves vs OCCT GeomAPI_IntSS
+bash scripts/run-sim-native-ssi-seeding.sh   #  3/3  — SSI S2 subdivision-seeding recall vs OCCT (recall 1.00)
+bash scripts/run-sim-native-ssi-marching.sh  #  5/5  — SSI S3 marching tracer (9 branches) vs OCCT IntPatch
+bash scripts/run-sim-native-ssi-s4.sh        #  8/8  — SSI S4-a/b coincident + tangent CLASSIFICATION vs OCCT IntAna_QuadQuadGeo/IntPatch (0 deferred)
 ```
 
 The native numeric facade (`src/native/numerics/`) is built over the **NumPP + SciPP**
@@ -224,7 +236,7 @@ cmake -S . -B build-numsci \
   -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++ \
   -DCYBERCAD_HAS_OCCT=OFF -DCYBERCAD_HAS_METAL=OFF -DCYBERCAD_HAS_NUMSCI=ON
 cmake --build build-numsci
-cd build-numsci && ctest --output-on-failure   # -> 23/23 pass (incl. test_native_numerics)
+cd build-numsci && ctest --output-on-failure   # -> 31/31 pass (incl. test_native_numerics + test_native_ssi_seeding/marching + test_native_ssi_s4_classification)
 ```
 
 #### Tetrahedral volume meshing (optional, external, AGPL TetGen)
@@ -299,7 +311,7 @@ verified geometry numbers.
 | **1 — Multi-core** | parallel OCCT booleans + meshing, determinism audit | ✅ complete at the simulator acceptance bar |
 | **2 — GPU (Metal)** | Metal backend, GPU tessellation wired into `cc_tessellate`, BVH + ray/frustum pick | ✅ complete at the simulator acceptance bar |
 | **3 — Missing features** | reference geometry, wrap-emboss, thread boolean, full-round (any planar dihedral) + G2 fillets | ✅ 5/5 (curved-neighbour full-round is the only residual) |
-| **4 — Native rewrite** | replace OCCT capability-by-capability, then drop it | ◐ **substantially native (planar/analytic), progressing on the curved tail** — native math · topology · tessellation · construction (incl. spline/torus/N-loft/RMF-sweep/threads) · planar+box∩cyl booleans · planar blends · STEP export; **numeric foundations adopted (NumPP + SciPP)**; **SSI S1** (analytic intersection) + **S2** (subdivision seeding) + **S3** (marching-line tracer — full transversal intersection curves / WLines) done vs OCCT. Pending: SSI S4 near-tangent robustness (the moat) → S5 curved booleans (consuming the S3 WLines), general curved blends, STEP/IGES import, shape healing. drop-occt (#8) BLOCKED on these (research-grade, ≈9–18 py). See [openspec/SSI-ROADMAP.md](openspec/SSI-ROADMAP.md). |
+| **4 — Native rewrite** | replace OCCT capability-by-capability, then drop it | ◐ **substantially native (planar/analytic), progressing on the curved tail** — native math · topology · tessellation · construction (incl. spline/torus/N-loft/RMF-sweep/threads) · planar+box∩cyl booleans · planar blends · STEP export; **numeric foundations adopted (NumPP + SciPP)**; **SSI S1** (analytic intersection) + **S2** (subdivision seeding) + **S3** (marching-line tracer — full transversal intersection curves / WLines) + **S4-a/b** (coincident-region + tangent-contact classification) done vs OCCT. Pending: SSI **S4-c…f** marching core (march-through-tangency, branch points, singularities, self-intersection — the moat tail) → S5 curved booleans (consuming the S3 WLines + S4 typed regions/contacts), general curved blends, STEP/IGES import, shape healing. drop-occt (#8) BLOCKED on these (research-grade, ≈9–18 py). See [openspec/SSI-ROADMAP.md](openspec/SSI-ROADMAP.md). |
 
 The **acceptance bar** is the in-repo iOS-simulator suite (correctness verified
 against analytic references, GPU vs CPU, and B-rep validity/watertightness).

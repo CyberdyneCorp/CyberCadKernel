@@ -23,6 +23,8 @@
 #define CYBERCAD_NATIVE_SSI_SEED_H
 
 #include "native/math/vec.h"
+#include "native/ssi/coincidence.h"
+#include "native/ssi/tangent_contact.h"
 
 #include <vector>
 
@@ -63,6 +65,25 @@ struct SeedSet {
                                ///< (pre-dedup; ≥ seeds.size())
   int deferredTangent = 0;     ///< candidate regions dropped as near-tangent / degenerate → S4.
                                ///< `> 0` is the honest "seen but not safely seeded" S4 signal.
+                               ///< COMPATIBILITY SUMMARY: still counts every dropped near-tangent
+                               ///< cluster (typed or not), so pre-S4-b callers/tests are unchanged.
+
+  /// S4-b: the TYPED tangent contacts classified for the near-tangent clusters the seeder
+  /// dropped (‖n₁×n₂‖ < tangentSinTol at the refined solution). One entry per dropped
+  /// near-tangent cluster, replacing the blunt `++deferredTangent` with WHAT the
+  /// degeneracy is: `TangentPoint` (isolated touch), `TangentCurve` (tangent along a
+  /// curve), `NearTangentTransversal` (grazes+crosses → S4-c gap, handed on, NOT traced),
+  /// or `Undecided` (within the curvature-noise band → OCCT). `deferredTangent` above stays
+  /// the count for backward compatibility; this vector carries the structure. Populated
+  /// only on the S2 path. Empty on a purely transversal / coincident pair.
+  std::vector<TangentContact> tangentContacts{};
+
+  /// S4-a: coincident sub-regions the seeded detector delimited on the two surfaces
+  /// (kind `OverlapSubRegion`), plus any `Undecided` verdicts where an overlap was
+  /// suspected but could not be robustly delimited (→ OCCT). Seeds/marching inside a
+  /// delimited `OverlapSubRegion` are SUPPRESSED (not emitted as spurious branches).
+  /// Empty on a purely transversal pair. Populated only on the S2 path.
+  std::vector<CoincidentRegion> coincidentRegions{};
 
   int branchCount() const noexcept { return static_cast<int>(seeds.size()); }
 };

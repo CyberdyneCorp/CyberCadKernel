@@ -19,6 +19,7 @@
 
 #include "native/math/bspline.h"
 #include "native/numerics/numerics.h"
+#include "native/ssi/tangent_seeded.h"  // S4-b: type a near-tangent stop
 
 #include <algorithm>
 #include <array>
@@ -225,6 +226,7 @@ bool onBoundary(const SurfaceAdapter& S, double u, double v, bool periodU, bool 
 struct DirResult {
   DirEnd end = DirEnd::Boundary;
   double sineAtStop = 0.0;
+  State stopState{};   ///< the on-curve state where the march stopped (for S4-b typing)
 };
 
 // One PREDICTED-then-CORRECTED step with deflection-driven shrink. Halves `h` (in/out)
@@ -262,7 +264,7 @@ DirResult marchDir(const SurfaceAdapter& A, const SurfaceAdapter& B,
   for (int step = 0; step < t.maxPoints; ++step) {
     const Tangent tan = intersectionTangent(A, B, cur);
     if (!tan.valid || tan.sine < t.tangentSinTol) {  // near-tangent → S4 stop
-      res.end = DirEnd::NearTangent; res.sineAtStop = tan.sine; return res;
+      res.end = DirEnd::NearTangent; res.sineAtStop = tan.sine; res.stopState = cur; return res;
     }
     const Vec3 dir = tan.dir * sign;
 
@@ -270,7 +272,7 @@ DirResult marchDir(const SurfaceAdapter& A, const SurfaceAdapter& B,
     const CorrectorOut c = tryStep(A, B, cur, dir, t, h, ok);
     if (!ok) {  // corrector could not take even a minStep transversally → S4 stop
       res.end = DirEnd::NearTangent; res.sineAtStop = intersectionTangent(A, B, cur).sine;
-      return res;
+      res.stopState = cur; return res;
     }
 
     // Loop closure: back near the seed after real progress, moving consistently.
@@ -380,6 +382,22 @@ FittedBSpline fitBSpline(const std::vector<WLinePoint>& pts, int degree, int max
 
 }  // namespace
 
+// S4-b: type a near-tangent STOP with the seeded differential-geometry classifier. The
+// tracer STILL STOPS here (never steps through the tangency); this only records WHAT the
+// degeneracy is (TangentPoint/Curve resolved, or NearTangentTransversal/Undecided handed
+// to S4-c → OCCT). Types whichever end stopped near-tangent, preferring the flatter one.
+TangentContact typeNearTangentStop(const SurfaceAdapter& A, const SurfaceAdapter& B,
+                                   const DirResult& f, const DirResult& b, double scale) {
+  const bool fNT = f.end == DirEnd::NearTangent, bNT = b.end == DirEnd::NearTangent;
+  const bool useF = fNT && (!bNT || f.sineAtStop <= b.sineAtStop);
+  const DirResult& sel = useF ? f : b;
+  const State& s = sel.stopState;
+  const Dir3 nA = A.normal(s.u1, s.v1);
+  const Dir3 nB = B.normal(s.u2, s.v2);
+  return classify_tangent_contact_seeded(A, B, s.u1, s.v1, s.u2, s.v2, s.p, nA, nB,
+                                         sel.sineAtStop, scale);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // march_branch — forward + backward from the seed, stitch, classify, fit.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -412,9 +430,10 @@ WLine march_branch(const SurfaceAdapter& A, const SurfaceAdapter& B, const Seed&
     // both ends left a domain boundary → a clean open branch.
     if (fwd.empty() && bwd.empty())
       line.status = TraceStatus::Failed;
-    else if (f.end == DirEnd::NearTangent || b.end == DirEnd::NearTangent)
+    else if (f.end == DirEnd::NearTangent || b.end == DirEnd::NearTangent) {
       line.status = TraceStatus::NearTangent;
-    else
+      line.stopReason = typeNearTangentStop(A, B, f, b, scale);  // S4-b: type the stop
+    } else
       line.status = TraceStatus::BoundaryExit;
   }
 

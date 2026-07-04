@@ -69,7 +69,9 @@
 #include "native/ssi/patch_bounds.h"  // SurfaceAdapter (point/normal/domain/period)
 #include "native/ssi/seed.h"          // Seed / SeedSet (S3 input contract)
 #include "native/ssi/seeding.h"       // SeedOptions (reused for the seeding pass)
+#include "native/ssi/tangent_contact.h"  // TangentContact (S4-b: typed stop reason)
 
+#include <optional>
 #include <vector>
 
 namespace cybercad::native::ssi {
@@ -124,6 +126,14 @@ struct WLine {
   FittedBSpline curve{};              ///< B-spline fitted through the polyline (Geom-quality)
   int branchId = 0;                   ///< echoes the S2 seed branch id
   double onSurfResidual = 0.0;        ///< max ‖node − surface‖ over BOTH surfaces (≤ tol)
+
+  /// S4-b: WHY the march stopped, TYPED, when it stopped at a tangency
+  /// (`status == NearTangent`). Carries the classified `TangentContact` at the stop
+  /// point (TangentPoint / TangentCurve / NearTangentTransversal / Undecided) so the
+  /// caller knows the SHAPE of the degeneracy the tracer ran into, not just that it did.
+  /// The tracer STILL STOPS at the tangency — this field types the stop, it does NOT
+  /// mean the march stepped through. Absent (nullopt) for Closed / BoundaryExit / Failed.
+  std::optional<TangentContact> stopReason{};
 
   bool isClosed() const noexcept { return status == TraceStatus::Closed; }
   bool truncated() const noexcept { return status == TraceStatus::NearTangent; }

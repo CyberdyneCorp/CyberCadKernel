@@ -281,6 +281,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_boolean
         test_native_curved_boolean
         test_native_ssi
+        test_native_ssi_s4_classification
         test_native_blend
         test_native_step_writer
         test_native_stl
@@ -351,6 +352,8 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_curved_boolean.cpp")
     set(test_native_ssi_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi.cpp")
+    set(test_native_ssi_s4_classification_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_s4_classification.cpp")
     set(test_native_blend_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_blend.cpp")
     set(test_native_step_writer_SRC
@@ -381,6 +384,13 @@ if(CYBERCAD_BUILD_TESTS)
     # CYBERCAD_HAS_NUMSCI and the substrate include trees — matching how the library
     # is built. (The S2/S3 tests only call always-visible declarations, so they do
     # not need this.) Guarded on the option + target existence.
+    # The S4-a classification test's SEEDED assertions are guarded by CYBERCAD_HAS_NUMSCI;
+    # it only calls always-visible declarations (seed_intersection / classify_degeneracy),
+    # so unlike the boolean test it needs the macro but NOT the substrate include trees.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_ssi_s4_classification)
+        target_compile_definitions(test_native_ssi_s4_classification PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_ssi_boolean)
         target_compile_definitions(test_native_ssi_boolean PRIVATE CYBERCAD_HAS_NUMSCI=1)
         target_include_directories(test_native_ssi_boolean PRIVATE

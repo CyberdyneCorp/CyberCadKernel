@@ -169,12 +169,98 @@ gap, within the deflection/step tol).
 - **Unlocks:** S5 curved booleans — the `TraceSet` (WLines with (u1,v1,u2,v2) per node) is
   its input contract.
 
-### S4 — Tangent / degeneracy robustness · (research-grade; best-effort + fallback)
+### S4 — Tangent / degeneracy robustness · ◐ CLASSIFICATION LAYER (S4-a/b) DONE AT THE BAR; marching-core (S4-c…f) pending
 Near-tangent stepping (n₁×n₂→0: step control, higher-order predictor),
 coincident/overlapping-surface detection, branch points & singularities,
 self-intersection guards. **This is the moat** — OCCT's decades of tuning. Lands
 as *progressively hardened*; whatever isn't robust **falls back to OCCT** and is
-reported with the measured gap. Never "done"; hardened over time.
+reported with the measured gap. Never "done"; hardened over time. Broken into
+tractable sub-slices; the **detection + classification** layer (S4-a/b) landed
+first, ahead of the hard **marching core** (S4-c).
+
+#### S4-a — Coincident / overlapping-surface detection + typed region · ✅ DONE AT THE BAR
+Robust coincidence detection on BOTH the analytic path and the seeded path, plus a
+**typed `CoincidentRegion`** (`FullSurfaceSame` for a same-locus pair;
+`OverlapSubRegion` with param bounds for a partial overlap; `Undecided` → OCCT when
+the region cannot be robustly delimited) so downstream queries/booleans consume a
+region descriptor instead of a bare flag. Analytic: closed-form `FullSurfaceSame`
+predicates for ALL elementary families (plane, coaxial-equal cyl/cone, same sphere,
+same torus), folding the pre-existing same-sphere / coaxial-equal-cyl `Coincident`.
+Seeded (`CYBERCAD_HAS_NUMSCI`): grid-sample a candidate region (agree iff on-both
+residual ≤ `onSurfTol` AND ‖n_A×n_B‖ ≤ `tangentSinTol`), grow to the agreement
+boundary, emit `OverlapSubRegion` and suppress seeds/march inside — or `Undecided`
+on a fuzzy boundary. `src/native/ssi/{coincidence.h,same_surface.h}`, OCCT-free.
+
+#### S4-b — Tangent-contact CLASSIFICATION · ✅ DONE AT THE BAR
+Replaces the blunt `SeedSet.deferredTangent` counter with a **typed
+`TangentContact`**: `TransversalOnly` (no tangency), `TangentPoint` (isolated 0-dim
+contact — e.g. spheres at d=R₁+R₂; emits the point), `TangentCurve` (tangency along
+a whole curve — e.g. cylinder tangent to a plane along a line, coaxial sphere∩cyl
+equator; emits the curve), `NearTangentTransversal` (grazes but crosses — the S4-c
+gap, classified and handed on, **never traced**), or `Undecided` → OCCT. Analytic
+tangent configs decided in closed form (`tangent_analytic.h`); seeded solutions
+classified by local differential geometry — the relative second fundamental form
+`H = II_A − II_B` in the shared tangent basis: sign-definite → `TangentPoint`,
+rank-1 → `TangentCurve`, indefinite → `NearTangentTransversal`, within the
+model-scale curvature-noise band → `Undecided` (never hand-tuned to force a verdict).
+`src/native/ssi/{tangent_contact.h,tangent_seeded.h}`; marching (`marching.h` `WLine`)
+carries an additive typed `stopReason` at a `NearTangent` stop — the tracer still
+**stops at** the tangency, it does **not** step through (that is S4-c). Change
+`add-native-ssi-s4-classification` (**archived** `2026-07-04`).
+- **Verify:** ✅ host `test_native_ssi_s4_classification` (**14 analytic + 8 seeded
+  cases, 0 failed**; NUMSCI OFF CTest **26/26** with the 8 seeded cases correctly
+  ABSENT, NUMSCI ON CTest **31/31**) + ✅ sim native-vs-OCCT classification parity
+  `run-sim-native-ssi-s4.sh` (**8 pairs, 0 failed, 0 deferred**; oracle
+  `IntAna_QuadQuadGeo` / `IntAna_ResultType` for analytic, `IntPatch` /
+  `GeomAPI_IntSS` + `GeomLProp_SLProps` for seeded). No regressions
+  (`run-sim-suite.sh` **221/221**, all six pre-S4 parity scripts still green,
+  S5 `native-pass=5` persists).
+
+**S4-a/b classification pairs, native-vs-OCCT** (worstOnSurf = max residual of the
+emitted point/curve on both surfaces; all at machine epsilon):
+
+| Pair | native | OCCT | worstOnSurf |
+|---|---|---|---|
+| same sphere | Same (`FullSurfaceSame`) | Same | 0 |
+| spheres d=R₁+R₂ | TangentPoint | Point | 1.22e-16 |
+| spheres crossing | Transversal | proper section | 0 |
+| plane tangent sphere | TangentPoint | Point | 6.12e-17 |
+| coaxial sphere∩cyl equator | TangentCurve (Circle) | tangent Circle | 1.84e-16 |
+| plane tangent cyl | TangentCurve (Line) | tangent Line | 0 |
+| seeded sph∩sph (diff-geom) | TangentPoint | Point (sine 1.22e-16) | 1.22e-16 |
+| seeded sph∩cyl (diff-geom) | TangentCurve | Circle (sine 0) | 0 |
+
+Honestly **deferred / undecided** (asserted as such in the host seeded suite, NOT
+weakened, NOT fabricated): opposite-saddle patch pair → `NearTangentTransversal`
+(indefinite relative II — the S4-c gap, handed on, never traced);
+matched-curvature contact below the model-scale curvature-noise floor → `Undecided`
+→ OCCT. The sim parity set was **0 deferred** — every pair was decidable and agreed
+with OCCT.
+- **Honest scope / risk:** DETECTION + CLASSIFICATION only. S4-a/b **type** the
+  degeneracy and emit the point/curve/region where determinable; they do **not**
+  march through a tangency and do **not** fabricate a curve across a degeneracy —
+  that is S4-c. A `NearTangentTransversal` is classified and handed on (still an
+  S4-c → OCCT gap), never traced. `Undecided`/`None`/empty on every non-robust
+  classification → engine-owned OCCT fallback + self-verify.
+- **Unlocks:** S5 curved booleans can consume `CoincidentRegion` / `TangentCurve`
+  (overlap handling, tangent-seam trimming) — a later S5 slice; and the marching
+  core (S4-c) has a typed reason feeding it.
+
+#### S4-c — Marching THROUGH a tangency · ✗ PENDING (the hard core of the moat)
+Near-tangent stepping, higher-order predictor across the degeneracy,
+fabricating the curve where the two surfaces graze-and-cross. `NearTangentTransversal`
+is currently classified and handed to OCCT; S4-c is what would trace it natively.
+
+#### S4-d — Branch points · ✗ PENDING
+Splitting the trace where intersection branches meet/cross (a point where n₁×n₂→0
+but the locus is not a simple tangency).
+
+#### S4-e — Singularities · ✗ PENDING
+Degenerate surface points (parametric poles, apex/edge singularities) on the
+intersection locus.
+
+#### S4-f — Self-intersection / small-loops · ✗ PENDING
+Self-intersection guards and small-loop recovery below the seeding resolution floor.
 
 ### S5 — Curved booleans via SSI (the payoff) · ◐ FIRST NATIVE SLICE landed (~months for full coverage)
 Use SSI curves to **split** the curved faces of two solids, **classify**
@@ -214,8 +300,11 @@ gate once S4 lands.
 ## Sequencing & effort
 
 ```
-substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ──► S3 marching (DONE) ──► S4 robustness (NEXT, moat)
-                             │                                    │
+substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ──► S3 marching (DONE) ──► S4 robustness (moat)
+                             │                                    │                          │
+                             │                                    │                          ├─ S4-a coincident-region (DONE)
+                             │                                    │                          ├─ S4-b tangent-classify (DONE)
+                             │                                    │                          └─ S4-c…f marching-core (PENDING)
                              └──────────────► S5 curved booleans ◄─┘  ──► #6 blends ──► #7 wrap-emboss
                                               (S5-a/b/c: drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON native ✓)
 ```
@@ -225,7 +314,9 @@ substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ─
 | S1 analytic SSI | ✅ DONE at the bar | bounded, closed-form — 17 analytic pairs verified vs OCCT |
 | S2 seeding | ✅ DONE at the bar (transversal) | subdivision + substrate refine — verified host + sim recall |
 | S3 marching | ✅ DONE at the bar (transversal) | tangent-step + substrate re-projection — 5 pairs / 9 branches vs OCCT |
-| S4 tangent robustness | multi-year, ongoing | the moat — best-effort + fallback |
+| S4-a coincident-region | ✅ DONE at the bar | typed `CoincidentRegion` (analytic + seeded); classification vs OCCT `IntAna_Same` |
+| S4-b tangent-classify | ✅ DONE at the bar | typed `TangentContact` (point/curve/near-tangent/undecided) — 8 pairs vs OCCT, 0 deferred |
+| S4-c…f marching-core | multi-year, ongoing | the moat tail — march-through-tangency, branch points, singularities, self-intersect; best-effort + fallback |
 | S5 curved booleans | ◐ slices S5-a/b/c DONE at the bar (~months for full) | through-drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON native vs OCCT (wt, ΔV ≤ 8e-4); sphere fuse/cut + more families + near-tangent gate remain |
 
 SSI + curved booleans total ≈ **1.5–3 py** (substrate-accelerated) for *usable*
@@ -240,6 +331,11 @@ as S1 (elementary) or S3 (freeform) curves are available.
   planar booleans, box∩cylinder, and native threads did.
 - **S4 is why "drop OCCT" stays a long-horizon goal**: the intersection *algorithm*
   is tractable on our substrate; the *robustness* on adversarial real-world inputs
-  is the person-decade OCCT moat, re-earned only incrementally.
+  is the person-decade OCCT moat, re-earned only incrementally. The
+  **detection/classification** layer (S4-a coincident-region, S4-b typed
+  tangent-contact) is now landed and verified vs OCCT; the **marching core**
+  (S4-c march-through-tangency, S4-d branch points, S4-e singularities, S4-f
+  self-intersection) is the remaining tail — a `NearTangentTransversal` is typed
+  and handed to OCCT, never traced natively yet.
 - Shape healing (#4) and STEP/IGES import (#3) remain **separate parallel tracks**
   also gating `drop-occt`; they are not part of this SSI roadmap.

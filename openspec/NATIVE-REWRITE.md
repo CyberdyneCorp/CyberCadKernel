@@ -638,6 +638,10 @@ Critical path: **#2 numeric foundations → #5 SSI → curved booleans → #6 bl
 **#8**. Total to genuinely drop OCCT ≈ **10–20 py** (a small team, several years);
 matching OCCT means re-earning its person-decades of hardening on real CAD data.
 
+> **Numeric-substrate decision (NumPP/SciPP):** GO-WITH-HARDENING — retires ~60–75% of
+> #2 (→ ~0.15–0.35 py) but only ~25–35% of #5's *numeric* slice; the SSI moat stays. See
+> [`docs/EVAL-numpp-scipp.md`](../docs/EVAL-numpp-scipp.md).
+
 ### Effort banked so far (human-expert-equivalent)
 
 The native rewrite delivered the entire analytic/tractable surface, verified vs

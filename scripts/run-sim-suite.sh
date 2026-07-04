@@ -62,7 +62,15 @@ SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 # NATIVE spline extrude / torus revolve / ruled loft / smooth+twisted sweep vs the OCCT
 # oracle for mass vol/area/centroid + bbox + watertight tessellate, PLUS one honest OCCT
 # fall-through per area — self-crossing spline, spindle torus, mismatched/curved-rail
-# loft, self-intersecting sweep + fine-pitch thread), and the
+# loft, self-intersecting sweep + fine-pitch thread), the
+# Phase-4 native-NUMERICS (#2, numeric-foundations) closest-point / Extrema parity
+# harness native_numerics_parity.mm (run-sim-native-numerics.sh — its own main();
+# projects 3D points onto native Plane / Cylinder / Sphere / B-spline surface /
+# B-spline curve via src/native/numerics project_point_to_surface/curve and compares
+# nearest distance + foot point + parameter to OCCT Extrema through
+# GeomAPI_ProjectPointOnSurf / GeomAPI_ProjectPointOnCurve; compiled under
+# -DCYBERCAD_HAS_NUMSCI with src/native/numerics/numerics.cpp linking the NumPP/SciPP
+# substrate archive + the OCCT geometry-oracle slice, NOT the whole kernel), and the
 # Phase-3 suite — phase3_suite.cpp
 # (its own main()) plus its checks_*.cpp modules (which record against
 # phase3_checks.h's Ctx, not checks.h's) — has run-sim-phase3-suite.sh. What remains
@@ -75,7 +83,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_sweep_parity.mm native_thread_parity.mm native_boolean_parity.mm \
       native_curved_boolean_parity.mm \
       native_blend_parity.mm native_step_parity.mm \
-      native_geomcompletion_parity.mm \
+      native_geomcompletion_parity.mm native_numerics_parity.mm \
       phase3_suite.cpp checks_reference_geometry.cpp checks_wrap_emboss.cpp \
       checks_thread_boolean.cpp checks_full_round_fillet.cpp checks_g2_fillet.cpp"
 SRCS=()

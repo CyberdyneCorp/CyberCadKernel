@@ -81,8 +81,16 @@ the rest, so OCCT remains a required dependency until Phase 4 completes.
   2- &amp; N-section ruled loft/straight+planar+RMF sweep/tapered-shank/helical+tapered thread),
   `boolean` (planar-polyhedron fuse/cut/common
   via BSP-CSG + axis-aligned box-cylinder curved analytic fuse/cut/common, self-verified),
-  `exchange` (native STEP AP203 EXPORT for in-scope native solids). Host-buildable and
+  `exchange` (native STEP AP203 EXPORT for in-scope native solids), and `numerics`
+  (OCCT-free numeric facade — generic solvers + closest-point/projection over the
+  **NumPP + SciPP** substrate, guarded by `CYBERCAD_HAS_NUMSCI`). Host-buildable and
   unit-tested with no OCCT.
+- **Numeric substrate** — **NumPP + SciPP**, the org's C++20, MIT
+  NumPy/SciPy ports, are the kernel's OCCT-free numeric substrate (root/`fsolve`/BFGS/
+  `least_squares`/`solve`/`lstsq` + `Extrema`-style closest-point). Referenced by absolute
+  path exactly like OCCT (NOT vendored), CPU-only, `special`/`stats` excluded; built as
+  `libnumsci_<target>.a` by `scripts/build-numsci.sh {host|iossim}` and linked behind
+  `-DCYBERCAD_HAS_NUMSCI=ON` (default OFF, so the rest of `src/native` builds without them).
 - **Compute backend** (`src/compute`) — default CPU backend + a **Metal** backend
   (iOS) for GPU work behind the same interface.
 
@@ -185,6 +193,20 @@ bash scripts/run-sim-native-thread.sh        # tapered-shank + helical/tapered t
 bash scripts/run-sim-native-boolean.sh       # 25/25 — planar-polyhedron fuse/cut/common vs OCCT BOPAlgo
 bash scripts/run-sim-curved-boolean.sh       # 18/18 — axis-aligned box-cylinder cut/fuse/common (native) + fallback vs OCCT BOPAlgo
 bash scripts/run-sim-native-geomcompletion.sh # spline extrude / off-axis-arc torus revolve / N-section loft / non-planar (RMF) sweep (native) + SSI/Tier-4 fall-through vs OCCT
+bash scripts/run-sim-native-numerics.sh      # 22/22 [NNUM] — native closest-point/projection vs OCCT Extrema (dDist ≤ 1.776e-15)
+```
+
+The native numeric facade (`src/native/numerics/`) is built over the **NumPP + SciPP**
+substrate and gated by `CYBERCAD_HAS_NUMSCI` (default OFF). To build + test it on the host:
+
+```sh
+# Build the substrate archive, then configure the kernel with the numerics module ON
+bash scripts/build-numsci.sh host              # -> libnumsci_host.a (77/77 TUs: 66 NumPP + 11 SciPP)
+cmake -S . -B build-numsci \
+  -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++ \
+  -DCYBERCAD_HAS_OCCT=OFF -DCYBERCAD_HAS_METAL=OFF -DCYBERCAD_HAS_NUMSCI=ON
+cmake --build build-numsci
+cd build-numsci && ctest --output-on-failure   # -> 23/23 pass (incl. test_native_numerics)
 ```
 
 Full toolchain notes are in [docs/build.md](docs/build.md).

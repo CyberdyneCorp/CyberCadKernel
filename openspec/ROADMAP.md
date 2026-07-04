@@ -250,6 +250,25 @@ the numeric oracle; native code is host-buildable (OCCT-free).
   mismatched-count / non-planar / guided / hard-rail loft, a general SPLINE
   surface-of-revolution, and a spindle torus.
   Detail: `docs/STATUS-phase-4.md`.)*
+- ✅ **Numeric foundations (native-rewrite #2 — the substrate under booleans/blends).**
+  Change **`add-native-numerics`** — **NumPP + SciPP ADOPTED** as the kernel's OCCT-free
+  numeric substrate (the org's C++20, MIT NumPy/SciPy ports; absolute-path, NOT vendored;
+  CPU-only; `optimize`/`linalg`(+`spatial`/`integrate`) subset, `special`/`stats` EXCLUDED;
+  guarded by `CYBERCAD_HAS_NUMSCI`, default OFF; built via `scripts/build-numsci.sh`). A
+  thin OCCT-free facade (`src/native/numerics/`) exposes the generic solvers
+  (root / `fsolve` / `minimize`(BFGS) / `least_squares`(LM) / `solve` / `lstsq`) and native
+  **closest-point / projection** (the `Extrema` on-ramp — point→curve / point→surface,
+  multi-start + SciPP refine, global-best foot). Both gates green: host `test_native_numerics`
+  (22 assertions, no OCCT, built under `CYBERCAD_HAS_NUMSCI=ON`) + iOS-sim native-vs-OCCT
+  `Extrema` parity `native_numerics_parity.mm` **22/22 `[NNUM]`** — dDist ≤ 1.776e-15
+  (analytic plane/cylinder/sphere feet fp-exact dPoint ≤ 1.707e-10; B-spline within tol,
+  largest `bspline_surf#3` dPoint 3.946e-08 at corner). Substrate compiles+links 77/77 TUs
+  HOST + arm64-iOS-simulator. Realizes the eval's ~60–75% #2 effort saving (→ ~0.15–0.35 py),
+  moving numeric foundations OFF the critical path; archived to
+  `openspec/specs/native-numerics`. No regressions: host `NUMSCI=OFF` CTest 22/22
+  (`test_native_numerics` correctly ABSENT), `NUMSCI=ON` 23/23, `run-sim-suite.sh` 221/221.
+  Deferred (not blocking): multiple-extrema enumeration, curve-curve / surface-surface
+  distance. **SSI (near-tangent) is NOT bought — it stays the booleans capability below.**
 - ◐ Booleans (native robust kernel — the hardest; longest-lived OCCT dependency;
   **research-grade**). Change **`add-native-booleans`** — capability
   `native-booleans`. Contract: `occt-usage` §Boolean operations. **PLANAR-polyhedron

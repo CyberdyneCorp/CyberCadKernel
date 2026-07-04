@@ -380,6 +380,34 @@ longest; a native exchange is lower priority than the modelling core.
     harness on the SKIP list). See [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md); living
     change `openspec/changes/add-native-geometry-completion` → archived to
     `openspec/specs/native-construction`.
+- ✅ **Numeric foundations (remaining-work #2 — the substrate) — NumPP/SciPP ADOPTED +
+  native closest-point DONE at the verification bar.** NumPP + SciPP (the org's C++20, MIT
+  NumPy/SciPy ports) are the kernel's OCCT-free numeric substrate — referenced **by
+  absolute path exactly like OCCT (NOT vendored)**, CPU-only, consuming the SciPP
+  `optimize`/`linalg`(+`spatial`/`integrate`) subset with **`special`+`stats` EXCLUDED**
+  (the Homebrew-libc++ ISO-29124 gap), gated by `CYBERCAD_HAS_NUMSCI` (default OFF, so the
+  rest of `src/native` builds without them). On top, a thin OCCT-free facade
+  (`src/native/numerics/`) exposes the generic solvers (root / `fsolve` / `minimize`(BFGS) /
+  `least_squares`(LM) / `solve` / `lstsq`) and native **closest-point / projection** (the
+  `Extrema` on-ramp — point→curve / point→surface, multi-start + SciPP refine, global-best
+  foot). Both gates green: host `test_native_numerics` (22 assertions, no OCCT — solver
+  known-values + closed-form + brute-force closest-point, built under
+  `CYBERCAD_HAS_NUMSCI=ON`) + native-vs-OCCT `Extrema` parity on the iOS sim
+  (`native_numerics_parity.mm`, **All 22 `[NNUM]` cases PASS** — dDist ≤ **1.776e-15**,
+  analytic plane/cylinder/sphere feet fp-exact dPoint ≤ 1.707e-10, B-spline within tol,
+  largest `bspline_surf#3` dPoint **3.946e-08** at corner u=v=0). Substrate compiles+links
+  **77/77 TUs** on HOST and arm64-iOS-simulator (`scripts/build-numsci.sh {host|iossim}` →
+  `libnumsci_<target>.a`). No regressions: host `NUMSCI=OFF` CTest 22/22
+  (`test_native_numerics` correctly ABSENT), `NUMSCI=ON` CTest 23/23, `run-sim-suite.sh`
+  221/221 (determinism serial==parallel bit-reproducible). This realizes the eval's
+  ~**60–75% effort saving** on #2 (→ ~0.15–0.35 py) — flipping #2 from *planned* to
+  *done-at-bar* and moving numeric foundations OFF the critical path. Deferred (NOT
+  blocking, recorded): multiple-extrema enumeration, curve-curve / surface-surface distance
+  (`Extrema_ExtCC` / `Extrema_ExtSS`), the `bspline_surf#3` corner caveat. **SSI is NOT
+  bought by this adoption — the near-tangent surface-surface-intersection moat stays
+  capability #5, which is NEXT and still needs the marching-line + tangent-robustness
+  layer written on top of this substrate.** Change `add-native-numerics` **archived**. See
+  [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md) numeric-foundations result table.
 - ◐ **#5 `native-booleans` — PLANAR-polyhedron slice DONE at the verification bar;
   curved / general still OCCT-fallthrough (not faked).** `cc_boolean` (fuse / cut /
   common) is NATIVE for **PLANAR-faced solids** (polyhedra — axis-aligned boxes, prisms)
@@ -625,7 +653,7 @@ LOC are OCCT's (the port/reference size).
 | # | Remaining item | OCCT LOC | Dep | Analytic slice | Production-robust |
 |---|---|---|---|---|---|
 | 1 | Twist/scale sweep, guided/rail sweep+loft, mismatched loft (self-verify-clean cases) | ~48k (TKOffset/BRepFill) | frame math | ~1–2 w | 0.5–1.5 py |
-| 2 | **Numeric foundations** — `math_` solvers (Newton/FunctionSetRoot/BFGS) + `Extrema` (45k) + `Adaptor3d` (7k) | ~55k | — | n/a | **0.5–1 py** — *highest leverage; on-ramp to everything below* |
+| 2 | ~~**Numeric foundations**~~ — **DONE at the bar.** `math_` solvers (Newton/FunctionSetRoot/BFGS) + `Extrema` (45k) + `Adaptor3d` (7k). **NumPP + SciPP ADOPTED** as the OCCT-free substrate (`add-native-numerics`, archived); generic solvers + native closest-point / projection are NATIVE + verified vs OCCT `Extrema` (22/22 `[NNUM]`, dDist ≤ 1.776e-15); SSI stays #5 | ~55k | — | done | **~0.15–0.35 py REALIZED** (was 0.5–1 py) — *~60–75% saving banked; on-ramp to everything below now native* |
 | 3 | STEP/IGES **import** (full AP203/214/242 + IGES parse + reconstruct) | ~300–600k | needs #4 | narrow (own export): ~w | 2–4 py |
 | 4 | **Shape healing** (`ShapeFix`/`ShapeUpgrade`/`ShapeAnalysis`) | 87,647 | — | n/a | 2–4 py |
 | 5 | **SSI + general curved booleans** (`IntPatch`/`IntWalk` 89k + BOPAlgo 76k) | ~165k | #2 | ~w/case | **3–6 py** (clean-room) / ~1.5–3 py (port from OCCT) — *the moat* |
@@ -633,13 +661,28 @@ LOC are OCCT's (the port/reference size).
 | 7 | Curved **wrap-emboss** | (composition) | #5 + curved offset | ~days | 0.2–0.5 py |
 | 8 | `drop-occt` — unlink + full regression | — | 1–7 | — | small, last |
 
-Critical path: **#2 numeric foundations → #5 SSI → curved booleans → #6 blends →
-#7 wrap-emboss**, with **#3 import ← #4 healing** as a parallel track. Both gate
-**#8**. Total to genuinely drop OCCT ≈ **10–20 py** (a small team, several years);
-matching OCCT means re-earning its person-decades of hardening on real CAD data.
+Critical path: **#2 numeric foundations (DONE) → #5 SSI (NEXT) → curved booleans →
+#6 blends → #7 wrap-emboss**, with **#3 import ← #4 healing** as a parallel track.
+Both gate **#8**. **#2 is done** — NumPP/SciPP adopted, generic solvers + native
+closest-point verified vs OCCT `Extrema` — so the next critical-path item is **#5 SSI**:
+the substrate (adopt) is done; what remains for #5 is writing the **marching-line +
+tangent-robustness (near-tangent seed) layer** on top of it (the moat NumPP/SciPP does not
+buy). Total to genuinely drop OCCT ≈ **10–20 py** (a small team, several years); matching
+OCCT means re-earning its person-decades of hardening on real CAD data.
 
-> **Numeric-substrate decision (NumPP/SciPP):** GO-WITH-HARDENING — retires ~60–75% of
-> #2 (→ ~0.15–0.35 py) but only ~25–35% of #5's *numeric* slice; the SSI moat stays. See
+> **Numeric-substrate decision (NumPP/SciPP): ADOPTED — GO-WITH-HARDENING — DELIVERED at
+> the verification bar.** NumPP + SciPP
+> (the org's C++20, MIT NumPy/SciPy ports) are **adopted as the kernel's OCCT-free numeric
+> substrate** for #2, referenced by absolute path exactly like OCCT (NOT vendored),
+> CPU-only, consuming the SciPP `optimize`/`linalg`(+`spatial`/`integrate`) subset with
+> `special`+`stats` EXCLUDED (a Homebrew-libc++ ISO-29124 gap, confined to `src/special/`,
+> unused by the kernel). This retires ~60–75% of #2 (→ ~0.15–0.35 py): the generic solvers
+> (root/`fsolve`/BFGS/`least_squares`/`solve`/`lstsq`) plus **native closest-point /
+> projection (`Extrema` on-ramp)** land native under `src/native/numerics/`, guarded by
+> `CYBERCAD_HAS_NUMSCI` so the rest of `src/native` builds without them. It retires only
+> ~25–35% of #5's *numeric* slice; **the SSI moat stays** — near-tangent SSI (EXP2b
+> naive-seed 0/7, EXP2c both-solver-fail) is NOT bought by these libraries and remains #5.
+> Change: `openspec/changes/add-native-numerics`. Eval:
 > [`docs/EVAL-numpp-scipp.md`](../docs/EVAL-numpp-scipp.md).
 
 ### Effort banked so far (human-expert-equivalent)
@@ -647,8 +690,11 @@ matching OCCT means re-earning its person-decades of hardening on real CAD data.
 The native rewrite delivered the entire analytic/tractable surface, verified vs
 OCCT: math, topology, watertight tessellation, construction (extrude/revolve/
 holed+typed profiles/spline+torus/N-loft/planar+non-planar sweep/threads/shank),
-planar + axis-aligned box∩cylinder booleans, planar blends, STEP export.
-Cumulative ≈ **0.6–0.9 py** of skilled kernel work.
+planar + axis-aligned box∩cylinder booleans, planar blends, STEP export, and the
+**numeric foundations (#2) — NumPP/SciPP adopted as the OCCT-free substrate + native
+closest-point/projection verified vs OCCT `Extrema`**. Cumulative ≈ **0.6–0.9 py** of
+skilled kernel work, plus the ~**0.15–0.35 py** #2 slice bought largely by adopting
+NumPP/SciPP rather than hand-writing the solver layer (a ~60–75% saving on #2).
 
 - **Last batch (geometry-completion) gained ≈ 3–5 person-weeks** — spline edges,
   torus revolve (+ native `Torus`), N-section loft, non-planar RMF sweep — and

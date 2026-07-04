@@ -20,6 +20,26 @@ option(CYBERCAD_BUILD_TESTS "Build the CTest unit tests" ON)
 # host CPU-only build.
 option(CYBERCAD_HAS_METAL "Build the Metal compute backend (iOS only)" OFF)
 
+# OFF => the numeric facade (src/native/numerics/*) is EXCLUDED and NumPP/SciPP
+# are not referenced — the rest of the kernel builds exactly as before (Phase-4
+# #2 is additive/guarded). ON => compile src/native/numerics on top of the
+# NumPP + SciPP-optimize/linalg substrate (OCCT-free), define CYBERCAD_HAS_NUMSCI,
+# add the substrate include trees and link libnumsci_<target>.a. Build the
+# archive first with scripts/build-numsci.sh {host|iossim}, then point
+# CYBERCAD_NUMSCI_DIR at its output. NumPP/SciPP are referenced by ABSOLUTE PATH
+# (like OCCT), never vendored. See docs/EVAL-numpp-scipp.md.
+option(CYBERCAD_HAS_NUMSCI "Build the src/native/numerics facade on NumPP + SciPP" OFF)
+
+# Output dir of scripts/build-numsci.sh: holds gen/ (config headers) +
+# libnumsci_<target>.a. Only used when CYBERCAD_HAS_NUMSCI=ON.
+set(CYBERCAD_NUMSCI_DIR "" CACHE PATH "build-numsci.sh output dir (gen/ + libnumsci_*.a)")
+# NumPP / SciPP source roots (absolute, like the OCCT path). Their include/ trees
+# are added when CYBERCAD_HAS_NUMSCI=ON.
+set(CYBERCAD_NUMPP_DIR "/Users/leonardoaraujo/work/NumPP"
+    CACHE PATH "NumPP source root (referenced by absolute path, not vendored)")
+set(CYBERCAD_SCIPP_DIR "/Users/leonardoaraujo/work/SciPP"
+    CACHE PATH "SciPP source root (referenced by absolute path, not vendored)")
+
 # OFF => unchanged (host stub or iOS cross-compile driven by the options above).
 # ON  => the PROVEN macOS desktop build: a SHARED libcybercadkernel.dylib built
 # from the same sources as the OCCT build (facade + core + engine + engine/occt),
@@ -55,10 +75,13 @@ set(CYBERCAD_OCCT_INCLUDE_DIR
     CACHE PATH "OCCT headers for the OCCT engine adapter (iOS only)")
 
 # ── library sources ───────────────────────────────────────────────────────────
-# All src/**.cpp EXCEPT src/engine/occt/* (added only when CYBERCAD_HAS_OCCT=ON).
+# All src/**.cpp EXCEPT src/engine/occt/* (added only when CYBERCAD_HAS_OCCT=ON)
+# and src/native/numerics/* (added only when CYBERCAD_HAS_NUMSCI=ON — that module
+# is the sole consumer of NumPP/SciPP and must stay out of the default build).
 file(GLOB_RECURSE CYBERCAD_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 list(FILTER CYBERCAD_SOURCES EXCLUDE REGEX "/src/engine/occt/")
+list(FILTER CYBERCAD_SOURCES EXCLUDE REGEX "/src/native/numerics/")
 
 # Static everywhere (host stub, iOS) EXCEPT the macOS desktop build, which links a
 # real shared libcybercadkernel.dylib the Python/ctypes binding loads.
@@ -107,6 +130,43 @@ if(CYBERCAD_MACOS_OCCT)
         -lTKBO -lTKTopAlgo -lTKGeomAlgo -lTKBRep -lTKGeomBase -lTKG3d -lTKG2d
         -lTKMath -lTKernel
         -Wl,-rpath,"${CYBERCAD_HOMEBREW_OCCT_LIB}")
+endif()
+
+# ── numeric facade on NumPP + SciPP (guarded) ─────────────────────────────────
+# Additive: only src/native/numerics/*.cpp is compiled (with CYBERCAD_HAS_NUMSCI
+# defined) and only this module sees NumPP/SciPP headers + the static archive.
+# The rest of the kernel is untouched, so every existing suite is unaffected.
+if(CYBERCAD_HAS_NUMSCI)
+    file(GLOB CYBERCAD_NUMSCI_SOURCES CONFIGURE_DEPENDS
+         "${CMAKE_CURRENT_SOURCE_DIR}/src/native/numerics/*.cpp")
+    target_sources(cybercadkernel PRIVATE ${CYBERCAD_NUMSCI_SOURCES})
+    target_compile_definitions(cybercadkernel PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    # Match the archive's -fvisibility=hidden (build-numsci.sh) so the substrate's
+    # weak symbols (e.g. numpp::kDefaultComplex guard var) don't trip the "weak
+    # symbol cannot be overridden" link warning from a visibility mismatch.
+    set_source_files_properties(${CYBERCAD_NUMSCI_SOURCES} PROPERTIES
+        COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
+
+    # Substrate include trees (referenced by absolute path, like OCCT) + the
+    # generated backends-OFF config headers produced by scripts/build-numsci.sh.
+    if(NOT CYBERCAD_NUMSCI_DIR)
+        message(FATAL_ERROR
+            "CYBERCAD_HAS_NUMSCI=ON requires -DCYBERCAD_NUMSCI_DIR=<build-numsci output>. "
+            "Run scripts/build-numsci.sh {host|iossim} first.")
+    endif()
+    target_include_directories(cybercadkernel PRIVATE
+        "${CYBERCAD_NUMPP_DIR}/include"
+        "${CYBERCAD_SCIPP_DIR}/include"
+        "${CYBERCAD_NUMSCI_DIR}/gen")
+
+    # Link libnumsci_<target>.a (host or iOS-sim archive from build-numsci.sh).
+    file(GLOB CYBERCAD_NUMSCI_ARCHIVE
+         "${CYBERCAD_NUMSCI_DIR}/libnumsci_*.a")
+    if(NOT CYBERCAD_NUMSCI_ARCHIVE)
+        message(FATAL_ERROR
+            "No libnumsci_*.a in ${CYBERCAD_NUMSCI_DIR}. Run scripts/build-numsci.sh first.")
+    endif()
+    target_link_libraries(cybercadkernel PUBLIC ${CYBERCAD_NUMSCI_ARCHIVE})
 endif()
 
 # ── Metal compute backend (iOS only) ──────────────────────────────────────────
@@ -168,6 +228,15 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_step_writer
         test_native_step
         test_native_engine)
+
+    # The numeric-facade test links NumPP/SciPP, so it is added ONLY when the
+    # substrate is built in (CYBERCAD_HAS_NUMSCI=ON). With the option OFF the
+    # existing suite is unchanged.
+    if(CYBERCAD_HAS_NUMSCI)
+        list(APPEND CYBERCAD_TESTS test_native_numerics)
+        set(test_native_numerics_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_numerics.cpp")
+    endif()
 
     # Most tests live directly under tests/; native-library tests live under
     # tests/native/. Map the exceptions here (basename → source path).

@@ -61,6 +61,28 @@ host app ── cc_* C facade ──► CyberCadKernel (C++20)
 - Cognitive complexity: services/orchestration ≤ 15; irreducible geometry
   algorithms may reach the systems band (≤ 25–35), flagged and documented.
 
+## External dependencies (numeric substrate + engine)
+- **OCCT** (OpenCASCADE, LGPL-2.1 + exception) — the initial exact B-rep engine, wrapped
+  behind the engine adapter and referenced by absolute path (`CYBERCAD_OCCT_INCLUDE_DIR`);
+  progressively replaced by native C++20 and unlinked at `drop-occt`.
+- **NumPP** (`/Users/leonardoaraujo/work/NumPP`) + **SciPP**
+  (`/Users/leonardoaraujo/work/SciPP`) — the org's C++20, **MIT** NumPy / SciPy ports,
+  **adopted as the kernel's OCCT-free numeric substrate** (Phase 4 #2, verdict **GO WITH
+  HARDENING**, now **DELIVERED at the verification bar** — `add-native-numerics` archived,
+  host + arm64-iOS-simulator build clean, native closest-point verified vs OCCT `Extrema`
+  22/22 — see [`../docs/EVAL-numpp-scipp.md`](../docs/EVAL-numpp-scipp.md) and
+  [`../docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md)). They
+  supply root-finding, nonlinear system solve (`fsolve`), unconstrained minimization
+  (BFGS), `least_squares`, and dense linear algebra (`solve` / `lstsq`) under the native
+  `src/native/numerics/` facade (closest-point / projection is built on them). Referenced
+  **by absolute path exactly like OCCT (NOT vendored)**; **CPU-only** (no NumPP GPU/BLAS
+  backend); the consumed SciPP surface is the numeric subset **`optimize` / `linalg`
+  (+ `spatial` / `integrate`)** with **`special` + `stats` EXCLUDED** (a Homebrew-libc++
+  ISO-29124 stdlib gap, confined to `src/special/`, unused by the kernel). Gated by
+  `CYBERCAD_HAS_NUMSCI` so the rest of `src/native` builds without them. NumPP/SciPP are
+  **not** OCCT, so `src/native/numerics` stays OCCT-free. SSI + curved booleans are NOT
+  bought by this adoption — they remain OCCT (the moat).
+
 ## Related specs
 - OCCT baseline & acceleration analysis:
   `/Users/leonardoaraujo/work/OCCT/openspec/` (`acceleration.md`, capability specs).

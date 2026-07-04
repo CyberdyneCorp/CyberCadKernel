@@ -242,6 +242,11 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_ssi_seeding)
         set(test_native_ssi_seeding_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_seeding.cpp")
+        # SSI Stage S3 marching-line tracer — the corrector (least_squares) + B-spline
+        # fit (lstsq) are under CYBERCAD_HAS_NUMSCI, so its host suite builds only here.
+        list(APPEND CYBERCAD_TESTS test_native_ssi_marching)
+        set(test_native_ssi_marching_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_marching.cpp")
     endif()
 
     # Most tests live directly under tests/; native-library tests live under

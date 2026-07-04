@@ -73,10 +73,14 @@ robustness tail keeps OCCT linked.** Canonical detail:
   ports) as the OCCT-free numeric substrate + native closest-point (Extrema).
 - ✅ **SSI S1** — analytic surface-surface intersection (elementary pairs, closed-form
   curves) vs OCCT `GeomAPI_IntSS`; **SSI S2** — subdivision seeding (transversal
-  seeds for freeform/skew-quadric pairs, 100% recall vs OCCT).
+  seeds for freeform/skew-quadric pairs, 100% recall vs OCCT); **SSI S3** —
+  marching-line tracer (WLine): full transversal intersection curves traced from the
+  S2 seeds vs OCCT `IntPatch` (5 pairs / 9 branches, all fully-traced, 0 near-tangent-
+  truncated; onSurf ≤ 6.81e-07, length within the step tol).
 
 **Still OCCT-backed (the tail that keeps OCCT linked):**
-- ☐ SSI **S3 marching** (curve tracing) → **S4 near-tangent robustness** (the moat).
+- ☐ SSI **S4 near-tangent robustness** (the moat) → **S5 curved booleans** (the payoff
+  consuming the S3 WLines).
 - ☐ General curved **booleans** & **blends** (sit on SSI); curved **wrap-emboss**.
 - ☐ Non-planar/guided/rail sweep robustness; general loft; fine-pitch threads.
 - ☐ **Shape healing**; **STEP/IGES import**.

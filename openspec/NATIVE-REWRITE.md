@@ -78,7 +78,7 @@ Dependency order. Each row is one OpenSpec change (`add-native-*`).
 | 4 | `add-native-swept-solids` | `native-construction` | hard | `BRepPrimAPI`, `BRepBuilderAPI`, `BRepOffsetAPI` |
 | 5 | `add-native-booleans` | `native-booleans` | **research-grade** | `BRepAlgoAPI` (BOPAlgo) |
 
-> #5 SSI → curved-booleans implementation plan: see [SSI-ROADMAP.md](SSI-ROADMAP.md) (staged S1-S5, substrate #2 done; S1 analytic + S2 seeding done, S3 marching NEXT).
+> #5 SSI → curved-booleans implementation plan: see [SSI-ROADMAP.md](SSI-ROADMAP.md) (staged S1-S5, substrate #2 done; S1 analytic + S2 seeding + S3 marching done — the SSI curve pipeline is now NATIVE for transversal freeform/quadric pairs; **S4 near-tangent robustness (the moat) is NEXT**, S5 curved booleans (the payoff consuming these WLines) follows).
 | 6 | `add-native-fillets-offsets` | `native-blends` | hard | `BRepFilletAPI`, `BRepOffsetAPI` |
 | 7 | `add-native-data-exchange` | `native-exchange` | moderate (external?) | `STEPControl`, `IGESControl` |
 | 8 | `drop-occt` | â | â | unlink OCCT; kernel fully native |
@@ -406,9 +406,10 @@ longest; a native exchange is lower priority than the modelling core.
   *done-at-bar* and moving numeric foundations OFF the critical path. Deferred (NOT
   blocking, recorded): multiple-extrema enumeration, curve-curve / surface-surface distance
   (`Extrema_ExtCC` / `Extrema_ExtSS`), the `bspline_surf#3` corner caveat. **SSI is NOT
-  bought by this adoption â the near-tangent surface-surface-intersection moat stays
-  capability #5, which is NEXT and still needs the marching-line + tangent-robustness
-  layer written on top of this substrate.** Change `add-native-numerics` **archived**. See
+  fully bought by this adoption â the substrate provides the re-projection corrector
+  the S2 seeding + S3 marching layers are built on (both now DONE for transversal pairs), but
+  the near-tangent / coincident / branch-point surface-surface-intersection moat stays
+  capability #5 as S4, which is NEXT and is written on top of this substrate + the S3 tracer.** Change `add-native-numerics` **archived**. See
   [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md) numeric-foundations result table.
 - â **#5 `native-booleans` â PLANAR-polyhedron slice DONE at the verification bar;
   curved / general still OCCT-fallthrough (not faked).** `cc_boolean` (fuse / cut /
@@ -538,7 +539,39 @@ longest; a native exchange is lower priority than the modelling core.
     `tests/native/test_native_ssi_seeding.cpp` + `tests/sim/native_ssi_seeding_{recall,parity}.mm`.
     Living change `openspec/changes/add-native-ssi-seeding`. See
     [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md) SSI-S2 result table and
-    [`SSI-ROADMAP.md`](SSI-ROADMAP.md) (S3 marching-line tracer is NEXT, consuming these seeds).
+    [`SSI-ROADMAP.md`](SSI-ROADMAP.md).
+  - **SSI Stage S3 (marching-line tracer / WLine) â DONE at the verification bar (both
+    gates, TRANSVERSAL); near-tangent / coincident / branch-point marching is S4 (honest).**
+    From each S2 seed, walks the intersection curve: predictor `t = normalize(n1 x n2)` â adaptive
+    step â **corrector** re-projecting each node onto BOTH surfaces via the numerics substrate
+    (`least_squares`, m=n=4 well-posed with an along-tangent advance residual, clamped to range) â
+    march both directions + stitch â close (`Closed`) / exit a boundary (`BoundaryExit`) â dedup
+    retraced branches â fit a clamped-uniform B-spline. OCCT-free in
+    `src/native/ssi/{marching.h,marching.cpp}` (`cybercad::native::ssi`); corrector / adaptive step /
+    B-spline fit guarded by `CYBERCAD_HAS_NUMSCI` (`marching.cpp` is an EMPTY TU with NUMSCI off);
+    INTERNAL (no `cc_*`). Consumes the S2 `SeedSet`, produces a `TraceSet` of `WLine`s (each node
+    carries (u1,v1,u2,v2) on both surfaces) â the S5 input contract. Both gates green: host
+    `test_native_ssi_marching` (**7 cases, 0 failed** â crossing spheres / plane∩sphere / skew-cyl â
+    Closed; ramp B-spline∩plane â `BoundaryExit`; tangent spheres â no curve (deferred, not faked);
+    duplicate seed â 1 WLine; every node on both surfaces < 1e-6, fit error < 1e-3; NUMSCI OFF
+    CTest **23/23** with the three NUMSCI-gated tests correctly ABSENT, NUMSCI ON CTest **26/26**
+    adding `test_native_numerics` (#24), `test_native_ssi_seeding` (#25), `test_native_ssi_marching`
+    (#26)) + sim native-vs-OCCT `IntPatch` / `GeomAPI_IntSS` **curve parity**
+    (`tests/sim/native_ssi_marching_parity.mm`): **5 pairs, 9 branches, 0 failed â all TRANSVERSAL
+    fully-traced, 0 near-tangent-truncated**; branch counts match OCCT on every pair; **5/5 OCCT
+    closed loops reproduced as Closed native WLines** (bspline∩plane correctly 0-closed / 4-open).
+    Worst deltas: max on-OCCT-curve **1.60e-06**, max on-surface **6.81e-07** (both skew-cyl-unequal),
+    max length delta **2.28e-03** abs / ~0.33% rel (bspline∩plane, within the deflection/step tol).
+    No regressions (`run-sim-suite.sh` **221/221**; `marching.cpp` additive/guarded, empty TU in the
+    default build, `CMakeLists.txt` only APPENDS the test under the existing `CYBERCAD_HAS_NUMSCI`
+    block, `native_ssi_marching_parity.mm` carries its own `main()` on the SKIP list). **Honest scope:**
+    TRANSVERSAL only â near-tangent branches are traced *up to* the tangent, marked `NearTangent`,
+    counted in `nearTangentGaps` (never a point past it); coincident / branch-point / self-intersection
+    marching is deferred to **S4** (the moat). `nearTangentGaps > 0` is the honest S4 hand-off signal.
+    Files: `src/native/ssi/{marching.h,marching.cpp}` + `tests/native/test_native_ssi_marching.cpp` +
+    `tests/sim/native_ssi_marching_parity.mm`. Living change `openspec/changes/add-native-ssi-marching`
+    **archived**. See [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md) SSI-S3 result table and
+    [`SSI-ROADMAP.md`](SSI-ROADMAP.md) (S4 robustness + S5 curved booleans remain).
 - â **`#4b` Tier E â native `cc_wrap_emboss` â DEFERRED (FUTURE WORK, not scheduled
   yet).** This is the *native* (OCCT-free) rewrite of wrap-emboss; it is distinct from
   the Phase-3 `add-robust-wrap-emboss` change, which is â done and OCCT-backed (the

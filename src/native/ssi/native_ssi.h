@@ -42,6 +42,17 @@
 //                       ≈1 seed per transversal branch. Refine (hence a useful
 //                       seeder) is under CYBERCAD_HAS_NUMSCI.
 //
+// STAGE S3 — MARCHING-LINE TRACER (WLine):
+//   * marching.h/.cpp — march_branch / trace_intersection: from each S2 seed, a
+//                       PREDICTOR-CORRECTOR walk (tangent = normalize(nA×nB); step
+//                       P+h·t; re-project onto BOTH surfaces via least_squares;
+//                       deflection-adaptive h; terminate on loop-closure / boundary /
+//                       near-tangent) yielding one WLine per branch + a fitted
+//                       B-spline (lstsq). TRANSVERSAL only — a march into a
+//                       near-tangent region is truncated and flagged
+//                       NearTangentTruncated (S4 gap), never faked. Entry points are
+//                       under CYBERCAD_HAS_NUMSCI (corrector + fit call the substrate).
+//
 // S2 IS TRANSVERSAL-ONLY (honest). Near-tangent / coincident / degenerate seeding
 // ill-conditions the refine and is DEFERRED to S4 — counted in SeedSet.deferredTangent,
 // never faked. `deferredTangent > 0` is a first-class "seen but not safely seeded"
@@ -85,6 +96,12 @@
 #include "native/ssi/seed.h"
 #include "native/ssi/patch_bounds.h"
 #include "native/ssi/seeding.h"
+
+// Stage S3 — marching-line tracer. Result types (WLine / TraceResult) are OCCT-free
+// and substrate-free; the marching/fit ENTRY POINTS (march_branch /
+// trace_intersection) are compiled only under CYBERCAD_HAS_NUMSCI (the corrector +
+// B-spline fit call native-numerics).
+#include "native/ssi/marching.h"
 
 /// The entire native SSI (Stage S1) API lives in this namespace.
 namespace cybercad::native::ssi {}

@@ -122,13 +122,52 @@ per branch. Native, OCCT-free (`cybercad::native::ssi`), refine under
   knob — deeper recovers smaller loops at more cost.
 - **Unlocks:** S3 marching — the `SeedSet` is its input contract (one WLine per seed).
 
-### S3 — Marching-line tracer (WLine) · (~months)
+### S3 — Marching-line tracer (WLine) · ✅ DONE AT THE BAR (transversal)
 From each seed, walk the intersection curve: tangent = normalize(n₁×n₂), adaptive
 step, **re-project** onto both surfaces via the substrate (Newton/LM), until the
 curve closes or exits a boundary; fit a B-spline through the polyline. This is
-OCCT's `IntWalk`/`WLine`, on our substrate.
-- **Verify:** sampled curve points on both surfaces (≤tol); curve length/shape vs
-  OCCT `IntPatch` on non-tangent freeform pairs.
+OCCT's `IntWalk`/`WLine`, on our substrate. Native, OCCT-free
+(`cybercad::native::ssi`); corrector / adaptive step / B-spline fit under
+`CYBERCAD_HAS_NUMSCI` (empty TU with NUMSCI off); INTERNAL (no `cc_*`). Consumes the
+S2 `SeedSet`, produces one `WLine` per transversal branch (`Closed`/`BoundaryExit`)
++ a `TraceSet` for S5. Change `add-native-ssi-marching` (**archived**).
+- **Module:** `src/native/ssi/{marching.h,marching.cpp}` (result types + tracer in one
+  OCCT-free header; `native_ssi.h` includes it).
+- **Verify:** ✅ host known-shape `test_native_ssi_marching` (**7 cases, 0 failed** —
+  crossing spheres / plane∩sphere / skew-cyl loops / sphere∩Bézier bump → Closed;
+  ramp B-spline∩plane → BoundaryExit open segment; tangent spheres → no curve
+  (deferred, not faked); duplicate seed → 1 WLine; every node on both surfaces < 1e-6,
+  fit error < 1e-3; NUMSCI OFF CTest **23/23** S3 tests correctly ABSENT, NUMSCI ON
+  CTest **26/26**) + ✅ sim native-vs-OCCT curve parity `native_ssi_marching_parity.mm`
+  (**5 pairs, 9 branches, 0 failed**; `IntPatch`/`GeomAPI_IntSS` oracle). No regressions
+  (`run-sim-suite.sh` **221/221**).
+
+**Marching-native pairs, native-vs-OCCT deltas** (all transversal, all FULLY TRACED,
+0 near-tangent-truncated → deferred to S4; onCurve = max native-sample distance to the
+OCCT curve, onSurf = max residual on both input surfaces, lenΔ = |nat−occt| arc length):
+
+| Pair | branches nat/occt | closed | onCurve | onSurf | lenΔ (nat / occt) | nt | seeds |
+|---|---|---|---|---|---|---|---|
+| bspline ∩ bspline | 1/1 | 1/1 | 1.86e-07 | 2.71e-08 | 4.35e-06 (2.8171 / 2.8171) | 0 | 1 |
+| bspline ∩ plane | 4/4 | 0/0 | 5.75e-09 | 1.41e-11 | 2.28e-03 (0.6917 / 0.6933) | 0 | 4 |
+| skew cyl unequal | 2/2 | 2/2 | 1.60e-06 | 6.81e-07 | 4.00e-05 (9.1521 / 9.1525) | 0 | 2 |
+| sphere ∩ sphere | 1/1 | 1/1 | 1.43e-07 | 1.23e-07 | 1.58e-05 (5.4413 / 5.4414) | 0 | 1 |
+| sphere ∩ bezier | 1/1 | 1/1 | 1.25e-07 | 3.37e-08 | 8.31e-05 (2.3696 / 2.3698) | 0 | 1 |
+
+Aggregate: **9 branches / 5 pairs, all TRANSVERSAL fully-traced, 0 near-tangent-truncated**.
+Closed-loop match **5/5** OCCT closed loops reproduced as Closed native WLines (bspline∩plane
+correctly 0-closed / 4-open). Worst: max onCurve **1.60e-06**, max onSurf **6.81e-07** (both
+skew-cyl-unequal); max lenΔ **2.28e-03** abs / ~0.33% rel (bspline∩plane — the only sub-mm-order
+gap, within the deflection/step tol).
+
+- **Honest scope / risk:** TRANSVERSAL only. **Near-tangent** branches are traced *up to*
+  the tangent, marked `NearTangent`, counted in `nearTangentGaps` — never a point past it;
+  **coincident / branch-point / self-intersection** deferred to S4. `nearTangentGaps > 0` is
+  the honest S4 hand-off signal. Automatic densify-and-refit on a too-loose B-spline fit is
+  not yet wired (the polyline stays the on-surface ground truth; the fit is a convenience
+  curve) — follow-up.
+- **Unlocks:** S5 curved booleans — the `TraceSet` (WLines with (u1,v1,u2,v2) per node) is
+  its input contract.
 
 ### S4 — Tangent / degeneracy robustness · (research-grade; best-effort + fallback)
 Near-tangent stepping (n₁×n₂→0: step control, higher-order predictor),
@@ -150,7 +189,7 @@ mesher). Extends `src/native/boolean/` from planar/axis-aligned to general curve
 ## Sequencing & effort
 
 ```
-substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ──► S3 marching (NEXT) ──► S4 robustness (moat)
+substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ──► S3 marching (DONE) ──► S4 robustness (NEXT, moat)
                              │                                    │
                              └──────────────► S5 curved booleans ◄─┘  ──► #6 blends ──► #7 wrap-emboss
 ```
@@ -159,7 +198,7 @@ substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ─
 |---|---|---|
 | S1 analytic SSI | ✅ DONE at the bar | bounded, closed-form — 17 analytic pairs verified vs OCCT |
 | S2 seeding | ✅ DONE at the bar (transversal) | subdivision + substrate refine — verified host + sim recall |
-| S3 marching | ~months | core algorithm on substrate |
+| S3 marching | ✅ DONE at the bar (transversal) | tangent-step + substrate re-projection — 5 pairs / 9 branches vs OCCT |
 | S4 tangent robustness | multi-year, ongoing | the moat — best-effort + fallback |
 | S5 curved booleans | ~months | extends existing assembler |
 

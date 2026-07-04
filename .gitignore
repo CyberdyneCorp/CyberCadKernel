@@ -13,6 +13,10 @@ CMakeFiles/
 # Staged third-party OCCT (rebuilt locally, never committed)
 /Vendor/
 
+# External TetGen static archive (AGPL — built locally by scripts/build-tetgen.sh,
+# never committed/vendored). Covered by /build-*/ above; listed explicitly here.
+/build-tet/
+
 # macOS / editors
 .DS_Store
 *.swp

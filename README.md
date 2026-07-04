@@ -90,10 +90,13 @@ the rest, so OCCT remains a required dependency until Phase 4 completes.
   0 near-tangent-truncated, onSurf ≤ 6.81e-07; plus **S5-a** — the first SSI-curve-driven
   curved boolean, the through-drill cyl∩cyl COMMON verified watertight vs OCCT
   `BRepAlgoAPI_Common` (ΔV 8.1e-04); near-tangent / coincident robustness is the pending
-  S4 moat, and wider curved booleans consuming these WLines the pending S5 payoff), and `numerics`
+  S4 moat, and wider curved booleans consuming these WLines the pending S5 payoff), `numerics`
   (OCCT-free numeric facade — generic solvers + closest-point/projection over the
-  **NumPP + SciPP** substrate, guarded by `CYBERCAD_HAS_NUMSCI`). Host-buildable and
-  unit-tested with no OCCT.
+  **NumPP + SciPP** substrate, guarded by `CYBERCAD_HAS_NUMSCI`), and `mesh`
+  (tetrahedral VOLUME meshing — `cc_tet_mesh` / `cc_tet_mesh_surface` emit CalculiX
+  C3D4/C3D10 tets on the **OPTIONAL, EXTERNAL, AGPL-3.0 TetGen** backend, guarded by
+  `CYBERCAD_HAS_TETGEN`, default OFF; plus always-on, TetGen-free native mesh-quality
+  metrics via `cc_mesh_quality`). Host-buildable and unit-tested with no OCCT.
 - **Numeric substrate** — **NumPP + SciPP**, the org's C++20, MIT
   NumPy/SciPy ports, are the kernel's OCCT-free numeric substrate (root/`fsolve`/BFGS/
   `least_squares`/`solve`/`lstsq` + `Extrema`-style closest-point). Referenced by absolute
@@ -222,6 +225,47 @@ cmake -S . -B build-numsci \
 cmake --build build-numsci
 cd build-numsci && ctest --output-on-failure   # -> 23/23 pass (incl. test_native_numerics)
 ```
+
+#### Tetrahedral volume meshing (optional, external, AGPL TetGen)
+
+Native tetrahedral VOLUME meshing (`cc_tet_mesh` / `cc_tet_mesh_surface`, emitting
+CalculiX **C3D4/C3D10** tets) is backed by [**TetGen**](https://wias-berlin.de/software/tetgen/),
+which is **AGPL-3.0**. To keep the shipped kernel MIT-clean the backend is
+**OPTIONAL and OFF by default**, exactly like the NumSci substrate:
+
+- **External, never vendored.** TetGen's sources (`tetgen.h`, `tetgen.cxx`,
+  `predicates.cxx`) stay in their own tree (default `/home/leonardo/work/tetgen`)
+  and are referenced by **absolute path** — no TetGen source is copied into or
+  committed to this repo.
+- **Flag-gated, default OFF.** The AGPL code compiles only under
+  `-DCYBERCAD_HAS_TETGEN=ON`. The **default MIT build never compiles or links any
+  AGPL code**; with the flag off, `cc_tet_mesh` / `cc_tet_mesh_surface` return an
+  empty mesh and set `cc_last_error` to a "tet meshing unavailable" message — they
+  never crash.
+- **Quality is always on.** `cc_mesh_quality` (native, pure geometry — signed
+  volume, dihedral angles, scaled Jacobian, aspect ratio) is TetGen-independent
+  and compiles/tests in the default build.
+- **Licensing.** Shipping a closed-source application that links TetGen requires a
+  **TetGen commercial license**; the default MIT configuration avoids the
+  obligation by not linking it.
+
+```sh
+# Build the external TetGen static archive, then configure the kernel with the mesher ON
+bash scripts/build-tetgen.sh host              # -> build-tet/host/libtetgen_host.a (external sources, not vendored)
+cmake -S . -B build-tet-mesh \
+  -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++ \
+  -DCYBERCAD_HAS_OCCT=OFF -DCYBERCAD_HAS_METAL=OFF \
+  -DCYBERCAD_HAS_TETGEN=ON \
+  -DCYBERCAD_TETGEN_DIR="$PWD/build-tet/host" \
+  -DCYBERCAD_TETGEN_SRC_DIR=/home/leonardo/work/tetgen
+cmake --build build-tet-mesh
+cd build-tet-mesh && ctest --output-on-failure   # adds test_native_tet (cube -> watertight C3D4/C3D10)
+```
+
+`test_native_quality` (mesh-quality metrics) runs in **every** configuration;
+`test_native_tet` (the TetGen-backed volume mesher) is registered only when
+`CYBERCAD_HAS_TETGEN=ON`. This delivery is **kernel-only** — wiring it into
+CalculiX++'s `CadMesher` is a follow-up.
 
 Full toolchain notes are in [docs/build.md](docs/build.md).
 

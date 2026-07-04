@@ -79,6 +79,46 @@ typedef struct {
     int triangleCount;
 } CCFaceMesh;
 
+/* ── Phase-4 additive (NOT part of the mirrored KernelBridgeAPI.h ABI): tet mesh ── */
+
+/* A tetrahedral volume mesh. nodes = x,y,z triplets (len nodeCount*3). elements =
+ * nodesPerElement ints per tet into `nodes`, 0-based, in CalculiX C3D4/C3D10 order
+ * (len elementCount*nodesPerElement). nodesPerElement is 4 (linear/C3D4) or
+ * 10 (quadratic/C3D10). order mirrors nodesPerElement. Owned by the caller; free
+ * with cc_tet_mesh_free. On failure all buffers are null / counts 0. */
+typedef struct {
+    double *nodes;       int nodeCount;
+    int    *elements;    int elementCount;
+    int     nodesPerElement;   /* 4 or 10 */
+    int     order;             /* 4=linear C3D4, 10=quadratic C3D10 */
+} CCTetMesh;
+
+/* Options for cc_tet_mesh / cc_tet_mesh_surface. order: 4=linear, 10=quadratic
+ * (default 10). target_element_size (mm; <=0 => no volume constraint, TetGen 'a'
+ * omitted). grading (radius-edge quality ratio q, e.g. 1.4; clamp >= 1.0).
+ * min_scaled_jacobian: quality gate reported back, NOT passed to TetGen. Mirrors
+ * CalculiX++ VolumeMeshOptions. */
+typedef struct {
+    int    order;
+    double target_element_size;
+    double grading;
+    double min_scaled_jacobian;
+} CCVolumeMeshOptions;
+
+/* Native mesh-quality report over a tet mesh (pure geometry; ALWAYS available,
+ * no TetGen). Angles in degrees; a regular tet scores dihedral 70.53, scaledJ 1.
+ * flagged_elements = malloc'd ids of tets with scaled Jacobian < min_scaled_jacobian
+ * (len elements_below_threshold), owned by caller, freed by cc_quality_report_free.
+ * valid = 0 when the input mesh is empty / degenerate. */
+typedef struct {
+    double min_dihedral_angle, max_dihedral_angle;
+    double min_scaled_jacobian, mean_scaled_jacobian;
+    double max_aspect_ratio;
+    int    elements_below_threshold;
+    int   *flagged_elements;
+    int    valid;
+} CCQualityReport;
+
 #ifndef CC_KERNEL_NO_PROTOTYPES
 
 /* ── Legacy mesh extrude ─────────────────────────────────────────────────── */
@@ -407,6 +447,27 @@ CCShapeId cc_full_round_fillet_faces(CCShapeId body, int leftFaceId, int middleF
  * failure. The stock cc_fillet_edges (G1 baseline) is unchanged. Safe no-op
  * (returns 0) in the host stub. */
 CCShapeId cc_fillet_edges_g2(CCShapeId body, const int *edgeIds, int edgeCount, double radius);
+
+/* ── Phase-4 additive: tetrahedral volume meshing ────────────────────────────── */
+
+/* Tet-mesh a body: tessellate its surface, then fill the PLC with TetGen. Requires
+ * the OPTIONAL, EXTERNAL, AGPL TetGen backend (CYBERCAD_HAS_TETGEN). In the default
+ * MIT build (flag OFF) this returns an EMPTY CCTetMesh and sets cc_last_error to a
+ * "tet meshing unavailable" message — never crashes, links no AGPL code. */
+CCTetMesh cc_tet_mesh(CCShapeId body, double deflection, CCVolumeMeshOptions opts);
+
+/* Decoupled entry: tet-mesh a raw closed TRIANGLE surface (no OCCT). Same backend,
+ * same unavailable behaviour when the flag is OFF. verticesXYZ = x,y,z triplets
+ * (len vertexCount*3); trianglesIJK = i,j,k 0-based triplets (len triangleCount*3). */
+CCTetMesh cc_tet_mesh_surface(const double *verticesXYZ, int vertexCount,
+                              const int *trianglesIJK, int triangleCount,
+                              CCVolumeMeshOptions opts);
+void cc_tet_mesh_free(CCTetMesh mesh);
+
+/* Native tet-mesh quality (ALWAYS available, TetGen-independent, pure geometry).
+ * Returns valid=0 (and sets cc_last_error) on empty/degenerate input. */
+CCQualityReport cc_mesh_quality(CCTetMesh mesh, double min_scaled_jacobian);
+void cc_quality_report_free(CCQualityReport report);
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 

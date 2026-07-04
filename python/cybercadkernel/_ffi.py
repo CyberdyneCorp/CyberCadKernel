@@ -219,6 +219,9 @@ def _bind(lib: ctypes.CDLL) -> None:
         "cc_step_import": ([c_char_p], S),
         "cc_iges_export": ([S, c_char_p], I),
         "cc_iges_import": ([c_char_p], S),
+        # stl exchange (triangle mesh; binary=1 => binary, 0 => ASCII)
+        "cc_stl_export": ([S, c_char_p, D, I], I),
+        "cc_stl_import": ([c_char_p], S),
         # transforms
         "cc_scale_shape": ([S, D], S),
         "cc_scale_shape_about": ([S, D, D, D, D], S),

@@ -12,11 +12,17 @@
 //     STEP AP203 file in true millimetres (step_writer.h). STEP IMPORT and IGES
 //     import/export stay OCCT (parsing arbitrary STEP/IGES is out of scope) — the
 //     engine keeps delegating those to the OCCT adapter.
+//   * NATIVE STL EXCHANGE — serialise a tessellated triangle mesh to a binary/ASCII
+//     STL file (stl_writer.h) and import an ASCII/binary STL back as a welded
+//     triangle-soup mesh (stl_reader.h). Import-as-mesh only (NOT B-rep) — the mesh
+//     serves display + measurement + tessellate directly.
 //
 #ifndef CYBERCAD_NATIVE_EXCHANGE_H
 #define CYBERCAD_NATIVE_EXCHANGE_H
 
 #include "native/exchange/step_writer.h"
+#include "native/exchange/stl_reader.h"
+#include "native/exchange/stl_writer.h"
 #include "native/topology/native_topology.h"
 
 #include <string>

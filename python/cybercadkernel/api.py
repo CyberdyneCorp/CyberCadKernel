@@ -817,6 +817,23 @@ class Shape:
         if not ok:
             raise _fail("iges_export")
 
+    def stl_export(
+        self, path: str, deflection: float = 0.1, binary: bool = True
+    ) -> None:
+        """Write this body's tessellated triangle mesh to an STL file.
+
+        ``deflection`` is the chord tolerance (mm) for tessellation; ``binary``
+        selects binary STL (default) versus ASCII. Raises on failure.
+        """
+        ok = _cffi.lib().cc_stl_export(
+            self.id,
+            str(path).encode("utf-8"),
+            float(deflection),
+            1 if binary else 0,
+        )
+        if not ok:
+            raise _fail("stl_export")
+
 
 # ── Kernel facade ─────────────────────────────────────────────────────────────
 
@@ -1101,6 +1118,12 @@ class Kernel:
         """Import a body from an IGES file."""
         return self._shape(
             _cffi.lib().cc_iges_import(str(path).encode("utf-8")), "iges_import"
+        )
+
+    def stl_import(self, path: str) -> Shape:
+        """Import an STL file (ASCII or binary, auto-detected) as a mesh body."""
+        return self._shape(
+            _cffi.lib().cc_stl_import(str(path).encode("utf-8")), "stl_import"
         )
 
     # ── Reference geometry (pure point math, no shape handle) ─────────────────

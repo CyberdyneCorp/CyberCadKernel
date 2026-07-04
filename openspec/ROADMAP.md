@@ -398,6 +398,14 @@ the numeric oracle; native code is host-buildable (OCCT-free).
   slice, `test_native_tessellate` green); archived to `openspec/specs/native-exchange`.
   STILL OCCT (never faked, out of scope): **STEP import**, **IGES export/import**, and an
   out-of-scope geometry kind (Ellipse/Bezier curve, rational spline, Bezier surface).
+  Change **`add-native-stl-exchange`** extends the capability with native OCCT-free **STL**:
+  `cc_stl_export(body, path, deflection, binary)` serializes the reused tessellation
+  (`IEngine::tessellate` → `MeshData`) to binary or ASCII STL — per-facet geometric normal,
+  true millimetres, deterministic byte-identical output — and `cc_stl_import(path)` reads
+  ASCII/binary (auto-detect, size-identity beats a deceptive `solid` header) as a welded
+  triangle-soup **mesh body** (display + `cc_tessellate` + bbox + area + volume-if-closed;
+  NOT B-rep reconstruction). Malformed input fails cleanly (`cc_last_error`, no partial body).
+  Host `test_native_stl` (8 cases) green.
 - ☐ **Drop OCCT** — **NOT reachable at the native ceiling; BLOCKED.** Change
   **`drop-occt`** would retire the OCCT adapter, but it requires EVERY `cc_*` path to be
   native. Two hard dependencies remain research-grade multi-year efforts: (1) a general

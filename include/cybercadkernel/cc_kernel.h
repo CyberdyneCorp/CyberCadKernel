@@ -332,6 +332,17 @@ CCShapeId cc_step_import(const char *path);
 int cc_iges_export(CCShapeId body, const char *path);
 CCShapeId cc_iges_import(const char *path);
 
+/* STL exchange (triangle mesh, true millimetres). ADDITIVE. `deflection` is the
+ * chord tolerance for the tessellation the writer serialises; binary=1 => binary
+ * STL (default), binary=0 => ASCII. Export is deterministic (same body + deflection
+ * => byte-identical file) with a per-facet geometric normal. cc_stl_export returns
+ * 1 on success, 0 on failure (see cc_last_error). cc_stl_import auto-detects ASCII
+ * vs binary and returns a MESH body (triangle soup, welded vertices) usable for
+ * display + measurement (bbox / area / volume-if-closed) + cc_tessellate; it is NOT
+ * a B-rep reconstruction. Returns 0 on failure (malformed file → cc_last_error). */
+int cc_stl_export(CCShapeId body, const char *path, double deflection, int binary);
+CCShapeId cc_stl_import(const char *path);
+
 /* ── Transforms ──────────────────────────────────────────────────────────── */
 
 CCShapeId cc_scale_shape(CCShapeId body, double factor);

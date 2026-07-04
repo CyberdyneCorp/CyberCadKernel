@@ -349,4 +349,53 @@ CC_TEST(stl_import_empty_ascii_detected_not_binary) {
     CC_CHECK(err.find("binary") == std::string::npos);
 }
 
+// 11 ── regression (portable parse/format, iOS deployment-target fix): the
+//        strtod/snprintf reimplementation that replaced std::from_chars/to_chars
+//        (unavailable on lower iOS simulator targets) must still (a) parse scientific
+//        notation + a leading '+', and (b) full-consume — REJECT a coordinate with
+//        trailing garbage ("10.0.0"), which a naive strtod would silently accept as
+//        10.0. Guards both the compile portability and the parse contract. ───────────
+CC_TEST(stl_import_scientific_parse_and_full_consume) {
+    cc_set_engine(1);
+
+    // (a) A well-formed ASCII solid written entirely in scientific notation with leading
+    //     '+' signs imports, and its coordinates parse to the right magnitude (0..10 box
+    //     face) — exercising the snprintf-shaped output and the strtod scientific parse.
+    const std::string good = tmpPath("cc_stl_scientific.stl");
+    {
+        std::ofstream f(good, std::ios::binary);
+        f << "solid sci\n"
+          << "  facet normal 0 0 +1.000000e+00\n    outer loop\n"
+          << "      vertex 0.000000e+00 0.000000e+00 0.000000e+00\n"
+          << "      vertex +1.000000e+01 0.000000e+00 0.000000e+00\n"
+          << "      vertex +1.000000e+01 +1.000000e+01 0.000000e+00\n"
+          << "    endloop\n  endfacet\n"
+          << "endsolid sci\n";
+    }
+    const CCShapeId id = cc_stl_import(good.c_str());
+    CC_CHECK(id != 0);
+    CCMesh m = cc_tessellate(id, 0.1);
+    CC_CHECK(m.triangleCount == 1);
+    cc_mesh_free(m);
+    double bb[6] = {0};
+    CC_CHECK(cc_bounding_box(id, bb) == 1);
+    CC_CHECK(std::fabs(bb[3] - 10.0) < 1e-4);  // max-x from "+1.000000e+01"
+    CC_CHECK(std::fabs(bb[4] - 10.0) < 1e-4);  // max-y
+    cc_shape_release(id);
+
+    // (b) A coordinate with trailing garbage must be rejected (full-consume). Without the
+    //     end == buf+size check, strtod would parse "10.0.0" as 10.0 and import succeed.
+    const std::string bad = tmpPath("cc_stl_trailing_garbage.stl");
+    {
+        std::ofstream f(bad, std::ios::binary);
+        f << "solid bad\n"
+          << "  facet normal 0 0 1\n    outer loop\n"
+          << "      vertex 0 0 0\n      vertex 10 0 0\n      vertex 10.0.0 10 0\n"
+          << "    endloop\n  endfacet\n"
+          << "endsolid bad\n";
+    }
+    CC_CHECK(cc_stl_import(bad.c_str()) == 0);
+    CC_CHECK(std::strlen(cc_last_error()) > 0);
+}
+
 CC_RUN_ALL()

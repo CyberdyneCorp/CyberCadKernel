@@ -8,9 +8,11 @@
 
 #include <array>
 #include <bit>
-#include <charconv>
+#include <cerrno>
+#include <clocale>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <string_view>
@@ -134,11 +136,27 @@ struct Tokenizer {
 };
 
 bool parse_double(std::string_view tok, double& out) {
-    // std::from_chars deliberately rejects a leading '+' on the mantissa; strip it so
-    // that cross-tool ASCII STLs writing "+1.5" style coordinates still import.
-    if (!tok.empty() && tok.front() == '+') tok.remove_prefix(1);
-    const auto res = std::from_chars(tok.data(), tok.data() + tok.size(), out);
-    return res.ec == std::errc() && res.ptr == tok.data() + tok.size();
+    // std::from_chars floating-point overloads are unavailable on lower iOS deployment
+    // targets, so parse with strtod on a null-terminated copy (STL coordinate tokens are
+    // short). strtod accepts a leading '+' directly, so no manual stripping is needed.
+    if (tok.empty()) return false;
+    char buf[64];
+    if (tok.size() >= sizeof(buf)) return false;  // absurdly long token → reject
+    std::memcpy(buf, tok.data(), tok.size());
+    buf[tok.size()] = '\0';
+    // Locale-proof: ASCII STL always writes '.'; if the runtime locale expects another
+    // decimal separator, translate so strtod parses the mantissa (mirrors the no-comma
+    // guarantee on the writer side).
+    const char dp = *std::localeconv()->decimal_point;
+    if (dp != '.' && dp != '\0')
+        for (std::size_t x = 0; x < tok.size(); ++x)
+            if (buf[x] == '.') buf[x] = dp;
+    char* end = nullptr;
+    errno = 0;
+    const double v = std::strtod(buf, &end);
+    if (end != buf + tok.size() || errno == ERANGE) return false;  // full-consume + in-range
+    out = v;
+    return true;
 }
 
 // Parse an ASCII STL: every "vertex x y z" keyword contributes one soup vertex.

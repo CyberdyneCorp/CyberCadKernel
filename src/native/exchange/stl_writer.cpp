@@ -7,9 +7,9 @@
 
 #include <array>
 #include <bit>
-#include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 
@@ -95,8 +95,14 @@ std::vector<Facet> collect_facets(const std::vector<double>& vertices,
 void append_ascii_float(std::string& s, double value) {
     char buf[32];
     const float f = to_f32(value);
-    const auto res = std::to_chars(buf, buf + sizeof(buf), f, std::chars_format::scientific, 6);
-    s.append(buf, res.ptr);
+    // std::to_chars floating-point overloads are unavailable on lower iOS deployment
+    // targets, so format with snprintf (equivalent "1.000000e+01" shape for a float32)
+    // and normalise any locale decimal comma to '.' — the file must stay locale-free.
+    const int n = std::snprintf(buf, sizeof(buf), "%.6e", static_cast<double>(f));
+    if (n <= 0 || static_cast<std::size_t>(n) >= sizeof(buf)) return;
+    for (int x = 0; x < n; ++x)
+        if (buf[x] == ',') buf[x] = '.';
+    s.append(buf, buf + n);
 }
 
 void append_vertex(std::string& s, const char* tag, const std::array<double, 3>& p) {

@@ -10,7 +10,7 @@ results. It only
   ``CCFaceMesh``) with field order and C types matching the header byte-for-byte
   so the ctypes layout equals the C ABI layout;
 * aliases ``CCShapeId`` to the header's ``typedef long`` (LP64 -> 64-bit);
-* declares ``argtypes`` / ``restype`` for every one of the 71 ``cc_*`` symbols
+* declares ``argtypes`` / ``restype`` for every one of the 73 ``cc_*`` symbols
   (so ctypes marshals arguments and, crucially, the *by-value* struct returns
   ``CCMesh`` / ``CCMassProps`` correctly);
 * loads ``libcybercadkernel.dylib`` (searching ``build-mac/`` then the
@@ -244,6 +244,9 @@ _SIGS: "dict[str, tuple[list, object]]" = {
     "cc_step_import": ([c_char_p], _S),
     "cc_iges_export": ([_S, c_char_p], _I),
     "cc_iges_import": ([c_char_p], _S),
+    # ── STL exchange (triangle mesh; binary=1 => binary, 0 => ASCII) ─────────
+    "cc_stl_export": ([_S, c_char_p, _D, _I], _I),
+    "cc_stl_import": ([c_char_p], _S),
     # ── Transforms ───────────────────────────────────────────────────────────
     "cc_scale_shape": ([_S, _D], _S),
     "cc_scale_shape_about": ([_S, _D, _D, _D, _D], _S),

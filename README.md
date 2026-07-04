@@ -119,6 +119,7 @@ linked until it is complete. Current split:
 | **blends: `cc_offset_face`** (planar face along its normal — EXACT slab) | features (replace-face, etc.) |
 | **blends: `cc_shell`** (uniform thickness, box-like planar solid — EXACT wall) | data exchange: **STEP IMPORT** + **IGES export/import** (parsing/writing arbitrary exchange formats) |
 | **exchange: `cc_step_export`** (native ISO-10303-21 STEP AP203 for in-scope native solids — sewn manifold `MANIFOLD_SOLID_BREP`, OCCT re-read round-trip verified) | exchange: out-of-scope geometry kinds (Ellipse/Bezier curve, rational spline, Bezier surface) |
+| **exchange: `cc_stl_export` / `cc_stl_import`** (native OCCT-free STL — binary/ASCII export with per-facet geometric normals + deterministic bytes; ASCII/binary auto-detect import as a welded mesh body, measurement + tessellation) | exchange: STL B-rep reconstruction (import is triangle-soup mesh only, by design) |
 | **blends: `cc_fillet_edges`** (CONSTANT radius, convex planar-dihedral edge — rolling-ball cylinder, deflection-bounded) | booleans: near-tangent / coincident |
 | construction: extrude, revolve (line-segment) | full general robust blend / offset over arbitrary NURBS solids |
 | construction: holed extrude (circular + polygon holes) | sweep: tight-curvature / self-intersecting / real-twist / guided / rail (all SSI / Tier-4) |

@@ -1299,6 +1299,26 @@ sewn manifold `CLOSED_SHELL`. **`cc_step_import`, `cc_iges_export`, `cc_iges_imp
 OCCT — intentionally out of scope** (parsing/writing arbitrary STEP/IGES is not part of
 this slice; the honest end state, keeping #8 blocked).
 
+**Native STL (`add-native-stl-exchange`) — export + mesh import, OCCT-FREE.** Extends the
+capability with two additive `cc_*` entries. `cc_stl_export(body, path, deflection, binary)`
+reuses the neutral tessellation path (`IEngine::tessellate` → `MeshData`, no duplicated
+meshing) and writes a binary (default) or ASCII STL under `src/native/exchange/stl_writer.{h,cpp}`
+— per-facet geometric normal `normalize((v1-v0)×(v2-v0))` (`(0,0,0)` for a zero-area facet,
+never fails), true millimetres, deterministic byte-identical output (fixed header, no
+timestamp/host/build-id), binary 80-byte header that never begins `solid`. `cc_stl_import(path)`
+(`stl_reader.{h,cpp}`) auto-detects ASCII vs binary — size-identity (`84 + 50·N`) beats a
+deceptive `solid` header, a non-text head byte forces binary — parses the triangle soup,
+**welds** coincident vertices on a tolerance grid, and tolerates degenerate/zero-area facets
+(skipped) → a mesh-backed native body (import-as-mesh only, **NOT** B-rep reconstruction) so
+display, `cc_tessellate`, bounding box, surface area, and volume-if-closed all work. Malformed
+input fails cleanly (`cc_last_error`, `0`, no partial body). Host `test_native_stl` (#22, 8
+cases: binary round-trip, ASCII well-formed, determinism binary+ASCII, ASCII/binary
+auto-detect, `solid`-headed binary trap, malformed clean-fail, measurement, and mixed
+valid/degenerate + leading-`+` tolerate-and-recover) green. Known follow-ups (documented,
+out of this slice): single-cell grid weld can under-weld foreign STLs whose coincident
+vertices straddle a cell boundary; a zero-facet ASCII file is misdetected as binary and
+rejected with a misleading message. `cc_step_import`, `cc_iges_export/import` still stay OCCT.
+
 **Native-vs-fallback split (engine wiring).** `NativeEngine::step_export`: an in-scope
 native body → NATIVE writer; an out-of-scope native body → clean error (never a native
 void handed to OCCT, never a faked file); a foreign (OCCT-built) body → OCCT

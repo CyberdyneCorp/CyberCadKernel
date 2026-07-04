@@ -257,6 +257,8 @@ public:
     ShapeResult step_import(const char* path) override;
     Result<void> iges_export(EngineShape body, const char* path) override;
     ShapeResult iges_import(const char* path) override;
+    // NATIVE: import an ASCII/binary STL as a mesh-backed native body (issue #5).
+    ShapeResult stl_import(const char* path) override;
 
 private:
     // Lazily create and return the fallback engine.

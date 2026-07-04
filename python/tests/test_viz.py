@@ -46,7 +46,35 @@ def test_export_stl_is_nonempty_and_round_trips(box, trimesh_or_skip, tmp_path):
     assert abs(reloaded.volume) == pytest.approx(1000.0, abs=1e-6)
 
 
-def test_render_png_gl_offscreen_or_skip(box, trimesh_or_skip, tmp_path):
+def test_export_stl_use_native_matches_trimesh(box, trimesh_or_skip, tmp_path):
+    """The native ``cc_stl_export`` writer agrees with the trimesh writer on the
+    same body+deflection: identical triangle count and bounding box.
+
+    Skips cleanly on any build whose dylib predates the ``cc_stl_export`` symbol.
+    """
+    trimesh = trimesh_or_skip
+    from cybercadkernel import _cffi, viz
+
+    if not hasattr(_cffi.lib(), "cc_stl_export"):
+        pytest.skip("dylib has no cc_stl_export symbol")
+
+    deflection = 0.1
+    with box(10, 10, 10) as b:
+        native_out = os.path.join(str(tmp_path), "box_native.stl")
+        trimesh_out = os.path.join(str(tmp_path), "box_trimesh.stl")
+
+        # Native writer: tessellates `b` at `deflection` and serializes per-facet.
+        viz.export_stl(b, native_out, use_native=True, deflection=deflection)
+        # Reference writer: same tessellation routed through trimesh.
+        viz.export_stl(b.tessellate(deflection), trimesh_out)
+
+    assert os.path.getsize(native_out) > 0
+
+    native = trimesh.load(native_out)
+    reference = trimesh.load(trimesh_out)
+
+    assert len(native.faces) == len(reference.faces)
+    assert native.bounds == pytest.approx(reference.bounds, abs=1e-4)
     from cybercadkernel import viz
 
     out = os.path.join(str(tmp_path), "box_gl.png")

@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -77,7 +78,9 @@ private:
 };
 
 struct NativeShape {
-    ntopo::Shape shape;
+    ntopo::Shape shape;       // B-rep bodies; left default/empty for mesh bodies
+    ntess::Mesh mesh;         // populated for imported STL mesh bodies (issue #5)
+    bool isMesh = false;      // true => serve the mesh directly (no B-rep)
     NativeShape() { NativeShapeRegistry::add(this); }
     ~NativeShape() { NativeShapeRegistry::remove(this); }
     NativeShape(const NativeShape&) = delete;
@@ -87,6 +90,16 @@ struct NativeShape {
 EngineShape wrapNative(ntopo::Shape shape) {
     auto holder = std::make_shared<NativeShape>();
     holder->shape = std::move(shape);
+    return std::static_pointer_cast<void>(holder);
+}
+
+// Wrap an imported triangle-soup mesh as a mesh-backed native body. Every native
+// body-consuming op (tessellate / mass_properties / bounding_box / face_meshes /
+// subshape_ids) branches on holder->isMesh to serve this mesh directly.
+EngineShape wrapNativeMesh(ntess::Mesh mesh) {
+    auto holder = std::make_shared<NativeShape>();
+    holder->mesh = std::move(mesh);
+    holder->isMesh = true;
     return std::static_pointer_cast<void>(holder);
 }
 
@@ -406,6 +419,7 @@ ShapeResult NativeEngine::solid_revolve(const double* profileXY, int pointCount,
 Result<MeshData> NativeEngine::tessellate(EngineShape body, double deflection) {
     if (!isNative(body)) return fallback().tessellate(body, deflection);
     const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh) return toMeshData(holder->mesh);  // imported STL soup
     ntess::MeshParams params;
     if (deflection > 0.0) params.deflection = deflection;
     ntess::SolidMesher mesher(params);
@@ -415,6 +429,18 @@ Result<MeshData> NativeEngine::tessellate(EngineShape body, double deflection) {
 Result<std::vector<FaceMeshData>> NativeEngine::face_meshes(EngineShape body, double deflection) {
     if (!isNative(body)) return fallback().face_meshes(body, deflection);
     const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh) {
+        // A triangle soup has no per-face topology: return the whole mesh as one
+        // face (faceId 1), reusing toMeshData's flat layout.
+        const MeshData md = toMeshData(holder->mesh);
+        FaceMeshData fmd;
+        fmd.faceId = 1;
+        fmd.vertices = md.vertices;
+        fmd.triangles = md.triangles;
+        std::vector<FaceMeshData> single;
+        single.push_back(std::move(fmd));
+        return single;
+    }
     ntess::MeshParams params;
     if (deflection > 0.0) params.deflection = deflection;
     ntess::FaceMesher fm(params);
@@ -446,9 +472,16 @@ Result<std::vector<FaceMeshData>> NativeEngine::face_meshes(EngineShape body, do
 Result<MassData> NativeEngine::mass_properties(EngineShape body) {
     if (!isNative(body)) return fallback().mass_properties(body);
     const auto* holder = static_cast<const NativeShape*>(body.get());
-    ntess::MeshParams params;
-    params.deflection = kPropertyDeflection;
-    const ntess::Mesh mesh = ntess::SolidMesher(params).mesh(holder->shape);
+    // Imported STL: measure the welded soup directly (area always valid; volume +
+    // valid only when the soup is watertight — "volume-if-closed"). A B-rep body
+    // meshes at the property deflection first.
+    ntess::Mesh brepMesh;
+    if (!holder->isMesh) {
+        ntess::MeshParams params;
+        params.deflection = kPropertyDeflection;
+        brepMesh = ntess::SolidMesher(params).mesh(holder->shape);
+    }
+    const ntess::Mesh& mesh = holder->isMesh ? holder->mesh : brepMesh;
 
     MassData out;
     out.area = ntess::surfaceArea(mesh);
@@ -483,6 +516,21 @@ Result<MassData> NativeEngine::mass_properties(EngineShape body) {
 Result<std::vector<double>> NativeEngine::bounding_box(EngineShape body) {
     if (!isNative(body)) return fallback().bounding_box(body);
     const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh) {
+        // AABB over the imported soup vertices (the mesh IS the geometry).
+        if (holder->mesh.vertices.empty())
+            return make_error("bounding_box: imported STL mesh is empty");
+        const auto& v0 = holder->mesh.vertices.front();
+        double lo[3] = {v0.x, v0.y, v0.z}, hi[3] = {v0.x, v0.y, v0.z};
+        for (const auto& p : holder->mesh.vertices) {
+            const double c[3] = {p.x, p.y, p.z};
+            for (int k = 0; k < 3; ++k) {
+                lo[k] = std::min(lo[k], c[k]);
+                hi[k] = std::max(hi[k], c[k]);
+            }
+        }
+        return std::vector<double>{lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]};
+    }
     // Bound the TESSELLATED body, not the raw B-rep vertices. A revolved solid's
     // topological vertices sit only at the angular STATIONS (e.g. θ = 0/120/240 for
     // a full turn), so a vertex-only AABB misses the circular extremes between them
@@ -512,6 +560,17 @@ Result<std::vector<double>> NativeEngine::bounding_box(EngineShape body) {
 Result<std::vector<int>> NativeEngine::subshape_ids(EngineShape body, int kind) {
     if (!isNative(body)) return fallback().subshape_ids(body, kind);
     const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh) {
+        // A triangle soup has no B-rep topology: expose the mesh vertices (kind 0,
+        // ids 1..vertexCount) and triangles as faces (kind 2, ids 1..triangleCount);
+        // there are no distinct edge sub-shapes (kind 1 → empty).
+        std::size_t n = 0;
+        if (kind == 0) n = holder->mesh.vertices.size();
+        else if (kind != 1) n = holder->mesh.triangles.size();
+        std::vector<int> ids(n);
+        for (std::size_t i = 0; i < n; ++i) ids[i] = static_cast<int>(i) + 1;
+        return ids;
+    }
     const ntopo::ShapeType type = kind == 0   ? ntopo::ShapeType::Vertex
                                   : kind == 1 ? ntopo::ShapeType::Edge
                                               : ntopo::ShapeType::Face;
@@ -984,5 +1043,16 @@ Result<void> NativeEngine::iges_export(EngineShape body, const char* path) {
     return fallback().iges_export(body, path);
 }
 ShapeResult NativeEngine::iges_import(const char* path) { return fallback().iges_import(path); }
+
+// NATIVE STL import (issue #5). The reader is OCCT-free, so this builds a mesh-backed
+// native body directly (no fallthrough). A malformed file yields no mesh → clean
+// error, and nothing is registered (the facade only records a valid ShapeResult).
+ShapeResult NativeEngine::stl_import(const char* path) {
+    if (!path) return make_error("stl_import: null path");
+    std::string err;
+    std::optional<ntess::Mesh> mesh = cybercad::native::exchange::stl_read(path, err);
+    if (!mesh) return make_error("stl_import: " + err);
+    return track(wrapNativeMesh(std::move(*mesh)));
+}
 
 }  // namespace cyber

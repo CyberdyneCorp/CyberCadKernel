@@ -25,6 +25,7 @@ import numpy as np
 if TYPE_CHECKING:  # pragma: no cover
     import trimesh
 
+    from .api import Shape
     from .mesh import Mesh
 
 # A mesh source is either a Mesh-like object or a (vertices, triangles) pair.
@@ -108,8 +109,50 @@ def export_mesh(mesh: MeshLike, path: str) -> str:
     return path
 
 
-def export_stl(mesh: MeshLike, path: str) -> str:
-    """Export ``mesh`` as binary STL. Returns ``path``."""
+def _export_stl_native(
+    body: "Shape", path: str, deflection: float, binary: bool
+) -> str:
+    """Serialize ``body`` to STL through the kernel's native ``cc_stl_export``.
+
+    ``body`` must be a :class:`~cybercadkernel.api.Shape` (it needs a live ``.id``
+    handle to tessellate). Raises :class:`RuntimeError` on kernel failure, using
+    the engine's ``cc_last_error`` string when available.
+    """
+    from . import _cffi
+
+    shape_id = getattr(body, "id", None)
+    if shape_id is None:
+        raise TypeError(
+            "export_stl(use_native=True) needs a Shape with a live .id handle, "
+            "not a raw mesh / (vertices, triangles) pair"
+        )
+    ok = _cffi.lib().cc_stl_export(
+        int(shape_id), str(path).encode("utf-8"), float(deflection), 1 if binary else 0
+    )
+    if not ok:
+        raw = _cffi.lib().cc_last_error()
+        detail = raw.decode("utf-8", "replace") if raw else "unknown error"
+        raise RuntimeError(f"native cc_stl_export failed: {detail}")
+    return path
+
+
+def export_stl(
+    mesh: MeshLike,
+    path: str,
+    use_native: bool = False,
+    deflection: float = 0.1,
+    binary: bool = True,
+) -> str:
+    """Export ``mesh`` as STL. Returns ``path``.
+
+    By default this uses the ``trimesh`` writer (binary STL). When
+    ``use_native=True`` the kernel's native ``cc_stl_export`` is used instead:
+    ``mesh`` must then be a :class:`~cybercadkernel.api.Shape` (a live body
+    handle), ``deflection`` is the chord tolerance (mm) for tessellation and
+    ``binary`` selects binary (default) versus ASCII STL.
+    """
+    if use_native:
+        return _export_stl_native(mesh, path, deflection, binary)
     to_trimesh(mesh).export(path, file_type="stl")
     return path
 

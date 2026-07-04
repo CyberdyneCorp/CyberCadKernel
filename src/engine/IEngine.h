@@ -407,6 +407,13 @@ public:
         (void)path;
         return engine_unsupported("iges_import");
     }
+    // STL import as a MESH body (triangle soup) — a native-mesh capability. The
+    // default is unsupported so the OCCT / stub engines inherit it; NativeEngine
+    // overrides it to build a mesh-backed native body.
+    virtual ShapeResult stl_import(const char* path) {
+        (void)path;
+        return engine_unsupported("stl_import");
+    }
 };
 
 // ── Active-engine selector ────────────────────────────────────────────────────

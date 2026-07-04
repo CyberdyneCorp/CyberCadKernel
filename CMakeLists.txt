@@ -227,6 +227,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_ssi
         test_native_blend
         test_native_step_writer
+        test_native_stl
         test_native_step
         test_native_engine)
 
@@ -277,6 +278,8 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_blend.cpp")
     set(test_native_step_writer_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step_writer.cpp")
+    set(test_native_stl_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_stl.cpp")
     set(test_native_step_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step.cpp")
 

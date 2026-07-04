@@ -17,6 +17,7 @@
 #include "cybercadkernel/cc_kernel.h"
 #include "engine/IEngine.h"
 #include "engine/native/native_engine.h"
+#include "native/exchange/native_exchange.h"
 
 namespace {
 
@@ -804,6 +805,36 @@ CCShapeId cc_iges_import(const char* path) {
     return cyber::guard(
         [&]() -> CCShapeId {
             auto r = active_engine()->iges_import(path);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
+}
+
+int cc_stl_export(CCShapeId body, const char* path, double deflection, int binary) {
+    return cyber::guard(
+        [&]() -> int {
+            // Reuse the neutral tessellation path (no duplicated meshing), then hand
+            // the flat POD to the OCCT-free native STL writer.
+            auto r = active_engine()->tessellate(resolve(body), deflection);
+            if (!r) {
+                set_last_error(r.error().message);
+                return 0;
+            }
+            const MeshData& m = r.value();
+            if (!cybercad::native::exchange::stl_export_mesh(m.vertices, m.triangles,
+                                                            path ? path : "", binary != 0)) {
+                set_last_error("STL export failed to write file");
+                return 0;
+            }
+            return 1;
+        },
+        0);
+}
+
+CCShapeId cc_stl_import(const char* path) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            auto r = active_engine()->stl_import(path);
             return finish_shape(r);
         },
         CCShapeId{0});

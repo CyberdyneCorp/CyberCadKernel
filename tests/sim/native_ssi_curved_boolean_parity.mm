@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// native_ssi_curved_boolean_parity.mm — SSI Stage S5-a (the SSI-curve-driven curved
-// boolean) native-vs-OCCT parity harness (iOS simulator). Gate 2 of the two-gate S5-a
+// native_ssi_curved_boolean_parity.mm — SSI Stage S5 (the SSI-curve-driven curved
+// boolean) native-vs-OCCT parity harness (iOS simulator). Gate 2 of the two-gate S5
 // model; Gate 1 (host, analytic ground truth, no OCCT) is
-// tests/native/test_native_ssi_curved_boolean.cpp.
+// tests/native/test_native_ssi_curved_boolean.cpp. Covers S5-a (through-drill COMMON),
+// S5-b (through-drill FUSE / CUT) and S5-c (sphere∩sphere COMMON), plus the honest
+// fall-back families (Steinmetz, sphere/cone∩box, sphere FUSE/CUT).
 //
 // S5-a EXTENDS the planar/axis-aligned native boolean to GENERAL curved pairs by driving
 // the face split from the S3 TraceSet WLines (not a hand-matched primitive): recognise
@@ -19,10 +21,12 @@
 // geometry, asserting per case: same watertight/closed shell, volume within tol, surface
 // area within tol, valid shape.
 //
-//   * cylinder ∩ cylinder (EQUAL radii, orthogonal axes) — the STEINMETZ case.
-//   * cylinder ∩ cylinder (UNEQUAL radii, skew/orthogonal axes) — the through-drill.
-//   * sphere ∩ box.
-//   * cone ∩ box.
+//   * cylinder ∩ cylinder (EQUAL radii, orthogonal axes) — the STEINMETZ case (fall-back).
+//   * cylinder ∩ cylinder (UNEQUAL radii, orthogonal axes) — the through-drill: COMMON
+//     (S5-a) + FUSE / CUT (S5-b) are NATIVE passes; only its self-verify gate decides.
+//   * sphere ∩ sphere (overlapping, equal + unequal radii) — the S5-c lens: COMMON is a
+//     NATIVE pass; sphere FUSE / CUT are deferred (fall-back).
+//   * sphere ∩ box, cone ∩ box (a box is not a curved solid → gate declines → fall-back).
 //
 // ── THE HONEST NATIVE-vs-FALLBACK SPLIT (measured, NOT fabricated) ─────────────────
 // The S5-a native path is DELIBERATELY narrow (transversal ELEMENTARY curved pairs; only
@@ -416,6 +420,35 @@ int main() {
     pc.nativeB = makeBox(-1.0, -1.0, 1.0, 1.0, 2.0);   // z∈[0,2]
     pc.occtA = occtSphere(1.5, 0.0);
     pc.occtB = occtBox(-1.0, -1.0, 1.0, 1.0, 2.0);
+    pc.relTol = 2e-2;
+    probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
+    runPair(pc);
+  }
+
+  // ── (3b) sphere ∩ sphere, overlapping (S5-c) — a NATIVE COMMON pass ───────────────
+  // Two spheres (both about world +Y) centred on the Y axis a distance d=1 apart, radii
+  // r=1 each, overlap in a lens. The trace is ONE closed seam circle (nearTangentGaps==0);
+  // the S5-c assembler welds the two inside-the-other spherical caps → a watertight native
+  // COMMON that matches BRepAlgoAPI_Common. Fuse/Cut for spheres are deferred → OCCT
+  // (honest fall-back). An equal-radius and an unequal-radius pair are both exercised.
+  {
+    PairCase pc;
+    pc.pairName = "sphere=sphere(lens)";
+    pc.nativeA = makeSphere(1.0, 0.0);
+    pc.nativeB = makeSphere(1.0, 1.0);
+    pc.occtA = occtSphere(1.0, 0.0);
+    pc.occtB = occtSphere(1.0, 1.0);
+    pc.relTol = 2e-2;
+    probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
+    runPair(pc);
+  }
+  {
+    PairCase pc;
+    pc.pairName = "sphere!=sphere(lens)";
+    pc.nativeA = makeSphere(1.2, 0.0);
+    pc.nativeB = makeSphere(0.8, 1.0);
+    pc.occtA = occtSphere(1.2, 0.0);
+    pc.occtB = occtSphere(0.8, 1.0);
     pc.relTol = 2e-2;
     probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
     runPair(pc);

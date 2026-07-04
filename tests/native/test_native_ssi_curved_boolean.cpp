@@ -41,12 +41,14 @@
 #include "native/boolean/curved.h"
 #include "native/boolean/native_boolean.h"
 #include "native/boolean/ssi_boolean.h"
+#include "native/construct/native_construct.h"
 #include "native/ssi/marching.h"
 #include "native/tessellate/native_tessellate.h"
 
 #include "harness.h"
 
 #include <cmath>
+#include <vector>
 
 namespace nb = cybercad::native::boolean;
 namespace sd = cybercad::native::boolean::ssidetail;
@@ -75,6 +77,50 @@ double cylinderVolume(double r, double lo, double hi) {
 ntopo::Shape makeCyl(int axis, double r, double lo, double hi) {
   nb::curved::AABox box{Point3{-100, -100, -100}, Point3{100, 100, 100}};
   return nb::curved::buildCommonSegment(box, nb::curved::AxisCylinder{axis, 0, 0, r, lo, hi});
+}
+
+namespace cst = cybercad::native::construct;
+
+// Build a full sphere of radius R centred at (cx,0,0) as a genuine native B-rep: an
+// on-axis meridian arc (south → north pole) revolved a full 2π about the in-plane Y axis
+// through (cx,0), which build_revolution_profile classifies to a Sphere band (see
+// test_native_profile revolve_profile_arc_sphere_volume). Its polar axis is +Y.
+ntopo::Shape makeSphere(double cx, double R) {
+  std::vector<cst::ProfileSegment> segs(1);
+  segs[0].kind = 1;  // arc
+  segs[0].cx = cx; segs[0].cy = 0; segs[0].r = R;
+  segs[0].x0 = cx; segs[0].y0 = -R;  // south pole (on axis)
+  segs[0].x1 = cx; segs[0].y1 = R;   // north pole (on axis)
+  segs[0].a0 = -sd::kSsiPi / 2.0; segs[0].a1 = sd::kSsiPi / 2.0;
+  const cst::RevolveAxis yAxis{cx, 0.0, 0.0, 1.0};
+  return cst::build_revolution_profile(segs, yAxis, 2.0 * sd::kSsiPi);
+}
+
+// A full sphere of radius R centred at (0,cy,0) — offset ALONG the +Y polar (revolution)
+// axis. Two such spheres overlap with their lens apex sitting exactly at each sphere's
+// parametric pole (v=±π/2), the case that stresses the pole singularity of a naive (u,v)
+// cap interpolation (the assembler uses direction-slerp precisely to be robust here).
+ntopo::Shape makeSphereY(double cy, double R) {
+  std::vector<cst::ProfileSegment> segs(1);
+  segs[0].kind = 1;
+  segs[0].cx = 0; segs[0].cy = cy; segs[0].r = R;
+  segs[0].x0 = 0; segs[0].y0 = cy - R;
+  segs[0].x1 = 0; segs[0].y1 = cy + R;
+  segs[0].a0 = -sd::kSsiPi / 2.0; segs[0].a1 = sd::kSsiPi / 2.0;
+  const cst::RevolveAxis yAxis{0.0, 0.0, 0.0, 1.0};
+  return cst::build_revolution_profile(segs, yAxis, 2.0 * sd::kSsiPi);
+}
+
+// Analytic COMMON (lens) volume of two overlapping spheres, centre distance d.
+// Equal radii r: two spherical caps of height h = r − d/2, cap = π h²(3r−h)/3, lens = 2·cap.
+double lensVolumeEqual(double r, double d) {
+  const double h = r - d / 2.0;
+  return 2.0 * sd::kSsiPi * h * h * (3.0 * r - h) / 3.0;
+}
+// General radii (closed form): V = π(rA+rB−d)²(d²+2d·rB−3rB²+2d·rA+6rA·rB−3rA²)/(12d).
+double lensVolumeGeneral(double rA, double rB, double d) {
+  return sd::kSsiPi * (rA + rB - d) * (rA + rB - d) *
+         (d * d + 2 * d * rB - 3 * rB * rB + 2 * d * rA + 6 * rA * rB - 3 * rA * rA) / (12 * d);
 }
 
 // Watertight enclosed volume of a native solid at a fine deflection, mirroring the
@@ -174,33 +220,115 @@ CC_TEST(through_drill_common_watertight_matches_analytic) {
   CC_CHECK(vCommonTrue <= std::min(vFat, vThin) + 1e-9);
 }
 
-// ── (2b) FUSE / CUT are deferred (NULL → OCCT); monotone relations hold analytically ─
-// The outside-fragment + cap re-trim for FUSE / CUT is not yet robust, so the native
-// path returns NULL and the engine uses OCCT. We assert the honest NULL AND the
-// inclusion–exclusion monotone relations against the closed forms directly — the
-// invariants any correct result (native or OCCT) must satisfy:
-//   fuse   = A + B − common  ≥ max(A, B)
-//   cut    = A − common      ≤ A
-//   common                    ≤ min(A, B)
-CC_TEST(through_drill_fuse_cut_deferred_and_monotone_relations) {
+// ── (2b) TRANSVERSAL through-drill FUSE / CUT: REAL native watertight passes (S5-b) ──
+// The S5-b assembler emits the fat wall with the two drill-mouth seam loops cut out
+// (planar-facet structured grid + a two-loop ribbon stitch to the seam), the two fat disc
+// caps as planar-facet fans, and — for CUT — the thin tube band reversed as the tunnel
+// wall / — for FUSE — the two protruding thin end tubes + thin end caps. Every seam-adjacent
+// fragment is a shared-pool planar facet (the S5-a watertight discipline; tessellator
+// untouched), so the shell welds watertight. We assert both are non-null, PASS the watertight
+// gate, and match the inclusion–exclusion closed forms to the engine's curved-parity bar
+// (a tessellation-deflection bound, not a relaxed tolerance):
+//   fuse = A + B − common,  cut = A − common,  with common the S5-a-pinned through-drill value.
+CC_TEST(through_drill_fuse_cut_watertight_match_inclusion_exclusion) {
   const ntopo::Shape fat = makeCyl(/*Z*/ 2, 2.0, -3, 3);
   const ntopo::Shape thin = makeCyl(/*X*/ 0, 0.5, -3, 3);
 
-  // Honest deferral: FUSE and CUT decline in S5-a (→ OCCT).
-  CC_CHECK(nb::ssi_boolean_solid(fat, thin, nb::Op::Fuse).isNull());
-  CC_CHECK(nb::ssi_boolean_solid(fat, thin, nb::Op::Cut).isNull());
-
-  // Inclusion–exclusion monotone relations from the closed forms.
   const double vFat = cylinderVolume(2.0, -3, 3);
   const double vThin = cylinderVolume(0.5, -3, 3);
-  const double vCommon = 3.117;  // through-drill COMMON ground truth (numeric integration)
+  const double vCommon = 3.116853;  // through-drill COMMON closed-form ground truth
   const double vFuse = vFat + vThin - vCommon;
   const double vCut = vFat - vCommon;
 
-  CC_CHECK(vFuse >= std::max(vFat, vThin) - 1e-9);  // fuse ≥ max(A, B)
-  CC_CHECK(vCommon <= std::min(vFat, vThin) + 1e-9);  // common ≤ min(A, B)
-  CC_CHECK(vCut <= vFat + 1e-9);                       // cut ≤ A
-  CC_CHECK(vCut >= 0.0);                               // cut is non-negative
+  // CUT: a non-null watertight candidate whose enclosed volume matches vFat − vCommon.
+  const ntopo::Shape cut = nb::ssi_boolean_solid(fat, thin, nb::Op::Cut);
+  CC_CHECK(!cut.isNull());
+  const double vCutMesh = watertightMeshVolume(cut);
+  CC_CHECK(vCutMesh > 0.0);                                    // watertight → engine accepts
+  CC_CHECK(std::fabs(vCutMesh - vCut) <= 1e-2 * vCut);         // ≤ 1% curved-parity bar
+
+  // FUSE: a non-null watertight candidate whose enclosed volume matches vFat + vThin − vCommon.
+  const ntopo::Shape fuse = nb::ssi_boolean_solid(fat, thin, nb::Op::Fuse);
+  CC_CHECK(!fuse.isNull());
+  const double vFuseMesh = watertightMeshVolume(fuse);
+  CC_CHECK(vFuseMesh > 0.0);
+  CC_CHECK(std::fabs(vFuseMesh - vFuse) <= 1e-2 * vFuse);
+
+  // Inclusion–exclusion monotone relations still hold against the closed forms.
+  CC_CHECK(vFuse >= std::max(vFat, vThin) - 1e-9);   // fuse ≥ max(A, B)
+  CC_CHECK(vCommon <= std::min(vFat, vThin) + 1e-9); // common ≤ min(A, B)
+  CC_CHECK(vCut <= vFat + 1e-9);                      // cut ≤ A
+  CC_CHECK(vCut >= 0.0);                              // cut is non-negative
+
+  // CUT is A−B (asymmetric): thin − fat (the tube as minuend) is a DIFFERENT topology and is
+  // honestly declined → OCCT (we do not emit the wrong shape).
+  CC_CHECK(nb::ssi_boolean_solid(thin, fat, nb::Op::Cut).isNull());
+}
+
+// ── (2c) TRANSVERSAL sphere∩sphere COMMON: a REAL native watertight lens (S5-c) ──
+// Two overlapping spheres trace as ONE closed seam circle (nearTangentGaps == 0). The
+// S5-c assembler builds the LENS bounded by the two inside-the-other spherical caps, each
+// a radial planar-facet fan from its apex (surface point nearest the other centre) out to
+// the shared seam; both caps' outer rings are the SAME pooled seam vertices → they weld
+// watertight along the one seam. We assert: the trace is one clean closed seam, a candidate
+// is produced, it PASSES the watertight gate, and its enclosed volume matches the closed-form
+// lens to the engine's curved-parity bar (1% — a tessellation-deflection bound). Two geometries
+// (equal + unequal radii); disjoint and tangent pairs decline → OCCT (honest NULL, not faked).
+CC_TEST(sphere_sphere_common_watertight_matches_analytic_lens) {
+  // Equal radii r=1, centres 1 apart → seam circle of radius √(1−0.25).
+  const double r = 1.0, dEq = 1.0;
+  const ntopo::Shape sA = makeSphere(0.0, r);
+  const ntopo::Shape sB = makeSphere(dEq, r);
+  CC_CHECK(!sA.isNull() && !sB.isNull());
+
+  const auto csA = sd::recogniseCurvedSolid(sA);
+  const auto csB = sd::recogniseCurvedSolid(sB);
+  CC_CHECK(csA && csB);
+  if (csA && csB) {
+    CC_CHECK(csA->kind == sd::CurvedKind::Sphere);
+    const ssi::TraceSet tr = ssi::trace_intersection(csA->adapter(), csB->adapter());
+    CC_CHECK(tr.nearTangentGaps == 0);  // fully transversal
+    CC_CHECK(tr.curveCount() == 1);     // ONE closed seam circle (the single-seam lens case)
+  }
+
+  const ntopo::Shape lens = nb::ssi_boolean_solid(sA, sB, nb::Op::Common);
+  CC_CHECK(!lens.isNull());
+  const double vLens = watertightMeshVolume(lens);
+  CC_CHECK(vLens > 0.0);  // watertight → engine accepts the native result
+  const double vTrue = lensVolumeEqual(r, dEq);
+  CC_CHECK(std::fabs(vTrue - lensVolumeGeneral(r, r, dEq)) < 1e-9);  // the two forms agree
+  CC_CHECK(std::fabs(vLens - vTrue) <= 1e-2 * vTrue);               // ≤ 1% curved-parity bar
+
+  // Unequal radii rA=1.2, rB=0.8, centres 1 apart — the general lens closed form.
+  const double rA = 1.2, rB = 0.8, dUn = 1.0;
+  const ntopo::Shape uA = makeSphere(0.0, rA);
+  const ntopo::Shape uB = makeSphere(dUn, rB);
+  const ntopo::Shape uLens = nb::ssi_boolean_solid(uA, uB, nb::Op::Common);
+  CC_CHECK(!uLens.isNull());
+  const double vUn = watertightMeshVolume(uLens);
+  CC_CHECK(vUn > 0.0);
+  const double vUnTrue = lensVolumeGeneral(rA, rB, dUn);
+  CC_CHECK(std::fabs(vUn - vUnTrue) <= 1e-2 * vUnTrue);
+
+  // POLE-ALIGNED: spheres offset along the +Y polar axis, so each cap's apex sits on the
+  // sphere's parametric pole (v=±π/2) — the case a naive (u,v) cap interpolation degenerates
+  // on. The direction-slerp cap stays watertight and matches the same equal-radius lens.
+  const ntopo::Shape pA = makeSphereY(0.0, r);
+  const ntopo::Shape pB = makeSphereY(dEq, r);
+  const ntopo::Shape pLens = nb::ssi_boolean_solid(pA, pB, nb::Op::Common);
+  CC_CHECK(!pLens.isNull());
+  const double vPole = watertightMeshVolume(pLens);
+  CC_CHECK(vPole > 0.0);                               // watertight even with the pole apex
+  CC_CHECK(std::fabs(vPole - vTrue) <= 1e-2 * vTrue);  // ≤ 1% curved-parity bar
+
+  // The lens ≤ min(sphere) volume (monotone invariant).
+  const double vSphA = 4.0 / 3.0 * sd::kSsiPi * r * r * r;
+  CC_CHECK(vTrue <= vSphA + 1e-9);
+
+  // Disjoint spheres (no seam) and externally-tangent spheres (near-tangent apex) BOTH
+  // decline → OCCT (honest NULL, never a fabricated lens).
+  CC_CHECK(nb::ssi_boolean_solid(makeSphere(0.0, 1.0), makeSphere(5.0, 1.0), nb::Op::Common).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(makeSphere(0.0, 1.0), makeSphere(2.0, 1.0), nb::Op::Common).isNull());
 }
 
 // ── (3) A near-tangent / unsupported pair MUST return NULL (honest fallback) ─────

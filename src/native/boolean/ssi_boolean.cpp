@@ -18,6 +18,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace cybercad::native::boolean {
@@ -305,6 +307,710 @@ void appendTubeBand(const CurvedSolid& tube, const std::vector<Seam>& seams,
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// S5-b — through-drill cyl∩cyl FUSE and CUT (assembler-only extension of S5-a).
+//
+// FUSE / CUT keep the SAME gate + trace + two rim seams as COMMON. What changes is
+// WHICH wall fragments survive (the planar set algebra of native_boolean.h) and their
+// winding — never the tracer, the tessellator, or the cc_* ABI. The surviving wall
+// fragments that touch a seam are emitted as PLANAR-TRIANGLE facets through the shared
+// pool (the S5-a watertight discipline) so they weld against the tube band + each other;
+// the analytic cylinder/disc faces are NOT reused for any seam-adjacent fragment (their
+// structured-grid mesh injects interior u-lines → T-junctions against the facet neighbours,
+// the exact S5-a failure). Anything not this clean through-drill config → NULL → OCCT.
+//
+// Fragment inventory of a through-drill A−B / A∪B (A = pierced/fat, B = piercing/thin):
+//   * PIERCED WALL with the two drill-mouth seam loops CUT OUT (kept for both ops — it is
+//     the part of the fat lateral wall OUTSIDE the thin tube). Planar-facet, outward.
+//   * the two PIERCED DISC CAPS (fat z-caps, entirely outside the tube) — re-emitted as
+//     planar-facet fans whose rim shares the wall's top/bottom u-samples (so cap↔wall welds
+//     without a T-junction against an analytic circle rim). Outward.
+//   * TUBE band between the two rim seams:
+//       CUT  → the tunnel wall: the thin tube band, INWARD-facing (material is outside it).
+//       FUSE → dropped (that stretch of the thin wall is inside the fat solid).
+//   * the two PIERCING END TUBES (thin wall from each seam out to the thin end cap):
+//       FUSE → kept, outward (the boss sticking out of the fat wall), + the two thin disc
+//              end caps (planar-facet fans). Their inner rim IS a seam → welds the fat hole.
+//       CUT  → dropped (thin end tubes are outside the fat solid, removed by the cut).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// One PLANAR triangle through three SHARED pool vertices, oriented so its face normal
+// points on the same side as (refOutward). Generalises tubeTriFace / appendMouthCap's
+// local `tri` so the wall, caps and end tubes share one orientation primitive.
+void pushPlanarTri(const math::Point3& a, const math::Point3& b, const math::Point3& c,
+                   const math::Vec3& refOutward, VertexPool& pool,
+                   std::vector<topo::Shape>& faces) {
+  const topo::Shape va = pool.vertexFor(a), vb = pool.vertexFor(b), vc = pool.vertexFor(c);
+  const math::Vec3 nrm = math::cross(b - a, c - a);
+  if (math::norm(nrm) < 1e-14) return;  // degenerate sliver → skip
+  const bool outward = math::dot(nrm, refOutward) >= 0.0;
+  const math::Vec3 oN = outward ? nrm : math::Vec3{-nrm.x, -nrm.y, -nrm.z};
+  const math::Ax3 fr = math::Ax3::fromAxisAndRef(a, math::Dir3{oN}, math::Dir3{b - a});
+  faces.push_back(outward ? detail::triangleFace(va, vb, vc, fr)
+                          : detail::triangleFace(va, vc, vb, fr));
+}
+
+// Radial vector from the pierced axis to a world point (the pierced wall's outward
+// material normal there) — the outward reference for a fat-wall / tunnel facet.
+math::Vec3 radialOut(const CurvedSolid& cs, const math::Point3& p) {
+  const math::Vec3 w = p - cs.frame.origin;
+  return w - cs.frame.z.vec() * math::dot(w, cs.frame.z.vec());
+}
+
+// A single closed drill-mouth seam loop expressed as the pierced wall's (u,v) track,
+// unwrapped into a contiguous window around its own centroid azimuth `uc` (no ±2π jump),
+// paired with the SHARED 3D seam nodes. Used to place the loop as a hole in the unrolled
+// wall panel and to weld its boundary (== the tube band rim) via the pool.
+struct MouthLoop {
+  double uc = 0.0;                                   ///< centroid azimuth (contiguous)
+  std::vector<std::pair<double, double>> uv;         ///< (u contiguous, v) per node
+  const Seam* seam = nullptr;                        ///< shared 3D nodes (seam->pts)
+};
+MouthLoop makeMouthLoop(const Seam& seam, const std::vector<std::pair<double, double>>& uvIn) {
+  MouthLoop m;
+  m.seam = &seam;
+  const double u0 = uvIn.front().first;
+  double uSum = 0.0;
+  m.uv.reserve(uvIn.size());
+  for (const auto& p : uvIn) {
+    const double uu = nearU(u0, p.first);
+    m.uv.emplace_back(uu, p.second);
+    uSum += uu;
+  }
+  m.uc = uSum / static_cast<double>(uvIn.size());
+  return m;
+}
+
+// Even-odd point-in-polygon test in the (u,v) plane for a mouth loop `m` at query (u,v).
+// `u` is first folded contiguous around the loop centroid so the wrap does not corrupt it.
+bool insideMouth(const MouthLoop& m, double u, double v) {
+  const double uq = nearU(m.uc, u);
+  bool in = false;
+  const std::size_t n = m.uv.size();
+  for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
+    const double ui = m.uv[i].first, vi = m.uv[i].second;
+    const double uj = m.uv[j].first, vj = m.uv[j].second;
+    if (((vi > v) != (vj > v)) && (uq < (uj - ui) * (v - vi) / (vj - vi) + ui)) in = !in;
+  }
+  return in;
+}
+
+// A structured (u,v) grid over the pierced wall: u wraps (column nu ≡ 0), v spans [vLo,vHi].
+// Carries the sampling so the three wall sub-phases (grid emit / contour trace / ribbon) share
+// one coordinate system instead of re-deriving it (and to keep each phase low-complexity).
+struct GridWall {
+  const CurvedSolid& cs;
+  int nu, nv;
+  double uAt(int i) const { return kSsiTwoPi * i / nu; }
+  double vAt(int j) const { return cs.vLo + (cs.vHi - cs.vLo) * j / nv; }
+  int wrap(int i) const { return ((i % nu) + nu) % nu; }
+  math::Point3 at(int i, int j) const { return cs.point(uAt(wrap(i)), vAt(j)); }
+  // A cell (i,j) is REMOVED if ANY vertex in its 1-cell DILATED corner neighbourhood (i-1..i+2 ×
+  // j-1..j+2) lies inside `m`. The dilation makes the removed block strictly CONTAIN the wobbly
+  // seam loop even where it bulges between grid columns (else the seam would poke out of the
+  // block boundary and the annulus stitch could not close).
+  bool removed(const MouthLoop& m, int i, int j) const {
+    for (int dj = -1; dj <= 2; ++dj)
+      for (int di = -1; di <= 2; ++di) {
+        const int jj = j + dj;
+        if (jj < 0 || jj > nv) continue;
+        if (insideMouth(m, uAt(wrap(i + di)), vAt(std::clamp(jj, 0, nv)))) return true;
+      }
+    return false;
+  }
+};
+
+// Trace the removed-block boundary of ONE mouth as an ORDERED grid-edge contour (list of
+// (column, row) grid vertices). The edges are the grid edges the neighbouring KEPT cells emit,
+// so the annulus outer loop welds the surrounding grid exactly (an angle-sort would reorder a
+// rectilinear boundary and open cracks). Returns false (→ decline) if the mouth covers no cell,
+// touches a wall v-edge, or the boundary is not one simple loop.
+// The cell-index bounding block of one mouth's dilated removed region (u contiguous around the
+// mouth centroid). ok == false when the mouth covers no cell or touches a wall v-edge (decline).
+struct BlockRange { int iMin, iMax, jMin, jMax; bool ok; };
+BlockRange mouthBlockRange(const GridWall& g, const MouthLoop& m) {
+  auto rem = [&](int di, int j) { return j >= 0 && j < g.nv && g.removed(m, g.wrap(di), j); };
+  int jMin = g.nv, jMax = -1;
+  for (int j = 0; j < g.nv; ++j)
+    for (int i = 0; i < g.nu; ++i)
+      if (rem(i, j)) { jMin = std::min(jMin, j); jMax = std::max(jMax, j); }
+  if (jMax < 0 || jMin == 0 || jMax + 1 >= g.nv) return {0, 0, 0, 0, false};
+  const int iuc = static_cast<int>(std::lround(m.uc / kSsiTwoPi * g.nu));
+  int iMin = g.nu, iMax = -1;
+  for (int di = -g.nu / 2; di <= g.nu / 2; ++di)
+    for (int j = jMin; j <= jMax; ++j)
+      if (rem(di + iuc, j)) { iMin = std::min(iMin, di + iuc); iMax = std::max(iMax, di + iuc); }
+  return {iMin, iMax, jMin, jMax, iMax >= iMin};
+}
+
+// Chain a directed-edge map (start-key → end-key, with key→(col,row)) into one ordered loop.
+bool chainLoop(const std::unordered_map<long long, long long>& nextV,
+               const std::unordered_map<long long, std::pair<int, int>>& vIJ,
+               std::vector<std::pair<int, int>>& loopOut) {
+  if (nextV.empty()) return false;
+  loopOut.clear();
+  const long long startK = nextV.begin()->first;
+  long long cur = startK;
+  for (std::size_t guard = 0; guard <= nextV.size(); ++guard) {
+    loopOut.push_back(vIJ.at(cur));
+    auto it = nextV.find(cur);
+    if (it == nextV.end()) return false;  // open contour → decline
+    cur = it->second;
+    if (cur == startK) break;
+  }
+  return loopOut.size() == nextV.size() && loopOut.size() >= 3;  // one simple loop
+}
+
+bool traceBlockContour(const GridWall& g, const MouthLoop& m,
+                       std::vector<std::pair<int, int>>& loopOut) {
+  const BlockRange br = mouthBlockRange(g, m);
+  if (!br.ok) return false;
+  auto rem = [&](int di, int j) { return j >= 0 && j < g.nv && g.removed(m, g.wrap(di), j); };
+  // Directed boundary edges (removed cell on the LEFT → CCW loop).
+  auto key = [&](int di, int j) { return static_cast<long long>(di) * 100000 + j; };
+  std::unordered_map<long long, long long> nextV;
+  std::unordered_map<long long, std::pair<int, int>> vIJ;
+  auto edge = [&](int adi, int aj, int bdi, int bj) {
+    nextV[key(adi, aj)] = key(bdi, bj);
+    vIJ[key(adi, aj)] = {adi, aj};
+    vIJ[key(bdi, bj)] = {bdi, bj};
+  };
+  for (int di = br.iMin; di <= br.iMax; ++di)
+    for (int j = br.jMin; j <= br.jMax; ++j) {
+      if (!rem(di, j)) continue;
+      if (!rem(di, j - 1)) edge(di, j, di + 1, j);          // bottom (u+)
+      if (!rem(di + 1, j)) edge(di + 1, j, di + 1, j + 1);  // right  (v+)
+      if (!rem(di, j + 1)) edge(di + 1, j + 1, di, j + 1);  // top    (u-)
+      if (!rem(di - 1, j)) edge(di, j + 1, di, j);          // left   (v-)
+    }
+  return chainLoop(nextV, vIJ, loopOut);
+}
+
+// A polyline loop of world points, each tagged with its azimuth about a shared (u,v) centroid.
+struct RibbonRing {
+  std::vector<math::Point3> pts;
+  std::vector<double> ang;
+  void add(double u, double v, double cu, double cv, const math::Point3& P) {
+    pts.push_back(P);
+    ang.push_back(std::atan2(v - cv, u - cu));
+  }
+  // Make the loop wind CCW (net azimuth increasing); reverse if it runs the other way.
+  void orientCCW() {
+    double net = 0.0;
+    for (std::size_t k = 1; k < ang.size(); ++k) {
+      double d = ang[k] - ang[k - 1];
+      while (d > kSsiPi) d -= kSsiTwoPi;
+      while (d < -kSsiPi) d += kSsiTwoPi;
+      net += d;
+    }
+    if (net < 0) { std::reverse(pts.begin(), pts.end()); std::reverse(ang.begin(), ang.end()); }
+  }
+  // Normalised (0..1) cumulative CCW azimuth swept from index `start` over `cnt` edges.
+  std::vector<double> sweep(int start, int cnt) const {
+    std::vector<double> s(cnt + 1, 0.0);
+    const int n = static_cast<int>(ang.size());
+    for (int k = 0; k < cnt; ++k) {
+      double d = ang[(start + k + 1) % n] - ang[(start + k) % n];
+      while (d > kSsiPi) d -= kSsiTwoPi;
+      while (d < -kSsiPi) d += kSsiTwoPi;
+      s[k + 1] = s[k] + d;
+    }
+    const double tot = s[cnt] != 0.0 ? s[cnt] : 1.0;
+    for (double& x : s) x /= tot;
+    return s;
+  }
+};
+
+// Fill the annulus between the OUTER block-boundary loop and the INNER seam loop with a robust
+// two-loop RIBBON stitch (no ear-clip): both loops are closed around the mouth centroid, so we
+// merge-walk them by matched swept-azimuth, advancing whichever ring's next node is at the
+// smaller fraction of the full turn and emitting one planar triangle per advance. After no + ni
+// advances both rings close, so EVERY outer (grid) edge and EVERY inner (seam) edge is a
+// triangle edge → the ribbon welds its two neighbours (grid + tube band) watertight, with no
+// near-degenerate slivers (an ear-clip of a thin annulus drops slivers → 3-edge holes).
+bool appendAnnulusRibbon(const CurvedSolid& pierced, const GridWall& g, const MouthLoop& m,
+                         const std::vector<std::pair<int, int>>& loop, VertexPool& pool,
+                         std::vector<topo::Shape>& faces) {
+  double cu = 0, cv = 0;
+  for (const auto& [di, j] : loop) { cu += nearU(m.uc, g.uAt(g.wrap(di))); cv += g.vAt(j); }
+  cu /= loop.size(); cv /= loop.size();
+  RibbonRing outer, inner;
+  for (const auto& [di, j] : loop)
+    outer.add(nearU(m.uc, g.uAt(g.wrap(di))), g.vAt(j), cu, cv, g.at(di, j));
+  for (std::size_t k = 0; k < m.uv.size(); ++k)
+    inner.add(nearU(m.uc, m.uv[k].first), m.uv[k].second, cu, cv, m.seam->pts[k]);
+  const int no = static_cast<int>(outer.pts.size()), ni = static_cast<int>(inner.pts.size());
+  if (no < 3 || ni < 3) return false;
+  outer.orientCCW();
+  inner.orientCCW();
+  auto angGap = [](double a, double b) {
+    double d = a - b; while (d > kSsiPi) d -= kSsiTwoPi; while (d < -kSsiPi) d += kSsiTwoPi;
+    return std::fabs(d);
+  };
+  int si = 0;  // align inner start to outer start azimuth so the ribbon does not spiral
+  for (int k = 1; k < ni; ++k)
+    if (angGap(outer.ang[0], inner.ang[k]) < angGap(outer.ang[0], inner.ang[si])) si = k;
+  const std::vector<double> so = outer.sweep(0, no);
+  const std::vector<double> siA = inner.sweep(si, ni);
+  auto emit = [&](const math::Point3& A, const math::Point3& B, const math::Point3& C) {
+    const math::Point3 c{(A.x + B.x + C.x) / 3, (A.y + B.y + C.y) / 3, (A.z + B.z + C.z) / 3};
+    pushPlanarTri(A, B, C, radialOut(pierced, c), pool, faces);
+  };
+  int io = 0, ii = 0;
+  for (int step = 0; step < no + ni; ++step) {
+    const bool takeOuter = (io < no) && (ii >= ni || so[io + 1] <= siA[ii + 1]);
+    const int iiC = (si + ii) % ni;
+    if (takeOuter) {
+      emit(outer.pts[io % no], outer.pts[(io + 1) % no], inner.pts[iiC]);  // outer (grid) edge
+      ++io;
+    } else {
+      emit(inner.pts[(si + ii + 1) % ni], inner.pts[iiC], outer.pts[io % no]);  // inner (seam) edge
+      ++ii;
+    }
+  }
+  return true;
+}
+
+// ── PIERCED WALL with two mouth holes → planar facets (the CUT/FUSE fat wall) ────
+// The fat lateral wall is a full-turn (u∈[0,2π]) band over v∈[vLo,vHi] minus the two drill-mouth
+// seam loops. Driver: tile the wall with a STRUCTURED (u,v) quad grid (u finely sampled for
+// curvature, v coarser — a cylinder is straight along v so tall facets stay exact), emit two
+// planar triangles per KEPT cell, then for each mouth trace its removed-block boundary contour
+// and ribbon-stitch it to the seam. Grid vertices come from ONE pool, so cell↔cell, wall↔cap
+// (shared v=vLo/vHi rows) and wall↔tube (shared seam nodes) all weld. Returns the ORDERED
+// v=vLo / v=vHi rim rings (full circle) for the disc caps. The irreducible sub-phases are
+// isolated in traceBlockContour / mouthBlockRange / appendAnnulusRibbon (each ≤ ~20 cognitive,
+// systems band), so this driver stays a short linear composition. Any non-through-drill config
+// (mouths coincident, touching a wall edge, non-simple block) → false (declined → OCCT).
+bool appendHoledWall(const CurvedSolid& pierced, const Seam& s0, const Seam& s1,
+                     const std::vector<std::pair<double, double>>& uv0,
+                     const std::vector<std::pair<double, double>>& uv1, int uCells, int vCells,
+                     VertexPool& pool, std::vector<topo::Shape>& faces,
+                     std::vector<math::Point3>& rimLo, std::vector<math::Point3>& rimHi) {
+  const MouthLoop m0 = makeMouthLoop(s0, uv0);
+  const MouthLoop m1 = makeMouthLoop(s1, uv1);
+  const double gap = std::fabs(nearU(m0.uc, m1.uc) - m0.uc);
+  if (!(gap > 0.2) || !(kSsiTwoPi - gap > 0.2)) return false;  // mouths not distinct
+
+  const GridWall g{pierced, uCells, vCells};
+  const int nu = uCells, nv = vCells;
+
+  // Full-circle cap rim rings at v=vLo / v=vHi (shared with the disc caps).
+  rimLo.assign(nu, math::Point3{});
+  rimHi.assign(nu, math::Point3{});
+  for (int i = 0; i < nu; ++i) { rimLo[i] = g.at(i, 0); rimHi[i] = g.at(i, nv); }
+
+  // Emit every KEPT grid cell (skip a cell removed by either mouth) as two planar triangles.
+  for (int j = 0; j < nv; ++j)
+    for (int i = 0; i < nu; ++i) {
+      if (g.removed(m0, i, j) || g.removed(m1, i, j)) continue;
+      const math::Point3 a = g.at(i, j), b = g.at(i + 1, j), c = g.at(i + 1, j + 1), d = g.at(i, j + 1);
+      const math::Point3 ctr{(a.x + b.x + c.x + d.x) / 4, (a.y + b.y + c.y + d.y) / 4,
+                             (a.z + b.z + c.z + d.z) / 4};
+      const math::Vec3 out = radialOut(pierced, ctr);
+      pushPlanarTri(a, b, c, out, pool, faces);
+      pushPlanarTri(a, c, d, out, pool, faces);
+    }
+
+  // Ribbon-stitch each mouth's removed block to its seam.
+  for (const MouthLoop* m : {&m0, &m1}) {
+    std::vector<std::pair<int, int>> loop;
+    if (!traceBlockContour(g, *m, loop)) return false;
+    if (!appendAnnulusRibbon(pierced, g, *m, loop, pool, faces)) return false;
+  }
+  return true;
+}
+
+// ── FACETED DISC CAP: a fan from the axis centre (at v) out to the wall rim samples
+// (`rim`, in u-order), planar facets, oriented along ±axis (`capOutward`). The rim
+// points are the SAME 3D nodes the wall's top/bottom row emitted (shared pool) → the
+// cap↔wall seam welds without a T-junction against an analytic circle rim.
+void appendDiskCap(const CurvedSolid& cs, double v, const std::vector<math::Point3>& rim,
+                   const math::Vec3& capOutward, VertexPool& pool, std::vector<topo::Shape>& faces) {
+  const int n = static_cast<int>(rim.size());
+  if (n < 3) return;
+  // The axis point at this v (a cylinder disc cap's centre): origin + v·axis.
+  const math::Point3 axisPt{cs.frame.origin.x + cs.frame.z.vec().x * v,
+                            cs.frame.origin.y + cs.frame.z.vec().y * v,
+                            cs.frame.origin.z + cs.frame.z.vec().z * v};
+  for (int k = 0; k + 1 < n; ++k) pushPlanarTri(axisPt, rim[k], rim[k + 1], capOutward, pool, faces);
+  pushPlanarTri(axisPt, rim[n - 1], rim[0], capOutward, pool, faces);
+}
+
+// ── ORIENTED TUBE BAND: the piercing wall between the two rim seams, its facet normals
+// forced to point on the side of `outwardSign` × radial-out-of-the-tube (+1 outer boss
+// wall for FUSE end tubes / -1 inward tunnel wall for CUT). Mirrors appendTubeBand but
+// takes the orientation reference so the same nodes serve both a boss and a tunnel.
+void appendOrientedTubeBand(const CurvedSolid& tube, const std::vector<Seam>& seams,
+                            const std::vector<std::pair<double, double>>& tuv0In,
+                            const std::vector<std::pair<double, double>>& tuv1In, double outwardSign,
+                            VertexPool& pool, std::vector<topo::Shape>& faces) {
+  std::vector<std::pair<double, double>> t0 = tuv0In, t1 = tuv1In;
+  std::vector<math::Point3> p0 = seams[0].pts, p1 = seams[1].pts;
+  if (t0.size() < 3 || t1.size() < 3) return;
+  unwrapRim(t0, p0);
+  unwrapRim(t1, p1);
+  int start1 = 0;
+  for (int k = 1; k < static_cast<int>(t1.size()); ++k)
+    if (wrapDiff(t0.front().first, t1[k].first) < wrapDiff(t0.front().first, t1[start1].first))
+      start1 = k;
+  const int n0 = static_cast<int>(t0.size());
+  const int n1 = static_cast<int>(t1.size());
+  auto push = [&](const math::Point3& a, const math::Point3& b, const math::Point3& c) {
+    const math::Point3 ctr{(a.x + b.x + c.x) / 3, (a.y + b.y + c.y) / 3, (a.z + b.z + c.z) / 3};
+    const math::Vec3 ref = radialOut(tube, ctr);
+    pushPlanarTri(a, b, c, math::Vec3{ref.x * outwardSign, ref.y * outwardSign, ref.z * outwardSign},
+                  pool, faces);
+  };
+  for (int c = 0; c < n0; ++c) {
+    const int cd = (c + 1) % n0;
+    const int e = (start1 + c) % n1;
+    const int ed = (start1 + c + 1) % n1;
+    push(p0[c], p0[cd], p1[e]);
+    push(p0[cd], p1[ed], p1[e]);
+  }
+}
+
+// ── PIERCING END TUBE (FUSE): the piercing wall from ONE seam out to the near thin end
+// cap — the part of the thin wall OUTSIDE the fat solid, i.e. the protruding boss. Planar
+// facets between the seam rim (shared pool → welds the fat wall hole) and a fresh rim ring
+// at the thin end (v = vEnd), whose ring the thin disc cap re-uses. Outward radial normal.
+// Returns the end-rim ring (u-ordered) for the thin disc cap; empty on decline.
+std::vector<math::Point3> appendEndTube(const CurvedSolid& tube, const Seam& seam,
+                                        const std::vector<std::pair<double, double>>& tuvIn,
+                                        double vEnd, VertexPool& pool,
+                                        std::vector<topo::Shape>& faces) {
+  std::vector<std::pair<double, double>> t = tuvIn;
+  std::vector<math::Point3> p = seam.pts;
+  if (t.size() < 3) return {};
+  unwrapRim(t, p);
+  const int n = static_cast<int>(t.size());
+  std::vector<math::Point3> endRing(n);
+  for (int k = 0; k < n; ++k) endRing[k] = tube.point(t[k].first, vEnd);
+  auto push = [&](const math::Point3& a, const math::Point3& b, const math::Point3& c) {
+    const math::Point3 ctr{(a.x + b.x + c.x) / 3, (a.y + b.y + c.y) / 3, (a.z + b.z + c.z) / 3};
+    pushPlanarTri(a, b, c, radialOut(tube, ctr), pool, faces);
+  };
+  for (int k = 0; k < n; ++k) {
+    const int kn = (k + 1) % n;
+    push(p[k], p[kn], endRing[kn]);
+    push(p[k], endRing[kn], endRing[k]);
+  }
+  return endRing;
+}
+
+// Resolve the through-drill roles (tube vs pierced operand) shared by CUT/FUSE. Mirrors
+// buildCommon's gate exactly; returns false for anything that is not a clean through-drill.
+struct DrillRoles {
+  const CurvedSolid* tube = nullptr;
+  const CurvedSolid* pierced = nullptr;
+  bool tubeIsA = false;
+};
+bool resolveRoles(const CurvedSolid& A, const CurvedSolid& B, const std::vector<Seam>& seams,
+                  DrillRoles& out) {
+  if (seams.size() != 2) return false;
+  for (const Seam& s : seams)
+    if (!s.closed || s.pts.size() < 4) return false;
+  const bool aTube = isFullCircle(seams[0].uvA) && isFullCircle(seams[1].uvA);
+  const bool bTube = isFullCircle(seams[0].uvB) && isFullCircle(seams[1].uvB);
+  const bool aPierced = !isFullCircle(seams[0].uvA) && !isFullCircle(seams[1].uvA);
+  const bool bPierced = !isFullCircle(seams[0].uvB) && !isFullCircle(seams[1].uvB);
+  if (!((aTube && bPierced) || (bTube && aPierced))) return false;
+  out.tubeIsA = aTube;
+  out.tube = aTube ? &A : &B;
+  out.pierced = aTube ? &B : &A;
+  // Only cylinder∩cylinder is host-verifiable in S5-b; other kinds still decline → OCCT.
+  if (out.tube->kind != CurvedKind::Cylinder || out.pierced->kind != CurvedKind::Cylinder)
+    return false;
+  return true;
+}
+
+// Wall grid resolution from the pierced radius + a fixed chord-sagitta target (NOT hand-
+// tuned), matching appendMouthCap's kCapSagitta discipline. u is sampled finely around the
+// FULL circle so each planar facet's bow off the true cylinder is bounded; v is sampled
+// modestly (a cylinder is straight along v, so tall facets are exact) but fine enough that
+// the mouth spans several v-cells (its annulus stitch stays ≤ one cell wide).
+void wallSteps(const CurvedSolid& pierced, const std::vector<Seam>& seams, bool tubeIsA,
+               int& uCells, int& vCells) {
+  const double sagStep = std::sqrt(8.0 * kCapSagitta / std::max(pierced.radius, 1e-9));
+  uCells = std::clamp(static_cast<int>(std::ceil(kSsiTwoPi / std::max(sagStep, 1e-6))), 16, 512);
+  // v-cell size: a fraction of the mouths' v-span so each mouth covers several cells.
+  auto piercedV = [&](int i) -> const std::vector<std::pair<double, double>>& {
+    return tubeIsA ? seams[i].uvB : seams[i].uvA;
+  };
+  double vLoM = 1e300, vHiM = -1e300;
+  for (int i = 0; i < 2; ++i)
+    for (const auto& p : piercedV(i)) { vLoM = std::min(vLoM, p.second); vHiM = std::max(vHiM, p.second); }
+  const double mouthVspan = std::max(vHiM - vLoM, 1e-6);
+  const double vCell = std::max(mouthVspan / 6.0, 1e-6);
+  vCells = std::clamp(static_cast<int>(std::ceil((pierced.vHi - pierced.vLo) / vCell)), 4, 256);
+}
+
+// buildCut(A,B) = A − B for a through-drill pair: the pierced (fat) wall with the two
+// mouth holes + its two disc caps + the INWARD tunnel wall (the thin tube band reversed).
+topo::Shape buildCut(const CurvedSolid& A, const CurvedSolid& B, const std::vector<Seam>& seams) {
+  DrillRoles roles;
+  if (!resolveRoles(A, B, seams, roles)) return {};
+  // CUT is A−B (A is the minuend). We build the PIERCED operand with a tunnel; that is only
+  // A−B when the pierced operand IS A. If A is the piercing tube (thin−fat), the result is a
+  // different topology (two capped end tubes) — decline → OCCT rather than emit the wrong shape.
+  if (roles.tubeIsA) return {};
+  const CurvedSolid& tube = *roles.tube;
+  const CurvedSolid& pierced = *roles.pierced;
+  auto tubeUV = [&](int i) -> const std::vector<std::pair<double, double>>& {
+    return roles.tubeIsA ? seams[i].uvA : seams[i].uvB;
+  };
+  auto piercedUV = [&](int i) -> const std::vector<std::pair<double, double>>& {
+    return roles.tubeIsA ? seams[i].uvB : seams[i].uvA;
+  };
+  // The tunnel must be INSIDE the pierced solid (same survival sample as COMMON).
+  const double tubeMidV = 0.5 * (meanV(tubeUV(0)) + meanV(tubeUV(1)));
+  if (classifyPoint(pierced, tube.point(meanU(tubeUV(0)), tubeMidV), kSsiTol) != 1) return {};
+
+  int uSteps, vSteps;
+  wallSteps(pierced, seams, roles.tubeIsA, uSteps, vSteps);
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  std::vector<math::Point3> rimLo, rimHi;
+  if (!appendHoledWall(pierced, seams[0], seams[1], piercedUV(0), piercedUV(1), uSteps, vSteps,
+                       pool, faces, rimLo, rimHi))
+    return {};
+  // Fat disc caps at v=vLo (outward −axis) and v=vHi (outward +axis).
+  appendDiskCap(pierced, pierced.vLo, rimLo, math::Vec3{-pierced.frame.z.vec().x,
+               -pierced.frame.z.vec().y, -pierced.frame.z.vec().z}, pool, faces);
+  appendDiskCap(pierced, pierced.vHi, rimHi, pierced.frame.z.vec(), pool, faces);
+  // Tunnel wall: the thin tube band, INWARD-facing.
+  appendOrientedTubeBand(tube, seams, tubeUV(0), tubeUV(1), /*outwardSign=*/-1.0, pool, faces);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildFuse(A,B) = A ∪ B for a through-drill pair: the pierced (fat) wall with the two
+// mouth holes + its two disc caps + the two piercing END TUBES (thin wall outside the fat
+// solid) + the two thin disc end caps. The tube band inside the fat solid is dropped.
+topo::Shape buildFuse(const CurvedSolid& A, const CurvedSolid& B, const std::vector<Seam>& seams) {
+  DrillRoles roles;
+  if (!resolveRoles(A, B, seams, roles)) return {};
+  const CurvedSolid& tube = *roles.tube;
+  const CurvedSolid& pierced = *roles.pierced;
+  auto tubeUV = [&](int i) -> const std::vector<std::pair<double, double>>& {
+    return roles.tubeIsA ? seams[i].uvA : seams[i].uvB;
+  };
+  auto piercedUV = [&](int i) -> const std::vector<std::pair<double, double>>& {
+    return roles.tubeIsA ? seams[i].uvB : seams[i].uvA;
+  };
+  const double tubeMidV = 0.5 * (meanV(tubeUV(0)) + meanV(tubeUV(1)));
+  if (classifyPoint(pierced, tube.point(meanU(tubeUV(0)), tubeMidV), kSsiTol) != 1) return {};
+
+  int uSteps, vSteps;
+  wallSteps(pierced, seams, roles.tubeIsA, uSteps, vSteps);
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  std::vector<math::Point3> rimLo, rimHi;
+  if (!appendHoledWall(pierced, seams[0], seams[1], piercedUV(0), piercedUV(1), uSteps, vSteps,
+                       pool, faces, rimLo, rimHi))
+    return {};
+  appendDiskCap(pierced, pierced.vLo, rimLo, math::Vec3{-pierced.frame.z.vec().x,
+               -pierced.frame.z.vec().y, -pierced.frame.z.vec().z}, pool, faces);
+  appendDiskCap(pierced, pierced.vHi, rimHi, pierced.frame.z.vec(), pool, faces);
+  // Each seam's end tube runs out to the NEARER thin end cap (v=vLo or v=vHi of the tube).
+  for (int i = 0; i < 2; ++i) {
+    const double seamV = meanV(tubeUV(i));
+    const double vEnd = (std::fabs(seamV - tube.vLo) < std::fabs(seamV - tube.vHi)) ? tube.vLo
+                                                                                   : tube.vHi;
+    const std::vector<math::Point3> ring =
+        appendEndTube(tube, seams[i], tubeUV(i), vEnd, pool, faces);
+    if (ring.empty()) return {};
+    const math::Vec3 capN = (vEnd == tube.vLo)
+        ? math::Vec3{-tube.frame.z.vec().x, -tube.frame.z.vec().y, -tube.frame.z.vec().z}
+        : tube.frame.z.vec();
+    appendDiskCap(tube, vEnd, ring, capN, pool, faces);
+  }
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// S5-c — sphere∩sphere COMMON (single-seam / two-spherical-cap assembler).
+//
+// Two overlapping spheres trace as ONE closed seam circle (recognition + S3 tracing
+// already deliver it; only buildCommon's seams.size()!=2 guard blocked this pair). The
+// COMMON is the LENS bounded by the two spherical caps — one from each sphere — that lie
+// INSIDE the other sphere, sharing the single seam circle. Each cap is the spherical
+// patch from its apex (the sphere's surface point nearest the OTHER centre) out to the
+// seam. We keep a cap iff its apex classifies INSIDE the other solid (the COMMON survival
+// rule); a tangent/ON apex → NULL → OCCT. Both caps' OUTER rings are the SAME shared
+// pooled seam vertices → they weld watertight along the one seam. Every cap facet is a
+// PLANAR triangle through sphere-surface points (the S5-a watertight discipline — the
+// analytic sphere face's structured-grid mesh would inject interior u-lines and open a
+// T-junction against the neighbour cap's fan; planar facets carry no interior points).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// SLERP two unit vectors by fraction t (great-circle interpolation on the unit sphere);
+// falls back to the linear-normalised blend when they are near-parallel (small angle).
+math::Vec3 slerpDir(const math::Vec3& a, const math::Vec3& b, double t) {
+  const double c = std::clamp(math::dot(a, b), -1.0, 1.0);
+  const double ang = std::acos(c);
+  if (ang < 1e-6) {
+    const math::Vec3 m{a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t};
+    const double L = std::max(math::norm(m), 1e-12);
+    return math::Vec3{m.x / L, m.y / L, m.z / L};
+  }
+  const double s = std::sin(ang);
+  const double wa = std::sin((1.0 - t) * ang) / s, wb = std::sin(t * ang) / s;
+  return math::Vec3{a.x * wa + b.x * wb, a.y * wa + b.y * wb, a.z * wa + b.z * wb};
+}
+
+// A spherical cap of `sph` bounded by the shared seam loop: a radial fan from the cap
+// APEX (surface point nearest the other centre) through `rings` concentric rings out to
+// the exact traced seam nodes. Interior ring/apex points are placed ON the sphere by
+// SLERPing the unit radial direction from the apex direction to each seam node's radial
+// direction (great-circle interpolation — geometrically exact on the sphere and free of
+// the (u,v) parametric-pole singularity, so it is robust even when the apex sits at the
+// sphere's pole). The cap follows the true spherical bulge to O(1/rings²); the OUTER ring
+// is the shared pooled seam nodes so the two caps weld along the one seam. Every facet is
+// a PLANAR triangle oriented with the sphere's OUTWARD radial normal (the lens boundary's
+// outward normal there). Mirrors appendMouthCap's radial-ring discipline.
+//
+// systems-band (~13 — radial ring slerp + outward orientation); flagged.
+void appendSphereCap(const CurvedSolid& sph, const math::Point3& otherCentre, const Seam& seam,
+                     int rings, VertexPool& pool, std::vector<topo::Shape>& faces) {
+  const int n = static_cast<int>(seam.pts.size());
+  if (n < 3 || rings < 1) return;
+  // Apex = surface point of `sph` nearest `otherCentre` (centre + R·unit(centre→other)).
+  const math::Vec3 toOther = otherCentre - sph.frame.origin;
+  const double dToOther = math::norm(toOther);
+  if (dToOther < 1e-12) return;
+  const math::Vec3 apexDir{toOther.x / dToOther, toOther.y / dToOther, toOther.z / dToOther};
+  const math::Point3 apex{sph.frame.origin.x + apexDir.x * sph.radius,
+                          sph.frame.origin.y + apexDir.y * sph.radius,
+                          sph.frame.origin.z + apexDir.z * sph.radius};
+  // Unit radial direction of each seam node (from the sphere centre).
+  std::vector<math::Vec3> seamDir(n);
+  for (int k = 0; k < n; ++k) {
+    const math::Vec3 w = seam.pts[k] - sph.frame.origin;
+    const double L = std::max(math::norm(w), 1e-12);
+    seamDir[k] = math::Vec3{w.x / L, w.y / L, w.z / L};
+  }
+  // Ring r (1..rings) node k: slerp(apexDir → seamDir[k], r/rings) · R, centred at origin.
+  auto ringPt = [&](int r, int k) -> math::Point3 {
+    if (r == rings) return seam.pts[k];  // outer ring = exact traced seam node
+    const math::Vec3 d = slerpDir(apexDir, seamDir[k], static_cast<double>(r) / rings);
+    return math::Point3{sph.frame.origin.x + d.x * sph.radius, sph.frame.origin.y + d.y * sph.radius,
+                        sph.frame.origin.z + d.z * sph.radius};
+  };
+  auto tri = [&](const math::Point3& a, const math::Point3& b, const math::Point3& c) {
+    const math::Point3 ctr{(a.x + b.x + c.x) / 3, (a.y + b.y + c.y) / 3, (a.z + b.z + c.z) / 3};
+    // Outward = sphere radial normal at the centroid (the lens boundary's outward normal).
+    const math::Vec3 out = ctr - sph.frame.origin;
+    pushPlanarTri(a, b, c, out, pool, faces);
+  };
+  for (int k = 0; k < n; ++k) tri(apex, ringPt(1, k), ringPt(1, (k + 1) % n));
+  for (int r = 2; r <= rings; ++r)
+    for (int k = 0; k < n; ++k) {
+      const int kn = (k + 1) % n;
+      tri(ringPt(r - 1, k), ringPt(r, k), ringPt(r, kn));
+      tri(ringPt(r - 1, k), ringPt(r, kn), ringPt(r - 1, kn));
+    }
+}
+
+// Target seam node count for a lens cap: the seam is a circle of radius ρ (its node
+// distance to the seam-plane axis); a chord subtending arc s bows s²/(8ρ) off the circle,
+// so keeping that ≤ kCapSagitta gives nSeam ≈ 2πρ / sqrt(8·kCapSagitta·ρ). Bounded [24,180]
+// so the facet count stays tractable while the seam-chord error stays negligible vs the 1%
+// volume bar. Uses the seam's own 3D radius (centroid → node distance) — not hand-tuned.
+int seamNodeTarget(const Seam& seam) {
+  math::Point3 c{0, 0, 0};
+  for (const auto& p : seam.pts) { c.x += p.x; c.y += p.y; c.z += p.z; }
+  const double n = static_cast<double>(seam.pts.size());
+  c.x /= n; c.y /= n; c.z /= n;
+  double rho = 0.0;
+  for (const auto& p : seam.pts) rho += math::norm(p - c);
+  rho /= n;
+  const double chord = std::sqrt(std::max(8.0 * kCapSagitta * rho, 1e-12));
+  const int target = static_cast<int>(std::ceil(kSsiTwoPi * rho / std::max(chord, 1e-9)));
+  return std::clamp(target, 24, 180);
+}
+
+// Decimate a closed seam to (about) `target` evenly-strided nodes, keeping the 3D points
+// and BOTH (u,v) tracks in lockstep so a cap built from either track welds on the shared
+// 3D points. If already ≤ target, returned unchanged.
+Seam decimateSeam(const Seam& seam, int target) {
+  const int n = static_cast<int>(seam.pts.size());
+  if (n <= target || target < 3) return seam;
+  Seam out;
+  out.closed = seam.closed;
+  const double stride = static_cast<double>(n) / target;
+  for (int k = 0; k < target; ++k) {
+    const int i = static_cast<int>(std::floor(k * stride));
+    out.pts.push_back(seam.pts[i]);
+    out.uvA.push_back(seam.uvA[i]);
+    out.uvB.push_back(seam.uvB[i]);
+  }
+  return out;
+}
+
+// buildLensCommon(A,B) = the COMMON of two overlapping SPHERES: the lens bounded by the
+// two inside-the-other spherical caps sharing the single seam circle. Taken ONLY when the
+// trace is ONE closed seam and both operands are Sphere. Declines (→ OCCT) if either apex
+// is not strictly INSIDE the other sphere (tangent/degenerate) — never faked.
+topo::Shape buildLensCommon(const CurvedSolid& A, const CurvedSolid& B,
+                            const std::vector<Seam>& seams) {
+  if (seams.size() != 1) return {};
+  const Seam& seam = seams[0];
+  if (!seam.closed || seam.pts.size() < 4) return {};
+  if (A.kind != CurvedKind::Sphere || B.kind != CurvedKind::Sphere) return {};
+
+  // Each cap's apex = the sphere's surface point nearest the other centre. Keep both only
+  // if each apex is strictly INSIDE the other solid (the COMMON survival rule).
+  const math::Vec3 ab = B.frame.origin - A.frame.origin;
+  const double d = math::norm(ab);
+  if (d < 1e-9) return {};  // concentric → not a transversal lens
+  const math::Vec3 abU{ab.x / d, ab.y / d, ab.z / d};
+  const math::Point3 apexA{A.frame.origin.x + abU.x * A.radius, A.frame.origin.y + abU.y * A.radius,
+                           A.frame.origin.z + abU.z * A.radius};
+  const math::Point3 apexB{B.frame.origin.x - abU.x * B.radius, B.frame.origin.y - abU.y * B.radius,
+                           B.frame.origin.z - abU.z * B.radius};
+  if (classifyPoint(B, apexA, kSsiTol) != 1) return {};  // ON/outside → tangent → OCCT
+  if (classifyPoint(A, apexB, kSsiTol) != 1) return {};
+
+  // Decimate the (densely-traced) seam to a shared node subset used by BOTH caps, so the
+  // two caps' outer rings are the SAME pooled vertices → weld. The subset keeps the seam's
+  // chord bow within kCapSagitta of the true circle (radius ρ ≈ seam-node distance to the
+  // seam-plane axis): nSeam ≈ 2π·ρ / sqrt(8·kCapSagitta·ρ). Bounded so the facet count stays
+  // tractable while the seam-chord error stays negligible vs the 1% volume bar.
+  const Seam capSeam = decimateSeam(seam, seamNodeTarget(seam));
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  // Ring count from each cap's TRUE polar half-angle θ (angle at the sphere centre between
+  // the apex direction and the seam) + the radial curvature-per-facet target kCapSagitta
+  // (NOT hand-tuned), matching appendMouthCap's discipline. rings ≈ θ·sqrt(R/(2·kCapSagitta));
+  // bounded so the cap facet count stays tractable (the residual radial sagitta at the cap =
+  // R(θ/rings)²/2 stays well under the engine's 1% volume bar).
+  auto ringsFor = [&](const CurvedSolid& sph, const math::Point3& apex) {
+    const math::Vec3 aDir = apex - sph.frame.origin;  // apex radial (length R)
+    // θ = MAX polar angle at the centre between the apex and any seam node (the cap's polar
+    // half-angle). The seam-centroid collapses onto the axis for a full circle, so we take a
+    // node's radial, not the mean.
+    double theta = 0.0;
+    for (const auto& p : capSeam.pts) {
+      const math::Vec3 sDir{p.x - sph.frame.origin.x, p.y - sph.frame.origin.y,
+                            p.z - sph.frame.origin.z};
+      const double denom = std::max(math::norm(aDir) * math::norm(sDir), 1e-12);
+      theta = std::max(theta, std::acos(std::clamp(math::dot(aDir, sDir) / denom, -1.0, 1.0)));
+    }
+    const double rings = std::max(theta, 1e-6) * std::sqrt(sph.radius / (2.0 * kCapSagitta));
+    return std::clamp(static_cast<int>(std::ceil(rings)), 4, 48);
+  };
+  appendSphereCap(A, B.frame.origin, capSeam, ringsFor(A, apexA), pool, faces);
+  appendSphereCap(B, A.frame.origin, capSeam, ringsFor(B, apexB), pool, faces);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
 // ── The COMMON of a THROUGH-DRILL transversal pair (design.md §1-4): one operand (the
 // PIERCED wall, whose two seams are full-circle rim loops) is drilled clean through by
 // the other (the PIERCING wall, whose two seams are local patches). The common region
@@ -403,17 +1109,28 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
   seams.reserve(trace.lines.size());
   for (const ssi::WLine& w : trace.lines) seams.push_back(toSeam(w));
 
-  // 1-4. SPLIT + CLASSIFY + SELECT + WELD. Only the COMMON of the two-branch
-  // transversal case is robustly assembled here (Steinmetz family, host-verifiable).
-  // Fuse / cut require the OUTSIDE wall fragments + the operands' caps re-trimmed by
-  // the seam — that watertight cap re-trim is NOT yet robust, so those ops decline
-  // (→ OCCT), honestly reported. This is the S5-a slice; wider ops are follow-on work.
+  // 1-4. SPLIT + CLASSIFY + SELECT + WELD, dispatched on seam-count + operand-kinds + op:
+  //   * THROUGH-DRILL cyl∩cyl (two rim seams, one operand full-circle on both, the other
+  //     local on both) — ALL THREE ops: COMMON (S5-a) buildCommon; FUSE / CUT (S5-b) select
+  //     the OUTSIDE fat wall (mouths cut out) + faceted caps + the reversed tunnel band (cut)
+  //     or the protruding end tubes (fuse).
+  //   * sphere∩sphere COMMON (S5-c) — one closed seam, both operands Sphere: buildLensCommon
+  //     welds the two inside-the-other spherical caps along the single seam.
+  // Every seam-adjacent fragment is a shared-pool planar facet so the shell welds watertight
+  // (assembler-side, tessellator untouched). Anything else (sphere fuse/cut, tangent/coincident,
+  // oblique/multi-tube cyl∩cyl, other curved-curved families) still returns NULL → OCCT.
   switch (op) {
-    case Op::Common:
-      return buildCommon(*csA, *csB, seams);
+    case Op::Common: {
+      // Through-drill (two rim seams) → buildCommon; single-seam sphere∩sphere lens
+      // (S5-c) → buildLensCommon. buildCommon is untouched (returns {} for one seam).
+      const topo::Shape drill = buildCommon(*csA, *csB, seams);
+      if (!drill.isNull()) return drill;
+      return buildLensCommon(*csA, *csB, seams);
+    }
     case Op::Fuse:
+      return buildFuse(*csA, *csB, seams);
     case Op::Cut:
-      return {};  // deferred → OCCT (see note above)
+      return buildCut(*csA, *csB, seams);
   }
   return {};
 }

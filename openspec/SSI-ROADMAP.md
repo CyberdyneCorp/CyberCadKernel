@@ -186,20 +186,30 @@ mesher). Extends `src/native/boolean/` from planar/axis-aligned to general curve
   OCCT fallback for the rest.
 - **Unlocks:** curved blends (#6) and curved wrap-emboss (#7) then compose on top.
 
-**S5-a done at the bar (change `add-native-ssi-curved-boolean`, archived):** the
-SSI-curve-driven split→classify→select→weld pipeline lives in
-`src/native/boolean/ssi_boolean.{h,cpp}` (OCCT-free, `CYBERCAD_HAS_NUMSCI`-gated,
-consumes the S3 `TraceSet`). It produces **one real native curved boolean verified
-vs OCCT `BRepAlgoAPI_Common`**: the **through-drill cylinder∩cylinder COMMON**
-(unequal radii, transversal two-loop trace) — watertight, ΔV = 8.1e-04, ΔA = 2.8e-04
-(sim parity `native-pass=1`, 11 honest fallbacks). Honest scope of this first slice:
-- **Steinmetz** (equal-radius orthogonal cyl∩cyl) is **near-tangent** at the top/bottom
-  crossings (`nearTangentGaps > 0`) → an **S4** case, not S5 → declines to OCCT.
-- **Fuse / Cut** need the outside-fragment + re-trimmed-cap weld (not yet robust) → decline.
-- **sphere×box, cone×box** have a planar (box) operand → not a curved-curved pair → decline.
-All declines are honest NULL→OCCT fallbacks (measured, never faked). Remaining S5
-work: fuse/cut caps, more curved-curved families, and lifting the near-tangent gate
-once S4 lands.
+**S5-a/b/c done at the bar (changes `add-native-ssi-curved-boolean` archived +
+`add-native-ssi-curved-boolean-wider`):** the SSI-curve-driven
+split→classify→select→weld pipeline lives in `src/native/boolean/ssi_boolean.{h,cpp}`
+(OCCT-free, `CYBERCAD_HAS_NUMSCI`-gated, consumes the S3 `TraceSet`). It now produces
+**five native curved-boolean sub-cases verified vs OCCT `BRepAlgoAPI_{Fuse,Cut,Common}`**
+(sim parity `native-pass=5`, 13 honest fallbacks):
+- **S5-a — through-drill cylinder∩cylinder COMMON** (unequal radii, transversal two-loop
+  trace) — watertight, ΔV = 8.1e-04, ΔA = 2.8e-04.
+- **S5-b — through-drill cylinder∩cylinder FUSE + CUT** (assembler-only extension: fat wall
+  with the two mouths cut out + planar-facet caps + reversed tunnel band / protruding end
+  tubes) — watertight, ΔV = 8.8e-05 (fuse) / 4.0e-05 (cut).
+- **S5-c — sphere∩sphere COMMON** (single closed seam → the lens of the two inside-the-other
+  spherical caps, welded along the one seam; direction-slerp cap facets, robust even when the
+  cap apex sits at the sphere's parametric pole) — watertight, ΔV = 4.1e-04 (equal radii) /
+  4.7e-04 (unequal radii).
+
+Honest scope still declining → OCCT (measured NULL fallbacks, never faked):
+- **Steinmetz** (equal-radius orthogonal cyl∩cyl) is **near-tangent** (`nearTangentGaps > 0`)
+  → an **S4** case → declines.
+- **sphere FUSE / CUT** (outer-cap union + re-trimmed remainder weld) → deferred → declines.
+- **oblique / multi-tube cyl∩cyl**, tangent/coincident (incl. Steinmetz), and other
+  curved-curved families (cyl∩cone, cyl∩sphere, cone∩cone, sphere∩box, freeform) → decline.
+Remaining S5 work: sphere fuse/cut, more curved-curved families, and lifting the near-tangent
+gate once S4 lands.
 
 ## Sequencing & effort
 
@@ -207,7 +217,7 @@ once S4 lands.
 substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ──► S3 marching (DONE) ──► S4 robustness (NEXT, moat)
                              │                                    │
                              └──────────────► S5 curved booleans ◄─┘  ──► #6 blends ──► #7 wrap-emboss
-                                              (S5-a: drill cyl∩cyl COMMON native ✓)
+                                              (S5-a/b/c: drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON native ✓)
 ```
 
 | Stage | Effort (robust) | Nature |
@@ -216,7 +226,7 @@ substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ─
 | S2 seeding | ✅ DONE at the bar (transversal) | subdivision + substrate refine — verified host + sim recall |
 | S3 marching | ✅ DONE at the bar (transversal) | tangent-step + substrate re-projection — 5 pairs / 9 branches vs OCCT |
 | S4 tangent robustness | multi-year, ongoing | the moat — best-effort + fallback |
-| S5 curved booleans | ◐ first slice DONE at the bar (~months for full) | S5-a: through-drill cyl∩cyl COMMON native vs OCCT (wt, ΔV 8.1e-4); fuse/cut + more families + near-tangent gate remain |
+| S5 curved booleans | ◐ slices S5-a/b/c DONE at the bar (~months for full) | through-drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON native vs OCCT (wt, ΔV ≤ 8e-4); sphere fuse/cut + more families + near-tangent gate remain |
 
 SSI + curved booleans total ≈ **1.5–3 py** (substrate-accelerated) for *usable*
 coverage; full OCCT-grade robustness (S4) is the long tail. Recommended cadence:

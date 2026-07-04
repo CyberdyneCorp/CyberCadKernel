@@ -77,11 +77,12 @@ robustness tail keeps OCCT linked.** Canonical detail:
   marching-line tracer (WLine): full transversal intersection curves traced from the
   S2 seeds vs OCCT `IntPatch` (5 pairs / 9 branches, all fully-traced, 0 near-tangent-
   truncated; onSurf ≤ 6.81e-07, length within the step tol).
-- ◐ **SSI S5-a (first curved-boolean slice)** — the SSI-curve-driven
+- ◐ **SSI S5-a/b/c (curved-boolean slices)** — the SSI-curve-driven
   split→classify→weld pipeline (`src/native/boolean/ssi_boolean.{h,cpp}`, consumes the
-  S3 `TraceSet`) produces its first **native curved boolean verified vs OCCT
-  `BRepAlgoAPI_Common`**: the through-drill cylinder∩cylinder COMMON (watertight,
-  ΔV 8.1e-04, ΔA 2.8e-04). Fuse/cut, other curved-curved families, and near-tangent
+  S3 `TraceSet`) produces **five native curved-boolean sub-cases verified vs OCCT
+  `BRepAlgoAPI_{Fuse,Cut,Common}`**: the through-drill cylinder∩cylinder COMMON (S5-a) +
+  FUSE + CUT (S5-b) and the sphere∩sphere COMMON lens (S5-c, equal + unequal radii) — all
+  watertight, ΔV ≤ 8e-04. Sphere fuse/cut, other curved-curved families, and near-tangent
   pairs (incl. Steinmetz) still decline to OCCT — honest, measured fallbacks.
 
 **Still OCCT-backed (the tail that keeps OCCT linked):**

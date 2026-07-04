@@ -17,7 +17,7 @@ the CyberCad **app link-swap** are optional, deferred follow-ups — not gates.
 
 | Suite | Command | Result |
 |---|---|---|
-| Host unit tests (CPU-only, stub + native core) | `ctest` (host build) | **23 / 23** (**28** with `CYBERCAD_HAS_NUMSCI=ON`) |
+| Host unit tests (CPU-only, stub + native core) | `ctest` (host build) | **24 / 24** (**29** with `CYBERCAD_HAS_NUMSCI=ON`) |
 | Full `cc_*` runtime + determinism + benchmark | `scripts/run-sim-suite.sh` | **221 / 221** |
 | GPU-vs-CPU parity (Metal), ray + frustum pick | `scripts/run-sim-gpu-suite.sh` | **26 / 26** |
 | GPU tessellation wired into `cc_tessellate` | `scripts/run-sim-integ-suite.sh` | **26 / 26** |
@@ -27,8 +27,8 @@ the CyberCad **app link-swap** are optional, deferred follow-ups — not gates.
 | SSI **S1** analytic intersection vs OCCT `GeomAPI_IntSS` | `scripts/run-sim-native-ssi.sh` | **18 / 18** |
 | SSI **S2** subdivision-seeding recall vs OCCT | `scripts/run-sim-native-ssi-seeding.sh` | **100% transversal** |
 | SSI **S3** marching tracer vs OCCT `IntPatch` | `scripts/run-sim-native-ssi-marching.sh` | **5 / 5** (9/9 branches) |
-| SSI **S5-a** curved boolean vs OCCT `BRepAlgoAPI` | `scripts/run-sim-native-ssi-curved-boolean.sh` | **12 / 12** (native-pass=1: drill cyl∩cyl COMMON, wt, ΔV 8.1e-4; 11 honest fallbacks) |
-| Spec validation | `openspec validate --all --strict` | **26 / 26** |
+| SSI **S5-a/b/c** curved boolean vs OCCT `BRepAlgoAPI` | `scripts/run-sim-native-ssi-curved-boolean.sh` | **18 / 18** (native-pass=5: drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON eq/uneq, all wt, ΔV ≤ 8e-4; 13 honest fallbacks) |
+| Spec validation | `openspec validate --all --strict` | **27 / 27** |
 
 Highlights (measured, not asserted-trivially):
 
@@ -49,7 +49,7 @@ Highlights (measured, not asserted-trivially):
 | **1 — Multi-core** | `accelerate-multicore-occt` | ✅ complete at acceptance bar |
 | **2 — GPU (Metal)** | `add-metal-compute-backend` ✅ · `add-gpu-tessellation` ✅ · `add-gpu-spatial-acceleration` ✅ | ✅ complete at acceptance bar; optional `cc_*` pick/cull facade entry deferred |
 | **3 — Missing features** | `add-reference-geometry` ✅ · `add-robust-wrap-emboss` ✅ · `add-robust-thread-boolean` ✅ · `add-g2-blend-fillet` ✅ · `add-full-round-fillet` ✅ | ✅ 5/5 full; full-round covers all planar walls (curved neighbours = documented residual) |
-| **4 — Native rewrite** | math · topology · tessellation · construction · planar+box∩cyl booleans · planar blends · STEP export · numeric foundations (NumPP/SciPP) · SSI S1+S2+S3 · SSI S5-a (first curved boolean: drill cyl∩cyl COMMON) | ◐ **substantially native (planar/analytic + first SSI-driven curved boolean)**; curved tail (SSI S4 · wider curved booleans/blends · import · healing) keeps OCCT linked; drop-occt (#8) BLOCKED (≈9–18 py) |
+| **4 — Native rewrite** | math · topology · tessellation · construction · planar+box∩cyl booleans · planar blends · STEP export · numeric foundations (NumPP/SciPP) · SSI S1+S2+S3 · SSI S5-a/b/c (curved booleans: drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON) | ◐ **substantially native (planar/analytic + SSI-driven curved booleans)**; curved tail (SSI S4 · wider curved booleans/blends · import · healing) keeps OCCT linked; drop-occt (#8) BLOCKED (≈9–18 py) |
 
 Detail: [STATUS-phase-0-1.md](STATUS-phase-0-1.md) ·
 [STATUS-phase-2.md](STATUS-phase-2.md) · [STATUS-phase-3.md](STATUS-phase-3.md) ·

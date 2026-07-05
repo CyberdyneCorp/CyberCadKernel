@@ -1100,9 +1100,11 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
 
   // Gate on full transversality — the honest S4 boundary.
   if (trace.nearTangentGaps > 0) return {};         // a branch traced up to a tangent → S4
+  if (trace.branchPoints > 0) return {};            // S4-d self-crossing (multi-arm) → out of scope for S5 single-seam booleans → OCCT
   if (trace.lines.empty()) return {};               // no seam → OCCT
   for (const ssi::WLine& w : trace.lines)
-    if (w.status == ssi::TraceStatus::NearTangent || w.status == ssi::TraceStatus::Failed)
+    if (w.status == ssi::TraceStatus::NearTangent || w.status == ssi::TraceStatus::Failed ||
+        w.status == ssi::TraceStatus::BranchArc)
       return {};                                    // out of scope → OCCT
 
   std::vector<Seam> seams;

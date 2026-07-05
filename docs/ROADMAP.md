@@ -91,29 +91,44 @@ robustness tail keeps OCCT linked.** Canonical detail:
   (`nearTangentGaps → 0`, 22 near-tangent nodes crossed, every node on both surfaces ≤ 1e-6,
   crossed arc on the OCCT `GeomAPI_IntSS` locus onCurve ≤ 5.6e-5); the equal-cylinder branch
   saddle and genuine `TangentPoint`/`TangentCurve` contacts STILL defer (`nearTangentCrossed
-  = 0`) — no point fabricated past a degeneracy. Deeper bands / branch points / singularities
-  (S4-d…f) remain the tail.
+  = 0`) — no point fabricated past a degeneracy. Deeper near-coincident bands / singularities
+  / self-intersection completeness (S4-e…f) remain the tail.
+- ✅ **SSI S4-d FIRST BRANCH-POINT SLICE (self-crossing locus)** — where the intersection
+  locus itself crosses, the marcher now LOCALIZES the branch point (`nn::minimize` the
+  transversality sine along the approach, re-projected onto both surfaces), ENUMERATES the
+  outgoing arms from the relative second fundamental form's tangent-cone quadratic (real
+  distinct roots only — never fabricated), ROUTES each arm with the S3 walk, and ASSEMBLES
+  the multi-arm curve. The **Steinmetz bicylinder** (two equal-R orthogonal cylinders) that
+  S3+S4-c truncated at the saddle is now **FULLY traced**: 2 branch points localized at
+  `(0,±1,0)`, 4 arms → 2 crossing ellipses, `nearTangentGaps = 0`, on the OCCT
+  `IntPatch`/`GeomAPI_IntSS` locus onCurve ≤ 1.74e-6 / onSurf ≤ 1.07e-8. The isolated
+  `TangentPoint` (spheres d=R₁+R₂) STILL ENDS with zero arms (definite tangent cone ⇒ no
+  real roots). Only the elementary transversal self-crossing (Steinmetz family) is handled;
+  general/freeform branch points and cusps DEFER → OCCT. **Steinmetz is now unblocked.**
 - ◐ **SSI S5-a/b/c (curved-boolean slices)** — the SSI-curve-driven
   split→classify→weld pipeline (`src/native/boolean/ssi_boolean.{h,cpp}`, consumes the
   S3 `TraceSet`) produces **five native curved-boolean sub-cases verified vs OCCT
   `BRepAlgoAPI_{Fuse,Cut,Common}`**: the through-drill cylinder∩cylinder COMMON (S5-a) +
   FUSE + CUT (S5-b) and the sphere∩sphere COMMON lens (S5-c, equal + unequal radii) — all
   watertight, ΔV ≤ 8e-04. Sphere fuse/cut, other curved-curved families, and near-tangent
-  pairs (incl. Steinmetz) still decline to OCCT — honest, measured fallbacks.
+  pairs still decline to OCCT — honest, measured fallbacks. (Steinmetz self-crossing loci are
+  now traced natively by S4-d, but the S5 boolean consuming a multi-arm `TraceSet` is a later
+  slice.)
 
 **Still OCCT-backed (the tail that keeps OCCT linked):**
-- ☐ SSI **S4-d…f marching core** (the moat tail: branch points, singularities,
-  self-intersection, deeper near-coincident bands — S4-a/b classification + the S4-c
-  first near-tangent march-through slice already landed) → **wider S5
-  curved booleans** (fuse/cut caps, more families, lifting the near-tangent gate,
-  consuming the S3 WLines + the S4 typed regions/contacts).
+- ☐ SSI **S4-d general/freeform + S4-e…f marching core** (the moat tail: general/freeform
+  branch points, cusps, singularities, self-intersection completeness, deeper near-coincident
+  bands — S4-a/b classification + the S4-c near-tangent march-through + the S4-d Steinmetz
+  branch-point slice already landed) → **wider S5 curved booleans** (fuse/cut caps, more
+  families, lifting the near-tangent gate, consuming the S3 WLines + the S4 typed
+  regions/contacts + multi-arm branch loci).
 - ☐ General curved **booleans** & **blends** (sit on SSI); curved **wrap-emboss**.
 - ☐ Non-planar/guided/rail sweep robustness; general loft; fine-pitch threads.
 - ☐ **Shape healing**; **STEP/IGES import**.
 - ☐ **`drop-occt`** — BLOCKED until the above are native (research-grade, multi-year).
 
 **Effort:** ≈ 0.9–1.3 py delivered (planar/analytic breadth); ≈ **9–18 py remaining**
-to genuinely drop OCCT, concentrated in SSI-S4-d…f marching robustness + healing + import.
+to genuinely drop OCCT, concentrated in SSI-S4-d(general)…f marching robustness + healing + import.
 
 ---
 

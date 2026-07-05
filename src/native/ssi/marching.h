@@ -122,6 +122,9 @@ enum class TraceStatus {
   BoundaryExit,  ///< the curve runs boundary-to-boundary (both ends on a domain edge)
   NearTangent,   ///< stopped at a near-tangent / divergent region → S4 gap (up-to-here only)
   Failed,        ///< corrector could not advance from the seed at all (no curve emitted)
+  BranchArc,     ///< S4-d: a complete arc of a self-crossing locus, running branch-to-branch
+                 ///< (both ends meet LOCALIZED branch points). A resolved junction, NOT an S4
+                 ///< gap — the arcs meeting at each branch point are recorded in TraceSet.branchNodes.
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -176,6 +179,22 @@ struct WLine {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// BranchNode (S4-d) — a localized branch point where the intersection LOCUS self-crosses
+// (multiple real curve arms meet at one point). `point` is the branch point B on BOTH
+// surfaces; `branchSine` = ‖nA×nB‖ there (≈ 0 — the transversality that collapsed);
+// `armLineIds` are the branchId's of the WLines whose ends meet at B (the connected arms).
+// A BranchNode is emitted ONLY for a GENUINE transversal self-crossing (the tangent-cone
+// quadratic had two distinct real roots ⇒ real outgoing arms) — never for an isolated
+// TangentPoint (definite second form ⇒ no arms ⇒ the curve ends).
+// ─────────────────────────────────────────────────────────────────────────────
+struct BranchNode {
+  math::Point3 point{};        ///< the branch point B (on both surfaces)
+  double branchSine = 0.0;     ///< ‖nA×nB‖ at B (≈ 0)
+  double onSurfResidual = 0.0; ///< ‖A.point − B.point‖ at B (≤ onSurfTol)
+  std::vector<int> armLineIds{}; ///< branchId of each WLine arm meeting at B
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MarchOptions — the predictor/corrector/step/termination knobs. Sentinel (≤ 0)
 // values are resolved from the operands' model scale at call time.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -197,6 +216,12 @@ struct MarchOptions {
   int fitDegree = 3;           ///< B-spline fit degree (cubic default)
   int fitMaxPoles = 64;        ///< max poles the least-squares fit uses (0 → interpolate every node)
   double dedupFrac = -1.0;     ///< two WLines duplicate if a node is within dedupFrac·scale (≤ 0 → 1e-4)
+
+  // ── S4-d BRANCH POINTS (branch-point localization + arm routing). OFF by default so
+  // every S3 transversal trace and every S4-c crossable-graze trace is BYTE-IDENTICAL to
+  // before; a caller opts in to route the arms of a genuine self-crossing (Steinmetz). ──
+  bool enableBranchPoints = false;  ///< S4-d: localize branch points + route the outgoing arms
+  double branchMergeFrac = -1.0;    ///< arms meeting within branchMergeFrac·scale of one B share a node (≤ 0 → 1e-3)
 };
 
 /// The full S3 result (design.md TraceSet): one WLine per distinct traced branch plus
@@ -216,6 +241,11 @@ struct TraceSet {
   int deferredTangent = 0;      ///< S2 near-tangent branches never seeded (echoed S4 gap)
   int closedCurves = 0;         ///< WLines that closed into a loop
   int openCurves = 0;           ///< WLines running boundary-to-boundary
+
+  // ── S4-d branch-point diagnostics (0 unless MarchOptions.enableBranchPoints) ──
+  std::vector<BranchNode> branchNodes{};  ///< localized branch points + their arm connectivity
+  int branchPoints = 0;          ///< #branch points localized + routed (== branchNodes.size())
+  int routedArms = 0;            ///< #arm WLines routed off branch points and kept (not deduped)
 
   int curveCount() const noexcept { return static_cast<int>(lines.size()); }
 };

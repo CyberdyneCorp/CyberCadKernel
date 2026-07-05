@@ -340,6 +340,7 @@ void reportPair(const std::string& pairName,
     switch (w.status) {
       case ssi::TraceStatus::Closed:       ++nativeTraced; ++nativeClosed; break;
       case ssi::TraceStatus::BoundaryExit: ++nativeTraced; break;
+      case ssi::TraceStatus::BranchArc:    ++nativeTraced; break;  // S4-d branch-to-branch arc
       case ssi::TraceStatus::NearTangent:  ++nativeNearTangent; break;
       case ssi::TraceStatus::Failed:       ++nativeFailed; break;
     }
@@ -668,10 +669,80 @@ void pairEqualCylindersDefer() {
   std::fflush(stdout);
 }
 
+// ── S4-d: the STEINMETZ branch points are LOCALIZED + the arms ROUTED, vs OCCT ────────
+// The SAME two equal orthogonal cylinders as pairEqualCylindersDefer (which stays a control
+// showing the DEFAULT still defers). Here we enable branch points: the native tracer must
+// LOCALIZE both branch points (0,±1,0) and ROUTE the arms so the FULL multi-arm intersection
+// (the two ellipses in planes x=±z) is traced. Verified against the OCCT oracle:
+//   * branchPoints == 2, each on BOTH OCCT surfaces AND on the OCCT locus within tol;
+//   * every native arc node lies on the OCCT locus (nearest OCCT branch) AND on both
+//     surfaces within tol — no fabricated points;
+//   * the native branch points match the analytic/OCCT saddles (0,±1,0);
+//   * nearTangentGaps == 0 (all arcs resolved to branch junctions), tracedBranches ≥ 4.
+// (OCCT tolerance-splits the figure-8 into its own arc set; the gate asserts the uncontested
+// facts — the native curve lies on OCCT's locus + surfaces, and both branch points match.)
+void pairEqualCylindersBranchS4d() {
+  nm::Cylinder cz{frameZ(), 1.0};
+  nm::Cylinder cx{Ax3{{0, 0, 0}, {0, 0, 1}, {0, 1, 0}, {1, 0, 0}}, 1.0};
+  ssi::ParamBox dom{0.0, 2.0 * kPi, -1.5, 1.5};
+  auto A = ssi::makeCylinderAdapter(cz, dom);
+  auto B = ssi::makeCylinderAdapter(cx, dom);
+
+  Handle(Geom_Surface) sa = new Geom_CylindricalSurface(toOcctAx3(frameZ()), 1.0);
+  Handle(Geom_Surface) sb =
+      new Geom_CylindricalSurface(toOcctAx3(Ax3{{0, 0, 0}, {0, 0, 1}, {0, 1, 0}, {1, 0, 0}}), 1.0);
+
+  ssi::MarchOptions mo;
+  mo.enableBranchPoints = true;
+  const ssi::TraceSet ts = ssi::trace_intersection(A, B, {}, mo);
+
+  const double onCurveTol = 5e-4, onSurfTol = 5e-4, bpTol = 5e-3;
+
+  // OCCT locus branches (for the on-locus check).
+  GeomAPI_IntSS iss(sa, sb, 1e-7);
+  std::vector<OcctBranch> occtBr;
+  if (iss.IsDone())
+    for (int i = 1; i <= iss.NbLines(); ++i)
+      occtBr.push_back(classifyBranch(iss.Line(i), sa, sb, /*tangentSine=*/1e-2));
+
+  // Every native arc node on the OCCT locus AND on both surfaces.
+  double maxOnCurve = 0.0, maxOnSurf = 0.0;
+  for (const auto& w : ts.lines)
+    for (const auto& n : w.points) {
+      double best = 1e30;
+      for (const auto& b : occtBr) best = std::min(best, distToOcctCurve(b.curve, n.point));
+      if (!occtBr.empty()) maxOnCurve = std::max(maxOnCurve, best);
+      maxOnSurf = std::max(maxOnSurf,
+                           std::max(distToOcctSurface(sa, n.point), distToOcctSurface(sb, n.point)));
+    }
+
+  // Both branch points localized at (0,±1,0), on both OCCT surfaces and on the OCCT locus.
+  bool sawPlus = false, sawMinus = false, bpOnLocus = true, bpOnSurf = true;
+  for (const auto& bn : ts.branchNodes) {
+    if (nm::distance(bn.point, Point3{0, 1, 0}) < bpTol) sawPlus = true;
+    if (nm::distance(bn.point, Point3{0, -1, 0}) < bpTol) sawMinus = true;
+    if (distToOcctSurface(sa, bn.point) > onSurfTol || distToOcctSurface(sb, bn.point) > onSurfTol)
+      bpOnSurf = false;
+    double best = 1e30;
+    for (const auto& b : occtBr) best = std::min(best, distToOcctCurve(b.curve, bn.point));
+    if (!occtBr.empty() && best > onCurveTol) bpOnLocus = false;
+  }
+
+  const bool ok = ts.branchPoints == 2 && ts.nearTangentGaps == 0 && ts.tracedBranches >= 4 &&
+                  sawPlus && sawMinus && bpOnSurf && bpOnLocus &&
+                  maxOnCurve <= onCurveTol && maxOnSurf <= onSurfTol;
+  if (ok) ++g_pass; else ++g_fail;
+  std::printf("[NMARCH] %-4s %-18s branchPts=%d NTgaps=%d traced=%d arms=%d onCurve=%.2e "
+              "onSurf=%.2e occtBr=%d (steinmetz localized + routed)\n",
+              ok ? "PASS" : "FAIL", "eq-cyl s4d", ts.branchPoints, ts.nearTangentGaps,
+              ts.tracedBranches, ts.routedArms, maxOnCurve, maxOnSurf, (int)occtBr.size());
+  std::fflush(stdout);
+}
+
 }  // namespace
 
 int main() {
-  std::printf("== SSI Stage S3/S4-c marching-line tracer native-vs-OCCT parity ==\n");
+  std::printf("== SSI Stage S3/S4-c/S4-d marching-line tracer native-vs-OCCT parity ==\n");
   std::fflush(stdout);
 
   pairBSplineBSpline();
@@ -680,7 +751,8 @@ int main() {
   pairCrossingSpheres();
   pairSphereBezier();
   pairNearTangentCrossedS4c();   // S4-c: graze marched through, full curve vs OCCT
-  pairEqualCylindersDefer();     // S4-c: branch saddle still deferred (not crossed)
+  pairEqualCylindersDefer();     // S4-c: branch saddle still deferred (not crossed) — control
+  pairEqualCylindersBranchS4d(); // S4-d: branch points localized + arms routed vs OCCT
 
   std::printf("== %d passed, %d failed ==\n", g_pass, g_fail);
   std::fflush(stdout);

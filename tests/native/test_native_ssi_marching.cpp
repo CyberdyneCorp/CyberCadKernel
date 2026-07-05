@@ -449,4 +449,77 @@ CC_TEST(march_dedup_retraced_branch) {
   CC_CHECK(tr.dedupedRetraces == 1);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// S4-d — BRANCH POINTS / self-crossing loci.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// STEINMETZ bicylinder: two equal R=1 cylinders, axes Z and X crossing orthogonally at
+// the origin. Their intersection is TWO ellipses (planes x=z and x=−z) that CROSS at two
+// branch points (0,±1,0). S3+S4-c DEFER there (one NearTangent WLine, a gap). With
+// enableBranchPoints the tracer must LOCALIZE both branch points and ROUTE the arms so the
+// FULL multi-arm intersection is traced: two branch points at (0,±1,0), all arcs on both
+// cylinders, no unresolved near-tangent gaps, no fabricated points.
+CC_TEST(march_steinmetz_branch_points_s4d) {
+  nmath::Cylinder cz{Ax3::fromAxisAndRef({0, 0, 0}, Dir3{0, 0, 1}, Dir3{1, 0, 0}), 1.0};  // axis Z
+  nmath::Cylinder cx{Ax3::fromAxisAndRef({0, 0, 0}, Dir3{1, 0, 0}, Dir3{0, 1, 0}), 1.0};  // axis X
+  ssi::ParamBox dom{0.0, 2.0 * kPi, -1.5, 1.5};
+  auto A = ssi::makeCylinderAdapter(cz, dom);
+  auto B = ssi::makeCylinderAdapter(cx, dom);
+  const double tol = 1e-5;
+
+  // BEFORE — default (branch points OFF): the marcher defers at the saddle (an S4 gap).
+  auto before = ssi::trace_intersection(A, B, defaultSeedOpts());
+  CC_CHECK(before.branchPoints == 0);
+  CC_CHECK(before.nearTangentGaps >= 1);       // honest defer, no branch handling
+
+  // AFTER — branch points ON: both branch points localized, arms routed, gaps resolved.
+  ssi::MarchOptions mo;
+  mo.enableBranchPoints = true;
+  auto tr = ssi::trace_intersection(A, B, defaultSeedOpts(), mo);
+
+  CC_CHECK(tr.branchPoints == 2);              // the two saddles (0,±1,0)
+  CC_CHECK(tr.nearTangentGaps == 0);           // every arc resolved to a branch junction
+  CC_CHECK(tr.tracedBranches >= 4);            // 4 arcs (2 per ellipse) assembled
+  CC_CHECK(tr.routedArms >= 1);                // at least one arm routed off a branch point
+
+  // Each branch point sits at (0,±1,0) on BOTH cylinders, with a collapsed sine.
+  bool sawPlus = false, sawMinus = false;
+  for (const auto& bn : tr.branchNodes) {
+    CC_CHECK(distToCylinder(cz, bn.point) < tol);
+    CC_CHECK(distToCylinder(cx, bn.point) < tol);
+    CC_CHECK(bn.branchSine < 1e-3);            // transversality collapsed → 0 at B
+    CC_CHECK(bn.armLineIds.size() >= 2);       // a self-crossing: ≥2 arcs meet here
+    if (nmath::distance(bn.point, Point3{0, 1, 0}) < 1e-3) sawPlus = true;
+    if (nmath::distance(bn.point, Point3{0, -1, 0}) < 1e-3) sawMinus = true;
+  }
+  CC_CHECK(sawPlus && sawMinus);
+
+  // NO fabricated points: every node of every arc lies on BOTH cylinders.
+  for (const auto& w : tr.lines)
+    for (const auto& n : w.points) {
+      CC_CHECK(distToCylinder(cz, n.point) < tol);
+      CC_CHECK(distToCylinder(cx, n.point) < tol);
+    }
+}
+
+// ISOLATED TANGENT POINT (control): two R=1 spheres at centre distance d = R1+R2 = 2 touch
+// at (1,0,0). The relative second form there is SIGN-DEFINITE ⇒ NO real arm directions ⇒
+// the S4-d enumerator returns no arms. Even with branch points ENABLED the curve must STILL
+// END — zero branch points, zero routed arms, no fabricated arc (S2 already defers it).
+CC_TEST(march_tangent_point_never_branches_s4d) {
+  nmath::Sphere s1{frameZ({0, 0, 0}), 1.0};
+  nmath::Sphere s2{frameZ({2.0, 0, 0}), 1.0};  // touch at (1,0,0)
+  ssi::ParamBox dom{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
+  auto A = ssi::makeSphereAdapter(s1, dom);
+  auto B = ssi::makeSphereAdapter(s2, dom);
+
+  ssi::MarchOptions mo;
+  mo.enableBranchPoints = true;
+  auto tr = ssi::trace_intersection(A, B, defaultSeedOpts(), mo);
+  CC_CHECK(tr.branchPoints == 0);              // an isolated tangent point is NOT a branch
+  CC_CHECK(tr.routedArms == 0);                // no arms sprouted
+  CC_CHECK(tr.curveCount() == 0);              // curve ends (no fabricated arc)
+  CC_CHECK(tr.deferredTangent >= 1);           // S4 gap echoed, not faked
+}
+
 int main() { return cctest::run_all(); }

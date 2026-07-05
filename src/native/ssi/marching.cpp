@@ -19,6 +19,7 @@
 
 #include "native/math/bspline.h"
 #include "native/numerics/numerics.h"
+#include "native/ssi/branch_point.h"    // S4-d: branch-point localize + arm enumerate
 #include "native/ssi/tangent_seeded.h"  // S4-b: type a near-tangent stop
 
 #include <algorithm>
@@ -51,6 +52,7 @@ struct Tuned {
   double bandEnterSin, bandExitSin;   ///< S4-c crossing-band thresholds (tangentSinTol-derived)
   double minCrossSine;                ///< S4-c floor: sine below this mid-crossing ⇒ genuine tangency/branch, defer
   int maxPoints, crossMaxSteps;
+  bool enableBranchPoints = false;    ///< S4-d: capture branch stalls for localization + arm routing
 };
 
 Tuned tune(const MarchOptions& o, double scale) {
@@ -78,6 +80,7 @@ Tuned tune(const MarchOptions& o, double scale) {
   t.minCrossSine  = 0.3 * t.bandEnterSin;
   t.maxPoints     = std::max(16, o.maxPoints);
   t.crossMaxSteps = std::max(1, o.crossMaxSteps);
+  t.enableBranchPoints = o.enableBranchPoints;
   return t;
 }
 
@@ -246,6 +249,14 @@ struct DirResult {
   State stopState{};   ///< the on-curve state where the march stopped (for S4-b typing)
   int crossed = 0;             ///< S4-c: near-tangent grazes marched through this direction
   double maxCrossResid = 0.0;  ///< worst on-both-surfaces residual over the crossed arcs
+
+  // S4-d: set only when enableBranchPoints AND this direction stopped at a BRANCH signature
+  // (steep sine collapse / raw-tangent flip — two arms meet). Carries the last-good on-curve
+  // state + forward tangent so the caller can localize the branch point and enumerate arms.
+  bool branchStall = false;
+  State branchState{};      ///< last-good on-curve state entering the branch band
+  Vec3 branchTStar{};       ///< last-good FORWARD unit tangent at that state
+  double branchEnterSine = 0.0;  ///< ‖nA×nB‖ just before the collapse
 };
 
 // One PREDICTED-then-CORRECTED step with deflection-driven shrink. Halves `h` (in/out)
@@ -356,6 +367,12 @@ struct CrossOut {
   State end{};          ///< the far-side state to resume the normal march from
   int count = 0;        ///< nodes appended (for nearTangentCrossed accounting)
   double maxResid = 0.0;
+  // S4-d: the crossing was refused because the near-tangency is a BRANCH signature — the
+  // transversality sine collapsed toward 0 (steep-collapse witness or band-minimum below
+  // the crossable floor). This is exactly the sine→0 dip of a self-crossing (Steinmetz
+  // saddle), distinct from a bounded-dip crossable graze. The caller (with branch points
+  // enabled) hands this to the S4-d localizer instead of a blind defer.
+  bool branchSignature = false;
 };
 
 // Per-node crossability verdict for a corrected crossing node with tangent `tanNew`.
@@ -413,10 +430,10 @@ CrossOut crossNearTangent(const SurfaceAdapter& A, const SurfaceAdapter& B,
   //      step, so it cannot leap over a measure-zero dip) must keep its minimum sine at or
   //      above a fraction of the enter threshold; a sine → 0 dip ⇒ defer.
   const bool steepCollapse = lastGoodSine > 0.0 && sine0 < 0.25 * lastGoodSine;
-  if (steepCollapse) return r;
+  if (steepCollapse) { r.branchSignature = true; return r; }
 
   const double bandMin = bandMinSine(A, B, stall, dirStar, t);
-  if (!(bandMin >= t.minCrossSine)) return r;  // (also catches inf / NaN → defer)
+  if (!(bandMin >= t.minCrossSine)) { r.branchSignature = true; return r; }  // (also catches inf / NaN → defer)
 
   const std::size_t base = out.size();  // rollback marker: discard all crossing nodes on failure
   State cur = stall;
@@ -534,6 +551,16 @@ std::optional<DirResult> tryBandEntry(const SurfaceAdapter& A, const SurfaceAdap
     stop.end = DirEnd::NearTangent;
     stop.sineAtStop = intersectionTangent(A, B, w.cur).sine;
     stop.stopState = w.cur;
+    // S4-d: a BRANCH signature (sine collapsed toward 0 — two arms meet) is CAPTURED so the
+    // caller can localize the branch point + route arms, instead of a blind defer. Only the
+    // branch case is captured; an ordinary tangency (TangentPoint/Curve/Undecided) is NOT —
+    // it keeps deferring, so an isolated tangent point can never sprout arms.
+    if (t.enableBranchPoints && cx.branchSignature) {
+      stop.branchStall = true;
+      stop.branchState = w.cur;
+      stop.branchTStar = w.tStar;
+      stop.branchEnterSine = w.lastGoodSine > 0.0 ? w.lastGoodSine : t.bandEnterSin;
+    }
     return stop;
   }
   res.crossed += cx.count;
@@ -731,15 +758,30 @@ TangentContact typeNearTangentStop(const SurfaceAdapter& A, const SurfaceAdapter
 
 // ─────────────────────────────────────────────────────────────────────────────
 // march_branch — forward + backward from the seed, stitch, classify, fit.
+//
+// Internal impl returns the traced WLine AND (S4-d) any BRANCH STALLS the two directions
+// hit — the last-good on-curve state + forward tangent + entering sine where a branch
+// signature (sine → 0, two arms meeting) forced the near-tangent stop. `trace_from_seeds`
+// uses those to localize branch points + route arms when enableBranchPoints. The public
+// march_branch drops the stalls (unchanged signature / behaviour).
 // ─────────────────────────────────────────────────────────────────────────────
-WLine march_branch(const SurfaceAdapter& A, const SurfaceAdapter& B, const Seed& seed,
-                   const MarchOptions& opts) {
+namespace {
+
+struct BranchStall {
+  State state{};
+  Vec3 tStar{};
+  double enterSine = 0.0;
+};
+
+WLine march_branch_impl(const SurfaceAdapter& A, const SurfaceAdapter& B, const Seed& seed,
+                        const MarchOptions& opts, std::vector<BranchStall>& stalls) {
   const double scale = std::max(A.modelScale, B.modelScale);
   const Tuned t = tune(opts, scale);
   const State seedState{seed.u1, seed.v1, seed.u2, seed.v2, seed.point};
 
   std::vector<WLinePoint> fwd, bwd;
   const DirResult f = marchDir(A, B, seedState, +1.0, t, scale, fwd);
+  if (f.branchStall) stalls.push_back({f.branchState, f.branchTStar, f.branchEnterSine});
 
   WLine line;
   line.branchId = seed.branchId;
@@ -755,6 +797,7 @@ WLine march_branch(const SurfaceAdapter& A, const SurfaceAdapter& B, const Seed&
     // Open (or truncated forward). March the other way too and stitch:
     //   [reversed backward half]  seed  [forward half].
     const DirResult b = marchDir(A, B, seedState, -1.0, t, scale, bwd);
+    if (b.branchStall) stalls.push_back({b.branchState, b.branchTStar, b.branchEnterSine});
     for (auto it = bwd.rbegin(); it != bwd.rend(); ++it) line.points.push_back(*it);
     line.points.push_back(toNode(seedState, seed.onSurfResidual));
     line.points.insert(line.points.end(), fwd.begin(), fwd.end());
@@ -776,6 +819,14 @@ WLine march_branch(const SurfaceAdapter& A, const SurfaceAdapter& B, const Seed&
     line.onSurfResidual = std::max(line.onSurfResidual, n.onSurfResidual);
   line.curve = fitBSpline(line.points, opts.fitDegree, opts.fitMaxPoles);
   return line;
+}
+
+}  // namespace
+
+WLine march_branch(const SurfaceAdapter& A, const SurfaceAdapter& B, const Seed& seed,
+                   const MarchOptions& opts) {
+  std::vector<BranchStall> ignored;
+  return march_branch_impl(A, B, seed, opts, ignored);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -807,6 +858,206 @@ bool retraces(const WLine& w, const std::vector<WLine>& kept, double radius) {
   return false;
 }
 
+// Distance from point p to segment [a,b].
+double pointSegDist(const Point3& p, const Point3& a, const Point3& b) {
+  const Vec3 ab = b - a;
+  const double len2 = math::normSquared(ab);
+  double s = len2 > 1e-30 ? math::dot(p - a, ab) / len2 : 0.0;
+  s = s < 0.0 ? 0.0 : (s > 1.0 ? 1.0 : s);
+  return math::distance(p, a + ab * s);
+}
+
+// S4-d arc dedup: does arc `w` lie on the SAME LOCUS as a kept line? Unlike retraces()
+// (node-to-node proximity, tuned for identical polylines from duplicate seeds), two arms
+// tracing the same arc from different branch points sample it at DIFFERENT positions, so we
+// test each probe node of `w` against the kept line's POLYLINE SEGMENTS (point-to-segment)
+// and require the MAJORITY to lie on it within `radius`. Symmetric-enough for arcs that
+// share a locus but were walked in opposite directions / with different steps.
+bool sameLocus(const WLine& w, const std::vector<WLine>& kept, double radius) {
+  if (w.points.size() < 2) return false;
+  for (const WLine& k : kept) {
+    if (k.points.size() < 2) continue;
+    int hits = 0, probes = 0;
+    const int stride = std::max<int>(1, static_cast<int>(w.points.size()) / 16);
+    for (std::size_t i = 0; i < w.points.size(); i += stride) {
+      ++probes;
+      double best = std::numeric_limits<double>::infinity();
+      for (std::size_t j = 1; j < k.points.size(); ++j)
+        best = std::min(best, pointSegDist(w.points[i].point, k.points[j - 1].point, k.points[j].point));
+      if (best <= radius) ++hits;
+    }
+    if (probes > 0 && hits * 4 >= probes * 3) return true;  // ≥75% of w lies on k's locus
+  }
+  return false;
+}
+
+// Tally a kept WLine into the TraceSet counters. Shared by the backbone loop and the
+// S4-d routed arms so both report identically.
+void tallyLine(TraceSet& res, WLine&& w) {
+  res.nearTangentCrossed += w.nearTangentCrossed;
+  switch (w.status) {
+    case TraceStatus::Closed:       ++res.closedCurves; ++res.tracedBranches; break;
+    case TraceStatus::BoundaryExit: ++res.openCurves;   ++res.tracedBranches; break;
+    case TraceStatus::NearTangent:  ++res.nearTangentGaps; break;
+    case TraceStatus::BranchArc:    ++res.openCurves;   ++res.tracedBranches; break;
+    case TraceStatus::Failed:       break;
+  }
+  res.lines.push_back(std::move(w));
+}
+
+// ── S4-d: localize + route branch arms (design steps 1–4) ─────────────────────────
+//
+// From the branch STALLS captured by the backbone marches, LOCALIZE each distinct branch
+// point B (branchpt::localize — minimize the transversality sine along the approach, then
+// re-project onto both surfaces), ENUMERATE its real outgoing arm rays (branchpt::
+// enumerateArms — the relative-second-form quadratic; empty ⇒ NOT a transversal branch ⇒
+// no arms), then ROUTE each ray: step off B by a small arm step, re-project back onto the
+// curve, seed a fresh march there, and keep the arc if it is genuinely NEW (not a retrace
+// of the backbone or an already-routed arm). Branch points that localize AND yield arms
+// become BranchNodes with the branchIds of every arc meeting at B. A stall that will not
+// localize / yields no arms leaves the backbone's honest NearTangent gap as-is.
+//
+// COMPLEXITY NOTE: this is the isolated S4-d branch handler the design flags — the one
+// place branch-routing complexity is allowed to sit (kept out of the hot marchDir loop).
+// Record `lineId` on the BranchNode(s) this arc's ENDPOINTS reach — an arc between two
+// branch points connects both. `endpoints` are the arc's first/last world points.
+void connectArm(TraceSet& res, int lineId, const Point3& p0, const Point3& p1, double mergeRadius) {
+  for (BranchNode& node : res.branchNodes) {
+    if (math::distance(node.point, p0) <= mergeRadius || math::distance(node.point, p1) <= mergeRadius) {
+      if (std::find(node.armLineIds.begin(), node.armLineIds.end(), lineId) == node.armLineIds.end())
+        node.armLineIds.push_back(lineId);
+    }
+  }
+}
+
+// A localized branch point + its enumerated outgoing arm rays.
+struct LocalBP { branchpt::Localized L; std::vector<Vec3> arms; };
+
+// PHASE 1 — from the raw stalls, LOCALIZE the distinct branch points and enumerate each
+// one's arms. A stall that does not localize, or whose tangent-cone quadratic yields no real
+// arms (definite second form = isolated TangentPoint → curve ends; cusp → defer), is dropped:
+// it never becomes a branch point (no fabrication). Duplicate stalls onto one B are merged.
+std::vector<LocalBP> localizeBranchPoints(const SurfaceAdapter& A, const SurfaceAdapter& B,
+                                          double scale, double h0, double onSurfTol,
+                                          double mergeRadius, const std::vector<BranchStall>& stalls) {
+  std::vector<LocalBP> bps;
+  for (const BranchStall& st : stalls) {
+    const branchpt::BPState stall{st.state.u1, st.state.v1, st.state.u2, st.state.v2, st.state.p};
+    const auto L = branchpt::localize(A, B, stall, st.tStar, st.enterSine, h0, onSurfTol);
+    if (!L) continue;
+    bool dup = false;
+    for (const LocalBP& e : bps)
+      if (math::distance(e.L.point.p, L->point.p) <= mergeRadius) { dup = true; break; }
+    if (dup) continue;
+    std::vector<Vec3> arms = branchpt::enumerateArms(A, B, *L, scale);
+    if (arms.empty()) continue;  // NOT a transversal branch → no arms (curve ends / defer)
+    bps.push_back({*L, std::move(arms)});
+  }
+  return bps;
+}
+
+// ROUTE one outgoing ray of a branch point: step off B along `ray`, re-project onto the
+// curve, seed a fresh march (branch points OFF so it stops honestly at the far branch and
+// never recurses). Returns the traced arc, or nullopt if the arm won't verify / made no
+// progress / wound past the cap (an honest drop — never a fabricated fragment).
+std::optional<WLine> routeArm(const SurfaceAdapter& A, const SurfaceAdapter& B,
+                              const MarchOptions& armOpts, const branchpt::Localized& bp,
+                              const Vec3& ray, double armStep, double onSurfTol, int armId) {
+  branchpt::BPState off = bp.point;
+  off.p = bp.point.p + ray * armStep;
+  const auto seedState = branchpt::reproject(A, B, off, onSurfTol, bp.point.p,
+                                             branchpt::AlongPin{ray, armStep});
+  if (!seedState) return std::nullopt;                            // won't verify on both surfaces
+  if (math::distance(seedState->p, bp.point.p) < 0.25 * armStep) return std::nullopt;  // no progress
+
+  Seed armSeed;
+  armSeed.u1 = seedState->u1; armSeed.v1 = seedState->v1;
+  armSeed.u2 = seedState->u2; armSeed.v2 = seedState->v2;
+  armSeed.point = seedState->p;
+  armSeed.onSurfResidual = math::distance(A.point(seedState->u1, seedState->v1),
+                                          B.point(seedState->u2, seedState->v2));
+  armSeed.branchId = armId;
+
+  std::vector<BranchStall> ignored;
+  WLine w = march_branch_impl(A, B, armSeed, armOpts, ignored);
+  if (w.points.size() < 2 || w.status == TraceStatus::Failed) return std::nullopt;
+  // A capped arm (reached the node budget) is winding, not a clean branch-to-branch arc → drop.
+  if (static_cast<int>(w.points.size()) >= 2 * armOpts.maxPoints - 4) return std::nullopt;
+  return w;
+}
+
+// RECLASSIFY branch-terminated arcs. An arc whose NearTangent ends both sit on a LOCALIZED
+// branch point is NOT an unresolved S4 gap — it is a resolved junction (the arcs meet at B,
+// recorded in the BranchNode). Convert it to BranchArc (a complete arc of the multi-arm
+// locus) and take it out of `nearTangentGaps`. This drives Steinmetz to nearTangentGaps == 0.
+void reclassifyBranchArcs(TraceSet& res, double mergeRadius) {
+  auto atBranch = [&](const Point3& p) {
+    for (const BranchNode& n : res.branchNodes)
+      if (math::distance(n.point, p) <= mergeRadius) return true;
+    return false;
+  };
+  for (WLine& w : res.lines) {
+    if (w.status != TraceStatus::NearTangent || w.points.size() < 2) continue;
+    if (atBranch(w.points.front().point) && atBranch(w.points.back().point)) {
+      w.status = TraceStatus::BranchArc;
+      w.stopReason.reset();
+      --res.nearTangentGaps;
+      ++res.openCurves;
+      ++res.tracedBranches;
+    }
+  }
+}
+
+void routeBranches(const SurfaceAdapter& A, const SurfaceAdapter& B, const MarchOptions& opts,
+                   double scale, const std::vector<BranchStall>& stalls, TraceSet& res) {
+  if (stalls.empty()) return;
+  const Tuned t = tune(opts, scale);
+  const double h0 = t.h0;
+  const double armStep = h0 / 8.0;                                   // step off B along a ray
+  const double mergeRadius = (opts.branchMergeFrac > 0 ? opts.branchMergeFrac : 1e-3) * scale;
+  const double dedupRadius = (opts.dedupFrac > 0 ? opts.dedupFrac : 1e-4) * scale;
+
+  const std::vector<LocalBP> bps =
+      localizeBranchPoints(A, B, scale, h0, t.onSurfTol, mergeRadius, stalls);
+  if (bps.empty()) return;
+
+  for (const LocalBP& e : bps) {
+    BranchNode node;
+    node.point = e.L.point.p;
+    node.branchSine = e.L.sine;
+    node.onSurfResidual = math::distance(A.point(e.L.point.u1, e.L.point.v1),
+                                         B.point(e.L.point.u2, e.L.point.v2));
+    res.branchNodes.push_back(node);
+  }
+  // Backbone arcs already passing through a branch point (they stopped there) are its arms.
+  for (const WLine& w : res.lines)
+    if (!w.points.empty())
+      connectArm(res, w.branchId, w.points.front().point, w.points.back().point, mergeRadius);
+
+  // ROUTE each branch point's rays. Branch points OFF for the arm marches (stop at the far
+  // branch, no recursion / runaway). Bound arm length so a winding arm is dropped, not kept.
+  MarchOptions armOpts = opts;
+  armOpts.enableBranchPoints = false;
+  const int backboneCap = std::max(64, static_cast<int>(16.0 * scale / std::max(h0, 1e-12)));
+  armOpts.maxPoints = std::min(opts.maxPoints, backboneCap);
+  int nextArmId = 10000;  // routed-arm branchIds live above the seed branchIds
+  for (const LocalBP& e : bps)
+    for (const Vec3& ray : e.arms) {
+      auto w = routeArm(A, B, armOpts, e.L, ray, armStep, t.onSurfTol, nextArmId);
+      if (!w) continue;
+      // Dedup against every kept line by LOCUS (point-to-polyline): an arm tracing an already
+      // kept arc from a different branch point samples it elsewhere, so retraces() would miss it.
+      if (sameLocus(*w, res.lines, std::max(dedupRadius, mergeRadius))) { ++res.dedupedRetraces; continue; }
+      connectArm(res, w->branchId, w->points.front().point, w->points.back().point, mergeRadius);
+      ++res.routedArms;
+      ++nextArmId;
+      tallyLine(res, std::move(*w));
+    }
+
+  res.branchPoints = static_cast<int>(res.branchNodes.size());
+  reclassifyBranchArcs(res, mergeRadius);
+}
+
 }  // namespace
 
 TraceSet trace_from_seeds(const SurfaceAdapter& A, const SurfaceAdapter& B,
@@ -817,19 +1068,24 @@ TraceSet trace_from_seeds(const SurfaceAdapter& A, const SurfaceAdapter& B,
   const double scale = std::max(A.modelScale, B.modelScale);
   const double dedupRadius = (opts.dedupFrac > 0 ? opts.dedupFrac : 1e-4) * scale;
 
+  std::vector<BranchStall> stalls;  // S4-d: branch stalls captured by the backbone marches
   for (const Seed& s : seeds.seeds) {
-    WLine w = march_branch(A, B, s, opts);
+    std::vector<BranchStall> seedStalls;
+    WLine w = march_branch_impl(A, B, s, opts, seedStalls);
+    // Capture branch stalls even when the WLine itself is deduped/failed — the branch point
+    // is a property of the geometry, not of which seed reached it.
+    if (opts.enableBranchPoints)
+      stalls.insert(stalls.end(), seedStalls.begin(), seedStalls.end());
     if (w.points.size() < 2 || w.status == TraceStatus::Failed) continue;  // no real curve
     if (retraces(w, res.lines, dedupRadius)) { ++res.dedupedRetraces; continue; }
-    res.nearTangentCrossed += w.nearTangentCrossed;  // S4-c grazes marched through this branch
-    switch (w.status) {
-      case TraceStatus::Closed:       ++res.closedCurves; ++res.tracedBranches; break;
-      case TraceStatus::BoundaryExit: ++res.openCurves;   ++res.tracedBranches; break;
-      case TraceStatus::NearTangent:  ++res.nearTangentGaps; break;
-      case TraceStatus::Failed:       break;  // filtered above
-    }
-    res.lines.push_back(std::move(w));
+    tallyLine(res, std::move(w));
   }
+
+  // S4-d: localize the captured branch points and route their outgoing arms. Additive —
+  // with enableBranchPoints off, `stalls` is empty and this is a no-op, so the transversal
+  // and crossable-graze results above are byte-identical to before.
+  if (opts.enableBranchPoints) routeBranches(A, B, opts, scale, stalls, res);
+
   return res;
 }
 

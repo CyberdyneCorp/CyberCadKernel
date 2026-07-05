@@ -78,7 +78,7 @@ Dependency order. Each row is one OpenSpec change (`add-native-*`).
 | 4 | `add-native-swept-solids` | `native-construction` | hard | `BRepPrimAPI`, `BRepBuilderAPI`, `BRepOffsetAPI` |
 | 5 | `add-native-booleans` | `native-booleans` | **research-grade** | `BRepAlgoAPI` (BOPAlgo) |
 
-> #5 SSI → curved-booleans implementation plan: see [SSI-ROADMAP.md](SSI-ROADMAP.md) (staged S1-S5, substrate #2 done; S1 analytic + S2 seeding + S3 marching done — the SSI curve pipeline is now NATIVE for transversal freeform/quadric pairs; **S5-a/b/c landed five native curved-boolean sub-cases** verified vs OCCT `BRepAlgoAPI_{Fuse,Cut,Common}` — the through-drill cyl∩cyl COMMON (S5-a) + FUSE + CUT (S5-b) and the sphere∩sphere COMMON lens (S5-c, equal + unequal radii), all watertight, ΔV ≤ 8e-4 (sim `native-pass=5`); `ssi_boolean.{h,cpp}`, changes `add-native-ssi-curved-boolean` + `add-native-ssi-curved-boolean-wider` archived. Remaining: **S4 near-tangent robustness (the moat)** + wider S5 coverage (sphere fuse/cut, more curved-curved families, lifting the near-tangent gate)).
+> #5 SSI → curved-booleans implementation plan: see [SSI-ROADMAP.md](SSI-ROADMAP.md) (staged S1-S5, substrate #2 done; S1 analytic + S2 seeding + S3 marching done — the SSI curve pipeline is now NATIVE for transversal freeform/quadric pairs; **S5-a/b/c landed five native curved-boolean sub-cases** verified vs OCCT `BRepAlgoAPI_{Fuse,Cut,Common}` — the through-drill cyl∩cyl COMMON (S5-a) + FUSE + CUT (S5-b) and the sphere∩sphere COMMON lens (S5-c, equal + unequal radii), all watertight, ΔV ≤ 8e-4 (sim `native-pass=5`); `ssi_boolean.{h,cpp}`, changes `add-native-ssi-curved-boolean` + `add-native-ssi-curved-boolean-wider` archived. S4-a/b classification + S4-c near-tangent march-through + **S4-d first branch-point slice landed** (the **Steinmetz** self-crossing bicylinder localized + routed through both branch points vs OCCT `IntPatch`/`GeomAPI_IntSS` — 2 branch pts, 4 arms → 2 crossing ellipses; isolated tangent point still ends; `add-native-ssi-s4d-branch-points` archived). Remaining: **S4 general/freeform branch points + S4-e…f moat** + wider S5 coverage (sphere fuse/cut, more curved-curved families, lifting the near-tangent gate, S5 booleans on multi-arm branch loci)).
 | 6 | `add-native-fillets-offsets` | `native-blends` | hard | `BRepFilletAPI`, `BRepOffsetAPI` |
 | 7 | `add-native-data-exchange` | `native-exchange` | moderate (external?) | `STEPControl`, `IGESControl` |
 | 8 | `drop-occt` | â | â | unlink OCCT; kernel fully native |
@@ -410,8 +410,9 @@ longest; a native exchange is lower priority than the modelling core.
   the S2 seeding + S3 marching layers are built on (both now DONE for transversal pairs), but
   the near-tangent / coincident / branch-point surface-surface-intersection moat stays
   capability #5 as S4 (its DETECTION + CLASSIFICATION layer S4-a/b + the first
-  near-tangent MARCH-THROUGH slice S4-c now DONE at the bar; the deeper marching core
-  S4-d…f is the remaining tail), written on top of this substrate + the
+  near-tangent MARCH-THROUGH slice S4-c + the first BRANCH-POINT slice S4-d — the
+  Steinmetz self-crossing bicylinder localized + routed — now DONE at the bar; the deeper
+  marching core, general/freeform branch points + S4-e…f, is the remaining tail), written on top of this substrate + the
   S3 tracer.** Change `add-native-numerics` **archived**. See
   [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md) numeric-foundations result table.
 - â **#5 `native-booleans` â PLANAR-polyhedron slice DONE at the verification bar;
@@ -646,13 +647,58 @@ longest; a native exchange is lower priority than the modelling core.
     (**7 passed, 0 failed** — `nt-cross s4c` crossed, `eq-cyl defer` deferred, 5 transversal
     pairs `nt=0`). No regressions (S5 `native-pass=5` persists, tessellator byte-identical).
     **Honest scope — what S4-c does NOT do:** deeper near-coincident bands, branch crossings
-    (S4-d), singularities (S4-e), self-intersection repair (S4-f), and any near-tangent
-    region not robustly crossable stay an honest `NearTangent` gap deferred to OCCT.
+    (now handled for the transversal self-crossing family by S4-d, below), singularities
+    (S4-e), self-intersection repair (S4-f), and any near-tangent region not robustly
+    crossable stay an honest `NearTangent` gap deferred to OCCT.
     Files: `src/native/ssi/marching.{h,cpp}` +
     `tests/native/test_native_ssi_marching.cpp` +
     `tests/sim/native_ssi_marching_parity.mm` + `scripts/run-sim-native-ssi-s4c.sh`.
     Living change `openspec/changes/add-native-ssi-s4c-near-tangent-marching` **archived**
     (`2026-07-04`).
+  - **SSI Stage S4-d (BRANCH POINTS — self-crossing locus) — FIRST HONEST SLICE DONE at the
+    verification bar (both gates).** The hardest SSI piece: where the intersection LOCUS
+    itself crosses (multiple curve arms meet at one point), LOCALIZE the branch point,
+    ENUMERATE the outgoing arms, ROUTE each and ASSEMBLE the multi-arm curve — verified vs
+    OCCT `IntPatch`/`GeomAPI_IntSS`. Additive to `marching.cpp` + new `branch_point.h`, gated
+    `CYBERCAD_HAS_NUMSCI`, default-on `enableBranchPoints`; no `cc_*`. Fires **exactly where
+    S4-c would have deferred** (the steep-sine-collapse + tangent-flip witness). Four steps:
+    **(1) LOCALIZE** — `nn::minimize` the transversality sine `g(s) = ‖nA×nB‖` along the
+    bracketed approach (each trial re-projected onto both surfaces with the S4-c fixed-plane
+    corrector), then a full `nn::least_squares` re-project of the minimum onto both surfaces;
+    accepted only if `‖A−B‖ ≤ onSurfTol` and the sine is at/near the floor, else DEFER (no
+    fabricated B). **(2) ENUMERATE ARMS** — build the shared tangent-plane basis at B, form
+    the relative second fundamental form `H = II_A − II_B`, solve the tangent-cone quadratic:
+    discriminant `Δ > 0` ⇒ TWO distinct real tangent lines ⇒ up to four world-space rays;
+    `Δ ≤ 0` ⇒ EMPTY (definite ⇒ isolated `TangentPoint`, END; double root ⇒ cusp, out of
+    scope, DEFER). **Never fabricates a ray** — the same discriminant sign as S4-b's
+    `TangentPoint` classification enforces "an isolated tangent point still ends". **(3)
+    ROUTE** — step `h₀/8` off B along each real ray, S4-c-correct back onto both surfaces,
+    then run the normal S3 walk to termination; drop the arm if `S₀` fails on-both-surfaces
+    or the march makes no progress. **(4) ASSEMBLE** — dedup arms that retrace a kept arm
+    (`retraces`), merge their shared branch-point connectivity into the `BranchNode`
+    (`point`, `branchSine`, `armLineIds`), `++branchPoints`. A branch not robustly
+    localizable/enumerable/routable STOPS + defers **exactly as S4-c** (a `NearTangent` WLine
+    in `nearTangentGaps`). **At the bar:** the **Steinmetz bicylinder** (two equal-R=1
+    orthogonal cylinders) that S3+S4-c TRUNCATE at the saddle (one `NearTangent` WLine,
+    `branchPoints=0`) is now FULLY traced: `branchPoints=2` localized at `(0,±1,0)` (branch
+    sine ≈ 5e-8 / 9e-8, re-projection residual ≈ 5e-13), 4 `BranchArc` arms assembled into
+    the two crossing ellipses, `nearTangentGaps=0`, every node on both cylinders ≤ `onSurfTol`;
+    sim parity vs OCCT `eq-cyl s4d branchPts=2 traced=4 arms=3 onCurve=1.74e-6 onSurf=1.07e-8`
+    (both branch points match the OCCT saddles at `(0,±1,0)`). The isolated `TangentPoint`
+    (spheres `d=R₁+R₂`) STILL ENDS with zero arms; the S4-c graze still crosses
+    (`crossed=22`); the flag-off eq-cyl control still defers; the 5 transversal pairs stay
+    `nt=0` bit-identical. Both gates green: host `test_native_ssi_marching` (**12 cases, 0
+    failed**; NUMSCI OFF CTest **26/26**, NUMSCI ON **31/31**) + sim
+    `scripts/run-sim-native-ssi-s4d.sh` (**8 passed, 0 failed**). No regressions (S5
+    `native-pass=5` persists, tessellator byte-identical, `src/native/**` OCCT-free).
+    **Honest scope — what S4-d does NOT do:** only the elementary two-real-distinct-line
+    **transversal self-crossing** (Steinmetz family) is traced; general/freeform branch
+    points, three-plus tangent lines, cusps (double root), S4-e singular points and S4-f
+    self-intersection completeness DEFER → OCCT, reported with the measured gap, never faked.
+    **Steinmetz is now unblocked** natively. Files: `src/native/ssi/branch_point.h` +
+    `src/native/ssi/marching.{h,cpp}` + `tests/native/test_native_ssi_marching.cpp` +
+    `tests/sim/native_ssi_marching_parity.mm` + `scripts/run-sim-native-ssi-s4d.sh`. Living
+    change `openspec/changes/add-native-ssi-s4d-branch-points` **archived** (`2026-07-04`).
 - â **`#4b` Tier E â native `cc_wrap_emboss` â DEFERRED (FUTURE WORK, not scheduled
   yet).** This is the *native* (OCCT-free) rewrite of wrap-emboss; it is distinct from
   the Phase-3 `add-robust-wrap-emboss` change, which is â done and OCCT-backed (the

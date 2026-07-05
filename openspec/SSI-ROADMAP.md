@@ -169,7 +169,7 @@ gap, within the deflection/step tol).
 - **Unlocks:** S5 curved booleans — the `TraceSet` (WLines with (u1,v1,u2,v2) per node) is
   its input contract.
 
-### S4 — Tangent / degeneracy robustness · ◐ CLASSIFICATION LAYER (S4-a/b) + FIRST MARCHING-CORE SLICE (S4-c) DONE AT THE BAR; S4-d…f pending
+### S4 — Tangent / degeneracy robustness · ◐ CLASSIFICATION LAYER (S4-a/b) + MARCHING-CORE SLICES (S4-c graze, S4-d branch points) DONE AT THE BAR; S4-e…f pending
 Near-tangent stepping (n₁×n₂→0: step control, higher-order predictor),
 coincident/overlapping-surface detection, branch points & singularities,
 self-intersection guards. **This is the moat** — OCCT's decades of tuning. Lands
@@ -279,16 +279,61 @@ single-branch graze** with four levers:
 cylinder that S3 TRUNCATES at `tangentSinTol=0.25` (sine dip ≈ 0.10) now traces the FULL
 closed loop (`nearTangentGaps → 0`, `nearTangentCrossed ≥ 1`, every node on both surfaces
 ≤ 1e-6, crossed arc on the OCCT `GeomAPI_IntSS` locus ≤ 5e-4); the equal-radius
-orthogonal cylinder **saddle (a branch crossing) STILL DEFERS** (`nearTangentCrossed = 0`,
-`nearTangentGaps ≥ 1`), as do genuine `TangentPoint`/`TangentCurve` contacts. Every S3
-transversal fixture traces bit-identically (the corrector/step outside the band is
-unchanged). Deeper near-coincident bands, branch crossings (S4-d), singularities (S4-e)
-and self-intersection (S4-f) remain the tail: anything not robustly crossable is still an
-honest `NearTangent` gap deferred to OCCT.
+orthogonal cylinder **saddle (a branch crossing) STILL DEFERS with the flag off / at the
+S4-c bar** (`nearTangentCrossed = 0`, `nearTangentGaps ≥ 1`) — that saddle is the S4-d
+branch-point case, now localized + routed (below); genuine `TangentPoint`/`TangentCurve`
+contacts still defer. Every S3 transversal fixture traces bit-identically (the
+corrector/step outside the band is unchanged). Deeper near-coincident bands, singularities
+(S4-e) and self-intersection (S4-f) remain the tail: anything not robustly crossable is
+still an honest `NearTangent` gap deferred to OCCT.
 
-#### S4-d — Branch points · ✗ PENDING
-Splitting the trace where intersection branches meet/cross (a point where n₁×n₂→0
-but the locus is not a simple tangency).
+#### S4-d — Branch points · ◐ FIRST HONEST SLICE DONE AT THE BAR (elementary transversal self-crossing — the Steinmetz family; general/freeform/cusp branches remain)
+The hardest SSI piece: where the intersection **locus itself crosses** (multiple curve arms
+meet at one point), LOCALIZE the branch point, ENUMERATE the outgoing arms from the local
+second-order structure, ROUTE each arm with the S3 marcher, then ASSEMBLE the multi-arm
+curve. The first slice (`add-native-ssi-s4d-branch-points`, archived `2026-07-04`, gated
+`CYBERCAD_HAS_NUMSCI`, additive to `marching.cpp` + new `branch_point.h`, default-on
+`enableBranchPoints`) fires **exactly where S4-c would have deferred** (the steep-sine-
+collapse + tangent-flip witness) and resolves the elementary **transversal self-crossing**:
+- **Localize** — `nn::minimize` the transversality sine `g(s) = ‖n_A×n_B‖` along the
+  bracketed approach (each trial re-projected onto both surfaces with the S4-c fixed-plane
+  corrector), then a full `nn::least_squares` re-project of the minimum onto both surfaces;
+  accepted only when `‖A−B‖ ≤ onSurfTol` and the sine is at/near the floor, else DEFER
+  (no fabricated B).
+- **Enumerate arms** — build the shared tangent-plane basis at B, form the relative second
+  fundamental form `H = II_A − II_B`, and solve the tangent-cone quadratic. Discriminant
+  `Δ > 0` ⇒ two distinct real tangent lines ⇒ up to four world-space rays (`±T₁, ±T₂`);
+  `Δ ≤ 0` ⇒ EMPTY (definite ⇒ isolated `TangentPoint`, END; double root ⇒ cusp, out of
+  scope, DEFER). **Never fabricates a ray** — the same discriminant sign as S4-b's
+  `TangentPoint` classification enforces "an isolated tangent point still ends".
+- **Route + assemble** — step `h₀/8` off B along each real ray, S4-c-correct back onto both
+  surfaces, then run the normal S3 walk to termination; dedup arms that retrace a kept arm
+  (`retraces`) and merge their shared branch-point connectivity into the `BranchNode`; count
+  `TraceSet.branchPoints` and record `armLineIds`. A branch not robustly
+  localizable/enumerable/routable STOPS + defers **exactly as S4-c** (a `NearTangent` WLine
+  counted in `nearTangentGaps`).
+
+**At the bar (host + sim, `CYBERCAD_HAS_NUMSCI` ON):** the **Steinmetz bicylinder** (two
+equal-radius R=1 cylinders, axes Z and X crossing orthogonally) — which S3+S4-c TRUNCATE at
+the saddle (one `NearTangent` WLine, `branchPoints = 0`) — is now **FULLY traced**: both
+branch points localized at `(0, ±1, 0)` (branch sine ≈ 5e-8 / 9e-8, re-projection residual
+≈ 5e-13), four `BranchArc` arms routed and assembled into the two crossing ellipses,
+`nearTangentGaps = 0`, every node on both cylinders ≤ `onSurfTol`. Sim parity vs OCCT
+`IntPatch`/`GeomAPI_IntSS`: `eq-cyl s4d branchPts=2 traced=4 arms=3 onCurve=1.74e-6
+onSurf=1.07e-8` — every native arc node on the OCCT locus and on both surfaces, both branch
+points matching the OCCT saddles at `(0, ±1, 0)` to tol. The isolated `TangentPoint` (two
+spheres at `d = R₁+R₂`) STILL ENDS with zero arms (definite `H` ⇒ no real roots); the S4-c
+graze still crosses (`crossed = 22`); the flag-off eq-cyl control still defers; the 5
+transversal pairs stay `nt = 0` bit-identical.
+
+- **Honest scope / risk:** only the **elementary two-real-distinct-line transversal
+  self-crossing** (the Steinmetz family) is traced. **General/freeform branch points**
+  (arbitrary self-crossings on freeform surfaces, three-plus tangent lines at one point),
+  **cusps** (double root of the tangent-cone quadratic), **S4-e singular points** (a
+  surface's own degeneracy on the locus), and **S4-f self-intersection completeness** all
+  remain DEFERRED → OCCT, reported with the measured gap, never faked.
+- **Unlocks:** **Steinmetz is now unblocked** natively; the multi-arm `TraceSet` +
+  `BranchNode` connectivity is available to S5 curved booleans for self-crossing loci.
 
 #### S4-e — Singularities · ✗ PENDING
 Degenerate surface points (parametric poles, apex/edge singularities) on the

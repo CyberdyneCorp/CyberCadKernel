@@ -312,6 +312,12 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_ssi_s4e_singularities)
         set(test_native_ssi_s4e_singularities_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_s4e_singularities.cpp")
+        # SSI Stage S4-f completeness + loop-robustness (robust true-return closure, self-
+        # intersection guard, adaptive completeness critic) — rides the same least_squares /
+        # lstsq substrate, so its host suite builds only under CYBERCAD_HAS_NUMSCI.
+        list(APPEND CYBERCAD_TESTS test_native_ssi_s4f_completeness)
+        set(test_native_ssi_s4f_completeness_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_s4f_completeness.cpp")
         # SSI Stage S5-a curved boolean — consumes the S3 TraceSet, so it is gated on
         # CYBERCAD_HAS_NUMSCI too and its host suite builds only in that config.
         list(APPEND CYBERCAD_TESTS test_native_ssi_boolean)

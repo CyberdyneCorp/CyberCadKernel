@@ -100,6 +100,15 @@ struct RecallReport {
   int deferredTangent = 0;
   double worstOnSurfResidual = 0.0;
 
+  /// S4-f: the honest completeness floor + residual. `criticFloorFrac` is the finest
+  /// minPatchFrac the adaptive completeness critic re-seeded at (0 if the critic was off);
+  /// a MEASURED recall of 1.0 on a fixture is scoped to THAT fixture at THAT floor — it is
+  /// never a global completeness claim. `residualAcknowledged` is ALWAYS true: below any
+  /// fixed resolution a smaller loop can still be missed, so a recall of 1.0 still carries a
+  /// residual (completeness is asymptotic, never a proof).
+  double criticFloorFrac = 0.0;
+  bool residualAcknowledged = true;
+
   /// Branch recall = native branches carrying ≥1 seed ÷ true transversal branches.
   /// Defined as 1.0 when there are no true branches (nothing to miss).
   double recall() const noexcept {

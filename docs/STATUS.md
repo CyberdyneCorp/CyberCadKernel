@@ -4,7 +4,7 @@ A single, honest snapshot of what is implemented and **verified**, with the
 commands to reproduce it. Nothing here is claimed working unless it was actually
 built/run in-repo. Per-phase detail lives in the phase status docs linked below.
 
-_Last updated: 2026-07-02._
+_Last updated: 2026-07-05._
 
 ## Acceptance bar
 
@@ -17,7 +17,7 @@ the CyberCad **app link-swap** are optional, deferred follow-ups — not gates.
 
 | Suite | Command | Result |
 |---|---|---|
-| Host unit tests (CPU-only, stub + native core) | `ctest` (host build) | **26 / 26** (**32** with `CYBERCAD_HAS_NUMSCI=ON`) |
+| Host unit tests (CPU-only, stub + native core) | `ctest` (host build) | **26 / 26** (**33** with `CYBERCAD_HAS_NUMSCI=ON`) |
 | Full `cc_*` runtime + determinism + benchmark | `scripts/run-sim-suite.sh` | **221 / 221** |
 | GPU-vs-CPU parity (Metal), ray + frustum pick | `scripts/run-sim-gpu-suite.sh` | **26 / 26** |
 | GPU tessellation wired into `cc_tessellate` | `scripts/run-sim-integ-suite.sh` | **26 / 26** |
@@ -32,6 +32,7 @@ the CyberCad **app link-swap** are optional, deferred follow-ups — not gates.
 | SSI **S4-d** branch points (self-crossing locus) vs OCCT `IntPatch`/`GeomAPI_IntSS` | `scripts/run-sim-native-ssi-s4d.sh` | **8 / 8** (Steinmetz bicylinder now FULLY traced: `branchPts=2` localized at `(0,±1,0)`, 4 arms → 2 crossing ellipses, `nearTangentGaps=0`, onCurve ≤ 1.74e-6 / onSurf ≤ 1.07e-8; isolated `TangentPoint` STILL ends, no arms; S4-c graze still `crossed=22`; flag-off eq-cyl still defers) |
 | SSI **S4-e** chart singularities (sphere pole / cone apex) vs OCCT `GeomAPI_IntSS` | `scripts/run-sim-native-ssi-marching.sh` (S4-e cases) | **2 / 2** (sphere great circle crossing both poles S3-truncated at half loop now FULLY traced: `singX=2`, `nearTangentGaps=0`, closed, `len` 6.2829 vs OCCT 6.2832, on locus + both surfaces ≤ 1.51e-7; double-cone∩plane line through apex S3 step-collapsed now FULLY traced both nappes: `singX=1`, 159 nodes, `v∈[−2,+2]`, on-surface ≤ 6.79e-16; finite cylinder `v`-cap still exits `BoundaryExit`, unverifiable pole/apex still DEFERS) |
 | SSI **S5-a/b/c/d** curved boolean vs OCCT `BRepAlgoAPI` | `scripts/run-sim-native-ssi-curved-boolean.sh` | **18 / 18** (native-pass=6: drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON eq/uneq + **branched Steinmetz COMMON** (`16R³/3` + OCCT, ΔV=8.75e-4), all wt, ΔV ≤ 9e-4; 12 honest fallbacks incl. Steinmetz fuse/cut) |
+| SSI **S4-f** completeness + loop-robustness vs OCCT `GeomAPI_IntSS` | `scripts/run-sim-native-ssi-s4f.sh` | **3 / 3** (**MEASURED per-fixture, not a completeness proof**: (A) small loop inside one default 1/32 leaf cell recovered by the adaptive critic — recall **0.50→1.00** (traced 1→2, recovered=1, floor **1/128**, dry), on both surfaces ≤ 6.87e-13; (D) many-small-loops adversarial pair recall **0.25→1.00** (traced 1→4, recovered=3, floor **1/48**, dry), ≤ 8.85e-12; (C) Gerono figure-eight self-crossing detected+traced-through — `selfInt=1` transverse near origin, `branchPts=0`, guard-off byte-identical, ≤ 1.97e-11. **Residual acknowledged: below the reported floor a smaller loop can still be missed — recall→1 is scoped to the fixture at that floor.**) |
 | Spec validation | `openspec validate --all --strict` | **29 / 29** |
 
 Highlights (measured, not asserted-trivially):
@@ -53,7 +54,7 @@ Highlights (measured, not asserted-trivially):
 | **1 — Multi-core** | `accelerate-multicore-occt` | ✅ complete at acceptance bar |
 | **2 — GPU (Metal)** | `add-metal-compute-backend` ✅ · `add-gpu-tessellation` ✅ · `add-gpu-spatial-acceleration` ✅ | ✅ complete at acceptance bar; optional `cc_*` pick/cull facade entry deferred |
 | **3 — Missing features** | `add-reference-geometry` ✅ · `add-robust-wrap-emboss` ✅ · `add-robust-thread-boolean` ✅ · `add-g2-blend-fillet` ✅ · `add-full-round-fillet` ✅ | ✅ 5/5 full; full-round covers all planar walls (curved neighbours = documented residual) |
-| **4 — Native rewrite** | math · topology · tessellation · construction · planar+box∩cyl booleans · planar blends · STEP export · numeric foundations (NumPP/SciPP) · SSI S1+S2+S3 · SSI S4-a/b (coincident-region + tangent-contact classification) · SSI S4-c (first near-tangent MARCH-THROUGH slice) · SSI S4-d (first branch-point slice: Steinmetz self-crossing localized + routed) · SSI S4-e (first chart-singularity slice: sphere parametric pole + cone apex crossed) · SSI S5-a/b/c/d (curved booleans: drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON + branched Steinmetz COMMON, native-pass=6) | ◐ **substantially native (planar/analytic + SSI-driven curved booleans + S4 degeneracy classification + near-tangent march-through + first branch-point routing + sphere-pole/cone-apex chart-singularity crossing)**; curved tail (SSI S4-d general/freeform + S4-e general/freeform + S4-f marching core · wider curved booleans/blends incl. Steinmetz fuse/cut + sphere fuse/cut + general branched · import · healing) keeps OCCT linked; drop-occt (#8) BLOCKED (≈9–18 py) |
+| **4 — Native rewrite** | math · topology · tessellation · construction · planar+box∩cyl booleans · planar blends · STEP export · numeric foundations (NumPP/SciPP) · SSI S1+S2+S3 · SSI S4-a/b (coincident-region + tangent-contact classification) · SSI S4-c (first near-tangent MARCH-THROUGH slice) · SSI S4-d (first branch-point slice: Steinmetz self-crossing localized + routed) · SSI S4-e (first chart-singularity slice: sphere parametric pole + cone apex crossed) · SSI S4-f (robust TRUE-RETURN loop-closure + self-intersection guard + adaptive completeness-critic re-seed — MEASURED recall floor, not a proof) · SSI S5-a/b/c/d (curved booleans: drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON + branched Steinmetz COMMON, native-pass=6) | ◐ **substantially native (planar/analytic + SSI-driven curved booleans + S4 degeneracy classification + near-tangent march-through + first branch-point routing + sphere-pole/cone-apex chart-singularity crossing + robust closure/self-intersection + measured completeness floor)**; curved tail (SSI S4-d general/freeform + S4-e general/freeform + S4-f general small-loop residual below the reached floor + self-intersection arc-splitting/topology repair · wider curved booleans/blends incl. Steinmetz fuse/cut + sphere fuse/cut + general branched · import · healing) keeps OCCT linked; drop-occt (#8) BLOCKED (≈9–18 py) |
 
 Detail: [STATUS-phase-0-1.md](STATUS-phase-0-1.md) ·
 [STATUS-phase-2.md](STATUS-phase-2.md) · [STATUS-phase-3.md](STATUS-phase-3.md) ·

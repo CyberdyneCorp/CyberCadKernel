@@ -2066,8 +2066,10 @@ Only the two elementary chart (removable) singularities — the **sphere paramet
 **cone apex** — are crossed, each verified node-by-node on both surfaces + on the OCCT locus.
 **General / freeform parametric singularities** (NURBS degenerate edges, collapsed spline poles),
 **higher-order / curve cusps** (the curve's own velocity → 0 where the point-based step cannot
-recover a far side), and **S4-f self-intersection completeness** all remain DEFERRED → OCCT,
-reported with the measured gap, never faked. Any pole/apex whose point-based crossing does not verify
+recover a far side) remain DEFERRED → OCCT, reported with the measured gap, never faked. (**S4-f
+robust closure + a self-intersection guard + an adaptive completeness critic now landed as a
+first slice — see the SSI-S4f result section; global topology repair / watertight self-intersection
+resolution stay the tail.**) Any pole/apex whose point-based crossing does not verify
 on both surfaces defers the same honest way (roll back → `NearTangent` → OCCT). The default is
 `enableChartSingularities=false`; the S3/S4-c/S4-d behaviour is byte-identical with the flag off.
 
@@ -2083,6 +2085,61 @@ on both surfaces defers the same honest way (roll back → `NearTangent` → OCC
   (`pairSpherePoleS4e` / `pairConeApexS4e`).
 
 Living change `openspec/changes/add-native-ssi-s4e-singularities` **archived** (`2026-07-05`).
+
+## SSI-S4f result section (COMPLETENESS + LOOP ROBUSTNESS — SSI-ROADMAP S4-f, FIRST SLICE)
+
+The least-glamorous, most-important-for-production S4 slice: it adds NO new geometry capability —
+it HARDENS the correctness/completeness of the curves S3 already traces. Additive to
+`src/native/ssi/{marching.h,marching.cpp}` + new OCCT-free `src/native/ssi/completeness_critic.h`,
+gated `CYBERCAD_HAS_NUMSCI`, no `cc_*` change, tessellator byte-identical, `src/native/**` OCCT-free.
+Two orthogonal parts, all switches gated so the S3/S4-c/S4-d/S4-e controls stay byte-identical:
+
+- **Robust TRUE-RETURN closure (always on).** S3 closed a loop on pure proximity
+  (`distance(cur, seed) ≤ loopClose·h`), which false-closes a curve that re-approaches its seed /
+  an earlier node while heading the other way. Closure is now a necessary-condition tightening:
+  close only after the march has travelled a full circuit (`arcLen > 2·closeRadius`) AND the return
+  heading is tangent-continuous with the seed's outgoing tangent (`dot(fwdNow, seedFwd) ≥
+  closureTangentCos`, default 0.5). It can only REFUSE a close, never MAKE one.
+- **Self-intersection guard (default-off `enableSelfIntersection`).** A single arm crossing ITSELF
+  (a figure-eight section) is detected by a geometric segment-segment crossing test over the
+  stitched polyline (two non-adjacent segments whose closest approach ≤ a tight touch radius at a
+  TRANSVERSE angle, `|cos| < 0.7`), recorded as a typed `WLine.selfIntersection` (DATA); the arm
+  marches THROUGH it. DISTINCT from an S4-d branch (`branchPoints == 0` — the locus does not flip).
+- **Adaptive completeness critic (default-off `completenessCritic`).** After the initial fixed-
+  resolution trace, LOOP-UNTIL-DRY: coverage grid over A's domain (`critic::coverageOf` /
+  `uncoveredBoxes`) → re-seed FINER (`minPatchFrac *= criticRefineFactor`) at the SAME `onSurfTol`
+  (discard any candidate that does not land on both surfaces) → dedup NEW branches by LOCUS vs all
+  kept curves → keep the genuinely new; stop after K dry rounds or the cost cap. Reports the floor
+  reached (`criticFloorFrac`, `criticStoppedDry`).
+
+**Host gate green:** `test_native_ssi_s4f_completeness` **6 cases, 0 failed** —
+(A) small loop MISSED at 1/16 (recall 0.5) → RECOVERED by the critic (recall 1.0 on that fixture,
+`criticRecoveredLoops ≥ 1`, floor 1/128, stopped dry, residual acknowledged); (B) a crossing-spheres
+circle traced at 10× loopCloseFrac goes from ~1.2% of the true length (S3 false-close) to ≥ 93%,
+default frac byte-identical at 99.6%; (C) a figure-eight (Gerono-lemniscate section) records ≥1
+typed TRANSVERSE self-crossing near the origin with `branchPoints == 0`, guard OFF byte-identical;
+(D) four disjoint loops rise from recall 0.25 to 1.0 with no over-production (traced == true count).
+Controls: the transversal loop still Closes; the S4-d Steinmetz still traces (`branchPoints == 2`,
+`selfIntersections == 0`) with the guard ON. **NUMSCI ON CTest 33/33; NUMSCI OFF CTest 26/26 (the
+S4-f TU is NUMSCI-gated and ABSENT with the substrate off).** No tolerance weakened.
+
+**Sim gate 2 green (native-vs-OCCT, booted simulator):** `tests/sim/native_ssi_s4f_completeness_parity.mm`
+via `scripts/run-sim-native-ssi-s4f.sh` — measured recall vs OCCT `GeomAPI_IntSS.NbLines`:
+(A) OCCT NbLines=2, native recall **0.50 → 1.00** (traced 1→2, floor 1/128, dry, residual),
+every recovered node on both OCCT surfaces ≤ 6.9e-13; (D) OCCT NbLines=4, native recall
+**0.25 → 1.00** (traced 1→4, floor 1/48, dry), worst on-surface ≤ 8.9e-12; (C) OCCT returns the
+self-crossing locus (NbLines=2 arc-split), native records 1 TRANSVERSE self-crossing near the
+origin, `branchPoints == 0`, guard-OFF byte-identical, crossing node on both surfaces ≤ 2.0e-11.
+No fabricated branch; recall stays a measured figure with the residual acknowledged.
+
+**HONEST FRAMING:** completeness is MEASURED + ASYMPTOTIC, never a proof — below any fixed re-seed
+round a smaller loop can still be missed, so `TraceSet.completenessResidual` /
+`RecallReport.residualAcknowledged` are ALWAYS true; a fixture's recall→1 is scoped to that fixture
+at that floor. NEVER fabricates a loop, a closure, or a seed. **S4-f DE-RISKS (does not
+unblock/complete) curved blends (#6) + wrap-emboss (#7);** watertight self-intersection resolution /
+global topology repair stay the S5/S6/S7 tail — S4-f DETECTS + REPORTS + traces-through.
+
+Archived change `openspec/changes/archive/2026-07-05-add-native-ssi-s4f-completeness`.
 
 ## native-meshing result section (tetrahedral volume meshing + quality, GitHub #1)
 

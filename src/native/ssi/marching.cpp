@@ -21,6 +21,7 @@
 #include "native/numerics/numerics.h"
 #include "native/ssi/branch_point.h"       // S4-d: branch-point localize + arm enumerate
 #include "native/ssi/chart_singularity.h"  // S4-e: single-surface chart-collapse witness + pole map
+#include "native/ssi/completeness_critic.h" // S4-f: coverage map + uncovered re-seed targets
 #include "native/ssi/tangent_seeded.h"     // S4-b: type a near-tangent stop
 
 #include <algorithm>
@@ -52,6 +53,9 @@ struct Tuned {
   double h0, minStep, maxStep, onSurfTol, maxDeflection, tangentSinTol, loopClose;
   double bandEnterSin, bandExitSin;   ///< S4-c crossing-band thresholds (tangentSinTol-derived)
   double minCrossSine;                ///< S4-c floor: sine below this mid-crossing ⇒ genuine tangency/branch, defer
+  double closureTangentCos;           ///< S4-f: close only if dot(fwdNow,seedFwd) ≥ this (BLOCK a false-close)
+  bool enableSelfIntersection = false;///< S4-f: record + trace through single-arm self-crossings
+  double selfIntersectRadius;         ///< S4-f: self-cross coincidence radius (resolved from selfIntersectRadiusFrac)
   int maxPoints, crossMaxSteps;
   bool enableBranchPoints = false;    ///< S4-d: capture branch stalls for localization + arm routing
   // ── S4-e chart-singularity knobs (single-surface ‖dU‖ collapse; sentinel-resolved) ──
@@ -84,6 +88,20 @@ Tuned tune(const MarchOptions& o, double scale) {
   // fraction of the enter threshold is NOT a crossable graze — defer (honest S4-d/tangency
   // handoff). 0.3·enter sits below a real graze's dip yet far above a true tangency's 0.
   t.minCrossSine  = 0.3 * t.bandEnterSin;
+  // S4-f TRUE-RETURN closure: a close requires the return heading to be tangent-continuous
+  // with the seed's outgoing tangent — dot(fwdNow, seedFwd) ≥ closureTangentCos. Default 0.5
+  // refuses headings turned more than 60° from the outgoing tangent: a genuine smooth loop
+  // returns to the seed heading essentially the way it left (dot ≈ +1), so every truly-closing
+  // control still closes; a curve merely SWEEPING PAST the seed mid-loop (or its own earlier
+  // node) is at a large tangent angle and is REFUSED. It is a necessary-condition tightening —
+  // it can only REFUSE a close, never MAKE one — so no tolerance is weakened. A caller may set
+  // a positive closureTangentCos to override; ≤ 0 uses the 0.5 default.
+  t.closureTangentCos = o.closureTangentCos > 0.0 ? o.closureTangentCos : 0.5;
+  // S4-f self-intersection coincidence radius (only used when the guard is on). Default
+  // 2·loopClose·h0 matches the loop-closure window scale; sentinel-resolved.
+  t.enableSelfIntersection = o.enableSelfIntersection;
+  t.selfIntersectRadius = (o.selfIntersectRadiusFrac > 0 ? o.selfIntersectRadiusFrac
+                                                         : 2.0 * t.loopClose) * t.h0;
   t.maxPoints     = std::max(16, o.maxPoints);
   t.crossMaxSteps = std::max(1, o.crossMaxSteps);
   t.enableBranchPoints = o.enableBranchPoints;
@@ -701,6 +719,7 @@ struct Walk {
   bool crossedChart = false; // S4-e: has this direction stepped across a chart singularity?
   Vec3 seedFwd{};            // seed's outgoing FORWARD tangent (closure-direction gate)
   bool haveSeedFwd = false;
+  double arcLen = 0.0;       // S4-f: accumulated arc length from the seed (TRUE-RETURN gate)
 };
 
 // Loop-closure proximity. In a pure S3 transversal trace this is exactly `loopClose·h`
@@ -712,14 +731,35 @@ double closeRadius(const Walk& w, const Tuned& t) {
   return (w.crossedAny || w.crossedChart) ? t.loopClose * std::max(w.h, 0.5 * t.h0)
                                           : t.loopClose * w.h;
 }
-// DIRECTION-CONSISTENT closure (only meaningful once a graze was crossed and the radius
-// floored). A near-tangent loop can pass CLOSE TO the seed at a mid-loop junction while
-// running the OTHER way; the inflated radius would false-close there. Require the current
-// forward tangent to agree with the seed's outgoing tangent. Pure S3 (crossedAny==false)
-// keeps its exact tight-radius behaviour (returns true unconditionally).
-bool closeAligned(const Walk& w, const Vec3& fwdNow) {
-  if (!w.crossedAny || !w.haveSeedFwd) return true;
-  return math::dot(fwdNow, w.seedFwd) > 0.0;
+// S4-f TRUE-RETURN arc gate. A genuine loop closes only after the march has actually
+// TRAVELLED a full circuit and come BACK — its accumulated arc length must exceed the
+// diameter of the closure window (2·closeRadius). A curve that is merely still WITHIN the
+// window after a few steps (the false-close an inflated proximity radius admits — the march
+// never left) has arcLen ≤ 2·closeRadius and is REFUSED. This is a necessary condition — a
+// real loop's perimeter is far larger than its detection window, so every truly-closing
+// control passes trivially; only the not-yet-departed near-pass is blocked. Combined with
+// the tangent-continuity gate (closeAligned), closure is a TRUE-RETURN test, not proximity.
+bool closeReturned(const Walk& w, const Tuned& t) {
+  return w.arcLen > 2.0 * closeRadius(w, t);
+}
+// S4-f TRUE-RETURN direction gate — a NECESSARY-CONDITION tightening applied to ALL
+// closures. A loop closes only when the march comes back near the seed HEADING THE WAY IT
+// LEFT: dot(fwdNow, seedFwd) ≥ closureTangentCos. A curve merely PASSING near its seed (or
+// an earlier node) while heading the OTHER way — the false-close the pure-proximity S3 test
+// admits — is now REFUSED, so the march continues to its true termination. This can only
+// REFUSE a close, never MAKE one: a genuinely closing loop returns roughly antiparallel-free
+// (dot ≈ +1 ≫ −0.5), so every truly-closing control still closes byte-identically.
+//
+// The gate needs the seed's captured outgoing tangent; before it is captured (haveSeedFwd
+// false — only possible in the first couple of steps, below the step > 2 closure guard) it
+// cannot refuse, so it returns true. Once a graze/pole was crossed the raw cross-product sign
+// is unreliable, so we compare with the previously-derived FORWARD tangent (w.tStar), which
+// tryBandEntry/tryChartBand already re-orient by the crossing chord.
+bool closeAligned(const Walk& w, const Vec3& fwdNow, const Tuned& t) {
+  if (!w.haveSeedFwd) return true;  // seed tangent not captured yet → cannot refuse
+  const double nf = math::norm(fwdNow), ns = math::norm(w.seedFwd);
+  if (nf <= 1e-14 || ns <= 1e-14) return true;  // degenerate heading → do not refuse
+  return math::dot(fwdNow, w.seedFwd) / (nf * ns) >= t.closureTangentCos;
 }
 bool atBoundary(const SurfaceAdapter& A, const SurfaceAdapter& B, const State& s) {
   return onBoundary(A, s.u1, s.v1, A.uPeriod > 0.0, A.vPeriod > 0.0) ||
@@ -756,6 +796,7 @@ std::optional<DirResult> tryBandEntry(const SurfaceAdapter& A, const SurfaceAdap
   res.crossed += cx.count;
   res.maxCrossResid = std::max(res.maxCrossResid, cx.maxResid);
   const Vec3 fwd = cx.end.p - w.cur.p;               // forward chord across the graze
+  w.arcLen += math::distance(w.cur.p, cx.end.p);     // S4-f: crossed arc counts toward the return gate
   w.cur = cx.end;
   w.crossedAny = true;
   w.h = std::max(t.minStep, 0.5 * t.h0);             // resume with a modest step
@@ -772,7 +813,8 @@ std::optional<DirResult> tryBandEntry(const SurfaceAdapter& A, const SurfaceAdap
     w.haveStar = true;
     recSine = rec.sine;
   }
-  if (step > 2 && math::distance(w.cur.p, start.p) <= closeRadius(w, t) && closeAligned(w, w.tStar)) {
+  if (step > 2 && math::distance(w.cur.p, start.p) <= closeRadius(w, t) &&
+      closeReturned(w, t) && closeAligned(w, w.tStar, t)) {
     DirResult done; done.end = DirEnd::LoopClosed; done.crossed = res.crossed;
     done.maxCrossResid = res.maxCrossResid; done.sineAtStop = recSine; return done;
   }
@@ -808,6 +850,7 @@ std::optional<DirResult> tryChartBand(const SurfaceAdapter& A, const SurfaceAdap
   res.chartCrossed += cx.count > 0 ? 1 : 0;  // one pole/apex stepped across (count = nodes)
   res.maxCrossResid = std::max(res.maxCrossResid, cx.maxResid);
   const Vec3 fwd = cx.end.p - w.cur.p;  // forward chord across the singular band
+  w.arcLen += math::distance(w.cur.p, cx.end.p);  // S4-f: crossed arc counts toward the return gate
   w.cur = cx.end;
   w.h = std::max(t.minStep, 0.5 * t.h0);  // resume with a modest step
   // Re-derive the forward sign so the resumed march keeps going the crossing way (the raw
@@ -823,7 +866,8 @@ std::optional<DirResult> tryChartBand(const SurfaceAdapter& A, const SurfaceAdap
     recSine = rec.sine;
   }
   w.crossedChart = true;
-  if (step > 2 && math::distance(w.cur.p, start.p) <= closeRadius(w, t) && closeAligned(w, w.tStar)) {
+  if (step > 2 && math::distance(w.cur.p, start.p) <= closeRadius(w, t) &&
+      closeReturned(w, t) && closeAligned(w, w.tStar, t)) {
     DirResult done; done.end = DirEnd::LoopClosed; done.crossed = res.crossed;
     done.chartCrossed = res.chartCrossed; done.maxCrossResid = res.maxCrossResid;
     done.sineAtStop = recSine; return done;
@@ -847,7 +891,7 @@ DirResult marchDir(const SurfaceAdapter& A, const SurfaceAdapter& B,
     // Loop closure at the current node (checked before a possible band entry so a loop
     // whose seed lies inside a graze still closes rather than crossing forever).
     if (step > 2 && w.crossedAny && math::distance(w.cur.p, start.p) <= closeRadius(w, t) &&
-        closeAligned(w, w.tStar)) {
+        closeReturned(w, t) && closeAligned(w, w.tStar, t)) {
       res.end = DirEnd::LoopClosed; res.sineAtStop = tan.sine; return res;
     }
 
@@ -891,9 +935,13 @@ DirResult marchDir(const SurfaceAdapter& A, const SurfaceAdapter& B,
     Vec3 fwd = dir;
     if (math::norm(chord) > 1e-14 && math::dot(dir, chord) < 0.0) fwd = dir * -1.0;
 
-    // Loop closure: back near the seed after real progress, moving consistently (a crossed
-    // loop must also return in the seed's outgoing direction — see closeAligned).
-    if (step > 2 && math::distance(c.s.p, start.p) <= closeRadius(w, t) && closeAligned(w, fwd)) {
+    // Loop closure (S4-f TRUE-RETURN): back near the seed AFTER actually travelling a full
+    // circuit (closeReturned — arcLen ≫ window, so the march really came back, not merely
+    // never left) AND heading the way it left (closeAligned — tangent-continuous). Either
+    // condition failing REFUSES the close; neither can MANUFACTURE one, so a truly-closing
+    // loop is byte-identical while a near-pass no longer false-closes.
+    if (step > 2 && math::distance(c.s.p, start.p) <= closeRadius(w, t) &&
+        closeReturned(w, t) && closeAligned(w, fwd, t)) {
       out.push_back(toNode(c.s, c.resid));
       res.end = DirEnd::LoopClosed; res.sineAtStop = tan.sine; return res;
     }
@@ -901,6 +949,7 @@ DirResult marchDir(const SurfaceAdapter& A, const SurfaceAdapter& B,
     w.tStar = fwd; w.haveStar = true;
     w.lastGoodSine = tan.sine;                                  // transversality just before any dip
     if (!w.haveSeedFwd) { w.seedFwd = fwd; w.haveSeedFwd = true; }
+    w.arcLen += math::distance(w.cur.p, c.s.p);                 // S4-f: accumulate travelled arc
     out.push_back(toNode(c.s, c.resid));
     w.cur = c.s;
 
@@ -1031,6 +1080,83 @@ struct BranchStall {
   double enterSine = 0.0;
 };
 
+// Closest approach between two 3D segments [p0,p1] and [q0,q1]: the minimum distance and the
+// clamped parameters s,u ∈ [0,1] of the closest points (Ericson, Real-Time Collision
+// Detection §5.1.9). Used to find a TRUE polyline self-crossing (two non-adjacent segments
+// whose closest approach ≈ 0), not mere node proximity.
+struct SegClosest { double dist; Point3 pOnA; Point3 pOnB; };
+SegClosest segSegClosest(const Point3& p0, const Point3& p1, const Point3& q0, const Point3& q1) {
+  const Vec3 d1 = p1 - p0, d2 = q1 - q0, r = p0 - q0;
+  const double a = math::dot(d1, d1), e = math::dot(d2, d2), f = math::dot(d2, r);
+  double s = 0.0, u = 0.0;
+  if (a <= 1e-18 && e <= 1e-18) { /* both degenerate → points */ }
+  else if (a <= 1e-18) { u = clampd(f / e, 0.0, 1.0); }
+  else {
+    const double c = math::dot(d1, r);
+    if (e <= 1e-18) { s = clampd(-c / a, 0.0, 1.0); }
+    else {
+      const double b = math::dot(d1, d2), den = a * e - b * b;
+      s = den > 1e-18 ? clampd((b * f - c * e) / den, 0.0, 1.0) : 0.0;
+      u = (b * s + f) / e;
+      if (u < 0.0) { u = 0.0; s = clampd(-c / a, 0.0, 1.0); }
+      else if (u > 1.0) { u = 1.0; s = clampd((b - c) / a, 0.0, 1.0); }
+    }
+  }
+  const Point3 cA = p0 + d1 * s, cB = q0 + d2 * u;
+  return {math::distance(cA, cB), cA, cB};
+}
+
+// S4-f: find GENUINE self-crossings of the stitched arm — two NON-ADJACENT polyline segments
+// that actually CROSS in 3D (closest approach ≤ a tight touch radius) at a TRANSVERSE angle
+// (segment directions more than ~45° apart — not a retrace / (anti)parallel doubling back).
+// This is the geometric definition of a self-intersection (a segment-segment crossing), so it
+// fires ONCE per real crossing and NOT along parallel-running arcs — the over-count a loose
+// node-proximity scan produces on a folded curve. Hits clustered around one physical crossing
+// are deduped by spatial proximity of the crossing point. Reported as DATA; the polyline is
+// UNCHANGED. DISTINCT from an S4-d BranchNode (a locus flip, ‖nA×nB‖→0, that spawns arms) — a
+// self-crossing keeps ONE arm, so a WLine with selfIntersectionCount > 0 has branchPoints 0.
+void detectStitchedSelfIntersections(WLine& line, const Tuned& t) {
+  const auto& pts = line.points;
+  const int n = static_cast<int>(pts.size());
+  if (n < 4) { line.selfIntersectionCount = 0; return; }
+  // Touch radius: a genuine crossing has the two passes essentially COINCIDENT. Tie it to a
+  // small fraction of the nominal step (the segment scale), NOT the loose closure window, so
+  // parallel-running arcs a node-proximity test would merge are not counted.
+  const double touch = std::max(0.5 * t.h0, t.selfIntersectRadius * 0.25);
+  const double mergeR = std::max(t.h0, touch * 2.0);  // dedup radius for one physical crossing
+  constexpr double kCrossCosMax = 0.70;               // > ~45° apart ⇒ transverse (not a retrace)
+  for (int i = 0; i + 1 < n; ++i) {
+    const Vec3 di = pts[static_cast<std::size_t>(i) + 1].point - pts[static_cast<std::size_t>(i)].point;
+    const double ni = math::norm(di);
+    if (ni <= 1e-14) continue;
+    for (int j = i + 2; j + 1 < n; ++j) {  // j ≥ i+2 skips the segment sharing node i+1
+      const Vec3 dj = pts[static_cast<std::size_t>(j) + 1].point - pts[static_cast<std::size_t>(j)].point;
+      const double nj = math::norm(dj);
+      if (nj <= 1e-14) continue;
+      const SegClosest cc = segSegClosest(
+          pts[static_cast<std::size_t>(i)].point, pts[static_cast<std::size_t>(i) + 1].point,
+          pts[static_cast<std::size_t>(j)].point, pts[static_cast<std::size_t>(j) + 1].point);
+      if (cc.dist > touch) continue;
+      const double cos = math::dot(di, dj) / (ni * nj);
+      if (std::fabs(cos) >= kCrossCosMax) continue;  // (anti)parallel → retrace, not a crossing
+      const Point3 X = cc.pOnA + (cc.pOnB - cc.pOnA) * 0.5;  // crossing = midpoint of closest approach
+      bool dup = false;
+      for (const auto& s : line.selfIntersections)
+        if (math::distance(s.point, X) < mergeR) { dup = true; break; }
+      if (dup) continue;
+      const WLinePoint& e = pts[static_cast<std::size_t>(i)];
+      const WLinePoint& l = pts[static_cast<std::size_t>(j)];
+      SelfIntersection si;
+      si.point = X;
+      si.u1a = e.u1; si.v1a = e.v1; si.u1b = l.u1; si.v1b = l.v1;
+      si.nodeA = i; si.nodeB = j;
+      si.tangentCos = cos;
+      line.selfIntersections.push_back(si);
+    }
+  }
+  line.selfIntersectionCount = static_cast<int>(line.selfIntersections.size());
+}
+
 WLine march_branch_impl(const SurfaceAdapter& A, const SurfaceAdapter& B, const Seed& seed,
                         const MarchOptions& opts, std::vector<BranchStall>& stalls) {
   const double scale = std::max(A.modelScale, B.modelScale);
@@ -1077,6 +1203,11 @@ WLine march_branch_impl(const SurfaceAdapter& A, const SurfaceAdapter& B, const 
 
   for (const auto& n : line.points)
     line.onSurfResidual = std::max(line.onSurfResidual, n.onSurfResidual);
+
+  // S4-f: scan the stitched arm for single-arm self-crossings (default off → no-op, so the
+  // WLine is byte-identical to S3/S4-c/S4-d/S4-e). Recorded as DATA; the arm is unchanged.
+  if (opts.enableSelfIntersection) detectStitchedSelfIntersections(line, t);
+
   line.curve = fitBSpline(line.points, opts.fitDegree, opts.fitMaxPoles);
   return line;
 }
@@ -1156,6 +1287,7 @@ bool sameLocus(const WLine& w, const std::vector<WLine>& kept, double radius) {
 void tallyLine(TraceSet& res, WLine&& w) {
   res.nearTangentCrossed += w.nearTangentCrossed;
   res.singularitiesCrossed += w.chartSingularCrossed;  // S4-e: poles/apexes stepped across
+  res.selfIntersections += w.selfIntersectionCount;    // S4-f: single-arm self-crossings recorded
   switch (w.status) {
     case TraceStatus::Closed:       ++res.closedCurves; ++res.tracedBranches; break;
     case TraceStatus::BoundaryExit: ++res.openCurves;   ++res.tracedBranches; break;
@@ -1321,6 +1453,41 @@ void routeBranches(const SurfaceAdapter& A, const SurfaceAdapter& B, const March
 
 }  // namespace
 
+namespace {
+
+// March every seed of `seeds`, appending each genuinely-new (non-retracing) branch to `res`
+// and collecting any S4-d branch stalls. Returns the number of NEW branches kept (a retrace
+// or a Failed/too-short march adds none). Shared by the initial trace and the S4-f critic
+// re-seed rounds so both dedup identically against ALL kept curves.
+int marchSeedsInto(const SurfaceAdapter& A, const SurfaceAdapter& B, const SeedSet& seeds,
+                   const MarchOptions& opts, double dedupRadius, TraceSet& res,
+                   std::vector<BranchStall>& stalls, bool locusDedup = false,
+                   double locusRadius = 0.0) {
+  int added = 0;
+  for (const Seed& s : seeds.seeds) {
+    std::vector<BranchStall> seedStalls;
+    WLine w = march_branch_impl(A, B, s, opts, seedStalls);
+    // Capture branch stalls even when the WLine itself is deduped/failed — the branch point
+    // is a property of the geometry, not of which seed reached it.
+    if (opts.enableBranchPoints)
+      stalls.insert(stalls.end(), seedStalls.begin(), seedStalls.end());
+    if (w.points.size() < 2 || w.status == TraceStatus::Failed) continue;  // no real curve
+    // The initial trace uses the tight node-proximity retrace test (byte-identical to before).
+    // The S4-f critic re-seed uses a LOCUS test (point-to-polyline): a re-seed at a finer
+    // resolution re-traces an already-found loop with DIFFERENT node sampling, so its probe
+    // nodes sit BETWEEN the kept line's nodes — a node-proximity test would miss the duplicate
+    // and OVER-PRODUCE, while the locus test correctly recognizes the same curve.
+    const bool dup = locusDedup ? sameLocus(w, res.lines, locusRadius)
+                                : retraces(w, res.lines, dedupRadius);
+    if (dup) { ++res.dedupedRetraces; continue; }
+    tallyLine(res, std::move(w));
+    ++added;
+  }
+  return added;
+}
+
+}  // namespace
+
 TraceSet trace_from_seeds(const SurfaceAdapter& A, const SurfaceAdapter& B,
                           const SeedSet& seeds, const MarchOptions& opts) {
   TraceSet res;
@@ -1330,17 +1497,7 @@ TraceSet trace_from_seeds(const SurfaceAdapter& A, const SurfaceAdapter& B,
   const double dedupRadius = (opts.dedupFrac > 0 ? opts.dedupFrac : 1e-4) * scale;
 
   std::vector<BranchStall> stalls;  // S4-d: branch stalls captured by the backbone marches
-  for (const Seed& s : seeds.seeds) {
-    std::vector<BranchStall> seedStalls;
-    WLine w = march_branch_impl(A, B, s, opts, seedStalls);
-    // Capture branch stalls even when the WLine itself is deduped/failed — the branch point
-    // is a property of the geometry, not of which seed reached it.
-    if (opts.enableBranchPoints)
-      stalls.insert(stalls.end(), seedStalls.begin(), seedStalls.end());
-    if (w.points.size() < 2 || w.status == TraceStatus::Failed) continue;  // no real curve
-    if (retraces(w, res.lines, dedupRadius)) { ++res.dedupedRetraces; continue; }
-    tallyLine(res, std::move(w));
-  }
+  marchSeedsInto(A, B, seeds, opts, dedupRadius, res, stalls);
 
   // S4-d: localize the captured branch points and route their outgoing arms. Additive —
   // with enableBranchPoints off, `stalls` is empty and this is a no-op, so the transversal
@@ -1350,10 +1507,95 @@ TraceSet trace_from_seeds(const SurfaceAdapter& A, const SurfaceAdapter& B,
   return res;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// S4-f ADAPTIVE COMPLETENESS CRITIC — bounded loop-until-dry re-seed.
+//
+// After the initial fixed-resolution seed + trace, re-subdivide FINER (minPatchFrac *=
+// criticRefineFactor per round) in the param regions NO traced curve covers, refine each
+// new candidate at the SAME onSurfTol (a candidate that does not land on BOTH surfaces is
+// DISCARDED by the seeder — never a fabricated seed), march it, and keep it only if it does
+// NOT retrace an already-kept curve. Repeat until `criticDryRounds` (K) consecutive rounds
+// find NO new branch, or the cost cap (criticMaxRounds / criticMaxCandidates) is hit.
+//
+// HONEST: this RAISES the recall floor (criticFloorFrac = the finest minPatchFrac reached);
+// it is NOT a proof. Below the finest round a smaller loop can still be missed, so
+// completenessResidual stays true. NEVER fabricates a seed or a loop.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+
+void runCompletenessCritic(const SurfaceAdapter& A, const SurfaceAdapter& B,
+                           const SeedOptions& seedOpts, const MarchOptions& marchOpts,
+                           double dedupRadius, TraceSet& res) {
+  const double refine = seedOpts.criticRefineFactor > 0.0 && seedOpts.criticRefineFactor < 1.0
+                            ? seedOpts.criticRefineFactor : 0.5;
+  const int maxRounds = std::max(0, seedOpts.criticMaxRounds);
+  const int dryK = std::max(1, seedOpts.criticDryRounds);
+  const int candCap = std::max(0, seedOpts.criticMaxCandidates);
+
+  double frac = seedOpts.minPatchFrac > 0 ? seedOpts.minPatchFrac : (1.0 / 32.0);
+  int candTotal = 0;
+  int dryStreak = 0;
+  std::vector<BranchStall> stalls;  // critic marches keep branch points OFF (see below)
+
+  // The critic re-seed marches with the SAME options but WITHOUT branch routing (a re-seed is
+  // for RECOVERING a missed transversal loop, not re-running S4-d) so it never perturbs the
+  // branch-point controls; self-intersection recording follows the caller's flag as-is.
+  MarchOptions critOpts = marchOpts;
+  critOpts.enableBranchPoints = false;
+
+  for (int round = 0; round < maxRounds; ++round) {
+    frac *= refine;                                   // finer resolution this round
+    res.criticFloorFrac = frac;                       // report the floor reached (updated each round)
+
+    // Where is nothing traced yet? A coarse coverage grid over A's domain (resolution tied to
+    // the CURRENT frac so the grid tracks the re-seed scale). No uncovered cell ⇒ nothing to
+    // look at at this grid resolution (NOT a completeness proof — see the header).
+    const int gridN = std::max(2, static_cast<int>(std::lround(1.0 / std::max(frac, 1e-6))));
+    const critic::Coverage cov = critic::coverageOf(res.lines, A.domain, gridN);
+    const std::vector<ParamBox> uncovered = critic::uncoveredBoxes(cov);
+    if (uncovered.empty()) { ++dryStreak; if (dryStreak >= dryK) { res.criticStoppedDry = true; break; } continue; }
+
+    // Re-seed at the finer resolution. The seeder already prunes/dedups internally; we then
+    // dedup the traced NEW branches vs ALL kept curves, so only genuinely new loops survive.
+    SeedOptions ro = seedOpts;
+    ro.completenessCritic = false;   // no recursion
+    ro.minPatchFrac = frac;
+    const SeedSet rs = seed_intersection(A, B, ro);
+    candTotal += rs.candidateRegions;
+
+    // Dedup a re-seed's traced branch by LOCUS (point-to-polyline) at a step-scaled radius, so
+    // a finer re-trace of an already-found loop is recognized as a duplicate (not over-produced).
+    const double scale = std::max(A.modelScale, B.modelScale);
+    const double h0 = marchOpts.initialStep > 0 ? marchOpts.initialStep : scale * (1.0 / 64.0);
+    const double locusRadius = std::max(dedupRadius, 2.0 * h0);
+    const int added = marchSeedsInto(A, B, rs, critOpts, dedupRadius, res, stalls,
+                                     /*locusDedup=*/true, locusRadius);
+    res.criticRecoveredLoops += added;
+    ++res.criticRounds;
+
+    if (added > 0) dryStreak = 0;
+    else { ++dryStreak; if (dryStreak >= dryK) { res.criticStoppedDry = true; break; } }
+
+    if (candCap > 0 && candTotal >= candCap) break;  // cost cap (not dry) → stop, residual stands
+  }
+}
+
+}  // namespace
+
 TraceSet trace_intersection(const SurfaceAdapter& A, const SurfaceAdapter& B,
                             const SeedOptions& seedOpts, const MarchOptions& marchOpts) {
   const SeedSet seeds = seed_intersection(A, B, seedOpts);
-  return trace_from_seeds(A, B, seeds, marchOpts);
+  TraceSet res = trace_from_seeds(A, B, seeds, marchOpts);
+
+  // S4-f: the adaptive completeness critic (default OFF → byte-identical to the fixed-
+  // resolution trace above). It recovers small loops the fixed floor missed, loop-until-dry,
+  // and reports the recall floor + residual — never a fabricated branch.
+  if (seedOpts.completenessCritic) {
+    const double scale = std::max(A.modelScale, B.modelScale);
+    const double dedupRadius = (marchOpts.dedupFrac > 0 ? marchOpts.dedupFrac : 1e-4) * scale;
+    runCompletenessCritic(A, B, seedOpts, marchOpts, dedupRadius, res);
+  }
+  return res;
 }
 
 }  // namespace cybercad::native::ssi

@@ -169,7 +169,7 @@ gap, within the deflection/step tol).
 - **Unlocks:** S5 curved booleans — the `TraceSet` (WLines with (u1,v1,u2,v2) per node) is
   its input contract.
 
-### S4 — Tangent / degeneracy robustness · ◐ CLASSIFICATION LAYER (S4-a/b) + MARCHING-CORE SLICES (S4-c graze, S4-d branch points, S4-e sphere-pole/cone-apex chart singularities) DONE AT THE BAR; S4-e general/freeform + S4-f pending
+### S4 — Tangent / degeneracy robustness · ◐ CLASSIFICATION LAYER (S4-a/b) + MARCHING-CORE SLICES (S4-c graze, S4-d branch points, S4-e sphere-pole/cone-apex chart singularities, S4-f robust closure + self-intersection guard + completeness critic) DONE AT THE BAR; S4-d/e general/freeform + S4-f general topology repair pending
 Near-tangent stepping (n₁×n₂→0: step control, higher-order predictor),
 coincident/overlapping-surface detection, branch points & singularities,
 self-intersection guards. **This is the moat** — OCCT's decades of tuning. Lands
@@ -330,10 +330,12 @@ transversal pairs stay `nt = 0` bit-identical.
 - **Honest scope / risk:** only the **elementary two-real-distinct-line transversal
   self-crossing** (the Steinmetz family) is traced. **General/freeform branch points**
   (arbitrary self-crossings on freeform surfaces, three-plus tangent lines at one point),
-  **cusps** (double root of the tangent-cone quadratic), and **S4-f self-intersection
-  completeness** all remain DEFERRED → OCCT, reported with the measured gap, never faked.
-  (**S4-e chart singularities** — the sphere parametric pole + cone apex — are now crossed
-  natively; see the S4-e slice below.)
+  **cusps** (double root of the tangent-cone quadratic), and **general small-loop / topology
+  repair (the S4-f residual)** all remain DEFERRED → OCCT, reported with the measured gap, never
+  faked. (**S4-e chart singularities** — the sphere parametric pole + cone apex — are now crossed
+  natively; and a **single-arm figure-eight self-intersection** is now DETECTED + traced-through
+  as typed data by the S4-f guard — `branchPts=0`, distinct from this locus branch — though it is
+  not yet split into sub-arcs; see the S4-e and S4-f slices below.)
 - **Unlocks:** **Steinmetz is now unblocked** natively; the multi-arm `TraceSet` +
   `BranchNode` connectivity is available to S5 curved booleans for self-crossing loci.
 
@@ -392,14 +394,68 @@ the 5 transversal pairs stay `nt = 0` bit-identical.
   node-by-node on both surfaces + on the OCCT locus. **General / freeform parametric
   singularities** (NURBS degenerate edges, collapsed spline poles), **higher-order / curve
   cusps** (the curve's own velocity → 0 where the point-based step cannot recover a far side),
-  and **S4-f self-intersection completeness** all remain DEFERRED → OCCT, reported with the
-  measured gap, never faked. Any pole/apex whose point-based crossing does not verify on both
-  surfaces defers the same honest way.
+  and the **general small-loop / self-intersection topology residual (S4-f)** all remain
+  DEFERRED → OCCT, reported with the measured gap, never faked. (S4-f now detects + traces a
+  single-arm self-crossing and recovers small loops the fixed subdivision misses at a MEASURED
+  recall floor — see the S4-f slice below — but that is a raised floor, not a completeness
+  proof.) Any pole/apex whose point-based crossing does not verify on both surfaces defers the
+  same honest way.
 - **Unlocks:** transversal intersection curves that pass through a sphere pole / cone apex are
   now traced end-to-end natively instead of truncating at the chart singularity.
 
-#### S4-f — Self-intersection / small-loops · ✗ PENDING
-Self-intersection guards and small-loop recovery below the seeding resolution floor.
+#### S4-f — Self-intersection / small-loops · ◐ FIRST COMPLETENESS + LOOP-ROBUSTNESS SLICE DONE AT THE BAR
+Adds no new geometry capability — it HARDENS the correctness/completeness of the curves S3
+already traces. Two orthogonal parts, both additive + gated so the S3/S4-c/S4-d/S4-e controls
+stay byte-identical (`src/native/ssi/{marching.h,marching.cpp}` + new OCCT-free
+`src/native/ssi/completeness_critic.h`, `CYBERCAD_HAS_NUMSCI`-gated, no `cc_*` change).
+
+- **Robust TRUE-RETURN closure (always on).** S3 closed a loop on pure proximity
+  (`distance(cur, seed) ≤ loopClose·h`), which FALSE-CLOSES a curve that merely re-approaches
+  its seed / an earlier node while heading the other way. Closure is now a necessary-condition
+  tightening: close only when the march has actually travelled a full circuit
+  (`arcLen > 2·closeRadius`, the true-return gate) AND the return heading is tangent-continuous
+  with the seed's outgoing tangent (`dot(fwdNow, seedFwd) ≥ closureTangentCos`, default 0.5).
+  It can only REFUSE a close, never MAKE one — every truly-closing control still closes
+  byte-identically, while an inflated-radius near-pass no longer truncates (fixture B: a crossing-
+  spheres circle traced at 10× loopCloseFrac went from ~1.2% of the true length to ≥ 93%, default
+  frac byte-identical at 99.6%).
+- **Self-intersection guard (default off `enableSelfIntersection`).** A single arm that crosses
+  ITSELF (a figure-eight section) is detected by a geometric segment-segment crossing test over
+  the stitched polyline — two non-adjacent segments whose closest approach ≤ a tight touch radius
+  at a TRANSVERSE angle (`|cos| < 0.7`, so a retrace / (anti)parallel doubling-back is excluded)
+  — recorded as a typed `WLine.selfIntersection` (DATA), and the arm marches THROUGH it (never
+  stopped, never closed). DISTINCT from an S4-d `BranchNode` (a locus flip, `‖nA×nB‖→0`, that
+  spawns arms): a self-crossing keeps ONE arm, so `branchPoints == 0`. Off → byte-identical.
+- **Adaptive completeness critic (default off `completenessCritic`).** After the initial fixed-
+  resolution seed + trace, LOOP-UNTIL-DRY: build a coarse coverage grid over A's domain from the
+  traced polylines (`critic::coverageOf` / `uncoveredBoxes`), re-seed FINER
+  (`minPatchFrac *= criticRefineFactor` per round) at the SAME `onSurfTol` (a candidate that does
+  not land on both surfaces is DISCARDED — never a fabricated seed), dedup the traced NEW branches
+  by LOCUS vs all kept curves (so a finer re-trace of an already-found loop is not over-produced),
+  keep the genuinely new ones. Stop after `criticDryRounds` (K) consecutive dry rounds or the cost
+  cap (`criticMaxRounds` / `criticMaxCandidates`). Fixture A: a small loop missed at 1/16
+  (recall 0.5) is RECOVERED (recall 1.0 on that fixture); fixture D: four disjoint loops rise from
+  recall 0.25 to 1.0 — both stopped dry, no over-production (traced == true count).
+
+**HONEST FRAMING (baked into the headers, tests, and this row):** completeness is MEASURED +
+ASYMPTOTIC, never a proof. Below ANY fixed re-seed round a smaller loop can still be missed, so
+`TraceSet.completenessResidual` / `RecallReport.residualAcknowledged` are ALWAYS true and the
+critic reports the floor reached (`criticFloorFrac`, `criticStoppedDry`) — a fixture's recall→1
+is scoped to that fixture at that floor, never a global claim. NEVER fabricates a loop, a closure,
+or a seed; an unrecoverable loop is a reported measured recall < 1, a self-intersection is a
+recorded typed crossing, a false-close is prevented (not a faked continuation).
+
+Host gate green: `test_native_ssi_s4f_completeness` **6 cases, 0 failed** (fixtures A–D + the
+transversal-loop and S4-d Steinmetz controls; NUMSCI ON CTest **33/33**, the S4-f TU ABSENT with
+NUMSCI OFF). No tolerance weakened; `src/native/**` stays OCCT-free.
+
+**S4-f DE-RISKS (does not unblock/complete) curved blends (#6) + wrap-emboss (#7)** — their
+intersection seams are exactly the small-loop / self-intersecting / many-loop patterns this slice
+hardens, but their assemblers stay S5/S6/S7. Global topology repair / watertight self-intersection
+resolution (splitting a self-crossing arm, healing a self-intersecting shell) also stay the tail —
+S4-f DETECTS + REPORTS + traces-through, it does not repair topology.
+
+Archived change `openspec/changes/archive/2026-07-05-add-native-ssi-s4f-completeness`.
 
 ### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d landed (branched-trace Steinmetz COMMON now native; ~months for full coverage)
 Use SSI curves to **split** the curved faces of two solids, **classify**

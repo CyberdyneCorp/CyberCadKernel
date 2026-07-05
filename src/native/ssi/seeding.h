@@ -75,6 +75,21 @@ struct SeedOptions {
   double minPatchFrac = -1.0; ///< leaf param-fraction per direction — the RESOLUTION/recall knob (≤ 0 → 1/32)
   int initialGridU = 1;       ///< pre-split of the U domain before recursion (loop-catching)
   int initialGridV = 1;       ///< pre-split of the V domain before recursion
+
+  // ── S4-f ADAPTIVE COMPLETENESS CRITIC (default OFF → the current fixed-resolution seed,
+  // byte-identical). When on, trace_intersection runs the fixed-resolution seed+trace first,
+  // then LOOP-UNTIL-DRY: re-subdivide finer (minPatchFrac *= criticRefineFactor per round) in
+  // regions no traced curve covers, refine at the SAME onSurfTol (a candidate that does not
+  // land on BOTH surfaces is DISCARDED — never a fabricated seed), dedup new seeds vs all kept
+  // curves, trace the genuinely new ones. Bounded by a cost cap; reports the floor + residual.
+  //
+  // HONEST FRAMING: this RAISES the recall floor; it is NOT a completeness proof. Below any
+  // fixed re-seed round a smaller loop can still be missed (TraceSet.completenessResidual). ──
+  bool completenessCritic = false; ///< S4-f master switch (off → fixed-resolution seed, byte-identical)
+  double criticRefineFactor = 0.5; ///< minPatchFrac *= this each round (finer resolution; must be < 1)
+  int criticDryRounds = 2;         ///< K: stop after this many CONSECUTIVE rounds finding NO new branch
+  int criticMaxRounds = 6;         ///< hard cap on re-seed rounds (cost bound)
+  int criticMaxCandidates = 4096;  ///< hard cap on total re-seed candidate regions across all rounds (cost bound)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

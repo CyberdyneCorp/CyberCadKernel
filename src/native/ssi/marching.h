@@ -113,6 +113,30 @@ struct WLinePoint {
   double onSurfResidual = 0.0; ///< ‖A.point − B.point‖ at this node (≤ tol)
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SelfIntersection (S4-f) — a point where a SINGLE traced arm crosses ITSELF: the
+// curve returns to the neighbourhood of an EARLIER, non-adjacent node with a TRANSVERSE
+// tangent (the two passes head in materially different directions — |dot| well below 1).
+// This is a figure-eight-style self-crossing of ONE branch — DISTINCT from an S4-d
+// BranchNode (where the intersection LOCUS itself branches: two DISTINCT arms meet,
+// ‖nA×nB‖ → 0), and DISTINCT from a retrace (an arm running back over itself, dot ≈ ±1,
+// which is a dedup/periodic-seam artifact, not reported). Reported as DATA — the arm is
+// NOT stopped and NOT closed at the crossing; it marches through. `nodeA`/`nodeB` index
+// the two WLine.points that coincide (the earlier and the later pass).
+//
+// HONEST SCOPE: S4-f DETECTS + REPORTS + traces THROUGH a self-crossing. It does NOT
+// split the arm into sub-arcs or repair topology (that is S5/S6 assembler work). A false
+// positive is a spurious COUNT, never a wrong curve (the polyline is unchanged).
+// ─────────────────────────────────────────────────────────────────────────────
+struct SelfIntersection {
+  math::Point3 point{};        ///< the crossing point (≈ both passes' node position)
+  double u1a = 0.0, v1a = 0.0; ///< params on A at the EARLIER pass (nodeA)
+  double u1b = 0.0, v1b = 0.0; ///< params on A at the LATER pass (nodeB)
+  int nodeA = 0;               ///< index of the earlier WLine.points node
+  int nodeB = 0;               ///< index of the later WLine.points node
+  double tangentCos = 0.0;     ///< dot(unit tangent at nodeA, unit tangent at nodeB) (|·| ≪ 1 ⇒ transverse)
+};
+
 /// How a traced WLine ended — the honest per-curve coverage report (design.md
 /// TraceStatus). A well-formed transversal branch is Closed or BoundaryExit; a march
 /// that ran into a tangency is NearTangent (traced up to it, remainder an S4 gap); a
@@ -184,6 +208,17 @@ struct WLine {
   /// mean the march stepped through. Absent (nullopt) for Closed / BoundaryExit / Failed.
   std::optional<TangentContact> stopReason{};
 
+  /// S4-f: SELF-INTERSECTIONS this arm crossed THROUGH (a single arm returning to an
+  /// earlier non-adjacent node with a TRANSVERSE tangent — a figure-eight self-crossing).
+  /// Detected + recorded ONLY when MarchOptions.enableSelfIntersection is on (off → this
+  /// stays empty and the trace is byte-identical to the S3/S4-c/S4-d/S4-e behaviour). Each
+  /// entry is a typed crossing, verified on both surfaces ≤ onSurfTol; the arm was NOT
+  /// stopped or closed at the crossing (it is reported as DATA, never a fabricated closure).
+  /// DISTINCT from an S4-d BranchNode (`branchPoints`): a self-crossing does NOT flip the
+  /// locus, so a WLine with `selfIntersectionCount > 0` has NO associated branch point.
+  int selfIntersectionCount = 0;
+  std::vector<SelfIntersection> selfIntersections{};
+
   bool isClosed() const noexcept { return status == TraceStatus::Closed; }
   bool truncated() const noexcept { return status == TraceStatus::NearTangent; }
 };
@@ -216,6 +251,28 @@ struct MarchOptions {
   double maxDeflection = -1.0; ///< max chord/arc bow per step before shrinking (≤ 0 → scale · 1e-3)
   double tangentSinTol = 1e-3; ///< ‖nA×nB‖ below this ⇒ near-tangent → truncate/cross (S4)
   double loopCloseFrac = 2.0;  ///< loop-closure proximity = loopCloseFrac · current step
+
+  // ── S4-f ROBUST CLOSURE + SELF-INTERSECTION (completeness / loop-robustness slice) ──
+  //
+  // TRUE-RETURN CLOSURE is ALWAYS ON and is a NECESSARY-CONDITION tightening of the S3
+  // proximity close: a loop now closes only when the march returns near the seed AND its
+  // heading is TANGENT-CONTINUOUS with the seed's outgoing tangent (it comes back the way
+  // it left). This can only REFUSE a false-close (a curve passing near the seed / an
+  // earlier node while heading the OTHER way) — it can never MAKE a close — so a
+  // truly-closing curve (every transversal control) is byte-identical. `closureTangentCos`
+  // sets how ANTIPARALLEL a return heading must be to BLOCK the close: dot(fwdNow, seedFwd)
+  // below it refuses the stop. ≤ 0 → −0.5 (a generous block threshold: only headings turned
+  // more than 120° from the seed's outgoing tangent are refused, so a genuine loop — whose
+  // return heading points roughly the same way it left — always closes).
+  double closureTangentCos = -1.0;  ///< close only if dot(fwdNow,seedFwd) ≥ this (≤ 0 → −0.5)
+
+  // SELF-INTERSECTION GUARD (default OFF → byte-identical S3/S4-c/S4-d/S4-e). When on, a
+  // crossing of an EARLIER non-seed, non-adjacent node of THIS arm with a TRANSVERSE tangent
+  // is recorded as a typed WLine.selfIntersection (data), and the arm CONTINUES through it
+  // (never stopped, never closed). `selfIntersectRadiusFrac` scales the coincidence radius
+  // (≤ 0 → 2·loopClose, so the self-cross window matches the loop-closure window).
+  bool enableSelfIntersection = false;
+  double selfIntersectRadiusFrac = -1.0;  ///< self-cross coincidence radius = this·h (≤ 0 → 2·loopClose·h)
 
   // ── S4-c near-tangent MARCHING band (all tangentSinTol-derived; no tolerance is
   // weakened — these only decide WHERE the fixed-plane crossing corrector engages) ──
@@ -269,6 +326,20 @@ struct TraceSet {
   std::vector<BranchNode> branchNodes{};  ///< localized branch points + their arm connectivity
   int branchPoints = 0;          ///< #branch points localized + routed (== branchNodes.size())
   int routedArms = 0;            ///< #arm WLines routed off branch points and kept (not deduped)
+
+  // ── S4-f SELF-INTERSECTION + COMPLETENESS-CRITIC diagnostics ──
+  //
+  // HONEST ASYMPTOTIC FRAMING (must not be overclaimed): the completeness critic RAISES the
+  // recall FLOOR by re-seeding finer in uncovered regions until dry; it is NOT a proof. Below
+  // ANY fixed subdivision resolution a smaller loop can still be missed, so `completenessResidual`
+  // is ALWAYS true. `criticFloorFrac` is the finest minPatchFrac reached; recall against OCCT
+  // stays a MEASURED figure (see RecallReport.recall()), never a blind 1.0.
+  int selfIntersections = 0;      ///< S4-f: total self-crossings recorded over all arms (0 unless enableSelfIntersection)
+  int criticRounds = 0;           ///< S4-f: adaptive-critic re-seed rounds run (0 unless completenessCritic)
+  int criticRecoveredLoops = 0;   ///< S4-f: NEW branches the critic recovered beyond the initial fixed-resolution trace
+  double criticFloorFrac = 0.0;   ///< S4-f: finest minPatchFrac the critic reached (the honest recall floor; 0 if critic off)
+  bool criticStoppedDry = false;  ///< S4-f: true if the critic stopped after K dry rounds (vs hitting the cost cap)
+  bool completenessResidual = true;  ///< S4-f: ALWAYS true — a loop below criticFloorFrac can still exist (never a proof)
 
   int curveCount() const noexcept { return static_cast<int>(lines.size()); }
 };

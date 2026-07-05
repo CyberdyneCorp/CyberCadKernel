@@ -140,12 +140,14 @@ robustness tail keeps OCCT linked.** Canonical detail:
   decline to OCCT — honest, measured fallbacks.
 
 **Still OCCT-backed (the tail that keeps OCCT linked):**
-- ☐ SSI **S4-d general/freeform + S4-e general/freeform + S4-f marching core** (the moat tail:
-  general/freeform branch points, higher-order/curve cusps, general/freeform parametric
-  singularities, self-intersection completeness, deeper near-coincident bands — S4-a/b
-  classification + the S4-c near-tangent march-through + the S4-d Steinmetz branch-point slice +
-  the S4-e sphere-pole/cone-apex chart-singularity slice + the S5-d branched Steinmetz COMMON
-  boolean already landed) → **wider S5
+- ☐ SSI **S4-d general/freeform + S4-e general/freeform + S4-f general topology repair** (the moat
+  tail: general/freeform branch points, higher-order/curve cusps, general/freeform parametric
+  singularities, watertight self-intersection resolution / topology repair, deeper near-coincident
+  bands — S4-a/b classification + the S4-c near-tangent march-through + the S4-d Steinmetz
+  branch-point slice + the S4-e sphere-pole/cone-apex chart-singularity slice + the S4-f robust
+  true-return closure / self-intersection guard / adaptive completeness critic (measured recall
+  wins on small-loop / many-loop fixtures, honest asymptotic floor + residual) + the S5-d branched
+  Steinmetz COMMON boolean already landed) → **wider S5
   curved booleans** (Steinmetz fuse/cut, sphere fuse/cut, general non-Steinmetz branched pairs,
   more families, consuming the S3 WLines + the S4 typed regions/contacts + multi-arm branch loci).
 - ☐ General curved **booleans** & **blends** (sit on SSI); curved **wrap-emboss**.

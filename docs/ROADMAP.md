@@ -138,6 +138,26 @@ robustness tail keeps OCCT linked.** Canonical detail:
   `Op::Common` dispatches to the branched builder. Sphere fuse/cut, general (non-Steinmetz)
   branched pairs, other curved-curved families, and non-Steinmetz near-tangent pairs still
   decline to OCCT — honest, measured fallbacks.
+- ✅ **Curved blend #6 FIRST SLICE (constant-radius rolling-ball fillet on a CIRCULAR crease)** —
+  the rim where a CYLINDER lateral face meets a coaxial PLANAR cap. A ball of radius `r` rolled
+  into that convex circular crease traces a **TORUS canal** (major `R = Rc − r`, minor `r`); the
+  native builder (`src/native/blend/curved_fillet.h`, OCCT-free) trims the wall + cap to the two
+  analytic tangent circles, inserts the quarter-tube torus patch, and rebuilds the whole filleted
+  solid as one deflection-bounded planar-facet soup welded watertight via the boolean
+  `assembleSolid`. **G1-tangent** at both seams by construction (torus normal is radial at the wall
+  seam `v=0`, axial at the cap seam `v=π/2`). Engine self-verify (watertight + `0 < Vr < Vo`);
+  verified vs OCCT `BRepFilletAPI` (sim `run-sim-native-curved-fillet.sh` **9/9**, `activeNative=1`,
+  vol rel ≤ 3.8e-3, area rel ≤ 2.1e-3). Requires `Rc ≥ 2r` (ring torus). CONCAVE rims, VARIABLE
+  radius, cyl↔cyl / cyl↔cone canals, NON-circular creases, multi-edge → OCCT.
+- ✅ **Wrap-emboss #7 FIRST SLICE (rectangular pad on a cylinder lateral face)** — emboss (`boss=1`)
+  a rectangular footprint onto a CYLINDER wall. The native builder (`src/native/feature/wrap_emboss.h`,
+  OCCT-free) wraps the footprint by the SAME map the OCCT oracle uses (`u = px/R`, `v = py + vMid`),
+  builds the raised pad (wrapped OUTER CAP at `R+height` + two circumferential walls + two axial
+  walls) and retiles the base wall with the footprint window removed, welding the whole embossed
+  solid watertight via `assembleSolid`. Engine self-verify (watertight + volume GROWS by
+  `footprint area × height`); verified vs OCCT `cc_wrap_emboss` (sim `run-sim-native-wrap-emboss.sh`
+  **6/6**, `activeNative=1`, vol rel ≤ 2.5e-3, area rel ≤ 7.3e-4). DEBOSS, non-rectangular / >4-corner
+  profiles, non-cylindrical base, >2π / off-end footprints → OCCT.
 
 **Still OCCT-backed (the tail that keeps OCCT linked):**
 - ☐ SSI **S4-d general/freeform + S4-e general/freeform + S4-f general topology repair** (the moat
@@ -150,7 +170,10 @@ robustness tail keeps OCCT linked.** Canonical detail:
   Steinmetz COMMON boolean already landed) → **wider S5
   curved booleans** (Steinmetz fuse/cut, sphere fuse/cut, general non-Steinmetz branched pairs,
   more families, consuming the S3 WLines + the S4 typed regions/contacts + multi-arm branch loci).
-- ☐ General curved **booleans** & **blends** (sit on SSI); curved **wrap-emboss**.
+- ☐ General curved **booleans** & **blends** beyond the first slices (sit on SSI): CONCAVE / VARIABLE /
+  non-circular-crease / cyl↔cyl-canal fillets; general curved **wrap-emboss** (deboss, non-rectangular
+  profiles, non-cylindrical base, >2π footprints). _(The circular cyl↔cap fillet #6 and the rectangular
+  pad-on-cylinder emboss #7 first slices are now native — see above.)_
 - ☐ Non-planar/guided/rail sweep robustness; general loft; fine-pitch threads.
 - ☐ **Shape healing**; **STEP/IGES import**.
 - ☐ **`drop-occt`** — BLOCKED until the above are native (research-grade, multi-year).

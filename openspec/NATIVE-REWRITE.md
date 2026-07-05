@@ -789,7 +789,12 @@ longest; a native exchange is lower priority than the modelling core.
 - â **`#4b` Tier E â native `cc_wrap_emboss` â DEFERRED (FUTURE WORK, not scheduled
   yet).** This is the *native* (OCCT-free) rewrite of wrap-emboss; it is distinct from
   the Phase-3 `add-robust-wrap-emboss` change, which is â done and OCCT-backed (the
-  app-facing behaviour already works). Native wrap-emboss needs three pieces:
+  app-facing behaviour already works). UPDATE 2026-07-05: the FIRST NATIVE SLICE has
+  since LANDED -- emboss a RECTANGULAR pad onto a CYLINDER lateral face is now native +
+  verified vs OCCT (see the `#7 native-wrap-emboss` entry below; `add-native-wrap-emboss`
+  archived `2026-07-05`). The rest of wrap-emboss (deboss, non-rectangular profiles,
+  non-cylindrical bases, >2pi footprints) stays OCCT-fallthrough. The plan below is
+  retained for those remaining general slices. Native wrap-emboss needs three pieces:
   (1) native project-a-2D-pattern-onto-a-surface into the target face UV domain,
   (2) native offset-along-normal by the emboss depth, and (3) a boolean merge of the
   raised/recessed region with the base solid. Step (2) is now **unblocked by #6** â the
@@ -870,6 +875,77 @@ longest; a native exchange is lower priority than the modelling core.
   ops' edge lookup) via the shared `EdgeCache`, so native-body edges are pickable exactly
   as OCCT-body edges are. On `run-sim-suite.sh`'s SKIP list (own `main()`); 221/221
   re-verified.
+- **#6 `native-blends` -- FIRST CURVED-blend slice DONE at all gates: constant-radius
+  rolling-ball fillet on a CIRCULAR crease (cylinder lateral <-> coaxial planar cap) ->
+  TORUS canal, G1-tangent, verified vs OCCT `BRepFilletAPI`.** Extends the planar
+  tangent-cylinder fillet to the first curved crease. A ball of radius `r` rolled into
+  the convex circular rim (cylinder radius `Rc`, coaxial cap at axial `H`) stays tangent
+  to both: its centre traces a circle of radius `Rc - r` at height `H - r` -- the
+  tube-centre circle of a TORUS coaxial with the cylinder (major `R = Rc - r`, minor
+  `r`). The blend surface is that torus's quarter-tube `v in [0, pi/2]`: at `v = 0` the
+  point is at radius `Rc` with a RADIAL normal (tangent circle on the cylinder wall --
+  `torus n cylinder`, an analytic SSI-S1 coaxial seam); at `v = pi/2` the point is at
+  radius `Rc - r` with an AXIAL normal (tangent circle on the cap -- `torus n plane`). So
+  the fillet is G1-tangent to the wall at `v=0` and to the cap at `v=pi/2` by
+  construction. Built OCCT-FREE in `src/native/blend/curved_fillet.h` (reuses
+  `blend_geom.h` + `math/torus.h` + boolean `assembleSolid`): it recognises the cyl<->cap
+  rim by GEOMETRY (sole coaxial Cylinder at the rim radius + sole Plane through the rim
+  perpendicular to the axis), resolves the cap + far-end axial heights, and rebuilds the
+  whole filleted solid as one deflection-bounded planar-facet soup -- far cap, cylinder
+  wall up to the wall seam, the torus quarter-tube (each curved quad SPLIT INTO TWO
+  TRIANGLES so every facet is exactly planar and welds watertight), and the trimmed cap --
+  all four parts sharing the SAME `N` angular samples so the wall->torus (`H-r`, `Rc`) and
+  torus->cap (`H`, `Rc-r`) seams weld with coincident vertices. Requires a RING torus
+  `Rc >= 2r` (else the tube self-intersects the axis -> NULL -> OCCT). Dispatched in
+  `NativeEngine::fillet_edges` AFTER the planar path declines, then the MANDATORY
+  `blendResultVerified` self-verify (watertight + `0 < Vr < Vo`) accepts it or discards ->
+  OCCT. Gate 1 GREEN -- host `test_native_blend` adds the closed-form-volume assertion +
+  `curved_fillet_g1_tangent_at_both_seams` (a pure-math check that the torus canal normal
+  is exactly radial at `v=0` vs the cylinder normal and exactly axial at `v=pi/2` vs the
+  cap normal, and the seam radii coincide -- ANALYTIC, no mesh, no OCCT). Gate 2 GREEN --
+  `run-sim-native-curved-fillet.sh` **9/9** through the `cc_*` facade under
+  `cc_set_engine(1)` (`activeNative=1`), native torus blend vs OCCT `BRepFilletAPI`:
+  vol rel <= 3.8e-3, area rel <= 2.1e-3, watertight, mesh-vol == B-rep, across
+  `Rc in {5,4,6}` incl. the `Rc=2r` ring-torus boundary; the reported `cos(wall seam)=1.0
+  / cos(cap seam)=1.0` is the ANALYTIC G1 the construction guarantees (flagged
+  analytic-not-mesh-sampled, honestly). STILL OCCT-fallthrough (NULL / self-verify
+  discards, honest error, never faked): CONCAVE rims, VARIABLE radius, cyl<->cyl /
+  cyl<->cone canal fillets, NON-circular curved creases (cone/sphere/ellipse/spline rim),
+  freeform neighbours, `Rc < 2r` near-degenerate, multi-edge. Change
+  `add-native-curved-fillet` archived `2026-07-05`.
+- **#7 `native-wrap-emboss` -- FIRST NATIVE slice DONE at all gates: emboss a RECTANGULAR
+  pad onto a CYLINDER lateral face, verified vs OCCT `cc_wrap_emboss`.** The Phase-3
+  `cc_wrap_emboss` (#290) stays the ORACLE; this adds a NATIVE path behind the same ABI.
+  Built OCCT-FREE in `src/native/feature/wrap_emboss.h`: for `boss=1` (emboss) on a native
+  solid whose picked face is a Cylinder wall, it wraps a closed 4-corner rectangular
+  footprint by the SAME map the OCCT oracle uses (`u = px/R` arc-length->angle,
+  `v = py + vMid` axial, `vMid` = wall's axial middle), then rebuilds the whole embossed
+  solid as one deflection-bounded planar-facet soup -- the pad's OUTER CAP (cylinder patch
+  at `R+height` over the footprint window), two CIRCUMFERENTIAL walls (planes perp to axis
+  at `v=vMin,vMax`), two AXIAL walls (planes through the axis at `u=uMin,uMax`), and the
+  base cylinder wall retiled over the FULL turn with the footprint window REMOVED -- every
+  part sharing a common `u`-sample sequence (window arc = the first `nUwin` cells) so all
+  seams weld watertight via the boolean `assembleSolid` (each curved quad SPLIT INTO TWO
+  TRIANGLES, planar-facet discipline). Why a facet soup, not an SSI fuse: the pad carries
+  planar walls + a cylindrical cap, so it is NOT a single elementary curved solid and the
+  S5-a single-elementary-pair `ssi_boolean_solid` cannot drive it -- mirroring the curved-
+  fillet slice is the robust path. Dispatched in `NativeEngine::wrap_emboss` for a native
+  body (an OCCT body forwards to the Phase-3 oracle unconditionally), then the MANDATORY
+  `wrapEmbossVerified` self-verify (watertight + volume GROWS by ~ `footprint area *
+  height`; the wrapped footprint area equals the flat profile area because `px` is already
+  arc-length) accepts it or discards -> OCCT; a native body the slice declines returns an
+  HONEST ERROR (never forwarded -- OCCT would misread the native void). Gate 1 GREEN --
+  host `test_native_wrap_emboss` (footprint/rectangle recovery + facet-soup watertightness
+  + volume-growth + decline of deboss/non-rectangular/non-cylindrical). Gate 2 GREEN --
+  `run-sim-native-wrap-emboss.sh` **6/6** through the `cc_*` facade under
+  `cc_set_engine(1)` (`activeNative=1`), native pad-on-cylinder vs OCCT `cc_wrap_emboss`:
+  vol rel <= 2.5e-3, area rel <= 7.3e-4, watertight, mesh-vol == B-rep, across
+  `Rc in {10,8,12}`. Native-vs-OCCT gap is deflection-bounded (planar-facet tiling vs
+  OCCT's exact cylindrical faces), well inside the 1% bar; nothing faked. STILL OCCT
+  (NULL / honest error): DEBOSS (`boss=0`), NON-rectangular / >4-corner / dense /
+  high-curvature profiles, NON-cylindrical (cone/sphere/planar/NURBS) base, footprints
+  that wrap >2pi / self-overlap / run off the axial ends, non-positive height. Change
+  `add-native-wrap-emboss` archived `2026-07-05`.
 - â **#7 `native-exchange` â native STEP EXPORT slice DONE at BOTH gates (host +
   sim OCCT re-read round-trip); STEP import + IGES stay OCCT (honest end state, out
   of scope).** `cc_step_export` is NATIVE

@@ -21,6 +21,7 @@
 #include "native/boolean/native_boolean.h"
 #include "native/construct/native_construct.h"
 #include "native/exchange/native_exchange.h"
+#include "native/feature/wrap_emboss.h"
 #include "native/tessellate/native_tessellate.h"
 
 #ifdef CYBERCAD_HAS_OCCT
@@ -389,6 +390,37 @@ bool blendResultVerified(const ntopo::Shape& result, const ntopo::Shape& origina
     return vr < vo - tol;                // chamfer / fillet / shell / offset-shrink
 }
 
+// SELF-VERIFY a native WRAP-EMBOSS result (Phase 4 #7 native-wrap-emboss). MANDATORY
+// guard mirroring the blend guard with wantGrow=true, but the growth is ANALYTIC: an
+// emboss (boss) RAISES a pad, so the result must be a valid watertight solid whose
+// volume EXCEEDS the base by the wrapped footprint area × height. For a rectangular
+// footprint on a cylinder the wrapped footprint area is the arc-length span × axial
+// span, and because the profile's px is ALREADY arc-length that equals the flat profile
+// area |pxMax-pxMin|·|pyMax-pyMin| (independent of R). The result carries TRUE curved
+// (cylindrical) faces, so its watertight mesh volume only approximates the analytic
+// target — deflection-bounded tolerance (1% relative + a small floor), like the curved
+// boolean guards. A NULL or failing candidate is DISCARDED -> OCCT cc_wrap_emboss.
+bool wrapEmbossVerified(const ntopo::Shape& result, const ntopo::Shape& original,
+                        const double* profileXY, int count, double height) {
+    const double vr = watertightVolume(result);
+    if (vr <= 0.0) return false;  // not watertight or empty → reject
+    const double vo = watertightVolume(original);
+    if (vo <= 0.0) return true;   // original not measurable → trust watertight+positive
+    if (profileXY == nullptr || count < 3 || !(height > 0.0)) return false;
+    double xlo = profileXY[0], xhi = profileXY[0], ylo = profileXY[1], yhi = profileXY[1];
+    for (int i = 1; i < count; ++i) {
+        xlo = std::min(xlo, profileXY[i * 2]);
+        xhi = std::max(xhi, profileXY[i * 2]);
+        ylo = std::min(ylo, profileXY[i * 2 + 1]);
+        yhi = std::max(yhi, profileXY[i * 2 + 1]);
+    }
+    const double footArea = (xhi - xlo) * (yhi - ylo);
+    if (!(footArea > 0.0)) return false;
+    const double expected = vo + footArea * height;
+    const double tol = std::max(1e-2 * expected, 1e-6);  // deflection-bounded curved mesh
+    return std::fabs(vr - expected) <= tol;
+}
+
 }  // namespace
 
 // ── Fallback engine factory (build-specific) ───────────────────────────────────
@@ -700,10 +732,29 @@ ShapeResult NativeEngine::guided_sweep(const double* p, int pc, const double* pa
         return fallback().guided_sweep(p, pc, path, pathc, g, gc);
     return track(wrapNative(std::move(solid)));
 }
+// ── NATIVE wrap-emboss (Phase 4 #7 native-wrap-emboss) with mandatory self-verify ──
+// First native slice: a RECTANGULAR pad embossed (boss=1) on a native body's CYLINDER
+// lateral face. The OCCT-free builder (src/native/feature/wrap_emboss.h) wraps the
+// footprint onto the cylinder and rebuilds the whole embossed solid as a deflection-
+// bounded planar-facet soup welded watertight via the boolean assembleSolid (mirroring
+// the curved-fillet slice — the pad-wall∩cylinder seam is expressed by shared footprint
+// vertices, not a fragile boolean). The result is SELF-VERIFIED (watertight + volume
+// GROWS by ≈ footprint area × height) and DISCARDED on failure. A native body the slice
+// declines (deboss, non-rectangular / non-cylindrical, off-end footprint) canNOT be
+// forwarded to OCCT (OCCT would misread the native void) → honest error. An OCCT body
+// forwards to the Phase-3 OCCT cc_wrap_emboss oracle unconditionally.
 ShapeResult NativeEngine::wrap_emboss(EngineShape body, int faceId, const double* p, int c, double d,
                                       int boss) {
-    CC_NATIVE_BODY_UNSUPPORTED("wrap_emboss", body);
-    return fallback().wrap_emboss(body, faceId, p, c, d, boss);
+    if (!isNative(body)) return fallback().wrap_emboss(body, faceId, p, c, d, boss);
+    const auto* h = static_cast<const NativeShape*>(body.get());
+    ntopo::Shape result =
+        cybercad::native::feature::wrap_emboss(h->shape, faceId, p, c, d, boss);
+    if (result.isNull() || !wrapEmbossVerified(result, h->shape, p, c, d))
+        return make_error(
+            "native wrap_emboss: no verified watertight result for this native body "
+            "(deboss / non-rectangular profile / non-cylindrical face / off-end or "
+            ">2π footprint → OCCT-only)");
+    return track(wrapNative(std::move(result)));
 }
 // ── Tier-D (#4b) threads + tapered shank ──────────────────────────────────────
 // tapered_shank is NATIVE: a shank silhouette revolved 360° about Z (reusing the
@@ -825,11 +876,18 @@ namespace nblend = cybercad::native::blend;
 ShapeResult NativeEngine::fillet_edges(EngineShape body, const int* e, int ec, double r) {
     if (!isNative(body)) return fallback().fillet_edges(body, e, ec, r);
     const auto* h = static_cast<const NativeShape*>(body.get());
+    // Planar dihedral fillet (tangent-cylinder). Curved-face inputs return NULL here.
     ntopo::Shape result = nblend::fillet_edges(h->shape, e, ec, r);
+    // First CURVED slice: a single circular crease (cylinder lateral ↔ coaxial planar
+    // cap) → torus rolling-ball blend. Tried when the planar path declines.
+    if (result.isNull()) result = nblend::curved_fillet_edge(h->shape, e, ec, r);
+    // MANDATORY self-verify (a convex blend REDUCES volume: 0 < Vr < Vo); a bad or
+    // leaky native candidate is DISCARDED (never faked). NULL / failure → OCCT-only.
     if (result.isNull() || !blendResultVerified(result, h->shape, /*wantGrow=*/false))
         return make_error(
             "native fillet_edges: no verified watertight result for this native body "
-            "(curved face / concave edge / ≠2-face edge / interference → OCCT-only)");
+            "(non-circular curved crease / concave / Rc<2r / ≠cyl-cap rim / "
+            "variable / interference → OCCT-only)");
     return track(wrapNative(std::move(result)));
 }
 ShapeResult NativeEngine::fillet_edges_variable(EngineShape body, const int* e, int ec, double r1,

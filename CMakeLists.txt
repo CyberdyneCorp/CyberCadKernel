@@ -283,6 +283,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_ssi
         test_native_ssi_s4_classification
         test_native_blend
+        test_native_wrap_emboss
         test_native_step_writer
         test_native_stl
         test_native_quality
@@ -368,6 +369,8 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_s4_classification.cpp")
     set(test_native_blend_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_blend.cpp")
+    set(test_native_wrap_emboss_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_wrap_emboss.cpp")
     set(test_native_step_writer_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step_writer.cpp")
     set(test_native_stl_SRC

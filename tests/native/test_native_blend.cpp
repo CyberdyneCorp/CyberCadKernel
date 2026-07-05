@@ -155,6 +155,129 @@ CC_TEST(fillet_curved_and_degenerate_fallthrough) {
   CC_CHECK(blend::fillet_edges(cyl, cids, 1, 1.0).isNull());
 }
 
+// ── curved fillet (first CURVED slice: torus canal blend on a cylinder↔cap rim) ──--
+
+namespace {
+// A capped solid cylinder: full-circle profile radius Rc extruded to height h. Faces:
+// bottom cap (−Z), top cap (+Z), one Cylinder wall. Rims are true Circle edges.
+topo::Shape cappedCylinder(double Rc, double h) {
+  cst::ProfileSegment seg;
+  seg.kind = 2;  // full circle
+  seg.cx = 0; seg.cy = 0; seg.r = Rc;
+  return cst::build_prism_profile({seg}, {}, {}, h);
+}
+// The Circle rim edge id at axial height `z` (the top or bottom rim).
+int findRimAtZ(const topo::Shape& s, double z) {
+  const topo::ShapeMap emap = topo::mapShapes(s, topo::ShapeType::Edge);
+  for (std::size_t i = 1; i <= emap.size(); ++i) {
+    const auto c = topo::curveOf(emap.shape(static_cast<int>(i)));
+    if (!c || c->curve->kind != topo::EdgeCurve::Kind::Circle) continue;
+    nmath::Point3 o = c->curve->frame.origin;
+    if (!c->location.isIdentity()) o = c->location.transform().applyToPoint(o);
+    if (std::fabs(o.z - z) < 1e-6) return static_cast<int>(i);
+  }
+  return 0;
+}
+}  // namespace
+
+CC_TEST(curved_fillet_cylinder_cap_watertight_volume_reduced) {
+  // Rc=5, h=10 capped cylinder; roll a ball r=1.5 into the top rim → a coaxial torus
+  // canal blend (major R=Rc−r=3.5, minor r=1.5). Watertight, volume BELOW the sharp
+  // cylinder, and matching the exact solid-of-revolution to the deflection bound.
+  const double Rc = 5.0, h = 10.0, r = 1.5;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  bool wt0 = false;
+  const double v0 = vol(cyl, wt0);
+  CC_CHECK(wt0);
+  const int rim = findRimAtZ(cyl, h);
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  topo::Shape f = blend::curved_fillet_edge(cyl, ids, 1, r, 0.005);
+  bool wt = false;
+  const double v = vol(f, wt);
+  CC_CHECK(!f.isNull());
+  CC_CHECK(wt);                 // torus quarter-tube welds watertight to wall + cap
+  CC_CHECK(v < v0);             // a convex fillet REDUCES the volume
+  // Exact filleted volume = cylinder up to the wall seam (z=h−r) + the torus solid of
+  // revolution over the last r of height. Closed form of ∫π·radius(v)²·dz with
+  // radius(v)=R+r·cos v, z=r·sin v, v∈[0,π/2]:
+  //   ∫₀^{π/2} π (R + r cos v)² r cos v dv
+  //   = π r [ R²·1 + 2Rr·(π/4) + r²·(2/3) ].
+  const double R = Rc - r;
+  const double vTorus = M_PI * r * (R * R + 2.0 * R * r * (M_PI / 4.0) + r * r * (2.0 / 3.0));
+  const double expected = M_PI * Rc * Rc * (h - r) + vTorus;
+  CC_CHECK(nearRel(v, expected, 5e-3));  // deflection-bounded facet approximation
+}
+
+CC_TEST(curved_fillet_g1_tangent_at_both_seams) {
+  // ANALYTIC G1 assertion (no OCCT, no mesh): the torus canal normal at the two seams
+  // matches the adjacent primary-face normal exactly. The blend surface is the quarter
+  // tube radius(v)=R+r·cos v, axialOffset(v)=r·sin v, with outward normal
+  //   n(u,v) = radial(u)·cos v + axis·sin v.
+  //   * v=0   (wall seam):  n = radial(u)  → the CYLINDER outward normal (radial). cos=1.
+  //   * v=π/2 (cap seam):   n = axis        → the CAP outward normal (+axis).      cos=1.
+  // Because both seams share position AND normal with the neighbour, the fillet is
+  // G1-tangent there. We check this at several u around the rim.
+  const double Rc = 5.0, r = 1.5;
+  const nmath::Vec3 axis{0, 0, 1};  // capped-cylinder axis (build_prism extrudes +Z)
+  for (int k = 0; k < 8; ++k) {
+    const double u = 2.0 * M_PI * k / 8.0;
+    const nmath::Vec3 radial{std::cos(u), std::sin(u), 0.0};
+    // Wall seam v=0: torus normal is purely radial → equals the cylinder radial normal.
+    const nmath::Vec3 nWall = radial * std::cos(0.0) + axis * std::sin(0.0);
+    CC_CHECK(nearRel(nmath::dot(nmath::Dir3{nWall}.vec(), radial), 1.0, 1e-12));
+    // Cap seam v=π/2: torus normal is purely axial → equals the cap outward normal.
+    const nmath::Vec3 nCap = radial * std::cos(M_PI / 2.0) + axis * std::sin(M_PI / 2.0);
+    CC_CHECK(nearRel(nmath::dot(nmath::Dir3{nCap}.vec(), axis), 1.0, 1e-12));
+  }
+  // The seam POSITIONS also coincide with the neighbours: v=0 sits at radius Rc (on the
+  // cylinder wall) and v=π/2 sits at radius Rc−r (the trimmed cap edge), closing G0+G1.
+  // radius(v)=(Rc−r)+r·cos v, so radius(0)=Rc (wall) and radius(π/2)=Rc−r (cap edge).
+  const double Rm = Rc - r;  // torus major radius
+  CC_CHECK(nearRel(Rm + r * std::cos(0.0), Rc, 1e-12));            // radius(0)=Rc (wall)
+  CC_CHECK(nearRel(Rm + r * std::cos(M_PI / 2.0), Rc - r, 1e-12));  // radius(π/2)=Rc−r (cap)
+}
+
+CC_TEST(curved_fillet_scope_defers) {
+  const double Rc = 5.0, h = 10.0;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  const int rim = findRimAtZ(cyl, h);
+  int ids[] = {rim};
+  // Ring-torus guard: r=3 ⇒ Rc<2r ⇒ NULL (spindle torus, defers to OCCT).
+  CC_CHECK(blend::curved_fillet_edge(cyl, ids, 1, 3.0, 0.01).isNull());
+  // Zero / negative radius → NULL.
+  CC_CHECK(blend::curved_fillet_edge(cyl, ids, 1, 0.0, 0.01).isNull());
+  // More than one picked edge → NULL (this slice handles a single rim).
+  int ids2[] = {rim, 1};
+  CC_CHECK(blend::curved_fillet_edge(cyl, ids2, 2, 1.5, 0.01).isNull());
+  // A straight (Line) box edge is not a circular crease → NULL.
+  topo::Shape b = box(10, 10, 10);
+  const int le = findEdgeId(b, {0, 10, 10}, {10, 10, 10});
+  int idsb[] = {le};
+  CC_CHECK(blend::curved_fillet_edge(b, idsb, 1, 1.0, 0.01).isNull());
+}
+
+CC_TEST(curved_fillet_both_rims_and_engine_dispatch) {
+  // The engine fillet_edges dispatches the circular rim through the curved path when
+  // the planar path declines. Exercise the builder on the BOTTOM rim too (z=0), and
+  // confirm the planar fillet_edges still returns NULL on this curved solid (so the
+  // engine's fall-through to curved_fillet_edge is what lands it).
+  const double Rc = 4.0, h = 8.0, r = 1.0;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  const int bottom = findRimAtZ(cyl, 0.0);
+  CC_CHECK(bottom != 0);
+  int ids[] = {bottom};
+  CC_CHECK(blend::fillet_edges(cyl, ids, 1, r).isNull());  // planar path declines
+  topo::Shape f = blend::curved_fillet_edge(cyl, ids, 1, r, 0.005);
+  bool wt = false;
+  const double v = vol(f, wt);
+  bool wt0 = false;
+  const double v0 = vol(cyl, wt0);
+  CC_CHECK(!f.isNull());
+  CC_CHECK(wt);
+  CC_CHECK(v < v0);
+}
+
 // ── offset_face ────────────────────────────────────────────────────────────────--
 
 CC_TEST(offset_top_face_grows_slab) {

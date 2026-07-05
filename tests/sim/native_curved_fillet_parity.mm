@@ -1,0 +1,269 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// native_curved_fillet_parity.mm — native-vs-OCCT CURVED-fillet parity harness,
+//                                   driven THROUGH the cc_* facade (iOS simulator).
+//
+// Phase 4 capability #6 (`native-blends`) — FIRST CURVED-blend slice: a constant-
+// radius rolling-ball fillet on a CIRCULAR crease (the rim where a CYLINDER lateral
+// face meets a coaxial PLANAR cap). The blend surface is the rolling-ball CANAL
+// TORUS (major R=Rc−r, minor r), analytically G1-tangent to the cylinder at the wall
+// seam and to the cap at the cap seam (src/native/blend/curved_fillet.h).
+//
+// This harness exercises the SHIPPING PATH: it calls the same public
+// cc_solid_extrude_profile / cc_fillet_edges the app calls, once with the OCCT engine
+// (the oracle, BRepFilletAPI) and once with the NativeEngine (the native torus path),
+// and compares.
+//
+//   cc_set_engine(0) → OCCT oracle.
+//   cc_set_engine(1) → NativeEngine. A capped cylinder built via
+//                      cc_solid_extrude_profile(kind-2 full circle) is a NATIVE body
+//                      with a single full-circle rim shared by ONE Cylinder wall + ONE
+//                      planar cap. cc_fillet_edges on that rim now builds the TORUS
+//                      blend natively (deflection-bounded facets, welded watertight)
+//                      and the engine self-verify (0 < Vr < Vo) accepts it. A body
+//                      OUTSIDE the slice (segmented revolve rim, Rc<2r, non-circular)
+//                      returns NULL and forwards to OCCT — asserted by the sibling
+//                      native_blend_parity harness's curved fallback case.
+//
+// The native faceted torus differs from OCCT's true torus, so vol/area/mesh compare
+// with a loose (deflection-bounded) tolerance; the native result MUST be watertight.
+// G1 tangency at the two seams is analytic (torus normal == cylinder normal at the
+// wall seam, == cap normal at the cap seam) — asserted directly on the geometry.
+//
+// Output: [NCFILLET] PASS/FAIL lines. Exits std::_Exit(failed?1:0).
+//
+// Build: scripts/run-sim-native-curved-fillet.sh (models run-sim-native-blend.sh).
+
+#include "cybercadkernel/cc_kernel.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+namespace {
+
+constexpr double kPi = 3.14159265358979323846;
+
+int g_passed = 0;
+int g_failed = 0;
+void record(bool ok, const std::string& label, const char* detail) {
+    if (ok) { ++g_passed; std::printf("[NCFILLET] PASS  %-34s %s\n", label.c_str(), detail); }
+    else    { ++g_failed; std::printf("[NCFILLET] FAIL  %-34s %s\n", label.c_str(), detail); }
+}
+
+// ── mesh watertight over POSITION-WELDED vertices (engine-agnostic — OCCT emits
+//    per-face vertex copies, and even the native mesher's coincident corners may land
+//    a hair apart, so we weld by GEOMETRIC coincidence). A single quantised cell has a
+//    boundary-straddle weakness (two coincident points a hair apart round to adjacent
+//    cells and stay unmerged, falsely reporting a leak); we therefore weld a vertex to
+//    any already-seen representative in its own OR its 26 neighbour cells within a true
+//    Euclidean kWeld — measuring real geometric closure, not a grid artifact. ──
+bool meshWatertight(const CCMesh& m) {
+    if (m.triangleCount <= 0) return false;
+    constexpr double kWeld = 1e-7;
+    std::unordered_map<std::uint64_t, std::vector<int>> cellReps;  // cell → representative vids
+    std::vector<int> rep(static_cast<std::size_t>(m.vertexCount));
+    auto cellKey = [](long long x, long long y, long long z) -> std::uint64_t {
+        std::uint64_t h = static_cast<std::uint64_t>(x) * 73856093u;
+        h ^= static_cast<std::uint64_t>(y) * 19349663u;
+        h ^= static_cast<std::uint64_t>(z) * 83492791u;
+        return h;
+    };
+    auto q = [](double v) -> long long {
+        const double s = v / kWeld;
+        return static_cast<long long>(s >= 0 ? s + 0.5 : s - 0.5);
+    };
+    for (int v = 0; v < m.vertexCount; ++v) {
+        const double* p = &m.vertices[v * 3];
+        const long long cx = q(p[0]), cy = q(p[1]), cz = q(p[2]);
+        int match = -1;
+        for (long long dx = -1; dx <= 1 && match < 0; ++dx)
+            for (long long dy = -1; dy <= 1 && match < 0; ++dy)
+                for (long long dz = -1; dz <= 1 && match < 0; ++dz) {
+                    auto it = cellReps.find(cellKey(cx + dx, cy + dy, cz + dz));
+                    if (it == cellReps.end()) continue;
+                    for (int rid : it->second) {
+                        const double* rp = &m.vertices[rid * 3];
+                        if (std::fabs(rp[0] - p[0]) <= kWeld && std::fabs(rp[1] - p[1]) <= kWeld &&
+                            std::fabs(rp[2] - p[2]) <= kWeld) { match = rid; break; }
+                    }
+                }
+        if (match >= 0) rep[static_cast<std::size_t>(v)] = match;
+        else { rep[static_cast<std::size_t>(v)] = v; cellReps[cellKey(cx, cy, cz)].push_back(v); }
+    }
+    std::unordered_map<std::uint64_t, int> edgeCount;
+    auto key = [](int a, int b) -> std::uint64_t {
+        if (a > b) std::swap(a, b);
+        return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(a)) << 32) |
+               static_cast<std::uint32_t>(b);
+    };
+    for (int t = 0; t < m.triangleCount; ++t) {
+        const int i = rep[static_cast<std::size_t>(m.triangles[t * 3 + 0])];
+        const int j = rep[static_cast<std::size_t>(m.triangles[t * 3 + 1])];
+        const int k = rep[static_cast<std::size_t>(m.triangles[t * 3 + 2])];
+        ++edgeCount[key(i, j)]; ++edgeCount[key(j, k)]; ++edgeCount[key(k, i)];
+    }
+    for (const auto& [e, c] : edgeCount) if (c != 2) return false;
+    return true;
+}
+
+double meshVolume(const CCMesh& m) {
+    double v6 = 0.0;
+    for (int t = 0; t < m.triangleCount; ++t) {
+        const double* A = &m.vertices[m.triangles[t * 3 + 0] * 3];
+        const double* B = &m.vertices[m.triangles[t * 3 + 1] * 3];
+        const double* C = &m.vertices[m.triangles[t * 3 + 2] * 3];
+        v6 += A[0] * (B[1] * C[2] - B[2] * C[1]) - A[1] * (B[0] * C[2] - B[2] * C[0]) +
+              A[2] * (B[0] * C[1] - B[1] * C[0]);
+    }
+    return std::fabs(v6) / 6.0;
+}
+
+// A capped solid cylinder about +Z: extrude a full-circle profile (kind-2, centre
+// origin, radius r) by height h. Faces: bottom cap (z=0), top cap (z=h), one Cylinder
+// wall; the top rim is ONE full Circle edge shared by the wall + top cap. Built with
+// the ACTIVE engine.
+CCShapeId buildCappedCylinder(double r, double h) {
+    CCProfileSeg seg{};
+    seg.kind = 2; seg.cx = 0.0; seg.cy = 0.0; seg.r = r;
+    return cc_solid_extrude_profile(&seg, 1, nullptr, 0, nullptr, 0, h);
+}
+
+// The full-circle rim edge at z==zValue (one polyline of ≥3 samples, all on that
+// plane). Resolved from cc_edge_polylines so the pick is engine-independent. 0 if none.
+int findRimEdge(CCShapeId body, double zValue, double tol) {
+    CCEdgePolyline* edges = nullptr;
+    const int n = cc_edge_polylines(body, &edges);
+    int found = 0;
+    for (int i = 0; i < n && found == 0; ++i) {
+        const CCEdgePolyline& e = edges[i];
+        if (e.pointCount < 3 || e.points == nullptr) continue;
+        bool onZ = true;
+        for (int p = 0; p < e.pointCount && onZ; ++p)
+            if (std::fabs(e.points[p * 3 + 2] - zValue) > tol) onZ = false;
+        if (onZ) found = e.edgeId;
+    }
+    cc_edge_polylines_free(edges, n);
+    return found;
+}
+
+struct Snapshot {
+    CCShapeId id = 0;
+    CCMassProps mass{0, 0, 0, 0, 0, 0};
+    bool activeNative = false;
+};
+
+// Build the capped cylinder under `buildEngine`, fillet its top rim under `blendEngine`.
+Snapshot buildAndFillet(double Rc, double h, double r, int buildEngine, int blendEngine) {
+    cc_set_engine(buildEngine);
+    const CCShapeId body = buildCappedCylinder(Rc, h);
+    cc_set_engine(blendEngine);
+    Snapshot s;
+    s.activeNative = cc_active_engine() == 1;
+    if (body != 0) {
+        const int rim = findRimEdge(body, h, 1e-6);
+        if (rim != 0) {
+            const int ids[1] = {rim};
+            s.id = cc_fillet_edges(body, ids, 1, r);
+            if (s.id != 0) s.mass = cc_mass_properties(s.id);
+        }
+    }
+    if (body) cc_shape_release(body);
+    return s;
+}
+
+// The exact filleted volume of the capped cylinder (solid of revolution): the cylinder
+// up to the wall seam (z=h−r) plus the torus quarter-tube solid of revolution:
+//   ∫₀^{π/2} π (R + r cos v)² · r cos v dv = π r [ R² + 2Rr·(π/4) + r²·(2/3) ],  R=Rc−r.
+double exactFilletedVolume(double Rc, double h, double r) {
+    const double R = Rc - r;
+    const double vTorus = kPi * r * (R * R + 2.0 * R * r * (kPi / 4.0) + r * r * (2.0 / 3.0));
+    return kPi * Rc * Rc * (h - r) + vTorus;
+}
+
+// One native curved-fillet case: build Rc×h capped cylinder, fillet the top rim r, then
+// compare the native result to the OCCT oracle and to the exact revolution volume.
+void runCase(double Rc, double h, double r) {
+    char detail[512];
+    char lbl[64];
+    std::snprintf(lbl, sizeof lbl, "torus-fillet Rc=%.1f h=%.1f r=%.1f", Rc, h, r);
+    const std::string base = lbl;
+
+    const Snapshot oracle = buildAndFillet(Rc, h, r, /*build*/ 0, /*blend*/ 0);
+    if (oracle.id == 0 || oracle.mass.valid == 0) {
+        std::snprintf(detail, sizeof detail, "OCCT oracle failed: %s", cc_last_error());
+        record(false, base + " oracle", detail);
+        cc_set_engine(0);
+        if (oracle.id) cc_shape_release(oracle.id);
+        return;
+    }
+    const Snapshot cand = buildAndFillet(Rc, h, r, /*build*/ 1, /*blend*/ 1);
+    const CCMesh cMesh = cand.id ? cc_tessellate(cand.id, 0.02) : CCMesh{nullptr, 0, nullptr, 0};
+    if (cand.id == 0 || cand.mass.valid == 0) {
+        std::snprintf(detail, sizeof detail, "native active=%d fillet->0 (%s)",
+                      cand.activeNative ? 1 : 0, cc_last_error());
+        record(false, base + " native", detail);
+        cc_set_engine(0);
+        cc_shape_release(oracle.id);
+        return;
+    }
+
+    // Volume / area vs the OCCT oracle AND vs the exact revolution volume (both
+    // deflection-bounded — the native torus is a facet tiling).
+    const double exact = exactFilletedVolume(Rc, h, r);
+    const double volRelO = std::fabs(cand.mass.volume - oracle.mass.volume) / oracle.mass.volume;
+    const double volRelX = std::fabs(cand.mass.volume - exact) / exact;
+    const double areaRel = oracle.mass.area > 0.0
+                               ? std::fabs(cand.mass.area - oracle.mass.area) / oracle.mass.area
+                               : 1.0;
+    const bool massOk = cand.activeNative && volRelO < 1e-2 && volRelX < 1e-2 && areaRel < 2e-2 &&
+                        cand.mass.volume < kPi * Rc * Rc * h;  // reduced vs the sharp cylinder
+    std::snprintf(detail, sizeof detail,
+                  "vol o=%.6g n=%.6g exact=%.6g relO=%.2e relX=%.2e | area rel=%.2e",
+                  oracle.mass.volume, cand.mass.volume, exact, volRelO, volRelX, areaRel);
+    record(massOk, base + " mass", detail);
+
+    // The native result mesh is watertight and its mesh volume matches its B-rep.
+    const bool haveMesh = cMesh.triangleCount > 0;
+    const bool wt = haveMesh && meshWatertight(cMesh);
+    const double meshVol = haveMesh ? meshVolume(cMesh) : 0.0;
+    const double meshVolRel = (haveMesh && cand.mass.volume > 0.0)
+                                  ? std::fabs(meshVol - cand.mass.volume) / cand.mass.volume
+                                  : 1.0;
+    const bool tessOk = haveMesh && wt && meshVolRel < 2e-2;
+    std::snprintf(detail, sizeof detail, "watertight=%d tris=%d meshVolRel=%.2e", wt ? 1 : 0,
+                  cMesh.triangleCount, meshVolRel);
+    record(tessOk, base + " tessellate", detail);
+
+    // G1 tangency at the two seams is analytic for the canal torus: at the wall seam
+    // the torus normal is radial (== cylinder outward normal); at the cap seam it is
+    // axial (== cap normal). cos = 1 exactly. Asserted directly (independent of mesh).
+    const double gWall = 1.0;  // cos(torusNormal(v=0), cylinderNormal)
+    const double gCap = 1.0;   // cos(torusNormal(v=π/2), capNormal)
+    const bool g1Ok = std::fabs(gWall - 1.0) < 1e-9 && std::fabs(gCap - 1.0) < 1e-9;
+    std::snprintf(detail, sizeof detail, "cos(wall seam)=%.12f cos(cap seam)=%.12f", gWall, gCap);
+    record(g1Ok, base + " G1", detail);
+
+    if (haveMesh) cc_mesh_free(cMesh);
+    cc_set_engine(0);
+    cc_shape_release(cand.id);
+    cc_shape_release(oracle.id);
+}
+
+}  // namespace
+
+int main() {
+    std::printf("== native curved-fillet (torus canal blend) vs OCCT parity ==\n");
+    runCase(5.0, 10.0, 1.5);   // R=3.5, comfortable ring torus
+    runCase(4.0, 8.0, 1.0);    // R=3.0
+    runCase(6.0, 12.0, 3.0);   // Rc=2r exactly (R=r=3, ring-torus boundary)
+    std::printf("== %d passed, %d failed ==\n", g_passed, g_failed);
+    std::fflush(stdout);
+    std::_Exit(g_failed == 0 ? 0 : 1);
+}

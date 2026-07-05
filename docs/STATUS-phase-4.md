@@ -47,8 +47,13 @@ Date: 2026-07-03 · Branch: `main`.
   is fixed at the mesher level, so well-formed threads mesh `boundaryEdges==0` at every
   deflection and run NATIVE. Still OCCT-fallthrough (not faked): kind-3 SPLINE profile
   edges, off-axis-arc (torus) / spline surface-of-revolution, twisted/guided/rail sweep,
-  3+-section / guided / rail loft, a fine-pitch / self-intersecting thread, and wrap-emboss
-  (Tier E).
+  3+-section / guided / rail loft, and a fine-pitch / self-intersecting thread. Wrap-emboss
+  (Tier E) is NO LONGER fully OCCT: its FIRST NATIVE SLICE (a rectangular pad on a cylinder
+  lateral face) has since landed native + verified vs OCCT — see the native-wrap-emboss
+  result table below (`add-native-wrap-emboss` archived); deboss / non-rectangular /
+  non-cylindrical / >2π stay OCCT. The blend family (#6) likewise gained its FIRST CURVED
+  slice (constant-radius fillet on a circular cylinder↔cap rim → torus canal, G1-tangent) —
+  see the native-curved-fillet result table below (`add-native-curved-fillet` archived).
 - **Capability #5 `native-booleans` — PLANAR-polyhedron slice done at the
   verification bar; curved / general still OCCT-fallthrough (honest).** Native
   `cc_boolean` (fuse / cut / common) for planar-faced solids (axis-aligned boxes,
@@ -1252,7 +1257,8 @@ for −d) and DISCARDS a bad candidate → OCCT.
 | `cc_offset_face` — PLANAR face along its normal | **NATIVE** | slide the face along its normal, drag the side faces; EXACT slab (grow +d / shrink −d) |
 | `cc_shell` — uniform thickness on a PLANAR / box-like solid | **NATIVE** | inset the kept walls inward by thickness + native BSP-cut the cavity; EXACT wall |
 | `cc_fillet_edges` — CONSTANT radius, convex PLANAR-DIHEDRAL edge | **NATIVE** | rolling-ball tangent cylinder (axis ∥ crease, `C = E − r/(1+n1·n2)·(n1+n2)`, tangent lines `Ti = C + r·ni`), deflection-bounded facets; blend face a `Cylinder` of radius r |
-| `cc_fillet_edges` — CURVED-face / curved-rim edge | OCCT-fallthrough | no curved-face blend surface / curved trimming in the planar slice; builder NULL → forwarded to `BRepFilletAPI_MakeFillet` |
+| `cc_fillet_edges` — CONSTANT radius, convex CIRCULAR crease (cylinder lateral ↔ coaxial planar cap), `Rc ≥ 2r` | **NATIVE (curved, #6 first slice)** | rolling-ball canal is a TORUS (major `R=Rc−r`, minor `r`); quarter-tube `v∈[0,π/2]`, trimmed to the two tangent circles (`torus∩cyl` at `v=0` radial, `torus∩plane` at `v=π/2` axial), G1-tangent at both seams; deflection-bounded facet soup welded via `assembleSolid` |
+| `cc_fillet_edges` — CONCAVE / VARIABLE / cyl↔cyl / cyl↔cone / NON-circular curved rim / freeform / `Rc<2r` / multi-edge | OCCT-fallthrough | outside the constant-radius convex circular cyl↔cap slice; builder NULL → forwarded to `BRepFilletAPI_MakeFillet` |
 | `cc_fillet_edges` / `cc_chamfer_edges` — CONCAVE edge | OCCT-fallthrough | reflex-dihedral material add + neighbourhood trimming out of slice; builder DECLINEs → NULL |
 | `cc_fillet_edges_variable` (variable radius) | OCCT-fallthrough | non-cylindrical swept blend surface; pure fall-through, no native builder call |
 | `cc_fillet_face` (blend a whole face) | OCCT-fallthrough | pure fall-through, no native builder call |
@@ -1275,7 +1281,7 @@ under `cc_set_engine(0/1)` (OCCT default restored in teardown). **`[NBLEND]` 16 
 | offset-face | `cc_offset_face` planar face | **NATIVE** | 1500 / 1500 · **4.55e-16** | 1.42e-16 | 2.66e-15 | 0.00e+00 (1e-6) | watertight, 12 tris, meshVolRel 0.00e+00 |
 | shell-open-top | `cc_shell` t on box, top open | **NATIVE** | 424 / 424 · **4.02e-16** | 1.28e-16 | 8.88e-16 | 0.00e+00 (1e-6) | watertight, 52 tris, meshVolRel 0.00e+00 |
 | fillet-edge | `cc_fillet_edges` const-r planar dihedral | **NATIVE** (deflection-bounded) | 997.854 / 997.765 · **8.96e-05** | 1.05e-04 | 4.16e-04 | 1.88e-16 (2e-2) | watertight, 36 tris, meshVolRel 0.00e+00 |
-| fillet-curved-edge | `cc_fillet_edges` on a curved rim | OCCT-fallthrough | 497.562 / 497.562 · **0.00e+00** | 0.00e+00 | 0.00e+00 | 0.00e+00 (1e-6) | forwarded to OCCT, watertight, 1010 tris, meshVolRel 3.48e-03 (curved fallback: volume-bound only) |
+| fillet-curved-edge | `cc_fillet_edges` on a curved rim OUTSIDE the #6 slice (OCCT-body / segmented rim) | OCCT-fallthrough | 497.562 / 497.562 · **0.00e+00** | 0.00e+00 | 0.00e+00 | 0.00e+00 (1e-6) | forwarded to OCCT, watertight, 1010 tris, meshVolRel 3.48e-03 (curved fallback: volume-bound only). The native curved-fillet path fires only on a native single-full-circle cyl↔cap rim; it does NOT hijack this case |
 | self-verify-guard | `cc_shell` t=6 on 10³ box (wall ≥ ½ span) | native REJECTS | id 0 (expect 0) | — | — | — | no verified watertight wall → OCCT-only (honest error, no fake result) |
 
 Tolerances: chamfer / offset / box-shell are EXACT (vol/area/centroid/bbox rel ≤ 4.55e-16
@@ -1312,6 +1318,99 @@ native-body edges are pickable exactly as OCCT-body edges are (covered by a
 - `tests/native/test_native_blend.cpp` — host Gate-1 (no OCCT).
 - `tests/sim/native_blend_parity.mm` + `scripts/run-sim-native-blend.sh` — sim Gate-2
   native-vs-OCCT parity (own `main()`; SKIPped by `run-sim-suite.sh`).
+
+## native-curved-fillet result table (#6 — first CURVED-blend slice)
+
+**Constant-radius rolling-ball fillet on a CIRCULAR crease** — the rim where a CYLINDER
+lateral face meets a coaxial PLANAR cap. The rolling ball's canal surface is a TORUS
+(major `R = Rc − r`, minor `r`); the native builder (`src/native/blend/curved_fillet.h`,
+OCCT-FREE) trims the wall + cap to the two analytic tangent circles, inserts the torus
+quarter-tube (`v ∈ [0, π/2]`), and rebuilds the whole filleted solid as one
+deflection-bounded planar-facet soup welded watertight via `boolean/assembleSolid`. G1-
+tangent at both seams by construction (torus normal radial at `v=0` = cylinder normal,
+axial at `v=π/2` = cap normal). Dispatched in `NativeEngine::fillet_edges` after the
+planar path declines; the MANDATORY `blendResultVerified` self-verify (watertight +
+`0 < Vr < Vo`) accepts or discards → OCCT. Requires `Rc ≥ 2r` (ring torus).
+
+**Host gate (Gate 1):** `test_native_blend` — closed-form-volume assertion (exact torus-
+canal volume) + `curved_fillet_g1_tangent_at_both_seams` (pure-math: torus canal normal
+exactly radial at `v=0` vs cylinder normal, exactly axial at `v=π/2` vs cap normal, seam
+radii coincide — ANALYTIC, no mesh, no OCCT). Host CTest 27/27 (34 with NUMSCI).
+
+**Native-vs-OCCT parity gate (Gate 2)** — `tests/sim/native_curved_fillet_parity.mm` +
+`scripts/run-sim-native-curved-fillet.sh`, booted iOS simulator, arm64, `cc_*` facade
+under `cc_set_engine(0/1)`. **`[NCFILLET]` 9 passed / 0 failed** (`activeNative=1`, REAL
+native — not a fallback). Native (n) vs OCCT `BRepFilletAPI` (o), exact torus-canal (x):
+
+| Case | vol (o / n / exact) · relO / relX | area rel | tessellate | G1 (analytic) |
+|---|---|---|---|---|
+| Rc=5.0 h=10.0 r=1.5 | 771.245 / 768.804 / 771.245 · 3.17e-03 / 3.17e-03 | 1.74e-03 | watertight, 896 tris, meshVolRel 0.00e+00 | cos(wall)=1.0 cos(cap)=1.0 |
+| Rc=4.0 h=8.0 r=1.0 | 397.032 / 395.539 / 397.032 · 3.76e-03 / 3.76e-03 | 2.09e-03 | watertight, 716 tris, meshVolRel 0.00e+00 | cos(wall)=1.0 cos(cap)=1.0 |
+| Rc=6.0 h=12.0 r=3.0 (Rc=2r ring-torus boundary) | 1292.49 / 1288.78 / 1292.49 · 2.86e-03 / 2.86e-03 | 1.50e-03 | watertight, 1316 tris, meshVolRel 0.00e+00 | cos(wall)=1.0 cos(cap)=1.0 |
+
+The native-vs-OCCT gap (≤ 0.38% volume) is the deflection bound of the planar-facet
+tiling against OCCT's exact torus/cylinder faces, well inside the 1% bar; nothing faked.
+**G1 is ANALYTIC** — the reported `cos = 1.0` is the closed-form tangency the torus
+construction guarantees (and the host test verifies the same closed form), NOT a
+mesh-sampled measurement (flagged honestly). STILL OCCT-fallthrough: CONCAVE rims,
+VARIABLE radius, cyl↔cyl / cyl↔cone canals, NON-circular creases, freeform neighbours,
+`Rc < 2r`, multi-edge, segmented revolve rims.
+
+### Files (#6 curved slice)
+
+- `src/native/blend/curved_fillet.h` — `curved_fillet_edge(shape, edgeIds, count, r, defl)`:
+  cyl↔cap rim recognition by geometry, torus-canal quarter-tube + trimmed/far caps + wall,
+  planar-triangle facet soup (OCCT-free).
+- `src/engine/native/native_engine.cpp` — `fillet_edges` tries `curved_fillet_edge` after the
+  planar path declines, gated by `blendResultVerified`.
+- `tests/native/test_native_blend.cpp` — host Gate-1 closed-form-volume + analytic-G1 cases.
+- `tests/sim/native_curved_fillet_parity.mm` + `scripts/run-sim-native-curved-fillet.sh` — sim
+  Gate-2 native-vs-OCCT parity (own `main()`; SKIPped by `run-sim-suite.sh`).
+
+## native-wrap-emboss result table (#7 — first NATIVE wrap-emboss slice)
+
+**Emboss a RECTANGULAR pad onto a CYLINDER lateral face** (`boss=1`), behind the existing
+Phase-3 OCCT `cc_wrap_emboss` ABI (which stays the ORACLE). The native builder
+(`src/native/feature/wrap_emboss.h`, OCCT-FREE) wraps the footprint by the SAME map the
+OCCT oracle uses (`u = px/R`, `v = py + vMid`), builds the raised pad (outer cylindrical
+cap at `R+height` + two circumferential walls + two axial walls) and retiles the base wall
+with the footprint window removed, sharing a common `u`-sample sequence so every seam welds
+watertight via `boolean/assembleSolid`. Dispatched in `NativeEngine::wrap_emboss` for a
+native body; the MANDATORY `wrapEmbossVerified` self-verify (watertight + volume GROWS by
+≈ `footprint area × height`) accepts or discards → OCCT (a declined native body returns an
+honest error — never forwarded, as OCCT would misread the native void).
+
+**Host gate (Gate 1):** `test_native_wrap_emboss` — footprint/rectangle recovery + facet-
+soup watertightness + volume growth + decline of deboss / non-rectangular / non-cylindrical.
+
+**Native-vs-OCCT parity gate (Gate 2)** — `tests/sim/native_wrap_emboss_parity.mm` +
+`scripts/run-sim-native-wrap-emboss.sh`, booted iOS simulator, arm64, `cc_*` facade under
+`cc_set_engine(0/1)`. **`[NWEMB]` 6 passed / 0 failed** (`activeNative=1`, REAL native).
+Native (n) vs OCCT `cc_wrap_emboss` (o), analytic expected (x = base + footprint×height):
+
+| Case | vol (o / n / expect) · relO / relX | area rel | tessellate |
+|---|---|---|---|
+| Rc=10.0 h=20.0 6×8 pad ×2 | 6388.79 / 6380.46 / 6375.05 · 1.30e-03 / 8.48e-04 | 6.48e-04 | watertight, 600 tris, meshVolRel 0.00e+00 |
+| Rc=8.0 h=24.0 4×5 pad ×1.5 | 4858.3 / 4850.25 / 4851.48 · 1.66e-03 / 2.54e-04 | 7.25e-04 | watertight, 528 tris, meshVolRel 1.88e-16 |
+| Rc=12.0 h=16.0 10×6 pad ×3 | 7440.73 / 7432.7 / 7414.22 · 1.08e-03 / 2.49e-03 | 6.17e-04 | watertight, 672 tris, meshVolRel 0.00e+00 |
+
+The native-vs-OCCT gap (≤ 0.17% volume) is the deflection bound of the planar-facet tiling
+against OCCT's exact cylindrical faces, well inside the 1% bar; nothing faked. The Phase-3
+OCCT wrap-emboss #290 oracle is unchanged (`run-sim-phase3-suite.sh` 70/70). STILL OCCT:
+DEBOSS (`boss=0`), NON-rectangular / >4-corner / dense / high-curvature profiles,
+NON-cylindrical (cone/sphere/planar/NURBS) base, footprints wrapping >2π / self-overlapping
+/ off the axial ends, non-positive height.
+
+### Files (#7 native wrap-emboss)
+
+- `src/native/feature/wrap_emboss.h` — `wrap_emboss(shape, faceId, profileXY, count, height,
+  boss, defl)`: cylinder-wall recovery, rectangular-footprint recovery, wrapped pad (outer
+  cap + circumferential + axial walls) + windowed base wall, planar-triangle facet soup (OCCT-free).
+- `src/engine/native/native_engine.cpp` — `wrap_emboss` native path + `wrapEmbossVerified`
+  self-verify; native-else-honest-error, OCCT body forwards to the Phase-3 oracle.
+- `tests/native/test_native_wrap_emboss.cpp` — host Gate-1 (no OCCT).
+- `tests/sim/native_wrap_emboss_parity.mm` + `scripts/run-sim-native-wrap-emboss.sh` — sim
+  Gate-2 native-vs-OCCT parity (own `main()`; SKIPped by `run-sim-suite.sh`).
 
 ## native-exchange result table (#7 — native STEP EXPORT slice)
 

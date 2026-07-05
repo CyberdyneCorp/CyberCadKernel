@@ -282,6 +282,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_curved_boolean
         test_native_ssi
         test_native_ssi_s4_classification
+        test_native_heal
         test_native_blend
         test_native_wrap_emboss
         test_native_step_writer
@@ -367,6 +368,8 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi.cpp")
     set(test_native_ssi_s4_classification_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_s4_classification.cpp")
+    set(test_native_heal_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_heal.cpp")
     set(test_native_blend_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_blend.cpp")
     set(test_native_wrap_emboss_SRC

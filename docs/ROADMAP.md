@@ -158,6 +158,23 @@ robustness tail keeps OCCT linked.** Canonical detail:
   `footprint area × height`); verified vs OCCT `cc_wrap_emboss` (sim `run-sim-native-wrap-emboss.sh`
   **6/6**, `activeNative=1`, vol rel ≤ 2.5e-3, area rel ≤ 7.3e-4). DEBOSS, non-rectangular / >4-corner
   profiles, non-cylindrical base, >2π / off-end footprints → OCCT.
+- ✅ **Shape healing FIRST NATIVE SLICE (tolerant sew + vertex/tolerance unification + degenerate
+  removal + orientation fix)** — an INTERNAL, OCCT-free healer (`src/native/heal/`, `healShell`) that
+  stitches a coincident-within-tolerance face soup into a connected, consistently-oriented,
+  WATERTIGHT solid: hash-welds near-coincident vertices (`boolean/assemble.h` `VertexPool`
+  generalized), shares an edge only when its endpoints unify to the same two shared vertices within
+  tolerance (never a fabricated coincidence), drops zero-length edges + sliver faces, and flood-fills
+  outward orientation with a global enclosed-volume-sign tie-break. SELF-VERIFIED (watertight +
+  `V > 0`) before it is kept; otherwise returns the input UNCHANGED with a typed `Unhealed` reason +
+  measured `maxResidualGap`. Verified vs OCCT `BRepBuilderAPI_Sewing` + `ShapeFix_Shell`/`ShapeFix_Solid`
+  (host `test_native_heal` 10/10; sim `run-sim-native-heal.sh` **4/4**): in-scope soup-cube/flipped-face
+  heal to V=1 watertight matching OCCT, and the un-healable fixtures (gap 1e-2 ≫ tol → `GapBeyondTolerance`
+  residual 0.0255; missing face → `OpenShell`) report UNHEALED HONESTLY, matching OCCT leaving the shell
+  open at the same tolerance. Engine hook `tryNativeHeal` → self-verify → OCCT fallback; no `cc_*` change.
+  **This is the gating foundation for a future native STEP IMPORT** (imported B-rep arrives with exactly
+  these coincident-within-tolerance / degenerate / orientation defects). Beyond-tol gaps, missing
+  pcurves, self-intersecting wires, and arbitrary broken industrial B-rep stay UNHEALED → OCCT (honest
+  asymptotic residual — a measured win vs OCCT on the in-scope family, not a guarantee).
 
 **Still OCCT-backed (the tail that keeps OCCT linked):**
 - ☐ SSI **S4-d general/freeform + S4-e general/freeform + S4-f general topology repair** (the moat
@@ -175,7 +192,9 @@ robustness tail keeps OCCT linked.** Canonical detail:
   profiles, non-cylindrical base, >2π footprints). _(The circular cyl↔cap fillet #6 and the rectangular
   pad-on-cylinder emboss #7 first slices are now native — see above.)_
 - ☐ Non-planar/guided/rail sweep robustness; general loft; fine-pitch threads.
-- ☐ **Shape healing**; **STEP/IGES import**.
+- ☐ **Shape healing residual** (beyond-tolerance gap bridging, missing-pcurve reconstruction,
+  self-intersecting-wire repair, arbitrary broken industrial B-rep — the coincident-within-tolerance /
+  degenerate / orientation first slice is now native, above); **STEP/IGES import** (gated on healing).
 - ☐ **`drop-occt`** — BLOCKED until the above are native (research-grade, multi-year).
 
 **Effort:** ≈ 0.9–1.3 py delivered (planar/analytic breadth); ≈ **9–18 py remaining**

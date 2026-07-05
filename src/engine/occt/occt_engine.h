@@ -160,6 +160,24 @@ std::vector<TopoDS_Face> facesByIds(const TopoDS_Shape& shape, const int* ids, i
 bool checkFineThreadGate(const EngineShape& a, const EngineShape& b, int op,
                          ShapeResult& outGated);
 
+// ── shape-healing oracle (Phase 4 #4 native-healing fallback) ─────────────────
+// The OCCT side of the engine-internal native-heal hook (see
+// src/engine/native/native_heal_hook.h): sew a face soup + heal the shell/solid via
+// BRepBuilderAPI_Sewing → ShapeFix_Shell → ShapeFix_Solid. Confined to this OCCT
+// adapter; the native module never includes an OCCT header. Also the ORACLE the sim
+// parity harness compares the native healer against.
+struct SewFixResult {
+    TopoDS_Shape shape;         // the sewn/fixed shell or solid (may be null on failure)
+    bool watertight = false;    // the sewn shell is closed (BRep_Tool / free-edge count == 0)
+    bool validSolid = false;    // a valid Solid was formed (ShapeFix_Solid + IsValid)
+    double volume = 0.0;        // enclosed volume of the fixed solid (BRepGProp), 0 if none
+};
+
+// Sew `faceSoup` (a TopoDS_Compound of independent faces) at `tolerance` and heal
+// with ShapeFix. Reports watertight/valid/volume so the parity harness can compare
+// against the native HealResult. Never widens the tolerance.
+SewFixResult sewAndFix(const TopoDS_Shape& faceSoup, double tolerance);
+
 }  // namespace occt
 
 // ── OcctEngine ────────────────────────────────────────────────────────────────

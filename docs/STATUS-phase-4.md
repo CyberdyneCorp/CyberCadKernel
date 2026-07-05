@@ -141,6 +141,37 @@ Date: 2026-07-03 · Branch: `main`.
   Native writer active (box 5363 B / cylinder 6893 B / holed-plate 6457 B); a foreign
   OCCT-built body falls through to OCCT `STEPControl_Writer` (re-read relV 0.00e+00). **STEP
   import, IGES export/import, and out-of-scope geometry stay OCCT (never faked).**
+- **Shape healing — FIRST NATIVE SLICE done at the verification bar (BOTH gates); the
+  arbitrary-broken-B-rep residual stays OCCT (honest, asymptotic).** An INTERNAL, OCCT-free
+  healer under `src/native/heal/` (`cybercad::native::heal::healShell`) that stitches a
+  coincident-within-tolerance face soup / malformed shell into a connected, consistently-oriented,
+  WATERTIGHT solid — or reports UNHEALED honestly and returns the input unchanged. It is INTERNAL
+  (no `cc_*` entry point, like SSI): the engine invokes it and parity is asserted at the C++/sim
+  boundary. Four sub-operations in dependency order: (1) **vertex/tolerance unification** (the
+  `boolean/assemble.h` `VertexPool` spatial hash generalized to arbitrary B-rep vertices), (2)
+  **tolerant sewing** (an edge becomes shared iff its endpoints unify to the same two shared vertices
+  within tolerance — never a fabricated coincidence), (3) **degenerate removal** (zero-length edges +
+  sliver / near-zero-area faces via a min-height test), (4) **orientation fix** (flood-fill consistent
+  outward winding across shared edges + a global enclosed-volume-sign tie-break). Every heal is
+  SELF-VERIFIED (`tessellate::isWatertight` + `enclosedVolume > 0` across a deflection ladder) before
+  it is kept; otherwise a typed `Unhealed` result carries the measured `maxResidualGap` and the ORIGINAL
+  shape. Both gates green: host `test_native_heal` (**10 cases, 0 failed** — soup-cube heals to V=1 with
+  `nMergedEdges=12`/`nMergedVerts=16` `maxResidualGap==0`, degenerate edge + sliver face dropped, flipped
+  face re-oriented, all-inward → global sign flip, within-tol verts merged + beyond-tol rejected, and
+  both un-healable fixtures — missing face → `OpenShell`, gap 1e-2 → `GapBeyondTolerance` residual 0.0255
+  — report UNHEALED input-unchanged; green NUMSCI OFF **and** ON) + sim native-vs-OCCT parity
+  (`run-sim-native-heal.sh`, **`[NHEAL]` 4 passed / 0 failed**): the in-scope soup-cube + flipped-face
+  heal to V=1 watertight matching OCCT `BRepBuilderAPI_Sewing` + `ShapeFix_Shell`/`ShapeFix_Solid` (V=1,
+  valid), and on the beyond-tol / missing-face fixtures the native UNHEALED verdict MATCHES OCCT leaving
+  the shell open (valid=0 watertight=0 at the same tolerance — no fabricated closure). Engine hook
+  `tryNativeHeal` (`src/engine/native/native_heal_hook.h`) wires native → self-verify → OCCT fallback
+  (`src/engine/occt/occt_shapefix.cpp`); NO `cc_*` change and `src/native/**` stays OCCT-free. **This is
+  the gating foundation for a future native STEP IMPORT** — imported B-rep arrives with exactly this
+  coincident-within-tolerance / degenerate / orientation defect family. **Honest scope (asymptotic, like
+  SSI S4-f):** a MEASURED win vs OCCT on the in-scope defect family, NOT a guarantee on arbitrary broken
+  industrial B-rep. Beyond-tolerance gap bridging, missing-pcurve reconstruction, self-intersecting-wire
+  repair, and freeform re-approximation stay OUT OF SCOPE → reported UNHEALED, deferred to OCCT `ShapeFix`,
+  never faked. Living change `add-native-shape-healing` archived to `openspec/specs/native-healing`.
 - **Numeric foundations (native-rewrite capability #2) — NumPP/SciPP adopted as the
   OCCT-free numeric substrate + native closest-point/projection done at the verification
   bar.** NumPP + SciPP (the org's C++20, MIT NumPy/SciPy ports) are ADOPTED by absolute
@@ -263,12 +294,13 @@ Date: 2026-07-03 · Branch: `main`.
   follow-up, NOT this PR. Shipping a closed-source app that links TetGen requires a
   **TetGen commercial license**; the default MIT configuration avoids the obligation by
   not linking it. See the native-meshing result section below.
-- **No regressions.** Host build + CTest **21/21** (incl. `test_native_tessellate`,
-  `test_native_boolean`, `test_native_blend`, `test_native_step_writer`, `test_native_step`);
-  `scripts/run-sim-suite.sh` stays **221 passed, 0 failed** (re-run against a freshly rebuilt
-  SIMULATORARM64 slice carrying the current native STEP-export sources; the OCCT default
-  engine and `cc_step_export` under it are unchanged; only change is `native_step_parity.mm`
-  on the SKIP list).
+- **No regressions.** Host build + CTest **28/28** NUMSCI OFF (**35/35** NUMSCI ON), incl.
+  `test_native_tessellate`, `test_native_boolean`, `test_native_blend`, `test_native_step_writer`,
+  `test_native_step`, and `test_native_heal` (#21); `scripts/run-sim-suite.sh` stays **221 passed,
+  0 failed** (re-run against a freshly rebuilt SIMULATORARM64 slice; the OCCT default engine and the
+  `cc_*` facade are unchanged — healing is INTERNAL, `native_heal_parity.mm` is on the SKIP list).
+  Every control matches its pre-heal baseline: SSI 18, marching 10, S4 8, S5 native-pass=6, blend 16,
+  fillet #6 9/9, wrap-emboss #7 6/6, Phase-3 70/70, `openspec validate --all --strict` 30/30.
 - **Contained blast radius.** Native math lives under `src/native/math/`, native
   topology under `src/native/topology/`, native tessellation under
   `src/native/tessellate/` (all header-only, unreachable from the facade by design).
@@ -1507,6 +1539,66 @@ returns a clean error.
 - `tests/sim/native_step_parity.mm` + `scripts/run-sim-native-step.sh` — sim Gate-2 native-
   write / OCCT-read round-trip (own `main()`; SKIPped by `run-sim-suite.sh`).
 
+## native-healing result table (FIRST shape-healing slice — internal, gates STEP import)
+
+**Honest scope.** The healer (`cybercad::native::heal::healShell`, `src/native/heal/`) is INTERNAL
+(no `cc_*` entry point, like SSI) and OCCT-FREE. It fixes EXACTLY four defect classes of a
+coincident-within-tolerance face soup / malformed shell — (1) near-coincident **vertex/tolerance
+unification** (VertexPool spatial hash), (2) **tolerant sewing** (share an edge only when its endpoints
+unified to the same two shared vertices within tolerance — never fabricated), (3) **degenerate removal**
+(zero-length edges + sliver / near-zero-area faces), (4) **orientation fix** (flood-fill outward winding
++ global enclosed-volume-sign tie-break) — then SELF-VERIFIES (watertight + `V > 0`) before claiming
+success. Anything else (a real gap > tol, a genuinely open shell, missing pcurves, self-intersecting
+wires, arbitrary broken industrial B-rep) is reported **UNHEALED** with the measured `maxResidualGap`
+and the ORIGINAL shape unchanged → OCCT `ShapeFix`. A **measured win on the in-scope family, not a
+guarantee.** This is the gating foundation for a future native STEP IMPORT (imported B-rep arrives with
+exactly this coincident-within-tolerance / degenerate / orientation defect family).
+
+**Engine wiring.** `tryNativeHeal` (`src/engine/native/native_heal_hook.h`) runs native → self-verify;
+kept only if watertight + valid + `V > 0`; otherwise falls through to the OCCT oracle
+`sewAndFix` (`src/engine/occt/occt_shapefix.cpp`, `BRepBuilderAPI_Sewing` → `ShapeFix_Shell`/`ShapeFix_Solid`).
+No `cc_*` change; `src/native/**` stays OCCT-free.
+
+**Gate 1 (host, no OCCT) GREEN.** `test_native_heal` — **10 cases, 0 failed** (NUMSCI OFF **and** ON):
+
+| Case | Assertion |
+|---|---|
+| `heal_soup_cube_watertight` | soup cube → watertight valid solid, V=1 (tess-verified), `nMergedEdges=12` `nMergedVerts=16` `maxResidualGap==0.0` |
+| `heal_degenerate_edge` | zero-length edge dropped; cube still heals to V=1 |
+| `heal_sliver_face` | near-zero-area sliver dropped; cube still heals to V=1 |
+| `heal_flipped_face` | one inward face re-oriented (`nFlipped≥1`) → correct +volume |
+| `heal_all_inward_global_flip` | all-inward cube → global sign flip → outward |
+| `heal_vertex_unify_merges_within_tol` | near-coincident vertices merged |
+| `heal_vertex_unify_rejects_beyond_tol` | vertices 1.0 apart NOT merged |
+| `heal_open_shell_unhealed` | missing face → `Unhealed(OpenShell)`, input unchanged |
+| `heal_beyond_tolerance_gap_unhealed` | gap 1e-2 ≫ tol 1e-4 → `Unhealed(GapBeyondTolerance)`, `maxResidualGap>tol`, input unchanged |
+| `heal_never_weakens_tolerance` | a 1e-2 gap is never force-closed at tol 1e-4 |
+
+**Gate 2 (sim native-vs-OCCT parity) GREEN.** `run-sim-native-heal.sh` — native `healShell` vs OCCT
+`sewAndFix` on identical soups: **`[NHEAL]` 4 passed / 0 failed**.
+
+| Fixture | Native | OCCT oracle | Verdict |
+|---|---|---|---|
+| soup-cube | V=1.00000 watertight=1 | V=1.00000 valid=1 | heal parity (in-scope) |
+| flipped-face | V=1.00000 watertight=1 | V=1.00000 valid=1 | heal parity (in-scope) |
+| beyond-tol-gap | UNHEALED reason=1 (`GapBeyondTolerance`) residual 0.0255 | valid=0 watertight=0 | honest UNHEALED matches OCCT |
+| open-shell | UNHEALED reason=2 (`OpenShell`) | valid=0 watertight=0 | honest UNHEALED matches OCCT |
+
+On the un-healable fixtures the native UNHEALED verdict MATCHES OCCT leaving the shell open at the same
+tolerance — no fabricated closure, no weakened tolerance.
+
+### Files (native healing)
+
+- `src/native/heal/` — `heal.cpp` + `heal.h`, `native_heal.h`, `heal_result.h`, `face_soup.h`,
+  `vertex_unify.h`, `tolerant_sew.h`, `degenerate.h`, `orient.h`, `assemble_shell.h`, `self_verify.h`
+  (all OCCT-free; worst function cognitive complexity 14, `findRepresentative`, Acceptable band).
+- `src/engine/native/native_heal_hook.h` — engine-internal `tryNativeHeal` (native → self-verify → OCCT).
+- `src/engine/occt/occt_shapefix.cpp` — the OCCT oracle `sewAndFix` (sim only; the sole OCCT TU here).
+- `tests/native/test_native_heal.cpp` (#21) — host Gate-1 (no OCCT).
+- `tests/sim/native_heal_parity.mm` + `scripts/run-sim-native-heal.sh` — sim Gate-2 native-vs-OCCT
+  (own `main()`; SKIPped by `run-sim-suite.sh`).
+- Living change `add-native-shape-healing` archived to `openspec/specs/native-healing`.
+
 ## numeric-foundations result table (native-rewrite capability #2)
 
 **Substrate adopted, not vendored.** NumPP (`/Users/leonardoaraujo/work/NumPP`) + SciPP
@@ -2329,8 +2421,11 @@ smooth-planar / NON-PLANAR (RMF) spine, `cc_tapered_shank`,
 well-formed `cc_helical_thread` / `cc_tapered_thread`; PLANAR-polyhedron booleans (fuse / cut /
 common via BSP-CSG) and the AXIS-ALIGNED box ⟷ axis-parallel-cylinder curved analytic boolean
 slice (closed-form through-hole cut / boss fuse / clipped-segment common); PLANAR blends —
-`cc_chamfer_edges`, constant-radius `cc_fillet_edges`, `cc_offset_face`, `cc_shell`; and **STEP
-EXPORT** (`cc_step_export` for in-scope native solids). Every native op is guarded by a
+`cc_chamfer_edges`, constant-radius `cc_fillet_edges`, `cc_offset_face`, `cc_shell`; **STEP
+EXPORT** (`cc_step_export` for in-scope native solids); and the **SHAPE-HEALING FIRST SLICE**
+(internal `healShell` — tolerant sewing + vertex/tolerance unification + degenerate removal +
+orientation fix of a coincident-within-tolerance face soup into a watertight solid, verified vs OCCT
+`BRepBuilderAPI_Sewing`/`ShapeFix`; the gating foundation for a future native STEP import). Every native op is guarded by a
 self-verify (watertight + volume / set-algebra / analytic checks) that DISCARDS a bad candidate
 and falls through to OCCT — never a faked result.
 
@@ -2338,7 +2433,9 @@ and falls through to OCCT — never a faked result.
 GENERAL curved / concave booleans (surface-surface intersection: sphere / cone / NURBS /
 non-axis-aligned / cyl-cyl / blind-hole / non-through cut, near-tangent / coincident-curved);
 curved / concave / variable-radius blends, `cc_fillet_face`, general robust blend/offset over
-arbitrary NURBS; shape healing; TIGHT-CURVATURE / self-intersecting / real-twist / guided / rail
+arbitrary NURBS; the **shape-healing RESIDUAL** (beyond-tolerance gap bridging, missing-pcurve
+reconstruction, self-intersecting-wire repair, arbitrary broken industrial B-rep — the
+coincident-within-tolerance / degenerate / orientation first slice is now native, above); TIGHT-CURVATURE / self-intersecting / real-twist / guided / rail
 sweep, MISMATCHED-count / guided / hard-rail loft, general SPLINE surface-of-revolution, a
 SPINDLE torus (off-axis arc crossing the axis), fine-pitch / self-intersecting threads (all
 needing SSI / Tier-4 surface-surface intersection + trimming); wrap-emboss over a general curved
@@ -2429,4 +2526,5 @@ general-curved and import frontier is explicitly deferred and remains OCCT-backe
 | 6 | `native-blends` | ◐ tractable planar slice done at the bar (BOTH gates green); curved/concave/variable/fillet_face OCCT-fallthrough | Native `cc_chamfer_edges` / `cc_fillet_edges` (constant radius) / `cc_offset_face` / `cc_shell` for the tractable PLANAR cases (`src/native/blend/`), each editing the solid's oriented-planar-polygon soup (`boolean/extractPolygons`) and re-welding a watertight solid via `boolean/assembleSolid`, then a MANDATORY engine self-verify (`blendResultVerified` — watertight + sane volume sign: chamfer/fillet/shell shrink, offset grows/shrinks) that DISCARDS a bad candidate (never faked). Native: **chamfer** = slice the convex corner off with the plane through the two setback lines (EXACT for a box); **fillet** = rolling-ball tangent cylinder on a convex planar dihedral (Phase-3 dihedral construction: axis ∥ crease, radius r, tangent to both planes), deflection-bounded facets, blend face a `Cylinder` of radius r, watertight; **offset_face** = slide a planar face along its normal dragging the side faces (EXACT slab); **shell** = inset kept walls inward by thickness + native BSP-cut the cavity (open-top box t=1 → wall vol 424). Both gates green: host `test_native_blend` (10 cases incl. 2-edge chamfer exact + concave-L-prism fallthrough) + 5 new `test_native_engine` facade cases (incl. a native `cc_edge_polylines` regression), host CTest **18/18** (no OCCT); sim native-vs-OCCT parity `native_blend_parity.mm` **[NBLEND] 16/16** — chamfer (vol o=995 n=995 rel 2.29e-16) / offset (1500, rel 4.55e-16) / shell (424, rel 4.02e-16) EXACT + watertight, constant-radius fillet deflection-bounded (o=997.854 n=997.765 rel 8.96e-05, watertight), a curved-rim fillet forwarded to OCCT (rel 0.00e+00), the self-verify rejecting a thickness-6 shell (id 0, honest error). No regressions (`run-sim-suite.sh` 221/221, `test_native_tessellate` 13/13 green). STILL OCCT-fallthrough (builder NULL / self-verify discards → forwarded, never faked): CURVED-face inputs, CONCAVE edges, variable-radius `cc_fillet_edges_variable`, `cc_fillet_face`, ≠2-face edges, multi-edge fillet interference, non-convex shell, oversized thickness. Blend fns 🟢 Excellent (≤10) except drivers `fillet_edges` (13) / `chamfer_edges` (11) 🟡 Acceptable. |
 | 7 | `native-exchange` | ◐ native STEP EXPORT slice done at BOTH gates (host + sim OCCT re-read round-trip); STEP import + IGES stay OCCT (honest, out of scope) | Native `cc_step_export` (engine-wired behind `cc_set_engine(1)`) for a native solid whose every face surface + edge curve is in scope: walks the native B-rep and emits a valid ISO-10303-21 STEP AP203 file in true MILLIMETRES — HEADER (FILE_DESCRIPTION/FILE_NAME/FILE_SCHEMA 'CONFIG_CONTROL_DESIGN') + Part-42 DATA graph (CARTESIAN_POINT/DIRECTION/AXIS2_PLACEMENT_3D, VERTEX_POINT, LINE/CIRCLE/B_SPLINE_CURVE_WITH_KNOTS + EDGE_CURVE, ORIENTED_EDGE→EDGE_LOOP, FACE_OUTER_BOUND/FACE_BOUND, PLANE/CYLINDRICAL/CONICAL/SPHERICAL/B_SPLINE_SURFACE_WITH_KNOTS, ADVANCED_FACE→CLOSED_SHELL→MANIFOLD_SOLID_BREP, ADVANCED_BREP_SHAPE_REPRESENTATION + mm SI_UNIT context + PRODUCT/PRODUCT_DEFINITION/APPLICATION_CONTEXT). Built OCCT-FREE under `src/native/exchange/` (`step_writer.h/.cpp`, `native_exchange.h`). The native builders emit per-face edges (sharing deferred, #4), so the writer DEDUPLICATES geometrically — coincident vertices → one VERTEX_POINT, both faces of a physical edge share ONE EDGE_CURVE (forward on one, reversed on the other via ORIENTED_EDGE) → a properly-sewn manifold CLOSED_SHELL. Native-else-OCCT wiring: `NativeEngine::step_export` runs native for an in-scope native body; an out-of-scope native body → clean error (never a native void to OCCT); an OCCT body → `STEPControl_Writer`. **`cc_step_import` STAYS OCCT** (parsing arbitrary STEP out of scope) and **`cc_iges_export/import` STAY OCCT** — the honest end state (#8 stays blocked). No cc_* ABI change; default engine stays OCCT. Entity arg orders cross-checked against OCCT `RWStep*` writers (EDGE_CURVE/ADVANCED_FACE/CIRCLE/LINE/VECTOR/ORIENTED_EDGE/B_SPLINE_CURVE_WITH_KNOTS all match) so the file parses through `STEPControl_Reader`. Gate 1 (host, no OCCT) GREEN — `test_native_step_writer` (6 cases: canSerialize scope; box AP203 header+wrapper+mm SI_UNIT; box 6 PLANE / 12 shared EDGE_CURVE / 8 VERTEX_POINT; cylinder CYLINDRICAL_SURFACE+CIRCLE; well-formed contiguous `#n=ENTITY(...);`; coords as REALs) + `test_native_engine::native_step_export_writes_valid_ap203_file` (facade `cc_step_export` runs native, returns 1, valid file); host CTest **20/20**, all native suites green. All writer functions 🟢 Excellent (≤7), no systems-band fn. **Gate 2 (sim OCCT re-read round-trip) GREEN** — the native-written file re-reads through `STEPControl_Reader` to the SAME solid within volume/bbox/topology tolerance: box relV 2.27e-16 / area rel 1.89e-16 / centroidΔ 0 / bbox 1.00e-07 (faces 6→6, edges 24→24); cylinder relV 1.27e-03 / area rel 5.97e-04 (faces 9→9, edges 30→30); holed-plate relV 2.90e-04 / area rel 1.09e-04 (faces 7→7, edges 28→30 within tol). Writer parity (native-written vs OCCT-written, both re-read): box/cylinder/holed-plate relV ≤ 4.70e-15, relA ≤ 6.48e-15, bboxΔ 0. Native writer active (native ISO-10303-21 emitted): box 5363 B, cylinder 6893 B, holed-plate 6457 B; a foreign (OCCT-built) body falls through to OCCT `STEPControl_Writer` (15394 B → re-read relV 0.00e+00, faces 6→6). No regressions (host CTest 21/21 incl. `test_native_step_writer` #19 + `test_native_step` #20; `run-sim-suite.sh` 221/221 against a freshly rebuilt SIMULATORARM64 slice carrying the current native STEP sources). STILL OCCT (never faked): STEP import, IGES export/import, and an out-of-scope geometry kind (Ellipse/Bezier curve, rational spline, Bezier surface). Living change: `openspec/changes/add-native-data-exchange` (archived). |
 | — | `native-meshing` (tet volume meshing + quality, GitHub #1) | ◐ kernel-only slice | New module `src/native/mesh/` (namespace `cybercad::native::mesh`): `quality.{h,cpp}` (ALWAYS-ON, pure geometry, no OCCT / no TetGen) + `tet_mesher.{h,cpp}` (the SOLE AGPL consumer). Additive `cc_*`: `cc_tet_mesh(body, deflection, opts)` (tessellate a B-rep → fill the PLC) + `cc_tet_mesh_surface(verts, tris, opts)` (raw closed TRIANGLE surface, OCCT-free), both emitting CalculiX **C3D4/C3D10** tets (corners + mid-edge nodes in `shape10tet` order, positive signed volume enforced, mid-edge nodes built NATIVELY — no TetGen `-o2`); plus always-on native `cc_mesh_quality` (signed volume, 6 dihedral angles, scaled Jacobian, aspect ratio — regular tet 70.53° / scaledJ 1; formulas cited: Verdict SAND2007-1751, Knupp 2001, Shewchuk 2002, Liu & Joe 1994). Tet mesher backed by the **OPTIONAL, EXTERNAL, AGPL-3.0 TetGen** (`/home/leonardo/work/tetgen`, absolute path, NEVER vendored/committed), gated behind a NEW option `CYBERCAD_HAS_TETGEN` (default OFF, mirrors `CYBERCAD_HAS_NUMSCI`; `-DTETLIBRARY` + include dir per-source-scoped to `tet_mesher.cpp` only). **Default MIT build links ZERO AGPL** — flag OFF → `cc_tet_mesh` returns empty `CCTetMesh` + `cc_last_error` ("tet meshing unavailable"), never crashes; `cc_mesh_quality` still works. Tests: `test_native_quality` (regular-tet golden / sliver flag / inverted / C3D10 mid-node consistency / empty-degenerate) runs in EVERY build; `test_native_tet` (unit cube → watertight C3D4/C3D10 at `pq1.4a…`, positive Jacobian, volume conservation, face manifoldness, quality gate) gated `CYBERCAD_HAS_TETGEN=ON`. Built via `scripts/build-tetgen.sh` (external sources → `build-tet/host/libtetgen_host.a`; predicates -O0, tetgen -O2). **Honest scope: kernel-only** — NO FE patch test yet; CalculiX++ `CadMesher` wiring (import / heal / triangulate / tet_mesh / quality / `map_to_model`) is a follow-up. Closed-app shipping that links TetGen needs a TetGen commercial license. See the native-meshing result section. |
+| — | `native-healing` (FIRST shape-healing slice — internal, gates STEP import) | ◐ first slice done at BOTH gates; arbitrary-broken-B-rep residual OCCT-fallthrough | INTERNAL OCCT-free healer `src/native/heal/` (`healShell` — no `cc_*` entry, like SSI) that stitches a coincident-within-tolerance face soup / malformed shell into a watertight consistently-oriented solid via four sub-ops: **vertex/tolerance unification** (VertexPool hash generalized to B-rep vertices), **tolerant sewing** (share an edge only when its endpoints unify to the same two shared vertices within tol — never fabricated), **degenerate removal** (zero-length edges + sliver / near-zero-area faces), **orientation fix** (flood-fill outward winding + global enclosed-volume-sign tie-break). SELF-VERIFIED (watertight + `V > 0`) before it is kept; otherwise a typed `Unhealed` result carries the measured `maxResidualGap` + the ORIGINAL shape unchanged → OCCT `ShapeFix`. Engine hook `tryNativeHeal` (`src/engine/native/native_heal_hook.h`) wires native → self-verify → OCCT fallback (oracle `sewAndFix` in `src/engine/occt/occt_shapefix.cpp` — `BRepBuilderAPI_Sewing` → `ShapeFix_Shell`/`ShapeFix_Solid`). Both gates green: host `test_native_heal` (#21) **10 cases, 0 failed** (soup-cube V=1 `nMergedEdges=12`/`nMergedVerts=16` `maxResidualGap==0`; degenerate edge + sliver dropped; flipped face re-oriented; all-inward → global flip; near-coincident verts merged + beyond-tol rejected; missing face → `Unhealed(OpenShell)`; gap 1e-2 → `Unhealed(GapBeyondTolerance)` residual 0.0255 input-unchanged; never weakens tolerance — green NUMSCI OFF **and** ON) + sim native-vs-OCCT parity `run-sim-native-heal.sh` **`[NHEAL]` 4/4** (in-scope soup-cube + flipped-face heal to V=1 watertight matching OCCT V=1 valid; un-healable gap-1e-2 → UNHEALED reason=1 residual 0.0255 and missing-face → UNHEALED reason=2 both MATCHING OCCT valid=0 watertight=0 — no fabricated closure). No `cc_*` change; `src/native/**` OCCT-free; tessellator pristine; no regressions (host CTest 28/28, `run-sim-suite.sh` 221/221, all controls at baseline). **This is the gating foundation for a future native STEP IMPORT** (imported B-rep arrives with exactly this coincident-within-tolerance / degenerate / orientation defect family). **Honest scope (asymptotic, like SSI S4-f): a MEASURED win vs OCCT on the in-scope family, NOT a guarantee.** STILL OCCT (UNHEALED → `ShapeFix`, never faked): beyond-tolerance gap bridging, missing-pcurve reconstruction, self-intersecting-wire repair, freeform re-approximation, arbitrary broken industrial B-rep. Living change `add-native-shape-healing` (archived to `openspec/specs/native-healing`). See the native-healing result table. |
 | 8 | `drop-occt` | ☐ planned (blocked) | Unlink OCCT once every capability is native — blocked while STEP import + IGES + curved/general booleans remain OCCT-backed. |

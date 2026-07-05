@@ -17,11 +17,13 @@
 #include <utility>
 #include <vector>
 
+#include "engine/native/native_heal_hook.h"
 #include "native/blend/native_blend.h"
 #include "native/boolean/native_boolean.h"
 #include "native/construct/native_construct.h"
 #include "native/exchange/native_exchange.h"
 #include "native/feature/wrap_emboss.h"
+#include "native/heal/native_heal.h"
 #include "native/tessellate/native_tessellate.h"
 
 #ifdef CYBERCAD_HAS_OCCT
@@ -434,6 +436,34 @@ std::shared_ptr<IEngine> make_native_fallback_engine() {
 #else
     return make_stub_engine();
 #endif
+}
+
+// ── engine-INTERNAL native-heal hook (Phase 4 #4 native-healing) ────────────────
+// Native builder → mandatory self-verify → OCCT fallback, the SAME discipline every
+// native op follows (see native_heal_hook.h). Reached internally by the engine, NOT
+// via cc_* — no ABI/IEngine change. healShell already self-verifies (watertight +
+// enclosed volume > 0) before returning Healed, so a Healed result is trustworthy;
+// an Unhealed result carries the honest measured residual and defers to OCCT.
+HealOutcome tryNativeHeal(const ntopo::Shape& shape, double tolerance) {
+    HealOutcome outcome;
+    namespace nheal = cybercad::native::heal;
+    outcome.native = nheal::healShell(shape, nheal::HealOptions{tolerance});
+    if (outcome.native.status == nheal::HealStatus::Healed) {
+        outcome.source = HealSource::Native;  // self-verified watertight + valid
+        return outcome;
+    }
+#ifdef CYBERCAD_HAS_OCCT
+    // DEFER: the native slice is out of scope for this defect. The OCCT sewing /
+    // ShapeFix oracle (cyber::occt::sewAndFix) runs on a TopoDS representation of
+    // the soup, entirely inside src/engine/occt/ — src/native/** stays OCCT-free.
+    // (This slice heals native-built soups; wiring a native→TopoDS converter for an
+    // arbitrary imported soup is the STEP-import track's job. Until then the honest
+    // outcome is Unhealed: the caller keeps the pristine input for OCCT.)
+    outcome.source = HealSource::Unhealed;
+#else
+    outcome.source = HealSource::Unhealed;  // no OCCT linked → honest deferral
+#endif
+    return outcome;
 }
 
 // ── construction / lifecycle ────────────────────────────────────────────────────

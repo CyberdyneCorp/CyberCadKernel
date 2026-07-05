@@ -91,8 +91,9 @@ robustness tail keeps OCCT linked.** Canonical detail:
   (`nearTangentGaps → 0`, 22 near-tangent nodes crossed, every node on both surfaces ≤ 1e-6,
   crossed arc on the OCCT `GeomAPI_IntSS` locus onCurve ≤ 5.6e-5); the equal-cylinder branch
   saddle and genuine `TangentPoint`/`TangentCurve` contacts STILL defer (`nearTangentCrossed
-  = 0`) — no point fabricated past a degeneracy. Deeper near-coincident bands / singularities
-  / self-intersection completeness (S4-e…f) remain the tail.
+  = 0`) — no point fabricated past a degeneracy. Deeper near-coincident bands / general-freeform
+  singularities + higher-order cusps / self-intersection completeness remain the tail (the
+  sphere-pole/cone-apex chart singularities are now crossed — S4-e, below).
 - ✅ **SSI S4-d FIRST BRANCH-POINT SLICE (self-crossing locus)** — where the intersection
   locus itself crosses, the marcher now LOCALIZES the branch point (`nn::minimize` the
   transversality sine along the approach, re-projected onto both surfaces), ENUMERATES the
@@ -105,6 +106,22 @@ robustness tail keeps OCCT linked.** Canonical detail:
   `TangentPoint` (spheres d=R₁+R₂) STILL ENDS with zero arms (definite tangent cone ⇒ no
   real roots). Only the elementary transversal self-crossing (Steinmetz family) is handled;
   general/freeform branch points and cusps DEFER → OCCT. **Steinmetz is now unblocked.**
+- ✅ **SSI S4-e FIRST CHART-SINGULARITY SLICE (sphere pole + cone apex)** — where ONE
+  surface's own `(u,v)` parametrization degenerates (`‖dU‖ → 0`) while its 3D point + normal
+  stay finite — a **sphere parametric pole** (`v = ±π/2`) or a **cone apex** — the intersection
+  can be perfectly transversal yet S3's single-surface Jacobian goes rank-1 and truncates. The
+  marcher now DETECTS the collapse from a single-surface `‖dU‖/‖dV‖` witness (distinct from the
+  S4-c pair sine and S4-d locus flip), STEPS ACROSS with a point-based fixed-plane cut along the
+  last-good tangent `t★` (never touching the degenerate `dU`), and maps the far side back by
+  chart continuity (sphere pole → opposite meridian `u+π`; cone apex → far nappe `v→−v`). A
+  great circle crossing BOTH sphere poles that S3 truncated at half loop (`len ≈ 3.1415`) is now
+  **FULLY traced** (`singX=2`, `nearTangentGaps=0`, closed, `len` native 6.2829 vs OCCT 6.2832,
+  on locus + both surfaces ≤ 1.51e-07); a double-cone∩plane line through the apex that S3
+  step-collapsed at is **FULLY traced across both nappes** (`singX=1`, 159 nodes, `v∈[−2,+2]`,
+  on-surface ≤ 6.79e-16). A genuine finite cylinder `v`-cap still exits as a `BoundaryExit`; any
+  pole/apex that will not verify on both surfaces DEFERS → OCCT — no crossing fabricated. Only
+  the sphere-pole + cone-apex chart singularities are crossed; general/freeform parametric
+  degeneracies and higher-order/curve cusps remain the tail.
 - ◐ **SSI S5-a/b/c/d (curved-boolean slices)** — the SSI-curve-driven
   split→classify→weld pipeline (`src/native/boolean/ssi_boolean.{h,cpp}`, consumes the
   S3 `TraceSet` — and, for S5-d, the S4-d branched re-trace) produces **six native
@@ -123,10 +140,12 @@ robustness tail keeps OCCT linked.** Canonical detail:
   decline to OCCT — honest, measured fallbacks.
 
 **Still OCCT-backed (the tail that keeps OCCT linked):**
-- ☐ SSI **S4-d general/freeform + S4-e…f marching core** (the moat tail: general/freeform
-  branch points, cusps, singularities, self-intersection completeness, deeper near-coincident
-  bands — S4-a/b classification + the S4-c near-tangent march-through + the S4-d Steinmetz
-  branch-point slice + the S5-d branched Steinmetz COMMON boolean already landed) → **wider S5
+- ☐ SSI **S4-d general/freeform + S4-e general/freeform + S4-f marching core** (the moat tail:
+  general/freeform branch points, higher-order/curve cusps, general/freeform parametric
+  singularities, self-intersection completeness, deeper near-coincident bands — S4-a/b
+  classification + the S4-c near-tangent march-through + the S4-d Steinmetz branch-point slice +
+  the S4-e sphere-pole/cone-apex chart-singularity slice + the S5-d branched Steinmetz COMMON
+  boolean already landed) → **wider S5
   curved booleans** (Steinmetz fuse/cut, sphere fuse/cut, general non-Steinmetz branched pairs,
   more families, consuming the S3 WLines + the S4 typed regions/contacts + multi-arm branch loci).
 - ☐ General curved **booleans** & **blends** (sit on SSI); curved **wrap-emboss**.

@@ -166,6 +166,16 @@ struct WLine {
   int nearTangentCrossed = 0;
   double crossMaxResidual = 0.0;
 
+  /// S4-e: how many CHART SINGULARITIES (sphere parametric poles v=±π/2 / cone apexes,
+  /// signed radius = 0) this branch STEPPED ACROSS with the point-based corrector — a
+  /// single-surface parametrization degeneracy (‖dU‖ → 0 with a finite point + normal),
+  /// DISTINCT from the S4-c pair graze and the S4-d locus branch. 0 for a pure S3 / S4-c /
+  /// S4-d trace. Every crossed node verified on both surfaces ≤ onSurfTol (see marching.cpp
+  /// crossChartSingularity); a branch with `chartSingularCrossed > 0` that is
+  /// `Closed`/`BoundaryExit` is a FULL curve the S3 marcher would have truncated at the
+  /// pole/apex. A chart singularity that could NOT be crossed is an honest NearTangent gap.
+  int chartSingularCrossed = 0;
+
   /// S4-b: WHY the march stopped, TYPED, when it stopped at a tangency
   /// (`status == NearTangent`). Carries the classified `TangentContact` at the stop
   /// point (TangentPoint / TangentCurve / NearTangentTransversal / Undecided) so the
@@ -222,6 +232,18 @@ struct MarchOptions {
   // before; a caller opts in to route the arms of a genuine self-crossing (Steinmetz). ──
   bool enableBranchPoints = false;  ///< S4-d: localize branch points + route the outgoing arms
   double branchMergeFrac = -1.0;    ///< arms meeting within branchMergeFrac·scale of one B share a node (≤ 0 → 1e-3)
+
+  // ── S4-e CHART SINGULARITIES (sphere parametric pole / cone apex crossing). OFF by
+  // default so every S3 transversal trace, every S4-c crossable-graze trace, and every S4-d
+  // branch trace is BYTE-IDENTICAL to before; a caller opts in to STEP ACROSS a single-
+  // surface parametrization degeneracy (‖dU‖ → 0 with a finite point + normal). The witness
+  // is the single-surface Jacobian rank-drop — DISTINCT from the S4-c pair sine and the S4-d
+  // locus flip (chart_singularity.h). Neither knob weakens a tolerance; they only decide the
+  // chart-collapse threshold and the fine crossing step. ──
+  bool enableChartSingularities = false;  ///< S4-e master switch (off → S3/S4-c/S4-d behaviour, byte-identical)
+  double chartCollapseFrac = -1.0;  ///< ‖dU‖ < chartCollapseFrac·‖dV‖ (and ·scale) ⇒ chart collapse (≤ 0 → 1e-3)
+  double chartStepFrac = -1.0;      ///< fine step off the singular point when crossing = chartStepFrac·h0 (≤ 0 → 1/16)
+  int chartMaxSteps = 256;          ///< max fine point-based steps spent crossing one pole/apex before deferring
 };
 
 /// The full S3 result (design.md TraceSet): one WLine per distinct traced branch plus
@@ -234,6 +256,7 @@ struct TraceSet {
   int tracedBranches = 0;       ///< WLines produced (Closed | BoundaryExit)
   int nearTangentGaps = 0;      ///< marches stopped at a near-tangent region that could NOT be crossed → S4 (reported)
   int nearTangentCrossed = 0;   ///< S4-c: near-tangent TRANSVERSAL grazes MARCHED THROUGH (would have truncated in S3)
+  int singularitiesCrossed = 0; ///< S4-e: chart poles/apexes STEPPED ACROSS + verified across all branches (would have truncated in S3). `nearTangentGaps` keeps counting ONLY singularities that could NOT be crossed (deferred → OCCT)
   int dedupedRetraces = 0;      ///< seeds whose march retraced an already-traced branch
 
   // Extra diagnostics (kept for verification/reporting; not in the minimal contract).

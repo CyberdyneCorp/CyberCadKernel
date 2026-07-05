@@ -169,7 +169,7 @@ gap, within the deflection/step tol).
 - **Unlocks:** S5 curved booleans — the `TraceSet` (WLines with (u1,v1,u2,v2) per node) is
   its input contract.
 
-### S4 — Tangent / degeneracy robustness · ◐ CLASSIFICATION LAYER (S4-a/b) + MARCHING-CORE SLICES (S4-c graze, S4-d branch points) DONE AT THE BAR; S4-e…f pending
+### S4 — Tangent / degeneracy robustness · ◐ CLASSIFICATION LAYER (S4-a/b) + MARCHING-CORE SLICES (S4-c graze, S4-d branch points, S4-e sphere-pole/cone-apex chart singularities) DONE AT THE BAR; S4-e general/freeform + S4-f pending
 Near-tangent stepping (n₁×n₂→0: step control, higher-order predictor),
 coincident/overlapping-surface detection, branch points & singularities,
 self-intersection guards. **This is the moat** — OCCT's decades of tuning. Lands
@@ -283,9 +283,10 @@ orthogonal cylinder **saddle (a branch crossing) STILL DEFERS with the flag off 
 S4-c bar** (`nearTangentCrossed = 0`, `nearTangentGaps ≥ 1`) — that saddle is the S4-d
 branch-point case, now localized + routed (below); genuine `TangentPoint`/`TangentCurve`
 contacts still defer. Every S3 transversal fixture traces bit-identically (the
-corrector/step outside the band is unchanged). Deeper near-coincident bands, singularities
-(S4-e) and self-intersection (S4-f) remain the tail: anything not robustly crossable is
-still an honest `NearTangent` gap deferred to OCCT.
+corrector/step outside the band is unchanged). Deeper near-coincident bands, general/freeform
++ higher-order-cusp singularities (S4-e tail; the sphere-pole/cone-apex chart singularities
+are now crossed — see S4-e below) and self-intersection (S4-f) remain the tail: anything not
+robustly crossable is still an honest `NearTangent` gap deferred to OCCT.
 
 #### S4-d — Branch points · ◐ FIRST HONEST SLICE DONE AT THE BAR (elementary transversal self-crossing — the Steinmetz family; general/freeform/cusp branches remain)
 The hardest SSI piece: where the intersection **locus itself crosses** (multiple curve arms
@@ -329,15 +330,73 @@ transversal pairs stay `nt = 0` bit-identical.
 - **Honest scope / risk:** only the **elementary two-real-distinct-line transversal
   self-crossing** (the Steinmetz family) is traced. **General/freeform branch points**
   (arbitrary self-crossings on freeform surfaces, three-plus tangent lines at one point),
-  **cusps** (double root of the tangent-cone quadratic), **S4-e singular points** (a
-  surface's own degeneracy on the locus), and **S4-f self-intersection completeness** all
-  remain DEFERRED → OCCT, reported with the measured gap, never faked.
+  **cusps** (double root of the tangent-cone quadratic), and **S4-f self-intersection
+  completeness** all remain DEFERRED → OCCT, reported with the measured gap, never faked.
+  (**S4-e chart singularities** — the sphere parametric pole + cone apex — are now crossed
+  natively; see the S4-e slice below.)
 - **Unlocks:** **Steinmetz is now unblocked** natively; the multi-arm `TraceSet` +
   `BranchNode` connectivity is available to S5 curved booleans for self-crossing loci.
 
-#### S4-e — Singularities · ✗ PENDING
-Degenerate surface points (parametric poles, apex/edge singularities) on the
-intersection locus.
+#### S4-e — Singularities · ◐ FIRST HONEST SLICE DONE AT THE BAR (sphere parametric pole + cone apex crossed; general/freeform param degeneracies + higher-order cusps remain)
+A **chart (removable) singularity** is where ONE surface's own `(u,v)` parametrization
+degenerates while its 3D point + normal stay finite: a **sphere parametric pole**
+(`v = ±π/2`, where `‖dU‖ = R·cos v → 0`) or a **cone apex** (signed radius
+`R₀ + v·sin α = 0`, where the tangential `‖dU‖ → 0`). The intersection can be perfectly
+**transversal** through such a point — the pair sine `‖n_A×n_B‖` need NOT collapse — yet
+the S3 marcher breaks there: `advanceParams` solves each surface's single-surface 2×2
+normal equations, and when that surface's `dU` row vanishes the 2×2 is rank-1, so the
+`(u,v)` update is ill-conditioned even though the 3D residual + normal are fine (and the
+pole sits on a non-periodic `v` edge, so the marcher also reports a spurious `BoundaryExit`
+or step-crawls the node budget at the apex). The first slice
+(`add-native-ssi-s4e-singularities`, archived `2026-07-05`, gated `CYBERCAD_HAS_NUMSCI`,
+additive to `marching.cpp` + new OCCT-free `chart_singularity.h`, default-**off**
+`enableChartSingularities`) detects and steps across the pole/apex:
+- **Single-surface chart witness (the S4-e detector, DISTINCT from S4-c/S4-d)** —
+  `chartConditionAt` finite-differences each surface's `‖dU‖` against `‖dV‖·scale`; a
+  collapse (`‖dU‖ ≪ collapseFrac·‖dV‖` AND `≪ collapseFrac·scale`) with a **finite normal**
+  flags a pole/apex on THAT surface. Computed from ONE surface's own Jacobian — NOT the pair
+  sine (the S4-c near-tangent witness, which need not collapse at a pole) and NOT a locus-
+  tangent flip (the S4-d branch witness). A finite cap keeps `‖dU‖ = O(‖dV‖)` so a genuine
+  domain boundary is NOT mistaken for a pole (it exits as a normal `BoundaryExit`).
+- **Point-based fixed-plane-cut crossing** — at a detected collapse, `crossChartSingularity`
+  makes a bounded sequence of fine POINT-BASED jumps along the fixed last-good forward
+  tangent `t★` (the branch_point.h / S4-c cut: drive `A.point − B.point → 0` under an
+  along-`t★` hyperplane), which NEVER touches the degenerate single-surface `dU`, so it stays
+  well-posed exactly where `advanceParams` failed.
+- **Loose chart map-back** — the singular surface's far-side `(u,v)` are re-seeded LOOSELY by
+  continuity: a **sphere pole** continues on the OPPOSITE meridian (`u_out = u_in + π mod 2π`,
+  the free-longitude jump) with the latitude reflecting; a **cone apex** is a single 3D point
+  the straight curve passes through to the far nappe (`v → −v`). The corrector confirms these;
+  the singular point itself is never emitted.
+- **Honest guard (the honesty core)** — a node is emitted ONLY if it verifies on BOTH
+  surfaces ≤ `onSurfTol` and makes real along-`t★` progress. On ANY failure (won't verify, no
+  progress, or the crossing budget exhausted) the whole band is DISCARDED (roll back) and the
+  march STOPS + defers → OCCT as a `NearTangent` gap counted in `nearTangentGaps`. No
+  pole/apex-crossing point is ever fabricated.
+
+**At the bar (host + sim, `CYBERCAD_HAS_NUMSCI` ON):** a marched great circle crossing BOTH
+sphere poles (`v = ±π/2`) that S3 TRUNCATES at the first pole (half loop, `len ≈ 3.1415`) is
+now **FULLY traced** — `singularitiesCrossed = 2`, `nearTangentGaps = 0`, one closed loop,
+`len` native `6.2829` vs OCCT `6.2832` (rel Δ 5.0e-05), every node on the OCCT
+`GeomAPI_IntSS` locus + both surfaces ≤ 1.51e-07. A double-cone `∩` plane whose line passes
+THROUGH the **cone apex** that S3 STEP-COLLAPSES at (`v` stalls at ≈ −0.04) is now **FULLY
+traced across both nappes** — `singularitiesCrossed = 1`, `nearTangentGaps = 0`, bounded 159
+nodes, `v ∈ [−2.00, +2.00]`, on-locus 7.11e-16 / on-surface 6.79e-16. Sim parity
+`sphere-pole s4e singX=2 NTgaps=0 closed=1` and `cone-apex s4e singX=1 NTgaps=0 nodes=159`.
+A genuine finite cylinder `v`-cap still exits as a `BoundaryExit` (chart machinery does NOT
+misfire); the S4-c graze still crosses and the S4-d Steinmetz still traces with the flag on;
+the 5 transversal pairs stay `nt = 0` bit-identical.
+
+- **Honest scope / risk:** only the two **elementary chart (removable) singularities** —
+  the **sphere parametric pole** and the **cone apex** — are crossed, each verified
+  node-by-node on both surfaces + on the OCCT locus. **General / freeform parametric
+  singularities** (NURBS degenerate edges, collapsed spline poles), **higher-order / curve
+  cusps** (the curve's own velocity → 0 where the point-based step cannot recover a far side),
+  and **S4-f self-intersection completeness** all remain DEFERRED → OCCT, reported with the
+  measured gap, never faked. Any pole/apex whose point-based crossing does not verify on both
+  surfaces defers the same honest way.
+- **Unlocks:** transversal intersection curves that pass through a sphere pole / cone apex are
+  now traced end-to-end natively instead of truncating at the chart singularity.
 
 #### S4-f — Self-intersection / small-loops · ✗ PENDING
 Self-intersection guards and small-loop recovery below the seeding resolution floor.

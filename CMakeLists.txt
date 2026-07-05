@@ -306,6 +306,12 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_ssi_marching)
         set(test_native_ssi_marching_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_marching.cpp")
+        # SSI Stage S4-e chart singularities (sphere pole / cone apex crossing) — the
+        # point-based crossing corrector rides the same least_squares substrate, so its
+        # host suite builds only under CYBERCAD_HAS_NUMSCI (like the S3 marching suite).
+        list(APPEND CYBERCAD_TESTS test_native_ssi_s4e_singularities)
+        set(test_native_ssi_s4e_singularities_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_s4e_singularities.cpp")
         # SSI Stage S5-a curved boolean — consumes the S3 TraceSet, so it is gated on
         # CYBERCAD_HAS_NUMSCI too and its host suite builds only in that config.
         list(APPEND CYBERCAD_TESTS test_native_ssi_boolean)

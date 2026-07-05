@@ -1,0 +1,120 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// chart_singularity.h — SSI Stage S4-e CHART-SINGULARITY DETECTION + MAPPING.
+//
+// A CHART SINGULARITY is where ONE surface's own (u,v) PARAMETRIZATION degenerates while
+// its 3D point + normal stay perfectly finite: a SPHERE parametric pole (v = ±π/2, where
+// ‖dU‖ = R·cos v → 0) or a CONE apex (signed radius R₀ + v·sin α = 0, where the tangential
+// ‖dU‖ → 0). The intersection curve can be perfectly TRANSVERSAL through such a point — the
+// pair transversality sine ‖n_A × n_B‖ need NOT collapse — yet the S3 marcher breaks there:
+// its predictor `advanceParams` solves the single-surface 2×2 normal equations
+// [dU dV]ᵀ[dU dV]·(Δu,Δv) = [dU dV]ᵀ(h·t); when the `dU` row vanishes that 2×2 is rank-1, so
+// the (u,v) update is ill-conditioned even though the 3D residual and the normal are fine.
+// The pole/apex also sits on a NON-PERIODIC v edge, so the marcher reports a spurious
+// BoundaryExit (sphere) or step-collapse-crawls the node budget (cone).
+//
+// WITNESS — the single-surface JACOBIAN RANK-DROP (DISTINCT from S4-c / S4-d). On each
+// surface we watch ‖dU‖ against ‖dV‖·scale: a collapse (‖dU‖ → 0 while the normal stays
+// finite) flags a pole/apex approach on THAT surface. This is computed from ONE surface's
+// own Jacobian — NOT the pair sine ‖n_A × n_B‖ (the S4-c near-tangent witness, which need
+// not collapse at a pole) and NOT a locus-tangent flip (the S4-d branch witness). The two
+// seams see different quantities and gate different code paths, so a pole crossing (healthy
+// sine, no flip) is caught ONLY by this chart witness, and a pair graze / locus branch (no
+// ‖dU‖ collapse) is never mistaken for a chart singularity.
+//
+// THIS HEADER IS THE DETECTOR + MAP-BACK MATH ONLY (design S4-e-1). The CROSSING / reproject
+// (S4-e-2/3/4) stays in marching.cpp, which owns the corrector and the WLine assembly — just
+// as branch_point.h leaves the arm routing to marching.cpp. Kept out of marching.cpp so the
+// single-surface conditioning + the pole-longitude-continuity / apex-single-point mapping are
+// isolated and separately readable.
+//
+// HONESTY. This header only DETECTS + MAPS; it fabricates nothing. The crossing in
+// marching.cpp emits a node only if it verifies on BOTH surfaces ≤ onSurfTol (see the guard
+// there). A wrong pole-longitude pick simply fails that verification and the march defers.
+//
+// Header-only, OCCT-FREE, SUBSTRATE-FREE (uses src/native/math only — the finite differences
+// need no native-numerics). Meaningful under CYBERCAD_HAS_NUMSCI like the marcher, but does
+// not itself require it. clang++ -std=c++20, fp64, deterministic.
+//
+#ifndef CYBERCAD_NATIVE_SSI_CHART_SINGULARITY_H
+#define CYBERCAD_NATIVE_SSI_CHART_SINGULARITY_H
+
+#include "native/math/vec.h"
+#include "native/ssi/patch_bounds.h"  // SurfaceAdapter / ParamBox
+
+#include <cmath>
+
+namespace cybercad::native::ssi {
+
+namespace chartsing {
+
+using math::Dir3;
+using math::Point3;
+using math::Vec3;
+
+/// π and 2π for the pole-longitude map.
+inline constexpr double kPi = 3.14159265358979323846;
+inline constexpr double kTwoPi = 6.28318530717958647692;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ChartCond — a single surface's chart conditioning at one (u,v): the finite-difference
+// tangent magnitudes ‖dU‖, ‖dV‖ and whether the U chart has COLLAPSED (a pole/apex).
+// `collapsed` is the S4-e witness (see chartConditionAt).
+// ─────────────────────────────────────────────────────────────────────────────
+struct ChartCond {
+  double dU = 0.0;         ///< ‖∂S/∂u‖ (finite-difference, same scheme as advanceParams)
+  double dV = 0.0;         ///< ‖∂S/∂v‖
+  bool normalFinite = true;///< the surface normal is finite here (a pole/apex, not a NaN)
+  bool collapsed = false;  ///< the U chart collapsed: ‖dU‖ ≪ ‖dV‖·frac AND ‖dU‖ ≪ scale·frac
+};
+
+// Central finite-difference ‖dU‖ / ‖dV‖ at (u,v), the SAME scheme advanceParams uses (a
+// domain-scaled step), then the collapse test. `collapseFrac` is MarchOptions.chartCollapseFrac
+// (sentinel-resolved by the caller). The chart U direction has COLLAPSED iff
+//   ‖dU‖ < collapseFrac · ‖dV‖   AND   ‖dU‖ < collapseFrac · scale
+// while the normal stays finite — i.e. the single-surface Jacobian dropped rank in U with a
+// well-defined point + normal (a REMOVABLE pole/apex singularity, not a genuine boundary — a
+// finite cap keeps ‖dU‖ = O(‖dV‖) there, so `collapsed` is false and the caller exits it as a
+// normal BoundaryExit). Two-sided differences so a v exactly on the ±π/2 pole edge still reads
+// a sound ‖dU‖ from the interior side.
+inline ChartCond chartConditionAt(const SurfaceAdapter& S, double u, double v, double scale,
+                                  double collapseFrac) {
+  const ParamBox& dom = S.domain;
+  const double hu = std::max(dom.du() * 1e-6, 1e-9);
+  const double hv = std::max(dom.dv() * 1e-6, 1e-9);
+  // Two-sided where the domain allows, one-sided into the interior at an edge (so a pole on
+  // the v edge still measures ‖dV‖ from inside and ‖dU‖ along the collapsing circle).
+  const double up = std::min(u + hu, dom.u1), um = std::max(u - hu, dom.u0);
+  const double vp = std::min(v + hv, dom.v1), vm = std::max(v - hv, dom.v0);
+  const Vec3 dU = (S.point(up, v) - S.point(um, v)) / std::max(up - um, 1e-300);
+  const Vec3 dV = (S.point(u, vp) - S.point(u, vm)) / std::max(vp - vm, 1e-300);
+  ChartCond c;
+  c.dU = math::norm(dU);
+  c.dV = math::norm(dV);
+  const Vec3 n = S.normal(u, v).vec();
+  c.normalFinite = std::isfinite(n.x) && std::isfinite(n.y) && std::isfinite(n.z);
+  c.collapsed = c.normalFinite && c.dU < collapseFrac * c.dV && c.dU < collapseFrac * scale;
+  return c;
+}
+
+// ── pole-longitude continuity map ──────────────────────────────────────────────
+//
+// At a sphere pole the whole u circle collapses to one point, so the longitude u is a FREE
+// coordinate there. A great arc through the pole CONTINUES on the OPPOSITE meridian: the
+// incoming u and the outgoing u differ by half a turn. Pin the far-side longitude as
+// u_out = u_in + π (mod the U period). The caller VERIFIES the resulting far node on both
+// surfaces ≤ onSurfTol; a wrong pick does not verify and the march defers (no fabrication).
+inline double poleContinuationU(double uIn, double uPeriod) {
+  const double period = uPeriod > 0.0 ? uPeriod : kTwoPi;
+  double u = uIn + 0.5 * period;
+  // wrap into [0, period)
+  u = std::fmod(u, period);
+  if (u < 0.0) u += period;
+  return u;
+}
+
+}  // namespace chartsing
+
+}  // namespace cybercad::native::ssi
+
+#endif  // CYBERCAD_NATIVE_SSI_CHART_SINGULARITY_H

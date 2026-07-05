@@ -4,6 +4,14 @@
 // native-vs-OCCT parity harness (iOS simulator). Gate 2 of the two-gate S3 model;
 // Gate 1 (host, no OCCT) is tests/native/test_native_ssi_marching.cpp.
 //
+// Also carries the S4-c / S4-d / S4-e gate-2 cases (same TU): S4-c near-tangent crossing,
+// S4-d Steinmetz branch routing, and S4-e CHART SINGULARITIES — a sphere parametric pole
+// (v=±π/2) / cone apex (signed radius = 0) crossed by the point-based corrector. The S4-e
+// cases FORCE marching (trace_from_seeds with a hand seed) so the analytic pair does not
+// short-circuit to a closed form, and assert the fully-traced native curve lies on the OCCT
+// GeomAPI_IntSS locus + on both surfaces within tol (Gate-1 host suite is
+// tests/native/test_native_ssi_s4e_singularities.cpp).
+//
 // S3 turns the S2 SeedSet (one seed per transversal branch) into the FULL intersection
 // CURVES: from each seed a predictor-corrector walk (tangent = normalize(nA×nB); step
 // P+h·t; re-project onto BOTH surfaces via native-numerics least_squares; deflection-
@@ -89,6 +97,7 @@
 #include <Geom_Surface.hxx>
 #include <Geom_Plane.hxx>
 #include <Geom_CylindricalSurface.hxx>
+#include <Geom_ConicalSurface.hxx>
 #include <Geom_SphericalSurface.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <Geom_BezierSurface.hxx>
@@ -739,6 +748,148 @@ void pairEqualCylindersBranchS4d() {
   std::fflush(stdout);
 }
 
+// ── S4-e helpers: force MARCHING through a chart singularity + verify vs OCCT ─────────
+// A one-seed SeedSet on hand params (trace_from_seeds forces marching, bypassing S1/S2 so
+// the analytic pair does not short-circuit to a closed form and the march actually walks
+// through the pole/apex).
+ssi::SeedSet handSeed(double u1, double v1, double u2, double v2, const Point3& p) {
+  ssi::Seed s;
+  s.u1 = u1; s.v1 = v1; s.u2 = u2; s.v2 = v2;
+  s.point = p; s.onSurfResidual = 0.0; s.branchId = 0;
+  ssi::SeedSet ss;
+  ss.seeds.push_back(s);
+  ss.candidateRegions = 1;
+  ss.refinedAccepted = 1;
+  return ss;
+}
+
+// OCCT y=0 plane (normal +Y): frame {origin, X=+x, Y=+z, Z(normal)=+y}. Its GeomAPI_IntSS
+// with the sphere is the great circle through both poles; with the double cone, the two
+// apex-crossing lines. Matches the native planeY0 fixture used in the S4-e host suite.
+Handle(Geom_Surface) occtPlaneY0() {
+  return new Geom_Plane(gp_Ax3(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0), gp_Dir(1, 0, 0)));
+}
+ssi::SurfaceAdapter nativePlaneY0(const ssi::ParamBox& dom) {
+  nm::Plane pl;
+  pl.pos = Ax3{Point3{0, 0, 0}, Dir3{1, 0, 0}, Dir3{0, 0, 1}, Dir3{0, 1, 0}};
+  return ssi::makePlaneAdapter(pl, dom);
+}
+
+// ── S4-e (a): SPHERE POLE — the great circle through BOTH poles fully traced vs OCCT ──
+// Unit sphere ∩ plane y=0 → the great circle in the x-z plane, which passes through the
+// sphere's two PARAMETRIC POLES (v=±π/2). With the chart switch OFF the S3 marcher truncates
+// to one meridian at the first pole (spurious BoundaryExit). With it ON S4-e steps across
+// both poles with the point-based cut → the FULL closed loop. Verified against OCCT
+// GeomAPI_IntSS: every native node on the OCCT locus AND on both OCCT surfaces within tol,
+// arc length ≈ the OCCT circle, closed. (The chart singularity is a NATIVE parametrization
+// artifact — OCCT's implicit sphere has no pole there — so the strong facts asserted are
+// on-locus + on-surface + length + closed, exactly the S3 contract.)
+void pairSpherePoleS4e() {
+  nm::Sphere sph{frameZ(), 1.0};
+  auto A = ssi::makeSphereAdapter(sph, ssi::ParamBox{0.0, 2.0 * kPi, -kPi / 2, kPi / 2});
+  auto B = nativePlaneY0(ssi::ParamBox{-2.0, 2.0, -2.0, 2.0});
+  Handle(Geom_Surface) sa = new Geom_SphericalSurface(toOcctAx3(frameZ()), 1.0);
+  Handle(Geom_Surface) sb = occtPlaneY0();
+  auto seeds = handSeed(0.0, 0.0, 1.0, 0.0, Point3{1, 0, 0});  // (1,0,0), away from either pole
+
+  // BEFORE — chart switch OFF: truncates at the first pole (< the full 2π loop).
+  ssi::MarchOptions off;
+  const ssi::TraceSet before = ssi::trace_from_seeds(A, B, seeds, off);
+  double lenBefore = 0.0;
+  for (const auto& w : before.lines) lenBefore += wlineLength(w);
+
+  // AFTER — chart switch ON: both poles crossed → the full great circle.
+  ssi::MarchOptions on; on.enableChartSingularities = true;
+  const ssi::TraceSet ts = ssi::trace_from_seeds(A, B, seeds, on);
+
+  // OCCT locus (the great circle; may be arc-split) for the on-curve oracle + its length.
+  GeomAPI_IntSS iss(sa, sb, 1e-7);
+  const int occtN = iss.IsDone() ? iss.NbLines() : 0;
+  std::vector<OcctBranch> occtBr;
+  double occtLen = 0.0;
+  for (int i = 1; i <= occtN; ++i) {
+    occtBr.push_back(classifyBranch(iss.Line(i), sa, sb, 1e-2));
+    occtLen += occtBr.back().length;
+  }
+
+  const double onCurveTol = 5e-4, onSurfTol = 1e-4, lengthTol = 3e-2;
+  double maxOnCurve = 0.0, maxOnSurf = 0.0, nativeLen = 0.0;
+  for (const auto& w : ts.lines) {
+    nativeLen += wlineLength(w);
+    for (const Point3& p : sampleWLine(w)) {
+      double best = 1e30;
+      for (const auto& b : occtBr) best = std::min(best, distToOcctCurve(b.curve, p));
+      maxOnCurve = std::max(maxOnCurve, best);
+      maxOnSurf = std::max(maxOnSurf, std::max(distToOcctSurface(sa, p), distToOcctSurface(sb, p)));
+    }
+  }
+  const double lenDelta = occtLen > 1e-12 ? std::fabs(nativeLen - occtLen) / occtLen : nativeLen;
+
+  const bool ok = ts.singularitiesCrossed >= 2 && ts.nearTangentGaps == 0 &&
+                  ts.closedCurves == 1 && occtN > 0 && lenBefore < 0.75 * occtLen &&
+                  maxOnCurve <= onCurveTol && maxOnSurf <= onSurfTol && lenDelta <= lengthTol;
+  if (ok) ++g_pass; else ++g_fail;
+  std::printf("[NMARCH] %-4s %-18s singX=%d NTgaps=%d closed=%d onCurve=%.2e onSurf=%.2e "
+              "lenDelta=%.2e (before=%.4f nat=%.4f occt=%.4f) occtBr=%d\n",
+              ok ? "PASS" : "FAIL", "sphere-pole s4e", ts.singularitiesCrossed, ts.nearTangentGaps,
+              ts.closedCurves, maxOnCurve, maxOnSurf, lenDelta, lenBefore, nativeLen, occtLen, occtN);
+  std::fflush(stdout);
+}
+
+// ── S4-e (b): CONE APEX — the apex-crossing line spans BOTH nappes vs OCCT ────────────
+// Double cone (R₀=0, α=45°, apex at origin) ∩ plane y=0 → the two lines z=±x through the
+// apex. OFF: the S3 marcher step-crawls at the apex (signed radius → 0) and never reaches the
+// v<0 nappe. ON: S4-e treats the apex as a pass-through 3D point → both nappes traced in a
+// bounded node count. Verified vs OCCT GeomAPI_IntSS: every native node on the OCCT locus AND
+// on both surfaces within tol.
+void pairConeApexS4e() {
+  nm::Cone cone; cone.pos = frameZ(); cone.radius = 0.0; cone.semiAngle = kPi / 4;
+  auto A = ssi::makeConeAdapter(cone, ssi::ParamBox{0.0, 2.0 * kPi, -2.0, 2.0});
+  auto B = nativePlaneY0(ssi::ParamBox{-3.0, 3.0, -3.0, 3.0});
+  Handle(Geom_Surface) sa = new Geom_ConicalSurface(toOcctAx3(frameZ()), kPi / 4, 0.0);
+  Handle(Geom_Surface) sb = occtPlaneY0();
+  const double vSeed = 1.8, r = vSeed * std::sin(kPi / 4), z = vSeed * std::cos(kPi / 4);
+  auto seeds = handSeed(0.0, vSeed, r, z, Point3{r, 0.0, z});
+
+  // BEFORE — chart switch OFF: stalls at the apex, never the far nappe.
+  ssi::MarchOptions off;
+  const ssi::TraceSet before = ssi::trace_from_seeds(A, B, seeds, off);
+  double v1loBefore = 1e9;
+  for (const auto& w : before.lines) for (const auto& n : w.points) v1loBefore = std::min(v1loBefore, n.v1);
+
+  // AFTER — chart switch ON: the apex crossed, both nappes.
+  ssi::MarchOptions on; on.enableChartSingularities = true;
+  const ssi::TraceSet ts = ssi::trace_from_seeds(A, B, seeds, on);
+
+  GeomAPI_IntSS iss(sa, sb, 1e-7);
+  const int occtN = iss.IsDone() ? iss.NbLines() : 0;
+  std::vector<OcctBranch> occtBr;
+  for (int i = 1; i <= occtN; ++i) occtBr.push_back(classifyBranch(iss.Line(i), sa, sb, 1e-2));
+
+  const double onCurveTol = 5e-4, onSurfTol = 1e-4;
+  double maxOnCurve = 0.0, maxOnSurf = 0.0, v1lo = 1e9, v1hi = -1e9;
+  int nodeCount = 0;
+  for (const auto& w : ts.lines) {
+    for (const auto& n : w.points) { v1lo = std::min(v1lo, n.v1); v1hi = std::max(v1hi, n.v1); ++nodeCount; }
+    for (const Point3& p : sampleWLine(w)) {
+      double best = 1e30;
+      for (const auto& b : occtBr) best = std::min(best, distToOcctCurve(b.curve, p));
+      if (!occtBr.empty()) maxOnCurve = std::max(maxOnCurve, best);
+      maxOnSurf = std::max(maxOnSurf, std::max(distToOcctSurface(sa, p), distToOcctSurface(sb, p)));
+    }
+  }
+
+  const bool ok = ts.singularitiesCrossed >= 1 && ts.nearTangentGaps == 0 && occtN > 0 &&
+                  v1loBefore > -0.5 && v1lo < -1.5 && v1hi > 1.5 && nodeCount < 2000 &&
+                  maxOnCurve <= onCurveTol && maxOnSurf <= onSurfTol;
+  if (ok) ++g_pass; else ++g_fail;
+  std::printf("[NMARCH] %-4s %-18s singX=%d NTgaps=%d nodes=%d v1=[%.2f,%.2f] (before v1lo=%.2f) "
+              "onCurve=%.2e onSurf=%.2e occtBr=%d\n",
+              ok ? "PASS" : "FAIL", "cone-apex s4e", ts.singularitiesCrossed, ts.nearTangentGaps,
+              nodeCount, v1lo, v1hi, v1loBefore, maxOnCurve, maxOnSurf, occtN);
+  std::fflush(stdout);
+}
+
 }  // namespace
 
 int main() {
@@ -753,6 +904,8 @@ int main() {
   pairNearTangentCrossedS4c();   // S4-c: graze marched through, full curve vs OCCT
   pairEqualCylindersDefer();     // S4-c: branch saddle still deferred (not crossed) — control
   pairEqualCylindersBranchS4d(); // S4-d: branch points localized + arms routed vs OCCT
+  pairSpherePoleS4e();           // S4-e: sphere parametric pole crossed, full great circle vs OCCT
+  pairConeApexS4e();             // S4-e: cone apex crossed, both nappes vs OCCT
 
   std::printf("== %d passed, %d failed ==\n", g_pass, g_fail);
   std::fflush(stdout);

@@ -19,8 +19,9 @@
 
 #include "native/math/bspline.h"
 #include "native/numerics/numerics.h"
-#include "native/ssi/branch_point.h"    // S4-d: branch-point localize + arm enumerate
-#include "native/ssi/tangent_seeded.h"  // S4-b: type a near-tangent stop
+#include "native/ssi/branch_point.h"       // S4-d: branch-point localize + arm enumerate
+#include "native/ssi/chart_singularity.h"  // S4-e: single-surface chart-collapse witness + pole map
+#include "native/ssi/tangent_seeded.h"     // S4-b: type a near-tangent stop
 
 #include <algorithm>
 #include <array>
@@ -53,6 +54,11 @@ struct Tuned {
   double minCrossSine;                ///< S4-c floor: sine below this mid-crossing ⇒ genuine tangency/branch, defer
   int maxPoints, crossMaxSteps;
   bool enableBranchPoints = false;    ///< S4-d: capture branch stalls for localization + arm routing
+  // ── S4-e chart-singularity knobs (single-surface ‖dU‖ collapse; sentinel-resolved) ──
+  bool enableChartSingularities = false;  ///< S4-e: step across a sphere pole / cone apex
+  double chartCollapseFrac;                ///< ‖dU‖ < this·‖dV‖ AND < this·scale ⇒ chart collapse
+  double chartStep;                        ///< FINE crossing step off the singular point (chartStepFrac·h0)
+  int chartMaxSteps;                       ///< max fine point-based steps crossing one pole/apex
 };
 
 Tuned tune(const MarchOptions& o, double scale) {
@@ -81,6 +87,13 @@ Tuned tune(const MarchOptions& o, double scale) {
   t.maxPoints     = std::max(16, o.maxPoints);
   t.crossMaxSteps = std::max(1, o.crossMaxSteps);
   t.enableBranchPoints = o.enableBranchPoints;
+  // S4-e: chart-collapse threshold (‖dU‖ ≪ ‖dV‖·scale) and the FINE crossing step. Both
+  // sentinel-resolved; neither weakens a solve tolerance — they only decide WHERE the
+  // point-based crossing engages and how finely it resolves the pole/apex.
+  t.enableChartSingularities = o.enableChartSingularities;
+  t.chartCollapseFrac = o.chartCollapseFrac > 0 ? o.chartCollapseFrac : 1e-3;
+  t.chartStep = std::max(t.minStep, (o.chartStepFrac > 0 ? o.chartStepFrac : (1.0 / 16.0)) * t.h0);
+  t.chartMaxSteps = std::max(1, o.chartMaxSteps);
   return t;
 }
 
@@ -249,6 +262,7 @@ struct DirResult {
   State stopState{};   ///< the on-curve state where the march stopped (for S4-b typing)
   int crossed = 0;             ///< S4-c: near-tangent grazes marched through this direction
   double maxCrossResid = 0.0;  ///< worst on-both-surfaces residual over the crossed arcs
+  int chartCrossed = 0;        ///< S4-e: chart singularities (pole/apex) stepped across this direction
 
   // S4-d: set only when enableBranchPoints AND this direction stopped at a BRANCH signature
   // (steep sine collapse / raw-tangent flip — two arms meet). Carries the last-good on-curve
@@ -499,6 +513,180 @@ CrossOut crossNearTangent(const SurfaceAdapter& A, const SurfaceAdapter& B,
   return r;
 }
 
+// ── S4-e: single-surface chart-singularity detection + point-based crossing ──────────
+//
+// A CHART SINGULARITY is ONE surface's own (u,v) parametrization degenerating (‖dU‖ → 0 at
+// a sphere pole v=±π/2 or a cone apex, signed radius = 0) while its 3D point + normal stay
+// FINITE. The intersection can be perfectly TRANSVERSAL through it (the pair sine need not
+// collapse), yet advanceParams' single-surface 2×2 goes rank-deficient there, so S3 either
+// spuriously BoundaryExits (the pole sits on a non-periodic v edge) or step-crawls the node
+// budget (the apex). The witness is the single-surface Jacobian rank-drop — computed from ONE
+// surface's ‖dU‖/‖dV‖, DISTINCT from the S4-c pair sine ‖n₁×n₂‖ and the S4-d locus flip
+// (chart_singularity.h). Which surface (if any) collapsed at the current node.
+enum class ChartSurf { None, A, B };
+
+struct ChartHit {
+  ChartSurf surf = ChartSurf::None;
+  chartsing::ChartCond cond{};  ///< the collapsed surface's conditioning (‖dU‖, ‖dV‖, finite normal)
+};
+
+// Evaluate the chart witness on BOTH surfaces at a node; report the collapsed one (the one
+// with the SMALLER ‖dU‖/‖dV‖ ratio if both somehow collapse). Independent of the S4-c/S4-d
+// seams: reads only single-surface finite-difference dU/dV, never the pair normal cross.
+ChartHit chartCondition(const SurfaceAdapter& A, const SurfaceAdapter& B, const State& s,
+                        double scale, const Tuned& t) {
+  const chartsing::ChartCond ca =
+      chartsing::chartConditionAt(A, s.u1, s.v1, scale, t.chartCollapseFrac);
+  const chartsing::ChartCond cb =
+      chartsing::chartConditionAt(B, s.u2, s.v2, scale, t.chartCollapseFrac);
+  ChartHit h;
+  const double ra = ca.dU / std::max(ca.dV, 1e-300);
+  const double rb = cb.dU / std::max(cb.dV, 1e-300);
+  if (ca.collapsed && (!cb.collapsed || ra <= rb)) { h.surf = ChartSurf::A; h.cond = ca; }
+  else if (cb.collapsed)                           { h.surf = ChartSurf::B; h.cond = cb; }
+  return h;
+}
+
+// True once the chart U direction has RECOVERED on BOTH surfaces (‖dU‖ back above the
+// collapse threshold) — the signal to hand back to the normal S3 march.
+bool chartRecovered(const SurfaceAdapter& A, const SurfaceAdapter& B, const State& s,
+                    double scale, const Tuned& t) {
+  return !chartsing::chartConditionAt(A, s.u1, s.v1, scale, t.chartCollapseFrac).collapsed &&
+         !chartsing::chartConditionAt(B, s.u2, s.v2, scale, t.chartCollapseFrac).collapsed;
+}
+
+// Seed the SINGULAR surface's far-side (u,v) LOOSELY from chart continuity, using only the
+// finite point + normal (never the degenerate dU). The corrector then confirms it; a wrong pick
+// simply fails verification and the march defers (no fabrication). Two removable-singularity
+// cases:
+//  * SPHERE POLE. A great arc through the pole continues on the OPPOSITE meridian: the longitude
+//    jumps by half a turn (poleContinuationU, u_in+π) while the latitude REFLECTS about the pole
+//    (v stays near ±π/2, then decreases back into the domain) — so the far-side v seed is the
+//    SAME magnitude, kept just inside the pole edge. The corrector re-lands the exact v.
+//  * CONE APEX. The apex is a single 3D point; the curve passes straight through to the far
+//    nappe, whose signed radius (hence v) has the OPPOSITE sign. Flip v; the longitude is
+//    unchanged (the straight line keeps its azimuth). The corrector confirms the far nappe.
+// `s` is the singular surface's (u,v) IN the collapsed node (near the pole/apex); returns the
+// far-side (uOut,vOut) seed. `poleCase` selects the sphere-pole reflect vs the apex sign-flip.
+// A chart singularity is a POLE (sphere) when the collapse sits on a v DOMAIN EDGE (v = ±π/2 —
+// the latitude runs out there), and an APEX (cone) when it sits in the v INTERIOR (signed radius
+// crosses zero away from either v-edge). Distinguished by the collapsed v's proximity to a
+// v-edge — periods alone cannot tell them apart (both have periodic u, non-periodic v).
+bool isPoleEdge(const SurfaceAdapter& S, double v) {
+  const ParamBox& d = S.domain;
+  const double ev = std::max(d.dv() * 1e-3, 1e-9);
+  return v <= d.v0 + ev || v >= d.v1 - ev;
+}
+
+void chartFarUV(const SurfaceAdapter& S, bool poleCase, double u, double v, double& uOut,
+                double& vOut) {
+  if (poleCase) {
+    // Sphere pole: the great arc CONTINUES on the OPPOSITE meridian — jump the longitude by half
+    // a turn (poleContinuationU, u_in+π) and KEEP the latitude (the far arc runs back DOWN from
+    // the same pole edge, v unchanged; there is no v beyond ±π/2). The corrector re-lands v.
+    uOut = S.uPeriod > 0.0 ? chartsing::poleContinuationU(u, S.uPeriod) : u;
+    vOut = v;
+  } else {
+    uOut = u;       // apex: azimuth unchanged (the straight line keeps its longitude)
+    vOut = -v;      // far nappe: signed radius (hence v) flips sign through the apex
+  }
+}
+
+// The result of one chart-singularity crossing (mirrors CrossOut).
+struct ChartCrossOut {
+  bool crossed = false;
+  State end{};          ///< the far-side state to resume the normal march from
+  int count = 0;        ///< nodes appended
+  double maxResid = 0.0;
+};
+
+// ── S4-e crossing driver (point-based fixed-plane cut) ───────────────────────────
+//
+// Called from marchDir when a chart collapse is detected (enableChartSingularities on). Makes a
+// bounded sequence of POINT-BASED JUMPS along the fixed last-good tangent t★ to STEP ACROSS the
+// singular point (sphere pole / cone apex). The corrector is the S4-c / branch_point.h FIXED-
+// PLANE cut: it drives the 3D residual A.point − B.point → 0 with an along-t★ hyperplane advance
+// (dot(A.point − anchor, t★) = d) — NEITHER residual touches the degenerate single-surface dU,
+// so it stays well-posed exactly where advanceParams failed. The singular surface's far-side
+// (u,v) are re-seeded LOOSELY from chart continuity (chartFarUV — pole meridian jump / apex v
+// sign flip); the corrector confirms them, and a node is EMITTED only if it verifies on BOTH
+// surfaces ≤ onSurfTol. Once ‖dU‖ has RECOVERED on both surfaces (we are clear of the pole/apex)
+// and the far side made real progress, resume the normal S3 march. On ANY failure DISCARD the
+// whole band (roll back `out`) and return crossed=false so the caller STOPS + defers → OCCT.
+// Never fabricates a pole/apex point: the singular point itself is never emitted; the crossing
+// steps FROM a last-good pre-singular node TO verified far-side nodes only.
+//
+// COMPLEXITY NOTE: the isolated S4-e crossing handler the design flags — the one place the chart
+// crossing loop + verification sits, kept out of the hot marchDir dispatch (parallels
+// crossNearTangent for S4-c).
+ChartCrossOut crossChartSingularity(const SurfaceAdapter& A, const SurfaceAdapter& B,
+                                    const State& stall, const Vec3& tStarFwd, ChartSurf which,
+                                    const Tuned& t, double scale, std::vector<WLinePoint>& out) {
+  ChartCrossOut r;
+  const std::size_t base = out.size();  // rollback marker: discard all crossing nodes on failure
+  const Vec3 dirStar = tStarFwd;        // fixed crossing direction (last-good forward tangent)
+  const bool singularIsA = which == ChartSurf::A;
+  const SurfaceAdapter& singular = singularIsA ? A : B;
+  // POLE (sphere, collapse on a v edge — continue on the opposite meridian) vs APEX (cone,
+  // collapse in the v interior — pass through to the far nappe, v sign flips).
+  const double vSing = singularIsA ? stall.v1 : stall.v2;
+  const bool poleCase = isPoleEdge(singular, vSing);
+
+  State cur = stall;
+  const double h = t.chartStep;         // FINE, fixed step across the band (resolve, don't leap)
+  bool crossed = false;                 // have we applied the far-side chart map yet?
+
+  for (int i = 0; i < t.chartMaxSteps; ++i) {
+    const Point3 anchor = cur.p;
+    const Point3 target = cur.p + dirStar * h;
+    // Seed the corrector at the CONTINUITY guess. The point-based reproject needs only a nearby
+    // (u,v) seed — it does NOT use the degenerate dU — so we advance the NON-singular surface by
+    // its (well-conditioned) tangent plane and carry the singular surface's (u,v) by continuity.
+    // At the collapse itself (once, when the singular chart's ‖dU‖ has collapsed) we FLIP to the
+    // FAR chart via chartFarUV (pole meridian jump / apex v sign flip); after that the far chart
+    // advances by continuity as v moves away from the pole/apex until ‖dU‖ recovers.
+    branchpt::BPState seed{cur.u1, cur.v1, cur.u2, cur.v2, target};
+    const SurfaceAdapter& reg = singularIsA ? B : A;   // the well-conditioned (regular) surface
+    if (singularIsA) advanceParams(reg, cur.u2, cur.v2, reg.uPeriod, dirStar * h, reg.domain, seed.u2, seed.v2);
+    else             advanceParams(reg, cur.u1, cur.v1, reg.uPeriod, dirStar * h, reg.domain, seed.u1, seed.v1);
+    const ChartHit hitCur = chartCondition(A, B, cur, scale, t);
+    if (!crossed && hitCur.surf != ChartSurf::None) {
+      double uO, vO;
+      if (singularIsA) { chartFarUV(A, poleCase, cur.u1, cur.v1, uO, vO); seed.u1 = uO; seed.v1 = vO; }
+      else             { chartFarUV(B, poleCase, cur.u2, cur.v2, uO, vO); seed.u2 = uO; seed.v2 = vO; }
+      crossed = true;
+    }
+
+    // Point-based fixed-plane reproject: land on both surfaces, held at distance h along t★ from
+    // the anchor (the well-posed-as-dU→0 cut). Never uses the degenerate single-surface dU.
+    const auto landed = branchpt::reproject(A, B, seed, t.onSurfTol, anchor,
+                                            branchpt::AlongPin{dirStar, h});
+    if (!landed) { out.resize(base); return r; }  // will not verify on both surfaces → defer
+    const State next{landed->u1, landed->v1, landed->u2, landed->v2, landed->p};
+
+    // Real progress along t★ (not sliding back to the anchor).
+    const double advance = math::dot(next.p - anchor, dirStar);
+    if (!(advance >= 0.25 * h)) { out.resize(base); return r; }
+
+    const double resid = math::distance(A.point(next.u1, next.v1), B.point(next.u2, next.v2));
+    out.push_back(toNode(next, resid));
+    r.maxResid = std::max(r.maxResid, resid);
+    ++r.count;
+    cur = next;
+
+    // Recovered on the far side: we have applied the far-chart map AND ‖dU‖ is back above the
+    // collapse threshold on BOTH surfaces (clear of the pole/apex). Resume the normal S3 march.
+    if (crossed && chartRecovered(A, B, cur, scale, t)) {
+      r.crossed = true;
+      r.end = cur;
+      return r;
+    }
+  }
+
+  out.resize(base);  // budget exhausted without recovering → discard, defer (honest gap)
+  return r;
+}
+
 // The mutable state carried through one direction's walk. Bundled so the walk loop can
 // hand it to small helpers (band entry, node acceptance) instead of inlining every branch
 // — keeping marchDir a flat dispatch (see the S4-c helpers below).
@@ -510,6 +698,7 @@ struct Walk {
   double lastGoodSine = 0.0; // ‖nA×nB‖ at the last pre-band node (crossable discriminator)
   bool haveStar = false;
   bool crossedAny = false;   // has this direction marched through a graze?
+  bool crossedChart = false; // S4-e: has this direction stepped across a chart singularity?
   Vec3 seedFwd{};            // seed's outgoing FORWARD tangent (closure-direction gate)
   bool haveSeedFwd = false;
 };
@@ -520,7 +709,8 @@ struct Walk {
 // returning to the seed (the seed can sit right at a graze); after a crossing we floor
 // the radius at the NOMINAL step so closure stays detectable.
 double closeRadius(const Walk& w, const Tuned& t) {
-  return w.crossedAny ? t.loopClose * std::max(w.h, 0.5 * t.h0) : t.loopClose * w.h;
+  return (w.crossedAny || w.crossedChart) ? t.loopClose * std::max(w.h, 0.5 * t.h0)
+                                          : t.loopClose * w.h;
 }
 // DIRECTION-CONSISTENT closure (only meaningful once a graze was crossed and the radius
 // floored). A near-tangent loop can pass CLOSE TO the seed at a mid-loop junction while
@@ -593,6 +783,59 @@ std::optional<DirResult> tryBandEntry(const SurfaceAdapter& A, const SurfaceAdap
   return std::nullopt;  // crossed → continue the walk
 }
 
+// ── S4-e chart-band entry (parallels tryBandEntry) ───────────────────────────────
+//
+// At a detected single-surface chart collapse (‖dU‖ → 0 on `which`, finite normal), try to
+// STEP ACROSS the pole/apex via crossChartSingularity. On success it updates `w` to the
+// recovered far side and returns nullopt (the caller CONTINUES the walk, re-checking closure/
+// boundary here); on a non-crossable / unverifiable singularity it returns a NearTangent
+// DirResult (the caller STOPS + defers → OCCT, reporting the measured gap). Requires a valid
+// last-good forward tangent (w.haveStar): the crossing needs a fixed t★ for the point-based cut.
+// Isolating this keeps marchDir a flat dispatch.
+std::optional<DirResult> tryChartBand(const SurfaceAdapter& A, const SurfaceAdapter& B,
+                                      const State& start, int step, ChartSurf which,
+                                      const Tuned& t, double scale, Walk& w,
+                                      std::vector<WLinePoint>& out, DirResult& res) {
+  const ChartCrossOut cx =
+      crossChartSingularity(A, B, w.cur, w.tStar, which, t, scale, out);
+  if (!cx.crossed) {  // chart collapse the point-based cut could not verify across → honest stop
+    DirResult stop;
+    stop.end = DirEnd::NearTangent;
+    stop.sineAtStop = intersectionTangent(A, B, w.cur).sine;
+    stop.stopState = w.cur;
+    return stop;
+  }
+  res.chartCrossed += cx.count > 0 ? 1 : 0;  // one pole/apex stepped across (count = nodes)
+  res.maxCrossResid = std::max(res.maxCrossResid, cx.maxResid);
+  const Vec3 fwd = cx.end.p - w.cur.p;  // forward chord across the singular band
+  w.cur = cx.end;
+  w.h = std::max(t.minStep, 0.5 * t.h0);  // resume with a modest step
+  // Re-derive the forward sign so the resumed march keeps going the crossing way (the raw
+  // cross-product sign is reliable again once ‖dU‖ recovered), refreshing tStar / lastGoodSine.
+  const Tangent rec = intersectionTangent(A, B, w.cur);
+  double recSine = 0.0;
+  if (rec.valid) {
+    const bool fwdAligned = math::dot(rec.dir, fwd) >= 0.0;
+    w.sign = fwdAligned ? 1.0 : -1.0;
+    w.tStar = fwdAligned ? rec.dir : rec.dir * -1.0;
+    w.lastGoodSine = rec.sine;
+    w.haveStar = true;
+    recSine = rec.sine;
+  }
+  w.crossedChart = true;
+  if (step > 2 && math::distance(w.cur.p, start.p) <= closeRadius(w, t) && closeAligned(w, w.tStar)) {
+    DirResult done; done.end = DirEnd::LoopClosed; done.crossed = res.crossed;
+    done.chartCrossed = res.chartCrossed; done.maxCrossResid = res.maxCrossResid;
+    done.sineAtStop = recSine; return done;
+  }
+  if (atBoundary(A, B, w.cur)) {
+    DirResult done; done.end = DirEnd::Boundary; done.crossed = res.crossed;
+    done.chartCrossed = res.chartCrossed; done.maxCrossResid = res.maxCrossResid;
+    done.sineAtStop = recSine; return done;
+  }
+  return std::nullopt;  // crossed → continue the walk
+}
+
 DirResult marchDir(const SurfaceAdapter& A, const SurfaceAdapter& B,
                   const State& start, double sign, const Tuned& t, double scale,
                   std::vector<WLinePoint>& out) {
@@ -606,6 +849,21 @@ DirResult marchDir(const SurfaceAdapter& A, const SurfaceAdapter& B,
     if (step > 2 && w.crossedAny && math::distance(w.cur.p, start.p) <= closeRadius(w, t) &&
         closeAligned(w, w.tStar)) {
       res.end = DirEnd::LoopClosed; res.sineAtStop = tan.sine; return res;
+    }
+
+    // S4-e chart singularity: a SINGLE-surface parametrization collapse (‖dU‖ → 0 at a sphere
+    // pole / cone apex) with a finite point + normal. Checked BEFORE the S4-c near-tangent and
+    // the boundary branches so a pole/apex (which sits on a non-periodic v edge AND ill-
+    // conditions advanceParams) routes to the point-based crossing instead of a spurious
+    // BoundaryExit or the step-crawl. Independent of the pair sine — computed from single-
+    // surface ‖dU‖/‖dV‖. Requires a last-good tangent for the fixed-plane cut.
+    if (t.enableChartSingularities && w.haveStar) {
+      const ChartHit hit = chartCondition(A, B, w.cur, scale, t);
+      if (hit.surf != ChartSurf::None) {
+        if (auto done = tryChartBand(A, B, start, step, hit.surf, t, scale, w, out, res))
+          return *done;
+        continue;  // crossed → resume the normal walk on the far side
+      }
     }
 
     // S4-c crossing band: try to MARCH THROUGH a near-tangency instead of stopping — only
@@ -792,6 +1050,7 @@ WLine march_branch_impl(const SurfaceAdapter& A, const SurfaceAdapter& B, const 
     line.points.insert(line.points.end(), fwd.begin(), fwd.end());
     line.status = TraceStatus::Closed;
     line.nearTangentCrossed = f.crossed;                       // S4-c: grazes marched through
+    line.chartSingularCrossed = f.chartCrossed;                // S4-e: poles/apexes stepped across
     line.crossMaxResidual   = f.maxCrossResid;
   } else {
     // Open (or truncated forward). March the other way too and stitch:
@@ -802,6 +1061,7 @@ WLine march_branch_impl(const SurfaceAdapter& A, const SurfaceAdapter& B, const 
     line.points.push_back(toNode(seedState, seed.onSurfResidual));
     line.points.insert(line.points.end(), fwd.begin(), fwd.end());
     line.nearTangentCrossed = f.crossed + b.crossed;           // S4-c: grazes marched through
+    line.chartSingularCrossed = f.chartCrossed + b.chartCrossed;  // S4-e: poles/apexes stepped across
     line.crossMaxResidual   = std::max(f.maxCrossResid, b.maxCrossResid);
     // Failed: neither direction advanced past the seed (no real curve). NearTangent: at
     // least one end stopped at a tangency (traced up to it — honest S4 gap). Otherwise
@@ -895,6 +1155,7 @@ bool sameLocus(const WLine& w, const std::vector<WLine>& kept, double radius) {
 // S4-d routed arms so both report identically.
 void tallyLine(TraceSet& res, WLine&& w) {
   res.nearTangentCrossed += w.nearTangentCrossed;
+  res.singularitiesCrossed += w.chartSingularCrossed;  // S4-e: poles/apexes stepped across
   switch (w.status) {
     case TraceStatus::Closed:       ++res.closedCurves; ++res.tracedBranches; break;
     case TraceStatus::BoundaryExit: ++res.openCurves;   ++res.tracedBranches; break;

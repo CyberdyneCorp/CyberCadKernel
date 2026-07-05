@@ -14,13 +14,25 @@
 // generalises across the transversal elementary family (cylinder / sphere / cone /
 // plane pairs) instead of enumerating each primitive by hand.
 //
-// It is HONESTLY NARROW. It consumes ONLY a fully-transversal trace
-// (`nearTangentGaps == 0`, every consumed WLine Closed or BoundaryExit). Near-tangent
-// / coincident / branch-point / freeform pairs are DEFERRED to S4 and fall back to
-// OCCT — this library returns a NULL Shape and the ENGINE (native_engine.cpp) owns
-// the OCCT fallthrough plus the mandatory watertight + correct-volume self-verify.
-// Nothing here is faked or hand-tuned: any stage that cannot proceed robustly returns
-// NULL, and the honest gap is what the roadmap calls the S4 seam.
+// It is HONESTLY NARROW. The single-seam S5-a/b/c paths consume ONLY a fully-transversal
+// trace (`nearTangentGaps == 0`, every consumed WLine Closed or BoundaryExit). ONE
+// branch-point family is additionally handled — S5-d, the STEINMETZ bicylinder (two
+// EQUAL-radius cylinders whose axes cross ORTHOGONALLY): on the decline edge where the
+// default (unbranched) trace reports `nearTangentGaps > 0` (the self-crossing branch
+// points collapse the transversality sine), and ONLY when a cheap pre-gate matches that
+// family, the path RE-TRACES with branch points enabled (MarchOptions.enableBranchPoints),
+// recognises the branched trace (2 branch points, 4 branch-to-branch arms), splits each
+// cylinder along its arcs into the two inside-the-other lune patches, and welds the four
+// lunes into ONE watertight COMMON shell sharing the four arc seams and the two branch-
+// point poles. Steinmetz FUSE / CUT are deferred (COMMON is the guaranteed slice). Every
+// OTHER near-tangent / coincident / non-Steinmetz branched (unequal-R / non-orthogonal
+// cylinders, cyl∩sphere/cone self-crossings, ≠2 branch points or ≠4 arms, an unresolved
+// branched trace) / freeform pair is DEFERRED and falls back to OCCT — this library
+// returns a NULL Shape and the ENGINE (native_engine.cpp) owns the OCCT fallthrough plus
+// the mandatory watertight + correct-volume self-verify (the existing `16 R³/3` Steinmetz
+// oracle now finally gets a native candidate). Nothing here is faked or hand-tuned: any
+// stage that cannot proceed robustly returns NULL, and the honest gap is what the roadmap
+// calls the S4 seam.
 //
 // ── PIPELINE (design.md §Pipeline) ────────────────────────────────────────────
 //   0. GATE + TRACE. Recover each operand's elementary curved wall from its native

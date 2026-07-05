@@ -342,7 +342,7 @@ intersection locus.
 #### S4-f — Self-intersection / small-loops · ✗ PENDING
 Self-intersection guards and small-loop recovery below the seeding resolution floor.
 
-### S5 — Curved booleans via SSI (the payoff) · ◐ FIRST NATIVE SLICE landed (~months for full coverage)
+### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d landed (branched-trace Steinmetz COMMON now native; ~months for full coverage)
 Use SSI curves to **split** the curved faces of two solids, **classify**
 fragments inside/outside (reuse the BSP-CSG classifier + a curved point-in-solid
 test), **assemble** the surviving shell watertight (curved-seam weld from the
@@ -352,12 +352,13 @@ mesher). Extends `src/native/boolean/` from planar/axis-aligned to general curve
   OCCT fallback for the rest.
 - **Unlocks:** curved blends (#6) and curved wrap-emboss (#7) then compose on top.
 
-**S5-a/b/c done at the bar (changes `add-native-ssi-curved-boolean` archived +
-`add-native-ssi-curved-boolean-wider`):** the SSI-curve-driven
-split→classify→select→weld pipeline lives in `src/native/boolean/ssi_boolean.{h,cpp}`
-(OCCT-free, `CYBERCAD_HAS_NUMSCI`-gated, consumes the S3 `TraceSet`). It now produces
-**five native curved-boolean sub-cases verified vs OCCT `BRepAlgoAPI_{Fuse,Cut,Common}`**
-(sim parity `native-pass=5`, 13 honest fallbacks):
+**S5-a/b/c + S5-d done at the bar (changes `add-native-ssi-curved-boolean` archived +
+`add-native-ssi-curved-boolean-wider` + `add-native-ssi-branched-boolean` archived
+`2026-07-05`):** the SSI-curve-driven split→classify→select→weld pipeline lives in
+`src/native/boolean/ssi_boolean.{h,cpp}` (OCCT-free, `CYBERCAD_HAS_NUMSCI`-gated, consumes the
+S3 `TraceSet` — and, for S5-d, the S4-d branched re-trace with `MarchOptions.enableBranchPoints
+= true`). It now produces **six native curved-boolean sub-cases verified vs OCCT
+`BRepAlgoAPI_{Fuse,Cut,Common}`** (sim parity `native-pass=6`, 12 honest fallbacks):
 - **S5-a — through-drill cylinder∩cylinder COMMON** (unequal radii, transversal two-loop
   trace) — watertight, ΔV = 8.1e-04, ΔA = 2.8e-04.
 - **S5-b — through-drill cylinder∩cylinder FUSE + CUT** (assembler-only extension: fat wall
@@ -367,15 +368,30 @@ split→classify→select→weld pipeline lives in `src/native/boolean/ssi_boole
   spherical caps, welded along the one seam; direction-slerp cap facets, robust even when the
   cap apex sits at the sphere's parametric pole) — watertight, ΔV = 4.1e-04 (equal radii) /
   4.7e-04 (unequal radii).
+- **S5-d — Steinmetz (equal-radius orthogonal cyl∩cyl) COMMON** (the *branched-trace*
+  assembler): a `steinmetzPreGate` (equal-R, orthogonal, crossing axes) fires ONLY on the S4
+  decline edge (`nearTangentGaps > 0`), RE-TRACES with branch points enabled, and
+  `recogniseSteinmetzTrace` accepts only the canonical structure (`branchPoints == 2`, four
+  `BranchArc` arms). `buildSteinmetzCommon` splits each cylinder along its two arcs into the
+  inside-the-other lune patches, keeps the four whose centroid is inside the other cylinder, and
+  welds them into ONE watertight shell sharing the four arc seams and the two branch-point
+  vertices (S5-a planar-facet + `VertexPool` discipline). Verified vs **BOTH** the exact
+  analytic bicylinder volume `16 R³/3 = 5.33333` (host) **and** OCCT `BRepAlgoAPI_Common` (sim):
+  watertight, volN = 5.3287, ΔV = 8.75e-04 (−0.088% vs analytic/OCCT), ΔA = 4.68e-04 — inside
+  the 1% curved-parity bar. No tolerance weakened.
 
 Honest scope still declining → OCCT (measured NULL fallbacks, never faked):
-- **Steinmetz** (equal-radius orthogonal cyl∩cyl) is **near-tangent** (`nearTangentGaps > 0`)
-  → an **S4** case → declines.
+- **Steinmetz FUSE / CUT** — deferred: `ssi_boolean_solid` dispatches only `Op::Common` to the
+  branched builder; FUSE/CUT return NULL → OCCT (valid+closed, volO 32.366 / 13.516). COMMON is
+  the guaranteed slice; FUSE/CUT ship only once their outside-fragment + reversed-tunnel +
+  end-cap re-trim assembles a watertight, correct-volume shell.
 - **sphere FUSE / CUT** (outer-cap union + re-trimmed remainder weld) → deferred → declines.
-- **oblique / multi-tube cyl∩cyl**, tangent/coincident (incl. Steinmetz), and other
-  curved-curved families (cyl∩cone, cyl∩sphere, cone∩cone, sphere∩box, freeform) → decline.
-Remaining S5 work: sphere fuse/cut, more curved-curved families, and lifting the near-tangent
-gate once S4 lands.
+- **oblique / multi-tube cyl∩cyl**, and other curved-curved families (cyl∩cone, cyl∩sphere,
+  cone∩cone, sphere∩box, freeform), plus any branched pair that is NOT equal-R orthogonal
+  Steinmetz (unequal-R / non-orthogonal / ≠ 2 branch points / ≠ 4 arms / `nearTangentGaps > 0`)
+  → decline.
+Remaining S5 work: Steinmetz FUSE/CUT, sphere fuse/cut, general (non-Steinmetz) branched pairs,
+and more curved-curved families.
 
 ## Sequencing & effort
 
@@ -387,7 +403,7 @@ substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ─
                              │                                    │                          ├─ S4-c near-tangent march-through (FIRST SLICE DONE)
                              │                                    │                          └─ S4-d…f marching-core tail (PENDING)
                              └──────────────► S5 curved booleans ◄─┘  ──► #6 blends ──► #7 wrap-emboss
-                                              (S5-a/b/c: drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON native ✓)
+                                              (S5-a/b/c/d: drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON + Steinmetz COMMON native ✓)
 ```
 
 | Stage | Effort (robust) | Nature |
@@ -399,7 +415,7 @@ substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ─
 | S4-b tangent-classify | ✅ DONE at the bar | typed `TangentContact` (point/curve/near-tangent/undecided) — 8 pairs vs OCCT, 0 deferred |
 | S4-c near-tangent march-through | ◐ FIRST SLICE DONE at the bar | fixed-plane-cut corrector marches a single-branch graze the S3 truncated (sphere∩offset-cyl: `nearTangentGaps → 0`, full loop on OCCT locus); branch saddle still defers |
 | S4-d…f marching-core tail | multi-year, ongoing | the moat tail — branch points, singularities, self-intersect, deeper near-coincident bands; best-effort + fallback |
-| S5 curved booleans | ◐ slices S5-a/b/c DONE at the bar (~months for full) | through-drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON native vs OCCT (wt, ΔV ≤ 8e-4); sphere fuse/cut + more families + near-tangent gate remain |
+| S5 curved booleans | ◐ slices S5-a/b/c/d DONE at the bar (~months for full) | through-drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON + branched Steinmetz COMMON (`16R³/3` + OCCT) native (wt, ΔV ≤ 9e-4); Steinmetz fuse/cut + sphere fuse/cut + general branched + more families remain |
 
 SSI + curved booleans total ≈ **1.5–3 py** (substrate-accelerated) for *usable*
 coverage; full OCCT-grade robustness (S4) is the long tail. Recommended cadence:

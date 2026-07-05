@@ -105,23 +105,30 @@ robustness tail keeps OCCT linked.** Canonical detail:
   `TangentPoint` (spheres d=R₁+R₂) STILL ENDS with zero arms (definite tangent cone ⇒ no
   real roots). Only the elementary transversal self-crossing (Steinmetz family) is handled;
   general/freeform branch points and cusps DEFER → OCCT. **Steinmetz is now unblocked.**
-- ◐ **SSI S5-a/b/c (curved-boolean slices)** — the SSI-curve-driven
+- ◐ **SSI S5-a/b/c/d (curved-boolean slices)** — the SSI-curve-driven
   split→classify→weld pipeline (`src/native/boolean/ssi_boolean.{h,cpp}`, consumes the
-  S3 `TraceSet`) produces **five native curved-boolean sub-cases verified vs OCCT
-  `BRepAlgoAPI_{Fuse,Cut,Common}`**: the through-drill cylinder∩cylinder COMMON (S5-a) +
-  FUSE + CUT (S5-b) and the sphere∩sphere COMMON lens (S5-c, equal + unequal radii) — all
-  watertight, ΔV ≤ 8e-04. Sphere fuse/cut, other curved-curved families, and near-tangent
-  pairs still decline to OCCT — honest, measured fallbacks. (Steinmetz self-crossing loci are
-  now traced natively by S4-d, but the S5 boolean consuming a multi-arm `TraceSet` is a later
-  slice.)
+  S3 `TraceSet` — and, for S5-d, the S4-d branched re-trace) produces **six native
+  curved-boolean sub-cases verified vs OCCT `BRepAlgoAPI_{Fuse,Cut,Common}`**: the
+  through-drill cylinder∩cylinder COMMON (S5-a) + FUSE + CUT (S5-b), the sphere∩sphere COMMON
+  lens (S5-c, equal + unequal radii), and the **branched-trace Steinmetz bicylinder COMMON
+  (S5-d)** — all watertight, ΔV ≤ 9e-04 (sim `native-pass=6`). **S5-d** turns the S4-d branched
+  Steinmetz trace into a native BOOLEAN: a `steinmetzPreGate` + branch-enabled re-trace +
+  `recogniseSteinmetzTrace` (2 branch points, 4 `BranchArc` arms) drive `buildSteinmetzCommon`,
+  which splits each cylinder along its arcs into the inside-the-other lune patches and welds the
+  four into ONE watertight shell sharing the arc seams + the two branch-point vertices. Verified
+  vs **BOTH** the exact analytic `16 R³/3 = 5.33333` (host) **and** OCCT (sim): volN = 5.3287,
+  ΔV = 8.75e-04 (−0.088%). **Steinmetz FUSE/CUT remain deferred → OCCT (honest NULL)** — only
+  `Op::Common` dispatches to the branched builder. Sphere fuse/cut, general (non-Steinmetz)
+  branched pairs, other curved-curved families, and non-Steinmetz near-tangent pairs still
+  decline to OCCT — honest, measured fallbacks.
 
 **Still OCCT-backed (the tail that keeps OCCT linked):**
 - ☐ SSI **S4-d general/freeform + S4-e…f marching core** (the moat tail: general/freeform
   branch points, cusps, singularities, self-intersection completeness, deeper near-coincident
   bands — S4-a/b classification + the S4-c near-tangent march-through + the S4-d Steinmetz
-  branch-point slice already landed) → **wider S5 curved booleans** (fuse/cut caps, more
-  families, lifting the near-tangent gate, consuming the S3 WLines + the S4 typed
-  regions/contacts + multi-arm branch loci).
+  branch-point slice + the S5-d branched Steinmetz COMMON boolean already landed) → **wider S5
+  curved booleans** (Steinmetz fuse/cut, sphere fuse/cut, general non-Steinmetz branched pairs,
+  more families, consuming the S3 WLines + the S4 typed regions/contacts + multi-arm branch loci).
 - ☐ General curved **booleans** & **blends** (sit on SSI); curved **wrap-emboss**.
 - ☐ Non-planar/guided/rail sweep robustness; general loft; fine-pitch threads.
 - ☐ **Shape healing**; **STEP/IGES import**.

@@ -21,7 +21,8 @@
 // geometry, asserting per case: same watertight/closed shell, volume within tol, surface
 // area within tol, valid shape.
 //
-//   * cylinder ∩ cylinder (EQUAL radii, orthogonal axes) — the STEINMETZ case (fall-back).
+//   * cylinder ∩ cylinder (EQUAL radii, orthogonal axes) — the STEINMETZ case: COMMON is
+//     now a NATIVE pass (the S5-d branched assembler, volume 16 r³/3); FUSE / CUT defer.
 //   * cylinder ∩ cylinder (UNEQUAL radii, orthogonal axes) — the through-drill: COMMON
 //     (S5-a) + FUSE / CUT (S5-b) are NATIVE passes; only its self-verify gate decides.
 //   * sphere ∩ sphere (overlapping, equal + unequal radii) — the S5-c lens: COMMON is a
@@ -33,9 +34,14 @@
 // the COMMON of a clean two-branch through-drill is assembled). What each case actually
 // does, verified at runtime and reported honestly (never tuned to pass):
 //
-//   1. EQUAL cylinders (Steinmetz): the S3 tracer reports nearTangentGaps > 0 (the
-//      tangential top/bottom branch-point seam), so the S5-a gate DECLINES → native
-//      returns NULL → the shipped result is OCCT. FALL-BACK for all three ops.
+//   1. EQUAL cylinders (Steinmetz): the DEFAULT (unbranched) S3 trace reports
+//      nearTangentGaps > 0 (the tangential top/bottom branch-point seam) — the decline
+//      edge on which the S5-d BRANCHED assembler engages: it re-traces with branch points
+//      enabled, recognises the 2-node / 4-arm Steinmetz family, and welds the four
+//      inside-the-other lune patches into ONE watertight bicylinder COMMON (analytic
+//      16 r³/3). COMMON is now a NATIVE PASS (its volume/area match BRepAlgoAPI_Common
+//      within tol, watertight). FUSE / CUT for the branched pair are deferred (COMMON is
+//      the guaranteed slice) → NULL → OCCT. FALL-BACK for those two ops only.
 //   2. UNEQUAL through-drill cylinders: Common traces cleanly (nearTangentGaps == 0, two
 //      disjoint loops) and the path DOES assemble a candidate COMMON shell — but that
 //      candidate is NOT yet robustly watertight (the periodic-UV seam weld is the honest
@@ -46,14 +52,16 @@
 //      elementary CURVED solids; a BOX has no curved face, so recogniseCurvedSolid
 //      declines it and ssi_boolean_solid returns NULL for every op → OCCT. FALL-BACK.
 //
-// So in the current S5-a slice EVERY sub-case is an honest fall-back: the native path
-// either returns NULL, or produces a candidate the mandatory self-verify rejects. The
-// harness DOES NOT count a fall-back as a native pass. For each fall-back it asserts the
-// SHIPPED result is correct — i.e. the OCCT oracle is a VALID, watertight/closed solid
-// with a sane volume/area — because that is what the kernel actually returns for the
-// pair. If a future S4 tracer removes the near-tangent gap (case 1) or the seam weld is
-// made robust (case 2), the native candidate will pass the same self-verify and flip to
-// a native PASS with NO harness change.
+// The recognised transversal / branched sub-cases (through-drill COMMON/FUSE/CUT, the
+// two sphere lenses, and now the Steinmetz COMMON) are NATIVE passes; the remaining
+// sub-cases (Steinmetz FUSE/CUT, sphere/cone∩box, sphere FUSE/CUT) are honest fall-backs.
+// The harness DOES NOT count a fall-back as a native pass; runPair auto-detects which each
+// case is at runtime from the native candidate itself (non-null + watertight + volume/area
+// vs OCCT within tol → native pass; else → fall-back). For each fall-back it asserts the
+// SHIPPED result is correct — i.e. the OCCT oracle is a VALID, watertight/closed solid with
+// a sane volume/area — because that is what the kernel actually returns for the pair. If a
+// future assembler resolves a deferred op, its native candidate passes the same self-verify
+// and flips to a native PASS with NO harness change.
 //
 // A native PASS requires: native result non-null AND its watertight mesh volume/area
 // match the OCCT oracle within tol AND the mesh is a closed shell. Anything short of that
@@ -377,9 +385,11 @@ int main() {
   std::fflush(stdout);
 
   // ── (1) cylinder ∩ cylinder, EQUAL radii, orthogonal axes — the STEINMETZ case ────
-  // Z-axis r=1 and X-axis r=1, both long enough to cross fully. Equal radii → the S3
-  // tracer hits the tangential top/bottom branch-point seam (nearTangentGaps > 0), so the
-  // S5-a gate declines every op → OCCT ships. Honest fall-back.
+  // Z-axis r=1 and X-axis r=1, both long enough to cross fully. Equal radii → the DEFAULT
+  // trace hits the tangential top/bottom branch-point seam (nearTangentGaps > 0); on that
+  // decline edge the S5-d branched assembler re-traces with branch points, welds the four
+  // inside-the-other lunes into the bicylinder and returns a WATERTIGHT COMMON matching
+  // BRepAlgoAPI_Common (analytic 16 r³/3) → NATIVE PASS. FUSE / CUT defer → OCCT.
   {
     PairCase pc;
     pc.pairName = "cyl=cyl(steinmetz)";

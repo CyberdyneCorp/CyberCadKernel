@@ -138,15 +138,19 @@ double watertightMeshVolume(const ntopo::Shape& s) {
 
 }  // namespace
 
-// ── (1) STEINMETZ: the exact 16 r³/3 ground truth + the HONEST native fallback ───
+// ── (1) STEINMETZ: the exact 16 r³/3 ground truth via the S5-d BRANCHED assembler ─
 // The classic Steinmetz configuration is two EQUAL-radius cylinders crossing at right
-// angles; their COMMON is the bicylinder of exact volume 16 r³/3. The native S5-a path
-// honestly DECLINES this pair because the S3 tracer reports nearTangentGaps > 0 at the
-// tangential top/bottom crossing (the branch-point seam), so ssi_boolean_solid returns
-// NULL and the engine falls back to OCCT. We assert BOTH: the analytic value is what an
-// eventual result must equal, AND the native path's honest NULL — never a fabricated
-// 16 r³/3.
-CC_TEST(steinmetz_analytic_value_and_honest_native_fallback) {
+// angles; their COMMON is the bicylinder of exact volume 16 r³/3. The DEFAULT (unbranched)
+// trace reports nearTangentGaps > 0 at the tangential top/bottom crossing (the two branch
+// points where the two intersection ellipses cross). On that decline edge, and only for a
+// recognised equal-R orthogonal cylinder pair, the S5-d assembler RE-TRACES with branch
+// points enabled (MarchOptions.enableBranchPoints), recognises the Steinmetz family
+// (branchPoints == 2, four branch-to-branch BranchArc arms), splits each cylinder along its
+// arcs into the two inside-the-other lune patches, and WELDS the four lunes into ONE
+// watertight shell sharing the four arc seams and the two branch-point poles. The result's
+// enclosed volume matches the EXACT 16 r³/3 to within the tessellation-deflection bound
+// (the engine's own curved-parity bar) — a real native pass, no fabricated value.
+CC_TEST(steinmetz_branched_common_watertight_matches_analytic) {
   const double r = 1.0;
   const double vTrue = steinmetzVolume(r);
   CC_CHECK(std::fabs(vTrue - 5.333333333333333) < 1e-9);  // 16/3 for r=1
@@ -154,21 +158,43 @@ CC_TEST(steinmetz_analytic_value_and_honest_native_fallback) {
   const ntopo::Shape a = makeCyl(/*Z*/ 2, r, -3, 3);
   const ntopo::Shape b = makeCyl(/*X*/ 0, r, -3, 3);
 
-  // The tracer honestly reports the branch-point / near-tangent seam of equal cylinders.
+  // The DEFAULT trace honestly reports the self-crossing branch points (near-tangent seam).
   const auto csA = sd::recogniseCurvedSolid(a);
   const auto csB = sd::recogniseCurvedSolid(b);
   CC_CHECK(csA && csB);
   if (csA && csB) {
     const ssi::TraceSet tr = ssi::trace_intersection(csA->adapter(), csB->adapter());
-    CC_CHECK(tr.nearTangentGaps > 0);  // honest S4 signal → gate declines
+    CC_CHECK(tr.nearTangentGaps > 0);  // honest S4 signal on the unbranched trace
+    // The branch-enabled re-trace resolves the Steinmetz structure: 2 branch points + 4
+    // branch-to-branch arms, no unresolved near-tangent gap.
+    ssi::MarchOptions mo;
+    mo.enableBranchPoints = true;
+    const ssi::TraceSet bt = ssi::trace_intersection(csA->adapter(), csB->adapter(), {}, mo);
+    CC_CHECK(bt.nearTangentGaps == 0);
+    CC_CHECK(bt.branchPoints == 2);
+    int arms = 0;
+    for (const ssi::WLine& w : bt.lines)
+      if (w.status == ssi::TraceStatus::BranchArc) ++arms;
+    CC_CHECK(arms == 4);
   }
 
-  // Because the pair is near-tangent, the native path returns NULL (→ OCCT). We assert
-  // the HONEST fallback, not a native volume the path cannot yet produce. When a future
-  // S4 tracer removes the near-tangent gap, this NULL flips and the engine self-verify
-  // already checks the result against steinmetzVolume(r) — no test change needed then.
-  CC_CHECK(nb::ssi_boolean_solid(a, b, nb::Op::Common).isNull());
-  CC_CHECK(nb::boolean_solid(a, b, nb::Op::Common).isNull());
+  // The S5-d branched assembler now produces a NON-NULL watertight candidate …
+  const ntopo::Shape cand = nb::ssi_boolean_solid(a, b, nb::Op::Common);
+  CC_CHECK(!cand.isNull());
+  CC_CHECK(!nb::boolean_solid(a, b, nb::Op::Common).isNull());
+
+  // … it IS robustly watertight (the engine's reject condition is a negative return) …
+  const double vCand = watertightMeshVolume(cand);
+  CC_CHECK(vCand > 0.0);  // watertight → engine self-verify accepts the native result
+
+  // … and its enclosed volume matches the EXACT Steinmetz 16 r³/3 to within the engine's
+  // curved-parity bar (1% relative, native_engine.cpp ssiCurvedBooleanVerified) — a
+  // tessellation-deflection bound, not a relaxed pass tolerance (measured deficit ≈ 0.09%).
+  CC_CHECK(std::fabs(vCand - vTrue) <= 1e-2 * vTrue);
+
+  // Monotone invariant: common ≤ min(vol(A), vol(B)).
+  const double vCyl = cylinderVolume(r, -3, 3);
+  CC_CHECK(vTrue <= vCyl + 1e-9);
 }
 
 // ── (2a) TRANSVERSAL through-drill COMMON: a REAL native watertight pass ─────────
@@ -331,15 +357,17 @@ CC_TEST(sphere_sphere_common_watertight_matches_analytic_lens) {
   CC_CHECK(nb::ssi_boolean_solid(makeSphere(0.0, 1.0), makeSphere(2.0, 1.0), nb::Op::Common).isNull());
 }
 
-// ── (3) A near-tangent / unsupported pair MUST return NULL (honest fallback) ─────
-// Equal-radius perpendicular cylinders are the near-tangent case (see test 1); a
-// disjoint pair has no seam at all. Both MUST decline (NULL) — the honest fallback,
-// never a fabricated result.
-CC_TEST(near_tangent_and_disjoint_pairs_return_null) {
-  // Near-tangent equal cylinders → NULL.
+// ── (3) Honest deferrals around the branched Steinmetz COMMON ────────────────────
+// The equal-R orthogonal Steinmetz COMMON is now a native BRANCHED pass (test 1). Here we
+// pin the honest DEFERRALS: the branched Steinmetz FUSE / CUT (COMMON is the guaranteed
+// slice — FUSE/CUT ship only if they robustly assemble, else NULL → OCCT), and a disjoint
+// pair with no seam. All MUST return NULL — never a fabricated result.
+CC_TEST(branched_fuse_cut_and_disjoint_return_null) {
+  // The equal-R Steinmetz FUSE / CUT are deferred (COMMON only) → NULL → OCCT.
   const ntopo::Shape eqA = makeCyl(2, 1.0, -3, 3);
   const ntopo::Shape eqB = makeCyl(0, 1.0, -3, 3);
-  CC_CHECK(nb::ssi_boolean_solid(eqA, eqB, nb::Op::Common).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(eqA, eqB, nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(eqA, eqB, nb::Op::Cut).isNull());
 
   // Disjoint (far-away parallel) cylinders → no seam → NULL.
   const ntopo::Shape a = makeCyl(2, 1.0, -2, 2);

@@ -78,7 +78,7 @@ Dependency order. Each row is one OpenSpec change (`add-native-*`).
 | 4 | `add-native-swept-solids` | `native-construction` | hard | `BRepPrimAPI`, `BRepBuilderAPI`, `BRepOffsetAPI` |
 | 5 | `add-native-booleans` | `native-booleans` | **research-grade** | `BRepAlgoAPI` (BOPAlgo) |
 
-> #5 SSI → curved-booleans implementation plan: see [SSI-ROADMAP.md](SSI-ROADMAP.md) (staged S1-S5, substrate #2 done; S1 analytic + S2 seeding + S3 marching done — the SSI curve pipeline is now NATIVE for transversal freeform/quadric pairs; **S5-a/b/c landed five native curved-boolean sub-cases** verified vs OCCT `BRepAlgoAPI_{Fuse,Cut,Common}` — the through-drill cyl∩cyl COMMON (S5-a) + FUSE + CUT (S5-b) and the sphere∩sphere COMMON lens (S5-c, equal + unequal radii), all watertight, ΔV ≤ 8e-4 (sim `native-pass=5`); `ssi_boolean.{h,cpp}`, changes `add-native-ssi-curved-boolean` + `add-native-ssi-curved-boolean-wider` archived. S4-a/b classification + S4-c near-tangent march-through + **S4-d first branch-point slice landed** (the **Steinmetz** self-crossing bicylinder localized + routed through both branch points vs OCCT `IntPatch`/`GeomAPI_IntSS` — 2 branch pts, 4 arms → 2 crossing ellipses; isolated tangent point still ends; `add-native-ssi-s4d-branch-points` archived). Remaining: **S4 general/freeform branch points + S4-e…f moat** + wider S5 coverage (sphere fuse/cut, more curved-curved families, lifting the near-tangent gate, S5 booleans on multi-arm branch loci)).
+> #5 SSI → curved-booleans implementation plan: see [SSI-ROADMAP.md](SSI-ROADMAP.md) (staged S1-S5, substrate #2 done; S1 analytic + S2 seeding + S3 marching done — the SSI curve pipeline is now NATIVE for transversal freeform/quadric pairs; **S5-a/b/c/d landed six native curved-boolean sub-cases** verified vs OCCT `BRepAlgoAPI_{Fuse,Cut,Common}` — the through-drill cyl∩cyl COMMON (S5-a) + FUSE + CUT (S5-b), the sphere∩sphere COMMON lens (S5-c, equal + unequal radii), and the **branched-trace Steinmetz bicylinder COMMON (S5-d)** — all watertight, ΔV ≤ 9e-4 (sim `native-pass=6`); `ssi_boolean.{h,cpp}`, changes `add-native-ssi-curved-boolean` + `add-native-ssi-curved-boolean-wider` + `add-native-ssi-branched-boolean` (archived `2026-07-05`). **S5-d** is the branched-trace assembler: on the S4 decline edge, a `steinmetzPreGate` (equal-R, orthogonal, crossing cylinders) triggers a branch-enabled re-trace, `recogniseSteinmetzTrace` accepts only the canonical 2-branch-point / 4-`BranchArc` structure, and `buildSteinmetzCommon` splits each cylinder along its arcs into the inside-the-other lune patches and welds the four into one watertight shell sharing the arc seams + the two branch-point vertices (S5-a planar-facet + `VertexPool` weld). Verified vs **BOTH** the exact analytic `16 R³/3 = 5.33333` (host) **and** OCCT `BRepAlgoAPI_Common` (sim): volN = 5.3287, ΔV = 8.75e-04 (−0.088%), ΔA = 4.68e-04, inside the 1% bar; no tolerance weakened. **Steinmetz FUSE/CUT remain deferred → OCCT (honest NULL)** — only `Op::Common` dispatches to the branched builder. S4-a/b classification + S4-c near-tangent march-through + **S4-d branch-point slice** (the Steinmetz self-crossing bicylinder localized + routed through both branch points vs OCCT `IntPatch`/`GeomAPI_IntSS` — 2 branch pts, 4 arms → 2 crossing ellipses; isolated tangent point still ends; `add-native-ssi-s4d-branch-points` archived). Remaining: **S4 general/freeform branch points + S4-e…f moat** + wider S5 coverage (Steinmetz fuse/cut, sphere fuse/cut, general non-Steinmetz branched pairs, more curved-curved families)).
 | 6 | `add-native-fillets-offsets` | `native-blends` | hard | `BRepFilletAPI`, `BRepOffsetAPI` |
 | 7 | `add-native-data-exchange` | `native-exchange` | moderate (external?) | `STEPControl`, `IGESControl` |
 | 8 | `drop-occt` | â | â | unlink OCCT; kernel fully native |
@@ -699,6 +699,38 @@ longest; a native exchange is lower priority than the modelling core.
     `src/native/ssi/marching.{h,cpp}` + `tests/native/test_native_ssi_marching.cpp` +
     `tests/sim/native_ssi_marching_parity.mm` + `scripts/run-sim-native-ssi-s4d.sh`. Living
     change `openspec/changes/add-native-ssi-s4d-branch-points` **archived** (`2026-07-04`).
+  - **SSI Stage S5-d (BRANCHED-TRACE CURVED BOOLEAN — Steinmetz COMMON) — DONE at the
+    verification bar (both gates).** The S4-d branched trace is now turned into a native
+    BOOLEAN: the Steinmetz bicylinder COMMON. On the S4 decline edge (`nearTangentGaps > 0`,
+    no usable single seam) a cheap `steinmetzPreGate` (both `Cylinder`, `|rA−rB| ≤ tol`, axes
+    orthogonal + crossing) RE-TRACES with `MarchOptions.enableBranchPoints = true`;
+    `recogniseSteinmetzTrace` accepts the branched `TraceSet` ONLY when canonical
+    (`nearTangentGaps == 0`, `branchPoints == 2`, exactly four `BranchArc` arms, each arm's
+    endpoints coincident with the two branch-node points) — anything else → NULL → OCCT.
+    `buildSteinmetzCommon` splits each cylinder wall along its two arcs into the inside-the-other
+    lune patches (planar-triangle strips walked branch-to-branch in lockstep, every interior
+    sample on the analytic cylinder), keeps the four whose centroid is inside the other cylinder,
+    and welds them into ONE watertight shell through a single `VertexPool` — both sides of every
+    arc and all four arcs at each branch point draw the SAME pooled nodes (the two branch-point
+    vertices pooled once), seam-adjacent facets are planar triangles (S5-a discipline, no
+    analytic face on a shared seam). The engine's existing `16 R³/3` oracle self-verifies and
+    owns the OCCT fallback. **At the bar:** COMMON of two equal-R=1 orthogonal cylinders is
+    non-NULL, watertight, enclosed volume 5.3287 vs the EXACT analytic `16/3 = 5.33333` **and**
+    OCCT `BRepAlgoAPI_Common` 5.3333 — ΔV = 8.75e-04 (−0.088%), ΔA = 4.68e-04, inside the 1%
+    curved-parity bar; no tolerance weakened. **Steinmetz FUSE / CUT DEFERRED → OCCT (honest
+    NULL):** `ssi_boolean_solid` dispatches only `Op::Common` to the branched builder; FUSE/CUT
+    return NULL (COMMON is the guaranteed slice; OCCT ships valid+closed volO 32.366 / 13.516).
+    Both gates green: host `test_native_ssi_curved_boolean` + `test_native_ssi_boolean` (analytic
+    `16 R³/3` + watertight + 2-branch/4-arm assertions; FUSE/CUT + disjoint → NULL; NUMSCI OFF
+    CTest **26/26**, NUMSCI ON **31/31**) + sim `run-sim-native-ssi-curved-boolean.sh`
+    (**18 passed, 0 failed, native-pass=6**). Additive to `src/native/boolean/ssi_boolean.{h,cpp}`
+    (`src/native/**` OCCT-free, `CYBERCAD_HAS_NUMSCI`-gated, tessellator + ssi tracer + app
+    byte-identical; no `cc_*` entry point added). No regressions — the 5 prior native passes
+    (S5-a/b/c) persist; the +1 is exactly the Steinmetz COMMON. **Honest scope — what S5-d does
+    NOT do:** only equal-R orthogonal-crossing (Steinmetz-family) branched cylinder pairs, COMMON
+    only; Steinmetz FUSE/CUT, unequal-R / non-orthogonal / ≠ 2-branch / ≠ 4-arm branched pairs,
+    cyl∩sphere / cyl∩cone / cone∩cone self-crossings, freeform branched → NULL → OCCT.
+    Living change `openspec/changes/add-native-ssi-branched-boolean` **archived** (`2026-07-05`).
 - â **`#4b` Tier E â native `cc_wrap_emboss` â DEFERRED (FUTURE WORK, not scheduled
   yet).** This is the *native* (OCCT-free) rewrite of wrap-emboss; it is distinct from
   the Phase-3 `add-robust-wrap-emboss` change, which is â done and OCCT-backed (the

@@ -82,26 +82,36 @@ CC_TEST(ssi_transversal_through_drill_traces_clean) {
              w.status == ssi::TraceStatus::BoundaryExit);
 }
 
-// ── (d) NEAR-TANGENT equal cylinders are DECLINED (the honest S4 boundary) ───────
+// ── (d) EQUAL cylinders (Steinmetz) — the S5-d BRANCHED pass ─────────────────────
 // Two EQUAL-radius cylinders crossing at right angles meet TANGENTIALLY at the top /
-// bottom (a branch-point / near-tangent seam) — the S3 tracer honestly reports
-// nearTangentGaps > 0, so the S5-a gate MUST decline and boolean_solid returns NULL
-// (→ engine falls back to OCCT). This is deferral, never a fabricated pass.
-CC_TEST(ssi_near_tangent_equal_cylinders_declined) {
+// bottom: the DEFAULT (unbranched) trace honestly reports nearTangentGaps > 0 (the
+// self-crossing branch points collapse the transversality sine). That is the DECLINE
+// edge on which the S5-d branched assembler engages: it re-traces with branch points
+// enabled, recognises the Steinmetz family (2 branch points, 4 branch-to-branch arcs),
+// and welds the four inside-the-other lune patches into the bicylinder COMMON. The
+// result is a WATERTIGHT native solid whose enclosed volume matches the EXACT Steinmetz
+// bicylinder value 16 r³/3 — a real native pass, no OCCT fallback (this NULL flipped to a
+// native result when S4-d branch routing + the S5-d assembler landed).
+CC_TEST(ssi_steinmetz_equal_cylinders_branched_common) {
   const ntopo::Shape a = makeCyl(2, 1.0, -3, 3);  // Z axis, r=1
-  const ntopo::Shape b = makeCyl(0, 1.0, -3, 3);  // X axis, r=1 (equal → tangent crossing)
+  const ntopo::Shape b = makeCyl(0, 1.0, -3, 3);  // X axis, r=1 (equal → self-crossing)
 
   const auto csA = sd::recogniseCurvedSolid(a);
   const auto csB = sd::recogniseCurvedSolid(b);
   CC_CHECK(csA && csB);
   if (csA && csB) {
     const ssi::TraceSet tr = ssi::trace_intersection(csA->adapter(), csB->adapter());
-    CC_CHECK(tr.nearTangentGaps > 0);  // honest S4 signal
+    CC_CHECK(tr.nearTangentGaps > 0);  // honest S4 signal on the DEFAULT (unbranched) trace
   }
-  // The whole dispatcher must decline (NULL) so the engine self-verify → OCCT path
-  // owns it. NULL is the correct, honest outcome here.
-  CC_CHECK(nb::ssi_boolean_solid(a, b, nb::Op::Common).isNull());
-  CC_CHECK(nb::boolean_solid(a, b, nb::Op::Common).isNull());
+  // The S5-d branched assembler now produces a non-null watertight COMMON candidate whose
+  // volume matches 16 r³/3 (verified in test_native_ssi_curved_boolean); here we only
+  // assert the dispatcher no longer declines the equal-cylinder COMMON.
+  CC_CHECK(!nb::ssi_boolean_solid(a, b, nb::Op::Common).isNull());
+  CC_CHECK(!nb::boolean_solid(a, b, nb::Op::Common).isNull());
+  // FUSE / CUT for the branched pair are DEFERRED (COMMON is the guaranteed slice) → NULL
+  // → OCCT. That deferral is honest, not a fabricated pass.
+  CC_CHECK(nb::ssi_boolean_solid(a, b, nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(a, b, nb::Op::Cut).isNull());
 }
 
 // ── (e) a disjoint pair (no intersection seam) is declined ───────────────────────

@@ -17,7 +17,9 @@
 #include "native/boolean/assemble.h"  // VertexPool (shared-vertex weld)
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -1082,6 +1084,351 @@ topo::Shape buildCommon(const CurvedSolid& A, const CurvedSolid& B,
   return topo::ShapeBuilder::makeSolid({shell});
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// S5-d — the BRANCHED-TRACE Steinmetz assembler (branch-point self-crossing).
+//
+// Two EQUAL-radius cylinders whose axes cross ORTHOGONALLY (the Steinmetz config)
+// intersect in TWO ellipses that cross at TWO branch points. The S4-d marcher
+// (MarchOptions.enableBranchPoints = true) localizes the two branch points and routes
+// the four branch-to-branch arcs (WLine status BranchArc). This assembler consumes
+// that branched TraceSet and builds the boolean directly from the four arcs.
+//
+// TOPOLOGY (verified against the live trace, R=1, axes Z & X through the origin):
+//   * branchPoints == 2 at (0, ±R, 0); all four arms meet at BOTH branch nodes.
+//   * four BranchArc arms, each running pole-to-pole (full y ∈ [−R, R]); each carries
+//     (u1,v1) on cyl-A and (u2,v2) on cyl-B per node.
+//   * on EACH cylinder the region INSIDE the other is TWO lune patches; a lune is
+//     bounded by the two arcs that lie on the SAME half of that cylinder (same folded
+//     mean u). The four lunes (two per cylinder) tile the COMMON boundary, sharing the
+//     four arcs (each arc is the crease between one cyl-A lune and one cyl-B lune) and
+//     the two branch-point poles (all four lunes taper to both poles).
+//
+// The COMMON is the four lunes welded on the four arcs + the two poles. FUSE / CUT
+// re-select which wall fragments survive (the outside-the-other regions), keeping the
+// four arcs as the shared seams. Every seam-adjacent facet is a PLANAR triangle through
+// SHARED pooled nodes (the S5-a discipline — the analytic surface face's structured-grid
+// mesh would inject interior u-lines and open a T-junction; planar facets carry none),
+// the two branch-point vertices are pooled ONCE, and the shell welds watertight.
+// Anything not a recognised equal-R orthogonal Steinmetz branched pair → NULL → OCCT.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// A branch arc: the shared 3D polyline + its (u,v) track on EACH cylinder, RESAMPLED
+// so it runs monotone from pole0 → pole1 (aligned to the two branch-point poles). The
+// endpoints are snapped to the exact pole points so all four arcs share the same two
+// pole vertices when pooled.
+struct BranchArcData {
+  std::vector<math::Point3> pts;                  ///< shared 3D nodes, pole0 → pole1
+  std::vector<std::pair<double, double>> uvA;     ///< (u,v) on cyl-A per node
+  std::vector<std::pair<double, double>> uvB;     ///< (u,v) on cyl-B per node
+};
+
+// Which cylinder a lune sits on, and the accessor that returns that cylinder's (u,v)
+// track for an arc.
+enum class LuneCyl { A, B };
+
+// Orient one arc pole0 → pole1: its nodes are the traced arc; if its first node is
+// nearer pole1 than pole0, reverse it (keeping 3D and both (u,v) tracks in lockstep),
+// then snap the two endpoints to the exact pole points.
+BranchArcData orientArc(const Seam& s, const math::Point3& pole0, const math::Point3& pole1) {
+  BranchArcData a{s.pts, s.uvA, s.uvB};
+  if (a.pts.size() < 2) return a;
+  const double d0 = math::norm(a.pts.front() - pole0);
+  const double d1 = math::norm(a.pts.front() - pole1);
+  if (d1 < d0) {
+    std::reverse(a.pts.begin(), a.pts.end());
+    std::reverse(a.uvA.begin(), a.uvA.end());
+    std::reverse(a.uvB.begin(), a.uvB.end());
+  }
+  a.pts.front() = pole0;
+  a.pts.back() = pole1;
+  return a;
+}
+
+// Resample an arc onto a COMMON pole-axis grid: `tvals[k]` is the fractional distance
+// along the pole0→pole1 axis (the y direction: t = (P−pole0)·axis / |pole1−pole0|). Both
+// arcs of a lune are resampled onto the SAME tvals so lo[k] and hi[k] sit at the same y —
+// the lune strip is then a clean pole-axis-perpendicular ribbon (no matched-index skew,
+// which would let the ribbon self-cross and double-cover). Linear interp between the
+// bracketing traced nodes, in 3D and BOTH (u,v) tracks; endpoints stay the exact poles.
+BranchArcData resampleArcByAxis(const BranchArcData& a, const math::Vec3& axisU,
+                                double axisLen, const std::vector<double>& tvals,
+                                const math::Point3& pole0) {
+  BranchArcData out;
+  const int m = static_cast<int>(a.pts.size());
+  std::vector<double> at(m);
+  for (int i = 0; i < m; ++i)
+    at[i] = math::dot(a.pts[i] - pole0, axisU) / std::max(axisLen, 1e-12);
+  auto lerpPair = [](std::pair<double, double> p, std::pair<double, double> q, double f) {
+    return std::make_pair(p.first + (q.first - p.first) * f, p.second + (q.second - p.second) * f);
+  };
+  for (double t : tvals) {
+    int i = 0;
+    while (i + 1 < m && at[i + 1] < t) ++i;
+    const int j = std::min(i + 1, m - 1);
+    const double span = at[j] - at[i];
+    const double f = (std::fabs(span) < 1e-12) ? 0.0 : std::clamp((t - at[i]) / span, 0.0, 1.0);
+    out.pts.push_back(math::Point3{a.pts[i].x + (a.pts[j].x - a.pts[i].x) * f,
+                                   a.pts[i].y + (a.pts[j].y - a.pts[i].y) * f,
+                                   a.pts[i].z + (a.pts[j].z - a.pts[i].z) * f});
+    out.uvA.push_back(lerpPair(a.uvA[i], a.uvA[j], f));
+    out.uvB.push_back(lerpPair(a.uvB[i], a.uvB[j], f));
+  }
+  return out;
+}
+
+// Mean folded u of an arc on cylinder `which` — decides which HALF of that cylinder the
+// arc lies on (two arcs on the same half bound one lune). Folded contiguous about the
+// first node's u so the periodic wrap does not corrupt the mean.
+double arcMeanU(const BranchArcData& a, LuneCyl which) {
+  const auto& uv = (which == LuneCyl::A) ? a.uvA : a.uvB;
+  const double u0 = uv.front().first;
+  double sum = 0.0;
+  for (const auto& p : uv) sum += nearU(u0, p.first);
+  return sum / static_cast<double>(uv.size());
+}
+
+// Build ONE lune patch on cylinder `cs` (kind `which`) bounded by arcs `lo` and `hi`
+// (both oriented pole0 → pole1). Walk the two arcs in lockstep by index fraction; at
+// each step interior-sample the cylinder in u between the two arcs' u-values (folded
+// contiguous) so each planar facet's bow off the true wall is bounded, and emit a strip
+// of planar triangles. `refInside` = the other solid — a lune facet's outward normal is
+// the cylinder's radial-out (COMMON keeps the inside-the-other patch, whose outward
+// normal is the wall's outward radial). The two poles are pooled ONCE (shared by all
+// four lunes), and each arc's nodes are pooled so both owning lunes share them → weld.
+//
+// systems-band (~18 — dual-arc lockstep walk + interior u-fold sampling); flagged.
+void appendLunePatch(const CurvedSolid& cs, LuneCyl which, const BranchArcData& lo,
+                     const BranchArcData& hi, int uSamples, double outwardSign, VertexPool& pool,
+                     std::vector<topo::Shape>& faces) {
+  const int n = std::min(static_cast<int>(lo.pts.size()), static_cast<int>(hi.pts.size()));
+  if (n < 3) return;
+  auto uvOf = [&](const BranchArcData& a, int k) {
+    return (which == LuneCyl::A) ? a.uvA[k] : a.uvB[k];
+  };
+  // Fold BOTH arcs' u-tracks contiguous, PER-STEP, anchored to the lo-arc node at THIS k
+  // (never a global base — the lune spans ~π of u pole-to-pole, so no single window keeps
+  // it contiguous). Interior column points are sampled on the cylinder across the lune
+  // WIDTH; because the two bounding arcs share the same y (hence ~the same u) at matched k,
+  // that width is essentially a v-ruling (a cylinder is straight in v), so the interior
+  // samples add negligible bow but keep every facet's chord on the true wall.
+  const math::Point3 axisPt = cs.frame.origin;
+  const math::Dir3 axisDir = cs.frame.z;
+  auto tri = [&](const math::Point3& p, const math::Point3& q, const math::Point3& s) {
+    const math::Point3 ctr{(p.x + q.x + s.x) / 3, (p.y + q.y + s.y) / 3, (p.z + q.z + s.z) / 3};
+    const math::Vec3 w = ctr - axisPt;
+    const math::Vec3 radial = w - axisDir.vec() * math::dot(w, axisDir.vec());
+    pushPlanarTri(p, q, s, math::Vec3{radial.x * outwardSign, radial.y * outwardSign,
+                                      radial.z * outwardSign}, pool, faces);
+  };
+  // Column j (0..uSamples): a chain of world points across the lune width at arc-step k. j=0
+  // is the `lo` arc node (shared, pooled), j=uSamples is the `hi` arc node (shared) — the
+  // exact traced nodes so the seam welds against the owning lune; interior j on the cylinder.
+  auto colPt = [&](int k, int j) -> math::Point3 {
+    if (j == 0) return lo.pts[k];
+    if (j == uSamples) return hi.pts[k];
+    // At a POLE station the two bounding arcs collapse to the SAME (shared) pole point;
+    // the whole width column is that exact pole. Interpolating (u,v) there and re-evaluating
+    // cs.point would drift ~1e-4 off the pole and spawn near-degenerate slivers the mesher
+    // splits inconsistently (a T-junction → not watertight). Return the exact pole instead.
+    if (math::norm(lo.pts[k] - hi.pts[k]) < kSsiTol) return lo.pts[k];
+    const auto uvLo = uvOf(lo, k);
+    const auto uvHi = uvOf(hi, k);
+    const double t = static_cast<double>(j) / uSamples;
+    const double u = uvLo.first + (nearU(uvLo.first, uvHi.first) - uvLo.first) * t;
+    const double v = uvLo.second + (uvHi.second - uvLo.second) * t;
+    return cs.point(u, v);
+  };
+  for (int k = 0; k + 1 < n; ++k)
+    for (int j = 0; j < uSamples; ++j) {
+      const math::Point3 a00 = colPt(k, j), a01 = colPt(k, j + 1);
+      const math::Point3 a10 = colPt(k + 1, j), a11 = colPt(k + 1, j + 1);
+      tri(a00, a10, a11);
+      tri(a00, a11, a01);
+    }
+}
+
+// Recognise the Steinmetz-family branched TraceSet: nearTangentGaps == 0, exactly two
+// branch nodes, exactly four BranchArc arms all on both cylinders (≤ onSurfTol), and
+// both branch nodes connecting all four arms. Returns the two pole points + the four
+// arcs (as Seams) on success; nullopt → decline → OCCT.
+struct SteinmetzTrace {
+  math::Point3 pole0, pole1;
+  std::vector<Seam> arcs;  ///< the four branch arcs (uvA on cyl-A, uvB on cyl-B)
+};
+std::optional<SteinmetzTrace> recogniseSteinmetzTrace(const ssi::TraceSet& t) {
+  if (t.nearTangentGaps > 0) return std::nullopt;
+  if (t.branchPoints != 2 || t.branchNodes.size() != 2) return std::nullopt;
+  if (t.lines.size() != 4) return std::nullopt;
+  for (const ssi::WLine& w : t.lines) {
+    if (w.status != ssi::TraceStatus::BranchArc) return std::nullopt;
+    if (w.points.size() < 3) return std::nullopt;
+    if (w.onSurfResidual > 10.0 * kSsiTol) return std::nullopt;  // must sit on both walls
+  }
+  // Both branch nodes must connect all four arms (each arm's branchId listed).
+  for (const ssi::BranchNode& bn : t.branchNodes)
+    if (bn.armLineIds.size() < 4) return std::nullopt;
+  SteinmetzTrace out;
+  out.pole0 = t.branchNodes[0].point;
+  out.pole1 = t.branchNodes[1].point;
+  if (math::norm(out.pole0 - out.pole1) < kSsiTol) return std::nullopt;  // coincident poles
+  out.arcs.reserve(4);
+  for (const ssi::WLine& w : t.lines) out.arcs.push_back(toSeam(w));
+  return out;
+}
+
+// Group the four arcs into the two lunes on cylinder `which` (each lune = the two arcs on
+// the same half of that cylinder, by folded mean u). Returns false if the split is not a
+// clean 2+2 (→ decline). Each pair is returned as an (lo,hi) ordered by mean v so the lune
+// strip walks from the low-v boundary to the high-v boundary.
+bool groupLunes(const std::vector<BranchArcData>& arcs, LuneCyl which,
+                std::array<std::pair<int, int>, 2>& lunesOut) {
+  // Cluster the four arcs by mean u into two groups (nearest-of-two by wrapped distance).
+  std::array<double, 4> mu{};
+  for (int i = 0; i < 4; ++i) mu[i] = arcMeanU(arcs[i], which);
+  // Seed group centres at the two most-separated arcs.
+  int seedA = 0, seedB = 1;
+  double best = -1.0;
+  for (int i = 0; i < 4; ++i)
+    for (int j = i + 1; j < 4; ++j) {
+      const double d = wrapDiff(mu[i], mu[j]);
+      if (d > best) { best = d; seedA = i; seedB = j; }
+    }
+  std::vector<int> gA, gB;
+  for (int i = 0; i < 4; ++i)
+    (wrapDiff(mu[i], mu[seedA]) <= wrapDiff(mu[i], mu[seedB]) ? gA : gB).push_back(i);
+  if (gA.size() != 2 || gB.size() != 2) return false;  // not a clean 2+2 → decline
+  auto meanV = [&](int i) {
+    const auto& uv = (which == LuneCyl::A) ? arcs[i].uvA : arcs[i].uvB;
+    double s = 0.0;
+    for (const auto& p : uv) s += p.second;
+    return s / static_cast<double>(uv.size());
+  };
+  auto order = [&](std::vector<int>& g) -> std::pair<int, int> {
+    return (meanV(g[0]) <= meanV(g[1])) ? std::make_pair(g[0], g[1])
+                                        : std::make_pair(g[1], g[0]);
+  };
+  lunesOut[0] = order(gA);
+  lunesOut[1] = order(gB);
+  return true;
+}
+
+// Facet-refinement count across a lune's width: keep each planar facet's chord bow off the
+// cylinder within kCapSagitta (the S5-a discipline). The width is the max folded-u span of
+// the lune's two bounding arcs; uSamples ≈ span / sqrt(8·kCapSagitta/R). Bounded [2,64].
+int luneUSamples(const CurvedSolid& cs, const BranchArcData& lo, const BranchArcData& hi,
+                 LuneCyl which) {
+  double span = 0.0;
+  const int n = std::min(static_cast<int>(lo.pts.size()), static_cast<int>(hi.pts.size()));
+  for (int k = 0; k < n; ++k) {
+    const auto a = (which == LuneCyl::A) ? lo.uvA[k] : lo.uvB[k];
+    const auto b = (which == LuneCyl::A) ? hi.uvA[k] : hi.uvB[k];
+    span = std::max(span, std::fabs(nearU(a.first, b.first) - a.first));
+  }
+  const double step = std::sqrt(8.0 * kCapSagitta / std::max(cs.radius, 1e-9));
+  return std::clamp(static_cast<int>(std::ceil(span / std::max(step, 1e-6))), 2, 64);
+}
+
+// buildSteinmetzCommon(A,B) = the bicylinder: the four inside-the-other lune patches
+// (two on cyl-A, two on cyl-B) welded on the four shared arcs + the two shared poles.
+// Each lune is kept iff its centroid classifies INSIDE the other solid (the COMMON
+// survival rule); an ON verdict → NULL → OCCT (never faked). One VertexPool welds the
+// whole shell: the two poles are pooled ONCE and each arc's nodes are shared by its two
+// owning lunes (cyl-A side and cyl-B side).
+topo::Shape buildSteinmetzCommon(const CurvedSolid& A, const CurvedSolid& B,
+                                 const SteinmetzTrace& st) {
+  // Orient all four arcs pole0 → pole1, then RESAMPLE every arc onto ONE common pole-axis
+  // grid (same tvals for all four). Two lunes sharing an arc then reference IDENTICAL 3D
+  // nodes at each grid station → the seam welds; and lo[k], hi[k] of every lune sit at the
+  // SAME pole-axis station (matched y) so the ribbon is a clean pole-perpendicular strip
+  // that cannot self-cross / double-cover.
+  const math::Vec3 axisVec = st.pole1 - st.pole0;
+  const double axisLen = math::norm(axisVec);
+  if (axisLen < kSsiTol) return {};
+  const math::Vec3 axisU{axisVec.x / axisLen, axisVec.y / axisLen, axisVec.z / axisLen};
+  // Node count along the arc from a chord-sagitta bound (the arc is ~a quarter ellipse of
+  // extent ~πR/2): nn ≈ arcLen / sqrt(8·kCapSagitta·R). Bounded [24,180]. Grid stations are
+  // COSINE-clustered toward the two poles (where all four lunes taper) so the tapering tip
+  // facets stay well-shaped.
+  const double arcLen = 0.5 * kSsiPi * std::max(A.radius, 1e-9);
+  const double chord = std::sqrt(std::max(8.0 * kCapSagitta * A.radius, 1e-12));
+  const int nn = std::clamp(static_cast<int>(std::ceil(arcLen / std::max(chord, 1e-9))), 24, 180);
+  std::vector<double> tvals(nn);
+  for (int k = 0; k < nn; ++k)
+    tvals[k] = 0.5 * (1.0 - std::cos(kSsiPi * k / (nn - 1)));  // 0..1, clustered at the poles
+  std::vector<BranchArcData> arcs;
+  arcs.reserve(4);
+  for (const Seam& s : st.arcs)
+    arcs.push_back(resampleArcByAxis(orientArc(s, st.pole0, st.pole1), axisU, axisLen, tvals,
+                                     st.pole0));
+  // Snap the two grid endpoints to the exact shared poles (all arcs → the same two nodes).
+  for (auto& a : arcs) { a.pts.front() = st.pole0; a.pts.back() = st.pole1; }
+
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  // Two lunes on cyl-A (inside B) and two on cyl-B (inside A).
+  struct LuneSpec { const CurvedSolid& cs; LuneCyl which; const CurvedSolid& other; };
+  const std::array<LuneSpec, 2> specs{LuneSpec{A, LuneCyl::A, B}, LuneSpec{B, LuneCyl::B, A}};
+  for (const LuneSpec& sp : specs) {
+    std::array<std::pair<int, int>, 2> lunes;
+    if (!groupLunes(arcs, sp.which, lunes)) return {};
+    for (const auto& [iLo, iHi] : lunes) {
+      const BranchArcData& lo = arcs[iLo];
+      const BranchArcData& hi = arcs[iHi];
+      // Keep the lune iff its centroid is INSIDE the other solid (COMMON survival rule).
+      const int mid = static_cast<int>(lo.pts.size()) / 2;
+      const auto uvLo = (sp.which == LuneCyl::A) ? lo.uvA[mid] : lo.uvB[mid];
+      const auto uvHi = (sp.which == LuneCyl::A) ? hi.uvA[mid] : hi.uvB[mid];
+      const double uMid = 0.5 * (uvLo.first + nearU(uvLo.first, uvHi.first));
+      const double vMid = 0.5 * (uvLo.second + uvHi.second);
+      const math::Point3 centroid = sp.cs.point(uMid, vMid);
+      const int cls = classifyPoint(sp.other, centroid, kSsiTol);
+      if (cls == 0) return {};        // ON the other wall → tangent → OCCT
+      if (cls != 1) continue;         // OUTSIDE → not a COMMON lune (should not happen)
+      const int uSamp = luneUSamples(sp.cs, lo, hi, sp.which);
+      appendLunePatch(sp.cs, sp.which, lo, hi, uSamp, /*outwardSign=*/1.0, pool, faces);
+    }
+  }
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// Cheap pre-gate for the Steinmetz family, checked ONLY on the decline edge (before the
+// expensive branch-enabled re-trace): both operands cylinders, near-equal radius, axis
+// directions orthogonal, axis lines crossing (min-distance ≈ 0). Anything else → no
+// re-trace (the branched path never fires for a non-Steinmetz pair).
+bool steinmetzPreGate(const CurvedSolid& A, const CurvedSolid& B) {
+  if (A.kind != CurvedKind::Cylinder || B.kind != CurvedKind::Cylinder) return false;
+  const double rMax = std::max(A.radius, B.radius);
+  if (std::fabs(A.radius - B.radius) > kSsiTol * std::max(rMax, 1.0)) return false;
+  const math::Vec3 za = A.frame.z.vec(), zb = B.frame.z.vec();
+  if (std::fabs(math::dot(za, zb)) > 1e-4) return false;  // axes not orthogonal
+  // Axis-line crossing distance: |(oB−oA)·(za×zb)| / |za×zb| ≈ 0 (skew lines meet).
+  const math::Vec3 n = math::cross(za, zb);
+  const double nn = math::norm(n);
+  if (nn < 1e-9) return false;  // parallel axes → not a crossing pair
+  const math::Vec3 d = B.frame.origin - A.frame.origin;
+  const double cross = std::fabs(math::dot(d, n)) / nn;
+  return cross <= kSsiTol * std::max(rMax, 1.0);
+}
+
+// S5-d branched dispatch: on the decline edge (default trace near-tangent), if the pair is
+// a Steinmetz-family equal-R orthogonal cylinder pair, RE-TRACE with branch points enabled
+// and route the four arcs. COMMON is the guaranteed slice; FUSE/CUT are deferred (NULL →
+// OCCT). Returns NULL for any non-Steinmetz branched pair or unresolved branched trace.
+topo::Shape tryBranchedSteinmetz(const CurvedSolid& A, const CurvedSolid& B,
+                                 const ssi::SurfaceAdapter& adA, const ssi::SurfaceAdapter& adB,
+                                 Op op) {
+  if (!steinmetzPreGate(A, B)) return {};
+  ssi::MarchOptions bopts;
+  bopts.enableBranchPoints = true;
+  const ssi::TraceSet bt = ssi::trace_intersection(adA, adB, {}, bopts);
+  const std::optional<SteinmetzTrace> st = recogniseSteinmetzTrace(bt);
+  if (!st) return {};
+  if (op == Op::Common) return buildSteinmetzCommon(A, B, *st);
+  return {};  // FUSE / CUT deferred (COMMON is the guaranteed slice) → OCCT
+}
+
 }  // namespace
 
 // ── The S5-a driver (design.md §Pipeline). Short, linear; the geometry lives in the
@@ -1098,8 +1445,16 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
   const ssi::SurfaceAdapter adB = csB->adapter();
   const ssi::TraceSet trace = ssi::trace_intersection(adA, adB);
 
-  // Gate on full transversality — the honest S4 boundary.
-  if (trace.nearTangentGaps > 0) return {};         // a branch traced up to a tangent → S4
+  // Gate on full transversality — the honest S4 boundary. The DEFAULT (unbranched)
+  // trace never routes branch arms, so a self-crossing pair (Steinmetz) shows up here as
+  // nearTangentGaps > 0 (the sine→0 dip at the branch points). That is exactly the
+  // DECLINE edge on which the S5-d branched assembler engages: on this edge ONLY, and
+  // ONLY when the cheap steinmetzPreGate matches, RE-TRACE with branch points enabled and
+  // route the four arcs to the branched builders. Every single-seam S5-a/b/c pass keeps
+  // its DEFAULT trace unchanged (the pre-gate requires equal-R orthogonal cylinders,
+  // which those pairs are not) — no re-trace, no regression.
+  if (trace.nearTangentGaps > 0)                    // a branch traced up to a tangent → S4
+    return tryBranchedSteinmetz(*csA, *csB, adA, adB, op);  // Steinmetz S5-d, else NULL → OCCT
   if (trace.branchPoints > 0) return {};            // S4-d self-crossing (multi-arm) → out of scope for S5 single-seam booleans → OCCT
   if (trace.lines.empty()) return {};               // no seam → OCCT
   for (const ssi::WLine& w : trace.lines)

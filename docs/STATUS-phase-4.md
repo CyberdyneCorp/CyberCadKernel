@@ -1689,6 +1689,70 @@ ellipse-on-quadric solids, `SURFACE_OF_REVOLUTION`, `TRIMMED_CURVE`, rational/we
 `BEZIER`, complex/trimmed profiles, non-mm units, all IGES. #8 `drop-occt` stays blocked (a
 general STEP/AP242 reader + IGES + a general-curved kernel still block it).
 
+### Native STEP IMPORT WIDENED (`add-native-step-scaled-ap242`) — uniform-scale + mirror placements (T1) + AP242 geometry, PMI skipped (T2)
+
+The rigid-only assembly gate above is widened to two more affine placement classes, and the
+AP242 annotation graph is tolerated instead of declining the whole file (change
+`add-native-step-scaled-ap242`, archived `2026-07-06`). Host CTest **29/29** NUMSCI OFF (**36/36**
+NUMSCI ON), `test_native_step_reader` **20 cases** (4 new); sim **`[NIMPORT]` 41/41** (the prior 33
+preserved + 8 new). Exactly 2 native/exchange files changed (`step_reader.cpp`, `step_reader.h`) +
+2 tests (`test_native_step_reader.cpp`, `native_step_import_parity.mm`); `step_writer.cpp`, the
+tessellator, `src/engine/**`, and the `cc_*` ABI are PRISTINE; `src/native/**` stays OCCT-free.
+
+- **T1 UNIFORM-SCALE / MIRROR PLACEMENT → LANDED (genuine native).** The boolean `isRigid` gate is
+  replaced by `classifyPlacement(const math::Transform&)` — a Gram-matrix conformality test
+  `MᵀM ≈ k²·I` (scale-relative tol) with a det-sign branch → `Rigid`(k≈1,det>0) |
+  `UniformScale`(k>0,det>0) | `Mirror`(det<0); a non-conformal `MᵀM` (non-uniform/shear) or
+  degenerate linear part → `nullopt` (DECLINE). `Rigid` reproduces the old `isRigid==true` path
+  byte-for-byte. A **UniformScale** component (parsed from a
+  `CARTESIAN_TRANSFORMATION_OPERATOR_3D('',#a1,#a2,#o,scale[,#a3])`, or a frame-encoded `k·I`; a
+  `_NON_UNIFORM` / unequal `scale1/2/3` triple → DECLINE) rides `solid.located(Location{T})`
+  directly and self-verifies with volume `k³·V₀` — k=2 → total vol 2728 = 1000 + 216·8, component
+  bbox [30,5,0]..[42,17,12], watertight (host `scaled_assembly_component_scales_by_k_cubed`; sim
+  `scaled native cto k³`). A **Mirror** component is orientation-complemented using the EXISTING
+  `topo::Orientation` `reversed`/`complemented` algebra (`shape.h`) BEFORE the mirror `Location`,
+  so the tessellator's tangent-derived normal (`cross(place(∂u),place(∂v))`, which FLIPS under
+  det<0 — see `surface_eval.h`) points OUTWARD again — the mirrored solid self-verifies watertight
+  with POSITIVE volume 1216 (not −216) and reflected bbox z∈[−6,0] (host
+  `mirrored_assembly_component_watertight_reflected`; sim `mirror native cto reflect`). **No
+  tessellator change, no new topology primitive.** A mirrored member that still fails the
+  watertight self-verify after compensation → DECLINE → OCCT (never a fabricated flip).
+- **T1 HONEST CAVEAT (load-bearing).** OCCT's `STEPControl_Writer` **cannot serialize** a scaled /
+  mirror assembly-component location: a 2× component re-imports at NATIVE size (vol 216, not 1728 —
+  the scale is silently dropped; the IDT AXIS2 frames stay orthonormal), a `SetMirror` becomes a
+  proper 180° ROTATION (det +1), and the trimmed iOS OCCT throws "Location with scaling
+  transformation is forbidden" on a scaled `TopLoc_Datum3D`; a `CARTESIAN_TRANSFORMATION_OPERATOR_3D`
+  in the IDT slot is schema-invalid and OCCT's reader ignores it. So an OCCT-authored
+  "scaled/mirrored assembly" DEGRADES to rigid in the file — there is **no OCCT oracle for genuine
+  k³/reflection**. T1 is therefore verified against the standard STEP scale/mirror operator with an
+  **analytic** expectation, and separately verified native == OCCT on the degraded-to-rigid
+  fixtures (sim `scaled occt cannot author`, `mirror occt cannot author`).
+- **T2 AP242 GEOMETRY, PMI SKIPPED → LANDED (genuine native, verified vs OCCT).** The two GLOBAL
+  record scans are relaxed so an AP242 file is not declined for carrying PMI. `validateUnitContext()`
+  now answers exactly "is the LENGTH unit millimetre?" — a length `SI_UNIT` MUST be `.MILLI.` (mm
+  gate UNCHANGED, no tolerance weakened) while a non-length `SI_UNIT` (`.RADIAN.`/`.STERADIAN.`,
+  PMI angle/plane-angle contexts) is SKIPPED, not read as non-mm. `assemblyDisposition()` /
+  `hasNestedAssembly()` take the assembly path only for a transform relationship that reaches a
+  `MANIFOLD_SOLID_BREP`; a `REPRESENTATION_RELATIONSHIP`/`MAPPED_ITEM`/`CDSR` in the
+  annotation/draughting graph that reaches no geometric root brep is SKIPPED, and the completeness
+  gate is computed over the GEOMETRIC root breps only. An AP242 file (rewritten schema + injected
+  PMI/GD&T/draughting incl. a rep-rel graph and plane/solid-angle unit contexts) imports the SOLID
+  identically to the OCCT re-import (vol 1000, bbox Δ=0, faces 6/6) with PMI skipped — the
+  previously-fatal rep-rel-PMI case now imports instead of declining (host
+  `ap242_pmi_skipped_imports_solid`; sim `ap242 pmi-skip native` + `pmi_box mass/bbox/topology`).
+- **DECLINES → OCCT (verified, never fabricated).** Non-uniform-scale / shear transforms
+  (`decline_non_uniform_shear_assembly_returns_null`; sim `shear` → NULL); PMI/GD&T **semantics**
+  (never turned into geometry); Form-B `MAPPED_ITEM`/`REPRESENTATION_MAP`; lone NAUO with no
+  composable placement; deep-nested (multi-level) assemblies; out-of-slice component geometry
+  (`TOROIDAL_SURFACE` etc.); ellipse-on-quadric solids; non-mm length units.
+
+**Residual → OCCT after the scaled/AP242 slice (honest, narrowed):** PMI/GD&T **semantics**,
+**non-uniform-scale / shear** transforms, deep-nested (multi-level) assemblies, Form-B
+`MAPPED_ITEM`, `TOROIDAL_SURFACE`, ellipse-on-quadric solids, `SURFACE_OF_REVOLUTION`,
+`TRIMMED_CURVE`, rational/weighted B-splines, `BEZIER`, complex/trimmed profiles, non-mm units, all
+IGES. #8 `drop-occt` stays blocked (a general STEP/AP242 reader + IGES + a general-curved kernel
+still block it).
+
 ### Files (#7)
 
 - `src/native/exchange/step_writer.h` / `step_writer.cpp` — OCCT-free ISO-10303-21 text

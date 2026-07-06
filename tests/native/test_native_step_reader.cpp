@@ -534,4 +534,205 @@ CC_TEST(accepts_ap214_and_ap242_file_schema) {
   CC_CHECK(std::fabs(volumeOf(s242) - vRef) < 1e-9);
 }
 
+namespace {
+
+// Author a two-box assembly (A=10-cube root, B=6-cube component) where B's placement
+// is carried by the `operatorRecords` — a CARTESIAN_TRANSFORMATION_OPERATOR_3D declared
+// as #900007 (the REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION transform_operator).
+// This is the STEP entity a foreign system emits for a SCALED / MIRRORED instance (an
+// AXIS2_PLACEMENT_3D frame pair cannot carry a scale or reflection). The wiring is the
+// same brep-reaching CDSR the rigid assembly test uses.
+std::string ctoAssembly(const std::string& operatorRecords) {
+  const double pa[] = {0, 0, 10, 0, 10, 10, 0, 10};
+  const double pb[] = {0, 0, 6, 0, 6, 6, 0, 6};
+  const std::string sa = ex::writeStepString(cst::build_prism(pa, 4, 10.0), "A");
+  const std::string sb = ex::writeStepString(cst::build_prism(pb, 4, 6.0), "B");
+  const std::string bodyB = renumberedDataBody(sb, 100000);
+  const long brepB = firstBrepId(bodyB);
+  std::string asm_;
+  asm_ += "#900008 = SHAPE_REPRESENTATION('',(#" + std::to_string(brepB) + "),#900020);\n";
+  asm_ += "#900009 = SHAPE_REPRESENTATION('',(),#900020);\n";
+  asm_ += "#900010 = ( REPRESENTATION_RELATIONSHIP('','',#900008,#900009) "
+          "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900007) "
+          "SHAPE_REPRESENTATION_RELATIONSHIP() );\n";
+  asm_ += "#900011 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900010,#900012);\n";
+  asm_ += "#900012 = PRODUCT_DEFINITION_SHAPE('','',#900013);\n";
+  asm_ += "#900013 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#900014,#900015,$);\n";
+  asm_ += "#900020 = GEOMETRIC_REPRESENTATION_CONTEXT(3);\n";
+  asm_ += operatorRecords;  // must declare #900007
+  std::string merged = sa;
+  const std::size_t insert = merged.find('\n', merged.find("DATA;")) + 1;
+  merged.insert(insert, bodyB + asm_);
+  return merged;
+}
+
+// The world box of the placed component solid, discriminated from the root by its
+// PLACEMENT (every fixture translates the component to x ≥ 30; the 10-cube root stays
+// at x ∈ [0,10]). Returns identity-marker box if absent.
+Box componentBox(const topo::Shape& shape) {
+  for (topo::Explorer e(shape, topo::ShapeType::Solid); e.more(); e.next()) {
+    const Box b = worldBox(e.current());
+    if (b.lo[0] > 15.0) return b;  // the translated component (root is at x ∈ [0,10])
+  }
+  return Box{{0, 0, 0}, {0, 0, 0}};
+}
+
+}  // namespace
+
+// ── T1 (SCALE) — a UNIFORM-SCALE component transform scales the solid by k³ ─────
+// The component's placement is a CARTESIAN_TRANSFORMATION_OPERATOR_3D with scale=2 and
+// an orthonormal axis triad, translated to (30,5,0). The native reader must APPLY the
+// scale: the 6-cube (vol 216) imports at 2× → vol 216·2³ = 1728, bbox 12-cube at
+// [30,5,0]..[42,17,12]; the 10-cube root stays vol 1000. Total 2728. Both solids stay
+// watertight (a uniform scale is conformal).
+CC_TEST(scaled_assembly_component_scales_by_k_cubed) {
+  const std::string step = ctoAssembly(
+      "#900001 = DIRECTION('',(1.,0.,0.));\n#900002 = DIRECTION('',(0.,1.,0.));\n"
+      "#900003 = DIRECTION('',(0.,0.,1.));\n#900004 = CARTESIAN_POINT('',(30.,5.,0.));\n"
+      "#900007 = CARTESIAN_TRANSFORMATION_OPERATOR_3D('',#900001,#900002,#900004,2.,#900003);\n");
+  const topo::Shape shape = ex::readStepString(step);
+  CC_CHECK(!shape.isNull());
+  if (shape.isNull()) return;
+  CC_CHECK(shape.type() == topo::ShapeType::Compound);
+
+  int solids = 0;
+  double volSum = 0.0;
+  bool allWatertight = true;
+  for (topo::Explorer e(shape, topo::ShapeType::Solid); e.more(); e.next()) {
+    ++solids;
+    if (!watertight(e.current())) allWatertight = false;
+    volSum += volumeOf(e.current());
+  }
+  CC_CHECK(solids == 2);
+  CC_CHECK(allWatertight);
+  CC_CHECK(std::fabs(volSum - (1000.0 + 1728.0)) < 1e-6);  // k³ = 8, 216·8 = 1728
+
+  const Box b = componentBox(shape);
+  CC_CHECK(std::fabs(b.lo[0] - 30.0) < 1e-6 && std::fabs(b.hi[0] - 42.0) < 1e-6);
+  CC_CHECK(std::fabs(b.lo[1] - 5.0) < 1e-6 && std::fabs(b.hi[1] - 17.0) < 1e-6);
+  CC_CHECK(std::fabs(b.lo[2] - 0.0) < 1e-6 && std::fabs(b.hi[2] - 12.0) < 1e-6);
+}
+
+// ── T1 (MIRROR) — a REFLECTED component is watertight with the right (positive) volume
+// The component's placement is a CARTESIAN_TRANSFORMATION_OPERATOR_3D whose axis triad
+// is LEFT-handed (axis3 = (0,0,-1), det < 0 → a reflection about z), translated x+30.
+// A reflection flips cross(∂u,∂v), so without orientation compensation the solid would
+// mesh inside-out (negative enclosed volume, not watertight). The reader complements the
+// mirrored component's faces, so the 6-cube imports WATERTIGHT with the correct POSITIVE
+// volume 216 and a reflected bbox: local [0,6]³ with z→−z gives z∈[−6,0], x∈[30,36].
+CC_TEST(mirrored_assembly_component_watertight_reflected) {
+  const std::string step = ctoAssembly(
+      "#900001 = DIRECTION('',(1.,0.,0.));\n#900002 = DIRECTION('',(0.,1.,0.));\n"
+      "#900003 = DIRECTION('',(0.,0.,-1.));\n#900004 = CARTESIAN_POINT('',(30.,0.,0.));\n"
+      "#900007 = CARTESIAN_TRANSFORMATION_OPERATOR_3D('',#900001,#900002,#900004,1.,#900003);\n");
+  const topo::Shape shape = ex::readStepString(step);
+  CC_CHECK(!shape.isNull());
+  if (shape.isNull()) return;
+  CC_CHECK(shape.type() == topo::ShapeType::Compound);
+
+  int solids = 0;
+  double volSum = 0.0;
+  bool allWatertight = true;
+  for (topo::Explorer e(shape, topo::ShapeType::Solid); e.more(); e.next()) {
+    ++solids;
+    if (!watertight(e.current())) allWatertight = false;  // mirror must stay watertight
+    volSum += volumeOf(e.current());                       // |vol| — outward, positive
+  }
+  CC_CHECK(solids == 2);
+  CC_CHECK(allWatertight);
+  CC_CHECK(std::fabs(volSum - (1000.0 + 216.0)) < 1e-6);  // positive 216, not −216
+
+  const Box b = componentBox(shape);
+  CC_CHECK(std::fabs(b.lo[0] - 30.0) < 1e-6 && std::fabs(b.hi[0] - 36.0) < 1e-6);
+  CC_CHECK(std::fabs(b.lo[1] - 0.0) < 1e-6 && std::fabs(b.hi[1] - 6.0) < 1e-6);
+  CC_CHECK(std::fabs(b.lo[2] + 6.0) < 1e-6 && std::fabs(b.hi[2] - 0.0) < 1e-6);  // z∈[−6,0]
+}
+
+// ── T1 (DECLINE) — a NON-UNIFORM / SHEAR component transform → NULL → OCCT ──────
+// The component's CARTESIAN_TRANSFORMATION_OPERATOR_3D uses a NON-ORTHOGONAL axis triad
+// (axis2 = (1,1,0)), so its linear part is a shear — MᵀM ≠ k²·I. The classifier declines
+// (non-conformal is out of the honest slice); the whole file returns NULL → OCCT. This
+// is the honest boundary: only rigid / uniform-scale / mirror are applied.
+CC_TEST(decline_non_uniform_shear_assembly_returns_null) {
+  const std::string step = ctoAssembly(
+      "#900001 = DIRECTION('',(1.,0.,0.));\n#900002 = DIRECTION('',(1.,1.,0.));\n"
+      "#900003 = DIRECTION('',(0.,0.,1.));\n#900004 = CARTESIAN_POINT('',(30.,0.,0.));\n"
+      "#900007 = CARTESIAN_TRANSFORMATION_OPERATOR_3D('',#900001,#900002,#900004,1.,#900003);\n");
+  CC_CHECK(ex::readStepString(step).isNull());
+}
+
+// ── T2 (AP242 PMI) — geometry imports; PMI / GD&T / annotation entities are SKIPPED ──
+// An AP242 file carries semantic PMI, geometric-tolerance, datum, dimensional and
+// draughting/annotation entities plus extra plane-/solid-angle unit contexts. NONE of it
+// is geometry we import. Two cases must import the SOLID and drop the PMI:
+//   (a) INERT PMI — annotation/GD&T entities the brep never references (unreferenced,
+//       so they were already skipped);
+//   (b) PMI carried by a REPRESENTATION_RELATIONSHIP graph (a DRAUGHTING_MODEL related to
+//       the shape rep via REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION) — this used to
+//       trip the assembly trigger and DECLINE the whole file; now that relationship does
+//       not reach a MANIFOLD_SOLID_BREP, it is SKIPPED and the solid still imports.
+CC_TEST(ap242_pmi_skipped_imports_solid) {
+  const std::string base = ex::writeStepString(box10(), "box");
+  const double vRef = volumeOf(ex::readStepString(base));
+  CC_CHECK(vRef > 0.0);
+  auto ap242 = [&](const std::string& pmi) {
+    std::string out = base;
+    const std::size_t s = out.find("FILE_SCHEMA");
+    const std::size_t e = out.find(';', s);
+    out.replace(s, e - s,
+                "FILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF "
+                "{ 1 0 10303 442 1 1 4 }'))");
+    const std::size_t insert = out.find('\n', out.find("DATA;")) + 1;
+    out.insert(insert, pmi);
+    return out;
+  };
+
+  // (a) inert PMI vocabulary (angle units, draughting, datum, tolerance, dimension).
+  const std::string inert =
+      "#70001 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );\n"
+      "#70002 = ( NAMED_UNIT(*) SOLID_ANGLE_UNIT() SI_UNIT($,.STERADIAN.) );\n"
+      "#70010 = DRAUGHTING_MODEL('PMI',(#70011),#70020);\n"
+      "#70011 = ANNOTATION_PLANE('',(#70012),#70013,$);\n"
+      "#70012 = ANNOTATION_FILL_AREA_OCCURRENCE('',(#70014),$,$,$);\n"
+      "#70013 = AXIS2_PLACEMENT_3D('',#70030,#70031,#70032);\n"
+      "#70020 = ( GEOMETRIC_REPRESENTATION_CONTEXT(3) "
+      "GLOBAL_UNIT_ASSIGNED_CONTEXT((#70001)) REPRESENTATION_CONTEXT('','') );\n"
+      "#70040 = DATUM('A',$,#70041,.FRONT.);\n"
+      "#70041 = PRODUCT_DEFINITION_SHAPE('','',#70042);\n"
+      "#70050 = DIMENSIONAL_SIZE(#70051,'diameter');\n"
+      "#70060 = GEOMETRIC_TOLERANCE('',$,#70061,#70062);\n"
+      "#70070 = FLATNESS_TOLERANCE('',$,#70071,#70072);\n"
+      "#70080 = PLACED_DATUM_TARGET_FEATURE('',$,$,$,#70081);\n"
+      "#70030 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+      "#70031 = DIRECTION('',(0.,0.,1.));\n#70032 = DIRECTION('',(1.,0.,0.));\n";
+  const topo::Shape sa = ex::readStepString(ap242(inert));
+  CC_CHECK(!sa.isNull());
+  if (!sa.isNull()) {
+    CC_CHECK(sa.type() == topo::ShapeType::Solid);
+    CC_CHECK(std::fabs(volumeOf(sa) - vRef) < 1e-9);  // identical to the plain box
+  }
+
+  // (b) PMI linked via a representation-relationship graph (no brep reached → skipped).
+  const std::string repRel =
+      "#70090 = SHAPE_REPRESENTATION('',(),#70020);\n"
+      "#70091 = DRAUGHTING_MODEL('PMI',(),#70020);\n"
+      "#70092 = ( REPRESENTATION_RELATIONSHIP('','',#70091,#70090) "
+      "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#70093) "
+      "SHAPE_REPRESENTATION_RELATIONSHIP() );\n"
+      "#70093 = ITEM_DEFINED_TRANSFORMATION('','',#70094,#70095);\n"
+      "#70094 = AXIS2_PLACEMENT_3D('',#70096,#70097,#70098);\n"
+      "#70095 = AXIS2_PLACEMENT_3D('',#70096,#70097,#70098);\n"
+      "#70096 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+      "#70097 = DIRECTION('',(0.,0.,1.));\n#70098 = DIRECTION('',(1.,0.,0.));\n"
+      "#70020 = ( GEOMETRIC_REPRESENTATION_CONTEXT(3) "
+      "GLOBAL_UNIT_ASSIGNED_CONTEXT((#70001)) REPRESENTATION_CONTEXT('','') );\n"
+      "#70001 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );\n";
+  const topo::Shape sb = ex::readStepString(ap242(repRel));
+  CC_CHECK(!sb.isNull());
+  if (!sb.isNull()) {
+    CC_CHECK(sb.type() == topo::ShapeType::Solid);
+    CC_CHECK(std::fabs(volumeOf(sb) - vRef) < 1e-9);
+  }
+}
+
 CC_RUN_ALL()

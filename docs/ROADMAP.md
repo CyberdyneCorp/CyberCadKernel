@@ -71,20 +71,36 @@ robustness tail keeps OCCT linked.** Canonical detail:
 - ✅ **STEP export** (native AP203).
 - ✅ **STEP import — native slice, now WIDENED** (OCCT-free Part-21 reader for the elementary/B-spline
   AP203 subset the native writer emits + foreign OCCT-written box/cylinder; healed via the healing
-  slice, self-verified watertight else → OCCT). Host round-trip exact + sim OCCT parity, now 33/33.
-  Widened along four honestly-gated tracks: **multi-solid** files (>1 `MANIFOLD_SOLID_BREP`, no
+  slice, self-verified watertight else → OCCT). Host round-trip exact + sim OCCT parity, now 41/41.
+  Widened along honestly-gated tracks: **multi-solid** files (>1 `MANIFOLD_SOLID_BREP`, no
   transform tree) import as a native `Compound` of watertight solids (rel 2.14e-16 vs OCCT re-import);
   a native **B-spline-FACE** solid round-trips native-export→import EXACT (the deferred bspline-face
   round-trip, closed on the existing `build_prism_profile_spline` op — not a fabricated fixture);
-  the reader recognises + maps the **ELLIPSE** curve entity to the native ellipse edge kind; and
-  a single-level **RIGID PLACED ASSEMBLY** (transform tree via `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION`
+  the reader recognises + maps the **ELLIPSE** curve entity to the native ellipse edge kind; a
+  single-level **RIGID PLACED ASSEMBLY** (transform tree via `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION`
   → `REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION` → `ITEM_DEFINED_TRANSFORMATION` AXIS2 pair)
-  imports as a native PLACED `Compound` — each component's rigid placement composed and applied via
-  the native topology `Location` (`isRigid` det≈+1 orthonormal gate, every root brep placed exactly
-  once else NULL). Verified vs OCCT on a 2-box assembly: 2 solids, vol rel 3.74e-16, bbox Δ=0, faces
-  12/12. The reader is **schema-independent** (enters at `DATA;`, never gates on `FILE_SCHEMA`), so
-  AP203/AP214/AP242 headers all import — confirmed on a real OCCT-authored AP214 file.
-  **Residual → OCCT** (honest): PMI/GD&T, non-rigid/scaled/mirrored transforms, deep-nested
+  imports as a native PLACED `Compound` — each component's placement composed and applied via
+  the native topology `Location` (every root brep placed exactly once else NULL); verified vs OCCT
+  on a 2-box assembly: 2 solids, vol rel 3.74e-16, bbox Δ=0, faces 12/12. The rigid `isRigid` gate is
+  now a `classifyPlacement()` classifier (`MᵀM ≈ k²·I` conformality + det-sign branch) that also
+  admits two new affine placement classes: a **UNIFORM-SCALE** component (via
+  `CARTESIAN_TRANSFORMATION_OPERATOR_3D`) scales the placed solid by k³ (k=2 → total vol 2728 =
+  1000 + 216·8, component watertight), and a **MIRROR** component (reflection, det<0) is
+  orientation-complemented with the existing `topo::Orientation` algebra so the tessellator's
+  tangent-derived normal points OUTWARD again — the mirrored solid self-verifies watertight with
+  POSITIVE volume 1216. Honesty caveat: OCCT's `STEPControl_Writer` **cannot serialize** a
+  scaled/mirror assembly location (it silently drops the scale and rigidifies the mirror to a proper
+  rotation; the trimmed iOS OCCT throws "Location with scaling transformation is forbidden"), so
+  genuine k³/reflection is verified against an **analytic** oracle via the standard STEP scale/mirror
+  operator, while the OCCT-authored fixtures are verified honestly as degrading to rigid
+  (native == OCCT). The reader also relaxes the assembly gate for **AP242** files: PMI / GD&T /
+  draughting / annotation entities and their angle/plane-angle unit contexts are SKIPPED (a
+  representation-relationship that reaches no `MANIFOLD_SOLID_BREP` is skipped, not fatal), so an
+  AP242 solid + PMI imports the SOLID identically to OCCT (vol 1000, bbox Δ=0, faces 6/6) instead of
+  declining the whole file. The reader is **schema-independent** (enters at `DATA;`, never gates on
+  `FILE_SCHEMA`), so AP203/AP214/AP242 headers all import.
+  **Residual → OCCT** (honest): PMI/GD&T **semantics** (never turned into geometry),
+  **non-uniform-scale / shear** transforms, deep-nested
   (multi-level) assemblies, `TOROIDAL_SURFACE` (no native torus surface kind), ellipse-bearing
   solids whose ellipse lies on a quadric (fails the watertight self-verify → whole solid falls back),
   complex/trimmed profiles, rational/weighted B-splines, non-mm units;
@@ -229,8 +245,8 @@ robustness tail keeps OCCT linked.** Canonical detail:
 - ☐ **Shape healing residual** (beyond-tolerance gap bridging, missing-pcurve reconstruction,
   self-intersecting-wire repair, arbitrary broken industrial B-rep — the coincident-within-tolerance /
   degenerate / orientation first slice is now native, above); **full STEP import** beyond the native
-  subset (PMI, non-rigid/scaled transforms, deep-nested assemblies, complex/trimmed profiles, torus → OCCT —
-  the native slices landed incl. rigid placed assemblies + AP214/AP242 headers, above),
+  subset (PMI SEMANTICS, non-uniform/shear transforms, deep-nested assemblies, complex/trimmed profiles, torus → OCCT —
+  the native slices landed incl. rigid/uniform-scale/mirror placed assemblies + AP242 geometry with PMI skipped, above),
   and **all IGES import/export** (stays OCCT / dropped per the earlier decision).
 - ☐ **`drop-occt`** — BLOCKED until the above are native (research-grade, multi-year).
 

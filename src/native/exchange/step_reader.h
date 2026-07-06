@@ -25,10 +25,20 @@
 // applied as a fallback (planar-only; a curved solid that fails to reconstruct
 // declines to OCCT rather than being planarized).
 //
+// ASSEMBLIES: a single-level product placement (CONTEXT_DEPENDENT_SHAPE_REPRESENTATION
+// → REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION) reaching a MANIFOLD_SOLID_BREP is
+// composed into a placed Compound. The component transform may be RIGID (an
+// ITEM_DEFINED_TRANSFORMATION AXIS2 frame pair) or a UNIFORM-SCALE / MIRROR
+// (a CARTESIAN_TRANSFORMATION_OPERATOR_3D — the entity that can carry a scale/reflection;
+// a mirror's faces are orientation-complemented so it meshes outward/watertight). AP242
+// PMI / GD&T / annotation entities (and their relationship graph that does NOT reach a
+// brep) are SKIPPED — the geometry imports, the PMI is dropped.
+//
 // DECLINE (returns a NULL Shape → engine falls to OCCT, never fabricates
-// geometry): any unsupported entity/surface keyword, rational/weighted B-spline,
-// assembly / >1 root, non-mm unit context, malformed record, or a reconstruction
-// that does not self-verify watertight.
+// geometry): any unsupported entity/surface keyword, rational/weighted B-spline, a
+// NON-uniform-scale / shear component transform, a Form-B MAPPED_ITEM or lone
+// assembly-usage with no composable placement, non-mm unit context, malformed record,
+// or a reconstruction that does not self-verify watertight.
 //
 // OCCT-FREE. Declaration here; body in step_reader.cpp. clang++ -std=c++20.
 //

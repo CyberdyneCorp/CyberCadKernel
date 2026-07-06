@@ -344,14 +344,22 @@ class Mapper {
   topo::Shape build() {
     if (!validateUnitContext()) return {};
     // A TRANSFORMED assembly (a REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION /
-    // ITEM_DEFINED_TRANSFORMATION tree) places each MANIFOLD_SOLID_BREP through a
-    // rigid transform. Parse that tree, compose a native Location per root, and
-    // return a PLACED Compound. Anything not composable (Form-B MAPPED_ITEM, a
-    // non-rigid/scaled transform, an out-of-slice component, or a broken structure)
-    // sets fail_ → NULL → OCCT. The flat multi-solid + single-solid paths below are
-    // byte-identical: only a present transform tree takes this branch (which
-    // previously returned NULL, so no accepting path can regress).
-    if (hasNestedAssembly()) return assembly();
+    // ITEM_DEFINED_TRANSFORMATION or CARTESIAN_TRANSFORMATION_OPERATOR_3D tree) places
+    // each MANIFOLD_SOLID_BREP through a conformal transform (rigid, uniform-scale, or
+    // mirror). Parse that tree, compose a native Location per root, and return a PLACED
+    // Compound. The disposition scan decides which path this file takes:
+    //   * Compose — a CONTEXT_DEPENDENT_SHAPE_REPRESENTATION reaches a MANIFOLD_SOLID_BREP
+    //     (a real product placement) → assembly().
+    //   * Decline — a Form-B MAPPED_ITEM / REPRESENTATION_MAP, or a lone
+    //     NEXT_ASSEMBLY_USAGE_OCCURRENCE with no composable placement → NULL → OCCT.
+    //   * None    — only ANNOTATION / PMI relationship entities (an AP242 draughting /
+    //     GD&T graph that does NOT reach a brep) → SKIP them and fall through to the flat
+    //     multi-solid / single-solid path (import the geometry, drop the PMI). This is
+    //     what lets an AP242 file whose PMI is carried by a REPRESENTATION_RELATIONSHIP
+    //     import its solids instead of declining the whole file.
+    const AsmKind ak = assemblyDisposition();
+    if (ak == AsmKind::Decline) { decline(); return {}; }
+    if (ak == AsmKind::Compose) return assembly();
 
     const std::vector<int> brepIds = findManifoldBreps();
     if (brepIds.empty() || fail_) return {};
@@ -426,24 +434,39 @@ class Mapper {
     return ids;
   }
 
-  // A TRANSFORMED / nested assembly: the file places one or more solids through an
-  // instance transform tree (NEXT_ASSEMBLY_USAGE_OCCURRENCE, MAPPED_ITEM, or a
-  // REPRESENTATION_RELATIONSHIP*[_WITH_TRANSFORMATION]). The writer's entity set does
-  // not model those placements, so we decline the whole file to OCCT rather than
-  // import the sub-solids at the WRONG (identity) location. A FLAT multi-solid file
-  // (several MANIFOLD_SOLID_BREP at world coordinates, no transform tree) has none of
-  // these and is imported as a Compound.
-  bool hasNestedAssembly() const {
+  // How the file's transform / relationship graph dispositions the import.
+  enum class AsmKind { None, Compose, Decline };
+
+  // Classify the file's product-structure / relationship graph WITHOUT reading it as a
+  // blanket "any relationship → assembly" trigger (which declined an AP242 file the
+  // moment its PMI carried a REPRESENTATION_RELATIONSHIP). The decision keys on whether
+  // a CONTEXT_DEPENDENT_SHAPE_REPRESENTATION actually reaches a MANIFOLD_SOLID_BREP:
+  //   * Compose — at least one CDSR's child shape-representation lists a brep → a real
+  //     product placement to compose (assembly()).
+  //   * Decline — no brep-reaching placement, but a Form-B MAPPED_ITEM / REPRESENTATION_MAP
+  //     (out of slice) or a lone NEXT_ASSEMBLY_USAGE_OCCURRENCE (an assembly usage with
+  //     no composable transform) is present → NULL → OCCT (unchanged honesty).
+  //   * None    — only ANNOTATION / PMI relationship entities that never reach a brep →
+  //     SKIP; the flat multi-solid / single-solid path imports the geometry.
+  // A FLAT multi-solid / single-solid file (no relationships at all) is also None.
+  AsmKind assemblyDisposition() {
+    bool brepReachingCDSR = false, hasMappedItem = false, hasNauo = false;
     for (const auto& [id, r] : recs_) {
+      if (r.combined) continue;
       const std::string& kw = r.keyword;
-      if (kw == "NEXT_ASSEMBLY_USAGE_OCCURRENCE" || kw == "MAPPED_ITEM" ||
-          kw == "REPRESENTATION_RELATIONSHIP" ||
-          kw == "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION" ||
-          kw == "SHAPE_REPRESENTATION_RELATIONSHIP" ||
-          kw == "ITEM_DEFINED_TRANSFORMATION" || kw == "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION")
-        return true;
+      if (kw == "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION" && !r.args.empty() &&
+          r.args[0].isRef()) {
+        const auto [childSr, opId] = relationshipAndTransform(r.args[0].ref);
+        if (childSr != 0 && brepOfRepresentation(childSr) != 0) brepReachingCDSR = true;
+      } else if (kw == "MAPPED_ITEM" || kw == "REPRESENTATION_MAP") {
+        hasMappedItem = true;
+      } else if (kw == "NEXT_ASSEMBLY_USAGE_OCCURRENCE") {
+        hasNauo = true;
+      }
     }
-    return false;
+    if (brepReachingCDSR) return AsmKind::Compose;
+    if (hasMappedItem || hasNauo) return AsmKind::Decline;
+    return AsmKind::None;
   }
 
   // ── Assembly transform tree (Form A: IDT / REP_REL_WITH_TRANSFORMATION) ───────
@@ -469,18 +492,83 @@ class Mapper {
     return math::Transform{m, f.origin.asVec()};
   }
 
-  // A transform is RIGID iff its linear part is orthonormal (MᵀM ≈ I) with
-  // det ≈ +1 (proper rotation, no scale/shear/mirror). We only place breps by rigid
-  // transforms — a scaled/mirrored placement is declined (never silently applied).
-  static bool isRigid(const math::Transform& t) {
+  // The SUPPORTED conformal placement classes. A placement is composed only if its
+  // linear part is CONFORMAL — MᵀM = k²·I for one scalar k (a rotation or reflection,
+  // uniformly scaled). Non-uniform scale / shear (MᵀM not a scalar multiple of I) is
+  // out of the honest slice and DECLINES → OCCT.
+  enum class PlacementClass { Rigid, UniformScale, Mirror };
+
+  // Classify a composed component transform, or nullopt to DECLINE. The Gram matrix
+  // g = MᵀM of a conformal map equals k²·I; the determinant sign then separates a
+  // proper (rigid / uniform-scale, det = +k³) from a reflection (mirror, det = −k³).
+  //   * Rigid        — k ≈ 1, det ≈ +1 (today's behaviour, unchanged).
+  //   * UniformScale — k ≠ 1, det > 0 (the placed solid's volume scales by k³; the
+  //     tessellator renders it correctly through the located node, unmodified).
+  //   * Mirror       — det < 0 (a reflection, optionally scaled; the composer applies
+  //     the Location AND complements the component's orientation so the
+  //     tangent-derived world normals point outward again — see assembly()).
+  //   * nullopt      — non-uniform / shear / singular → DECLINE.
+  static std::optional<PlacementClass> classifyPlacement(const math::Transform& t) {
     const math::Mat3& m = t.linear();
     const math::Mat3 g = m.transposed() * m;  // Gram matrix
+    const double s2 = g(0, 0);
+    if (s2 < 1e-12) return std::nullopt;  // singular / degenerate linear part
+    const double tol = 1e-9 * (1.0 + s2);
     for (std::size_t i = 0; i < 3; ++i)
       for (std::size_t j = 0; j < 3; ++j) {
-        const double target = (i == j) ? 1.0 : 0.0;
-        if (std::fabs(g(i, j) - target) > 1e-9) return false;
+        const double target = (i == j) ? s2 : 0.0;  // conformal ⇒ g = s²·I
+        if (std::fabs(g(i, j) - target) > tol) return std::nullopt;
       }
-    return std::fabs(m.determinant() - 1.0) > 1e-9 ? false : true;
+    const double k = std::sqrt(s2);
+    const double det = m.determinant();
+    if (det < 0.0) return PlacementClass::Mirror;
+    return std::fabs(k - 1.0) < 1e-9 ? PlacementClass::Rigid : PlacementClass::UniformScale;
+  }
+
+  // CARTESIAN_TRANSFORMATION_OPERATOR_3D('',#axis1(u),#axis2(v),#origin,scale,#axis3(w))
+  // → the affine map  world = origin + scale·(x·u + y·v + z·w). This is the STEP entity
+  // (ISO 10303-42) a foreign system emits for a SCALED or MIRRORED instance transform
+  // (the AXIS2_PLACEMENT_3D frame pair of an ITEM_DEFINED_TRANSFORMATION cannot carry a
+  // scale or reflection — its axes are normalized and right-handed). Missing axes take
+  // the schema defaults (u=+X, w=+Z, v=w×u ≈ +Y); a missing scale defaults to 1. The
+  // linear part is built from the file's LITERAL (unit) axis vectors, so the placement
+  // classifier is the sole conformality gate — a non-orthogonal triad (shear) or a
+  // singular one DECLINES; a clean scaled / reflected triad is applied.
+  std::optional<math::Transform> cartesianOperator(long id) {
+    const Record* r = rec(id);
+    if (!r || r->combined) return std::nullopt;
+    if (r->keyword != "CARTESIAN_TRANSFORMATION_OPERATOR_3D" &&
+        r->keyword != "CARTESIAN_TRANSFORMATION_OPERATOR")
+      return std::nullopt;
+    if (r->args.size() < 4 || !r->args[3].isRef()) return std::nullopt;
+    const auto o = point(r->args[3].ref);
+    if (!o) return std::nullopt;
+    math::Dir3 u{1, 0, 0}, v{0, 1, 0}, w{0, 0, 1};
+    if (r->args[1].isRef()) { if (auto d = direction(r->args[1].ref)) u = *d; }
+    if (r->args[2].isRef()) { if (auto d = direction(r->args[2].ref)) v = *d; }
+    if (r->args.size() > 5 && r->args[5].isRef()) { if (auto d = direction(r->args[5].ref)) w = *d; }
+    double scale = 1.0;
+    if (r->args.size() > 4 && r->args[4].isNumber()) scale = r->args[4].asReal();
+    if (std::fabs(scale) < 1e-12) return std::nullopt;
+    const math::Vec3 U = u.vec(), V = v.vec(), W = w.vec();
+    const math::Mat3 lin{scale * U.x, scale * V.x, scale * W.x,
+                         scale * U.y, scale * V.y, scale * W.y,
+                         scale * U.z, scale * V.z, scale * W.z};
+    return math::Transform{lin, o->asVec()};
+  }
+
+  // Resolve a REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION transformation_operator
+  // #id (an ITEM_DEFINED_TRANSFORMATION or a CARTESIAN_TRANSFORMATION_OPERATOR_3D) to a
+  // composed placement Transform + a MIRROR flag, or nullopt to DECLINE. The classifier
+  // gates conformality: rigid / uniform-scale / mirror are accepted, non-uniform / shear
+  // declines.
+  std::optional<std::pair<math::Transform, bool>> resolveOperator(long opId) {
+    std::optional<math::Transform> t = itemDefinedTransform(opId);
+    if (!t) t = cartesianOperator(opId);
+    if (!t) return std::nullopt;
+    const auto cls = classifyPlacement(*t);
+    if (!cls) return std::nullopt;
+    return std::make_pair(*t, *cls == PlacementClass::Mirror);
   }
 
   // The list of item #ids of a *_SHAPE_REPRESENTATION (or SHAPE_REPRESENTATION):
@@ -507,9 +595,12 @@ class Mapper {
     return found;
   }
 
-  // Read an ITEM_DEFINED_TRANSFORMATION('','',#fromAx2,#toAx2) → the rigid transform
-  // T = frameToWorld(to) ∘ frameToWorld(from)⁻¹, or nullopt if it is not composable
-  // (missing/other-typed args, an unreadable placement, or a non-rigid result).
+  // Read an ITEM_DEFINED_TRANSFORMATION('','',#fromAx2,#toAx2) → the composed transform
+  // T = frameToWorld(to) ∘ frameToWorld(from)⁻¹, or nullopt if it is not readable
+  // (missing/other-typed args or an unreadable/singular placement). Conformality is
+  // classified by resolveOperator/classifyPlacement, not here — an AXIS2_PLACEMENT_3D
+  // frame pair is always rigid (its axes are normalized right-handed), so this path
+  // yields a rigid T; a scale/mirror arrives through cartesianOperator instead.
   std::optional<math::Transform> itemDefinedTransform(long idtId) {
     const Record* r = recOfKind(idtId, "ITEM_DEFINED_TRANSFORMATION");
     if (!r || r->args.size() != 4 || !r->args[2].isRef() || !r->args[3].isRef())
@@ -519,9 +610,7 @@ class Mapper {
     if (!from || !to) return std::nullopt;
     const auto fromInv = frameToWorld(*from).inverse();
     if (!fromInv) return std::nullopt;
-    const math::Transform t = frameToWorld(*to).composedWith(*fromInv);
-    if (!isRigid(t)) return std::nullopt;
-    return t;
+    return frameToWorld(*to).composedWith(*fromInv);
   }
 
   // Locate the REPRESENTATION_RELATIONSHIP and the IDT id inside the combined
@@ -545,7 +634,11 @@ class Mapper {
   }
 
   // Build a placed Compound from the assembly transform tree. Declines (fail_) on
-  // any Form-B / non-rigid / out-of-slice / under-constrained structure.
+  // any Form-B / non-uniform-shear / out-of-slice / under-constrained structure. A
+  // brep-reaching CDSR places its component by a rigid, uniform-scale, or mirror
+  // transform; a mirror also has its faces complemented so the world normals stay
+  // outward. A CDSR that does NOT reach a brep (an AP242 PMI / annotation
+  // relationship) is SKIPPED, not declined.
   topo::Shape assembly() {
     const std::vector<int> brepIds = findManifoldBreps();
     if (brepIds.empty()) { decline(); return {}; }
@@ -558,32 +651,35 @@ class Mapper {
         return {};
       }
 
-    // Seed every root at identity; each CDSR places exactly one brep exactly once.
+    // Seed every root at identity; each product CDSR places exactly one brep once.
     std::unordered_map<int, math::Transform> placement;
     std::unordered_map<int, bool> placed;
+    std::unordered_map<int, bool> mirrored;  // reflection ⇒ complement the faces
     for (const int id : brepIds) {
       placement.emplace(id, math::Transform::identity());
       placed.emplace(id, false);
+      mirrored.emplace(id, false);
     }
 
-    int rootCount = static_cast<int>(brepIds.size());
+    const int rootCount = static_cast<int>(brepIds.size());
     int placedCount = 0;
     for (const auto& [id, r] : recs_) {
       if (r.combined || r.keyword != "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION") continue;
-      if (r.args.empty() || !r.args[0].isRef()) { decline(); return {}; }
-      const auto [childSr, idtId] = relationshipAndTransform(r.args[0].ref);
-      if (childSr == 0 || idtId == 0) { decline(); return {}; }
+      if (r.args.empty() || !r.args[0].isRef()) continue;  // not a placement carrier
+      const auto [childSr, opId] = relationshipAndTransform(r.args[0].ref);
+      if (childSr == 0 || opId == 0) continue;              // malformed / annotation → skip
       const long brep = brepOfRepresentation(childSr);
-      if (brep == 0) { decline(); return {}; }
+      if (brep == 0) continue;  // PMI / annotation relationship (no brep) → SKIP, not decline
       auto pit = placement.find(static_cast<int>(brep));
       if (pit == placement.end() || placed[static_cast<int>(brep)]) {
         // A brep referenced by no seed, or placed twice → structure we do not model.
         decline();
         return {};
       }
-      const auto t = itemDefinedTransform(idtId);
-      if (!t) { decline(); return {}; }
-      pit->second = *t;
+      const auto op = resolveOperator(opId);  // rigid / uniform-scale / mirror, or decline
+      if (!op) { decline(); return {}; }
+      pit->second = op->first;
+      mirrored[static_cast<int>(brep)] = op->second;
       placed[static_cast<int>(brep)] = true;
       ++placedCount;
     }
@@ -595,16 +691,20 @@ class Mapper {
     const int unplaced = rootCount - placedCount;
     if (placedCount == 0 || unplaced > 1) { decline(); return {}; }
 
-    // Map each root and apply its composed rigid Location.
+    // Map each root and apply its composed Location. A mirrored component's faces are
+    // complemented (reversedShape) so the tessellator's tangent-derived normals point
+    // OUTWARD again — a reflection flips cross(∂u,∂v), which without this compensation
+    // would mesh the solid inside-out (negative enclosed volume). No tessellator change.
     std::vector<topo::Shape> solids;
     solids.reserve(brepIds.size());
     for (const int id : brepIds) {
       const topo::Shape solid = mapManifoldBrep(id);
       if (fail_ || solid.isNull()) return {};
-      // The unplaced ROOT keeps an identity Location (byte-identical to the flat
-      // path); a placed component rides its composed rigid Location.
-      const topo::Shape placedSolid =
-          placed.at(id) ? solid.located(topo::Location{placement.at(id)}) : solid;
+      topo::Shape placedSolid = solid;  // unplaced ROOT stays identity (flat-path identical)
+      if (placed.at(id)) {
+        placedSolid = solid.located(topo::Location{placement.at(id)});
+        if (mirrored.at(id)) placedSolid = placedSolid.reversedShape();
+      }
       solids.push_back(placedSolid);
     }
     if (solids.size() == 1) return solids.front();

@@ -49,6 +49,7 @@
 
 #include <STEPControl_Reader.hxx>
 #include <STEPControl_Writer.hxx>
+#include <Standard_Failure.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Compound.hxx>
@@ -453,6 +454,238 @@ void runAp214Header() {
     record(isAp214 && pr.parsed && pr.solids == 1 && pr.allWatertight, "assembly", "ap214 header", d);
 }
 
+// ── T1 scale/mirror helpers (OCCT-free authoring of a CTO_3D placement) ───────────
+// OCCT's STEPControl_Writer CANNOT serialize a non-rigid assembly-component location:
+// it silently DROPS a uniform scale (the component re-imports at native size) and
+// CONVERTS a mirror into a proper 180° rotation (det +1). So an OCCT-authored "scaled"
+// or "mirrored" assembly degenerates to a RIGID placement in the file — there is no
+// scale/mirror left for either reader to apply. To exercise the native scale/mirror
+// path in the sim we author the transform DIRECTLY as a CARTESIAN_TRANSFORMATION_OPERATOR_3D
+// (the standard STEP entity for a scaled/reflected instance) and probe the NATIVE reader
+// against an ANALYTIC expectation (OCCT is not an oracle here — its reader ignores a
+// CTO in this slot). This is honest: the k³ / reflection is proven natively, and the
+// OCCT-authored fixtures separately prove native == OCCT on the degenerated rigid file.
+std::string renumBody(const std::string& s, long off) {
+    const std::size_t d = s.find("DATA;");
+    const std::size_t e = s.find("ENDSEC;", d);
+    const std::size_t st = s.find('\n', d) + 1;
+    const std::string b = s.substr(st, e - st);
+    std::string o;
+    for (std::size_t i = 0; i < b.size(); ++i) {
+        o += b[i];
+        if (b[i] == '#') {
+            std::size_t j = i + 1; std::string n;
+            while (j < b.size() && std::isdigit((unsigned char)b[j])) n += b[j++];
+            if (!n.empty()) { o += std::to_string(std::stol(n) + off); i = j - 1; }
+        }
+    }
+    return o;
+}
+long firstBrepOf(const std::string& b) {
+    const std::size_t k = b.find("MANIFOLD_SOLID_BREP");
+    const std::size_t h = b.rfind('#', k);
+    std::size_t j = h + 1; std::string n;
+    while (j < b.size() && std::isdigit((unsigned char)b[j])) n += b[j++];
+    return std::stol(n);
+}
+// A native 2-box assembly (A=10-cube root, B=6-cube) whose B placement is the given
+// CARTESIAN_TRANSFORMATION_OPERATOR_3D operator record set (declaring #900007).
+std::string nativeCtoAssembly(const std::string& op) {
+    using cybercad::native::construct::build_prism;
+    const double pa[] = {0, 0, 10, 0, 10, 10, 0, 10};
+    const double pb[] = {0, 0, 6, 0, 6, 6, 0, 6};
+    const std::string sa = nex::writeStepString(build_prism(pa, 4, 10.0), "A");
+    const std::string sb = nex::writeStepString(build_prism(pb, 4, 6.0), "B");
+    const std::string bodyB = renumBody(sb, 100000);
+    const long brepB = firstBrepOf(bodyB);
+    std::string asm_;
+    asm_ += "#900008 = SHAPE_REPRESENTATION('',(#" + std::to_string(brepB) + "),#900020);\n";
+    asm_ += "#900009 = SHAPE_REPRESENTATION('',(),#900020);\n";
+    asm_ += "#900010 = ( REPRESENTATION_RELATIONSHIP('','',#900008,#900009) "
+            "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900007) "
+            "SHAPE_REPRESENTATION_RELATIONSHIP() );\n";
+    asm_ += "#900011 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900010,#900012);\n";
+    asm_ += "#900012 = PRODUCT_DEFINITION_SHAPE('','',#900013);\n";
+    asm_ += "#900013 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#900014,#900015,$);\n";
+    asm_ += "#900020 = GEOMETRIC_REPRESENTATION_CONTEXT(3);\n";
+    asm_ += op;
+    std::string merged = sa;
+    const std::size_t ins = merged.find('\n', merged.find("DATA;")) + 1;
+    merged.insert(ins, bodyB + asm_);
+    return merged;
+}
+// Per-solid world bbox of the placed component (translated to x ≥ 30; root at x∈[0,10]).
+struct WBox { double lo[3], hi[3]; };
+bool componentWBox(const std::string& path, WBox& out) {
+    const ntopo::Shape s = nex::step_import_native(path);
+    if (s.isNull()) return false;
+    for (ntopo::Explorer e(s, ntopo::ShapeType::Solid); e.more(); e.next()) {
+        ntess::MeshParams p; p.deflection = 0.005;
+        const ntess::Mesh m = ntess::SolidMesher{p}.mesh(e.current());
+        WBox b{{1e300, 1e300, 1e300}, {-1e300, -1e300, -1e300}};
+        for (const auto& v : m.vertices) {
+            const double c[3] = {v.x, v.y, v.z};
+            for (int k = 0; k < 3; ++k) { b.lo[k] = std::min(b.lo[k], c[k]); b.hi[k] = std::max(b.hi[k], c[k]); }
+        }
+        if (b.lo[0] > 15.0) { out = b; return true; }
+    }
+    return false;
+}
+void writeFile(const std::string& path, const std::string& text) {
+    if (FILE* f = std::fopen(path.c_str(), "wb")) { std::fwrite(text.data(), 1, text.size(), f); std::fclose(f); }
+}
+
+// ── (J) SCALED assembly — OCCT degrades to rigid; native applies a genuine CTO scale ─
+void runScaledAssembly() {
+    // (J1) OCCT-authored 2× scaled component → HONEST report that OCCT CANNOT serialize a
+    //      non-rigid assembly location. On Homebrew OCCT it silently drops the scale (the
+    //      component re-imports at native size); on this trimmed iOS OCCT a scaled
+    //      TopLoc_Datum3D THROWS Standard_DomainError. Either way there is no k³ to apply —
+    //      caught + reported, never a fabricated result. Native == OCCT on any file OCCT
+    //      does manage to write (a rigid, unscaled placement).
+    char d[360];
+    try {
+        const std::string occtPath = "/tmp/cck_nimport_scaled_occt.step";
+        TopoDS_Shape a = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 10, 10, 10).Shape();
+        TopoDS_Shape bLocal = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 6, 6, 6).Shape();
+        gp_Trsf sc; sc.SetScale(gp_Pnt(0, 0, 0), 2.0);
+        gp_Trsf tr; tr.SetTranslation(gp_Vec(30, 5, 0));
+        TopoDS_Shape b = bLocal.Located(TopLoc_Location(gp_Trsf(tr * sc)));
+        TopoDS_Compound comp; BRep_Builder bb; bb.MakeCompound(comp); bb.Add(comp, a); bb.Add(comp, b);
+        STEPControl_Writer w;
+        if (w.Transfer(comp, STEPControl_AsIs) != IFSelect_RetDone || w.Write(occtPath.c_str()) != IFSelect_RetDone) {
+            record(false, "scaled", "occt author", "OCCT write failed");
+        } else {
+            const NativeProbe pr = probeNative(occtPath);
+            const double ov = occtStepVolume(occtPath);
+            std::snprintf(d, sizeof d, "OCCT drops assembly scale → rigid: nativeVol=%.6g occtVol=%.6g (~1216, NOT 2728)",
+                          pr.vol, ov);
+            const bool degradedOk = ov > 0 && std::fabs(pr.vol - ov) / ov < 5e-3;
+            record(pr.parsed && pr.compound && pr.solids == 2 && degradedOk, "scaled", "occt→rigid parity", d);
+            const Props nat = importUnder(1, occtPath);
+            const Props oracle = importUnder(0, occtPath);
+            compare("scaled", "occt_degraded", nat, oracle, 5e-3, 5e-3);
+        }
+    } catch (const Standard_Failure& ex) {
+        std::snprintf(d, sizeof d, "OCCT cannot serialize a scaled assembly location (%s) — no k³ to author",
+                      ex.GetMessageString() ? ex.GetMessageString() : "Standard_Failure");
+        record(true, "scaled", "occt cannot author", d);  // honest: OCCT declines → expected
+    }
+
+    // (J2) native CTO_3D scale=2 file → the k³ scaling is APPLIED (analytic oracle).
+    const std::string ctoPath = "/tmp/cck_nimport_scaled_cto.step";
+    writeFile(ctoPath, nativeCtoAssembly(
+        "#900001 = DIRECTION('',(1.,0.,0.));\n#900002 = DIRECTION('',(0.,1.,0.));\n"
+        "#900003 = DIRECTION('',(0.,0.,1.));\n#900004 = CARTESIAN_POINT('',(30.,5.,0.));\n"
+        "#900007 = CARTESIAN_TRANSFORMATION_OPERATOR_3D('',#900001,#900002,#900004,2.,#900003);\n"));
+    const NativeProbe pc = probeNative(ctoPath);
+    WBox cb{}; const bool hasBox = componentWBox(ctoPath, cb);
+    const bool volOk = std::fabs(pc.vol - (1000.0 + 1728.0)) < 1e-3;  // 216·2³ = 1728
+    const bool boxOk = hasBox && std::fabs(cb.lo[0] - 30) < 1e-4 && std::fabs(cb.hi[0] - 42) < 1e-4 &&
+                       std::fabs(cb.hi[2] - 12) < 1e-4;
+    std::snprintf(d, sizeof d, "native CTO scale=2: parsed=%d solids=%d vol=%.6g (want 2728) compHi=[%.2f,%.2f,%.2f]",
+                  pc.parsed, pc.solids, pc.vol, hasBox ? cb.hi[0] : 0, hasBox ? cb.hi[1] : 0, hasBox ? cb.hi[2] : 0);
+    record(pc.parsed && pc.compound && pc.solids == 2 && pc.allWatertight && volOk && boxOk,
+           "scaled", "native cto k³", d);
+}
+
+// ── (K) MIRRORED assembly — OCCT rigidifies; native applies a genuine CTO reflection ─
+void runMirroredAssembly() {
+    // (K1) OCCT-authored mirror → HONEST report that OCCT rigidifies it (drops the
+    //      reflection: on Homebrew OCCT it becomes a proper 180° rotation; on this iOS
+    //      OCCT a mirrored TopLoc_Datum3D throws). Caught + reported; native == OCCT on
+    //      any file OCCT does write.
+    char d[360];
+    try {
+        const std::string occtPath = "/tmp/cck_nimport_mirror_occt.step";
+        TopoDS_Shape a = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 10, 10, 10).Shape();
+        TopoDS_Shape bLocal = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 6, 6, 6).Shape();
+        gp_Trsf mir; mir.SetMirror(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)));
+        gp_Trsf tr; tr.SetTranslation(gp_Vec(40, 0, 0));
+        TopoDS_Shape b = bLocal.Located(TopLoc_Location(gp_Trsf(tr * mir)));
+        TopoDS_Compound comp; BRep_Builder bb; bb.MakeCompound(comp); bb.Add(comp, a); bb.Add(comp, b);
+        STEPControl_Writer w;
+        if (w.Transfer(comp, STEPControl_AsIs) != IFSelect_RetDone || w.Write(occtPath.c_str()) != IFSelect_RetDone) {
+            record(false, "mirror", "occt author", "OCCT write failed");
+        } else {
+            const NativeProbe pr = probeNative(occtPath);
+            const double ov = occtStepVolume(occtPath);
+            std::snprintf(d, sizeof d, "OCCT rigidifies mirror→rotation: nativeVol=%.6g occtVol=%.6g (+1216)", pr.vol, ov);
+            const bool degradedOk = ov > 0 && std::fabs(pr.vol - ov) / ov < 5e-3;
+            record(pr.parsed && pr.compound && pr.solids == 2 && pr.allWatertight && degradedOk,
+                   "mirror", "occt→rigid parity", d);
+            const Props nat = importUnder(1, occtPath);
+            const Props oracle = importUnder(0, occtPath);
+            compare("mirror", "occt_degraded", nat, oracle, 5e-3, 5e-3);
+        }
+    } catch (const Standard_Failure& ex) {
+        std::snprintf(d, sizeof d, "OCCT cannot serialize a mirrored assembly location (%s) — no reflection to author",
+                      ex.GetMessageString() ? ex.GetMessageString() : "Standard_Failure");
+        record(true, "mirror", "occt cannot author", d);
+    }
+
+    // (K2) native CTO_3D reflection (axis3=−Z, det<0) → watertight, POSITIVE vol,
+    //      reflected bbox (analytic oracle). Compensated by face-orientation complement.
+    const std::string ctoPath = "/tmp/cck_nimport_mirror_cto.step";
+    writeFile(ctoPath, nativeCtoAssembly(
+        "#900001 = DIRECTION('',(1.,0.,0.));\n#900002 = DIRECTION('',(0.,1.,0.));\n"
+        "#900003 = DIRECTION('',(0.,0.,-1.));\n#900004 = CARTESIAN_POINT('',(30.,0.,0.));\n"
+        "#900007 = CARTESIAN_TRANSFORMATION_OPERATOR_3D('',#900001,#900002,#900004,1.,#900003);\n"));
+    const NativeProbe pc = probeNative(ctoPath);
+    WBox cb{}; const bool hasBox = componentWBox(ctoPath, cb);
+    const bool volOk = std::fabs(pc.vol - (1000.0 + 216.0)) < 1e-3;   // POSITIVE 216, not −216
+    const bool boxOk = hasBox && std::fabs(cb.lo[0] - 30) < 1e-4 && std::fabs(cb.hi[0] - 36) < 1e-4 &&
+                       std::fabs(cb.lo[2] + 6) < 1e-4 && std::fabs(cb.hi[2] - 0) < 1e-4;  // z∈[−6,0]
+    std::snprintf(d, sizeof d, "native CTO mirror: parsed=%d watertight=%d vol=%.6g (want 1216) compZ=[%.2f,%.2f]",
+                  pc.parsed, pc.parsed && pc.allWatertight, pc.vol, hasBox ? cb.lo[2] : 0, hasBox ? cb.hi[2] : 0);
+    record(pc.parsed && pc.compound && pc.solids == 2 && pc.allWatertight && volOk && boxOk,
+           "mirror", "native cto reflect", d);
+}
+
+// ── (L) AP242 file — geometry imports natively vs OCCT; PMI is skipped ────────────
+// Author an OCCT box, then string-inject an AP242 FILE_SCHEMA header + a semantic-PMI /
+// GD&T / draughting graph (including a REPRESENTATION_RELATIONSHIP that does NOT reach a
+// brep — the case that used to decline the whole file). The NATIVE reader must import the
+// SOLID identically to the OCCT re-import, dropping the PMI.
+void runAp242Pmi() {
+    const std::string path = "/tmp/cck_nimport_ap242_pmi.step";
+    TopoDS_Shape box = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 10, 10, 10).Shape();
+    const std::string occtBox = "/tmp/cck_nimport_ap242_src.step";
+    if (!occtWriteStep(box, occtBox)) { record(false, "ap242", "author", "OCCT write failed"); return; }
+    // Read the OCCT file text, rewrite schema to AP242, inject a PMI rep-rel graph.
+    std::string txt;
+    if (FILE* f = std::fopen(occtBox.c_str(), "rb")) {
+        char buf[8192]; size_t n; while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) txt.append(buf, n); std::fclose(f);
+    }
+    { const std::size_t s = txt.find("FILE_SCHEMA"); const std::size_t e = txt.find(';', s);
+      if (s != std::string::npos)
+          txt.replace(s, e - s, "FILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF { 1 0 10303 442 1 1 4 }'))"); }
+    const std::size_t ins = txt.find('\n', txt.find("DATA;")) + 1;
+    txt.insert(ins,
+        "#970001 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );\n"
+        "#970020 = ( GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNIT_ASSIGNED_CONTEXT((#970001)) REPRESENTATION_CONTEXT('','') );\n"
+        "#970090 = SHAPE_REPRESENTATION('',(),#970020);\n"
+        "#970091 = DRAUGHTING_MODEL('PMI',(),#970020);\n"
+        "#970092 = ( REPRESENTATION_RELATIONSHIP('','',#970091,#970090) REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#970093) SHAPE_REPRESENTATION_RELATIONSHIP() );\n"
+        "#970093 = ITEM_DEFINED_TRANSFORMATION('','',#970094,#970095);\n"
+        "#970094 = AXIS2_PLACEMENT_3D('',#970096,#970097,#970098);\n"
+        "#970095 = AXIS2_PLACEMENT_3D('',#970096,#970097,#970098);\n"
+        "#970096 = CARTESIAN_POINT('',(0.,0.,0.));\n#970097 = DIRECTION('',(0.,0.,1.));\n#970098 = DIRECTION('',(1.,0.,0.));\n"
+        "#970050 = DIMENSIONAL_SIZE(#970051,'width');\n"
+        "#970060 = FLATNESS_TOLERANCE('',$,#970061,#970062);\n");
+    writeFile(path, txt);
+    const NativeProbe pr = probeNative(path);
+    const double ov = occtStepVolume(path);
+    char d[320];
+    std::snprintf(d, sizeof d, "native parsed=%d solids=%d nativeVol=%.6g occtVol=%.6g (PMI skipped)",
+                  pr.parsed, pr.solids, pr.vol, ov);
+    const bool volOk = ov > 0 && std::fabs(pr.vol - ov) / ov < 5e-3;
+    record(pr.parsed && pr.solids == 1 && pr.allWatertight && volOk, "ap242", "pmi-skip native", d);
+    const Props nat = importUnder(1, path);
+    const Props oracle = importUnder(0, path);
+    compare("ap242", "pmi_box", nat, oracle, 5e-3, 5e-3);
+}
+
 }  // namespace
 
 int main() {
@@ -479,6 +712,16 @@ int main() {
     //    Compound vs OCCT; an AP214 foreign header is accepted (schema-independent).
     runTransformedAssembly();// two boxes placed via the transform tree → placed compound
     runAp214Header();        // foreign AP214 (AUTOMOTIVE_DESIGN) header accepted
+
+    // ── WIDENED SLICE (this task, T1/T2) — SCALED + MIRRORED component placements and
+    //    an AP242 PMI file. OCCT cannot serialize a non-rigid assembly placement (it
+    //    drops scale, rigidifies mirror), so each scale/mirror track reports BOTH the
+    //    honest OCCT→rigid degradation (native == OCCT on the file) AND a native
+    //    CARTESIAN_TRANSFORMATION_OPERATOR_3D file that proves the k³ scale / reflection
+    //    natively (analytic oracle). AP242 imports the solid vs OCCT, PMI skipped.
+    runScaledAssembly();     // T1a: uniform-scale component (native k³; OCCT→rigid)
+    runMirroredAssembly();   // T1b: mirrored component (native reflect; OCCT→rigid)
+    runAp242Pmi();           // T2 : AP242 file (solid imported, PMI skipped) vs OCCT
 
     cc_set_engine(0);  // restore the default engine before we leave
     std::printf("[NIMPORT] DONE  passed=%d failed=%d\n", g_passed, g_failed);

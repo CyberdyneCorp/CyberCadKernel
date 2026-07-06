@@ -1444,19 +1444,17 @@ int luneUSamples(const CurvedSolid& cs, const BranchArcData& lo, const BranchArc
   return std::clamp(static_cast<int>(std::ceil(span / std::max(step, 1e-6))), 2, 64);
 }
 
-// buildSteinmetzCommon(A,B) = the bicylinder: the four inside-the-other lune patches
-// (two on cyl-A, two on cyl-B) welded on the four shared arcs + the two shared poles.
-// Each lune is kept iff its centroid classifies INSIDE the other solid (the COMMON
-// survival rule); an ON verdict → NULL → OCCT (never faked). One VertexPool welds the
-// whole shell: the two poles are pooled ONCE and each arc's nodes are shared by its two
-// owning lunes (cyl-A side and cyl-B side).
-topo::Shape buildSteinmetzCommon(const CurvedSolid& A, const CurvedSolid& B,
-                                 const SteinmetzTrace& st) {
-  // Orient all four arcs pole0 → pole1, then RESAMPLE every arc onto ONE common pole-axis
-  // grid (same tvals for all four). Two lunes sharing an arc then reference IDENTICAL 3D
-  // nodes at each grid station → the seam welds; and lo[k], hi[k] of every lune sit at the
-  // SAME pole-axis station (matched y) so the ribbon is a clean pole-perpendicular strip
-  // that cannot self-cross / double-cover.
+// Orient + resample the four Steinmetz arcs onto ONE common pole-axis grid (shared by ALL
+// three builders so their weld nodes are byte-identical). All four arcs are oriented
+// pole0 → pole1, then RESAMPLED onto the same cosine-clustered tvals. Two lunes/strips
+// sharing an arc then reference IDENTICAL 3D nodes at each grid station → the seam welds;
+// and lo[k], hi[k] of every lune sit at the SAME pole-axis station (matched y) so a ribbon
+// is a clean pole-perpendicular strip that cannot self-cross / double-cover. Returns the
+// four resampled arcs (empty on a degenerate pole axis → the caller declines → OCCT).
+//
+// Factored verbatim out of buildSteinmetzCommon so COMMON stays byte-identical: the arc
+// count, cosine grid and pole snap are UNCHANGED — FUSE/CUT merely re-select fragments.
+std::vector<BranchArcData> orientResampleArcs(const CurvedSolid& refR, const SteinmetzTrace& st) {
   const math::Vec3 axisVec = st.pole1 - st.pole0;
   const double axisLen = math::norm(axisVec);
   if (axisLen < kSsiTol) return {};
@@ -1465,8 +1463,8 @@ topo::Shape buildSteinmetzCommon(const CurvedSolid& A, const CurvedSolid& B,
   // extent ~πR/2): nn ≈ arcLen / sqrt(8·kCapSagitta·R). Bounded [24,180]. Grid stations are
   // COSINE-clustered toward the two poles (where all four lunes taper) so the tapering tip
   // facets stay well-shaped.
-  const double arcLen = 0.5 * kSsiPi * std::max(A.radius, 1e-9);
-  const double chord = std::sqrt(std::max(8.0 * kCapSagitta * A.radius, 1e-12));
+  const double arcLen = 0.5 * kSsiPi * std::max(refR.radius, 1e-9);
+  const double chord = std::sqrt(std::max(8.0 * kCapSagitta * refR.radius, 1e-12));
   const int nn = std::clamp(static_cast<int>(std::ceil(arcLen / std::max(chord, 1e-9))), 24, 180);
   std::vector<double> tvals(nn);
   for (int k = 0; k < nn; ++k)
@@ -1478,6 +1476,19 @@ topo::Shape buildSteinmetzCommon(const CurvedSolid& A, const CurvedSolid& B,
                                      st.pole0));
   // Snap the two grid endpoints to the exact shared poles (all arcs → the same two nodes).
   for (auto& a : arcs) { a.pts.front() = st.pole0; a.pts.back() = st.pole1; }
+  return arcs;
+}
+
+// buildSteinmetzCommon(A,B) = the bicylinder: the four inside-the-other lune patches
+// (two on cyl-A, two on cyl-B) welded on the four shared arcs + the two shared poles.
+// Each lune is kept iff its centroid classifies INSIDE the other solid (the COMMON
+// survival rule); an ON verdict → NULL → OCCT (never faked). One VertexPool welds the
+// whole shell: the two poles are pooled ONCE and each arc's nodes are shared by its two
+// owning lunes (cyl-A side and cyl-B side).
+topo::Shape buildSteinmetzCommon(const CurvedSolid& A, const CurvedSolid& B,
+                                 const SteinmetzTrace& st) {
+  const std::vector<BranchArcData> arcs = orientResampleArcs(A, st);
+  if (arcs.size() != 4) return {};
 
   VertexPool pool;
   std::vector<topo::Shape> faces;
@@ -1503,6 +1514,154 @@ topo::Shape buildSteinmetzCommon(const CurvedSolid& A, const CurvedSolid& B,
       const int uSamp = luneUSamples(sp.cs, lo, hi, sp.which);
       appendLunePatch(sp.cs, sp.which, lo, hi, uSamp, /*outwardSign=*/1.0, pool, faces);
     }
+  }
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// S5-d FUSE / CUT — the SAME branched trace, different fragment selection + caps.
+//
+//  * FUSE = A ∪ B: the OUTSIDE-the-other wall region of BOTH cylinders (each cylinder's
+//    full wall with its two INSIDE-the-other lunes cut out as mouths) + all four original
+//    disc end caps, welded along the four shared arcs.
+//  * CUT(A,B) = A − B: A's OUTSIDE wall (its two inside-A lunes cut out) + A's two disc
+//    caps + B's two INSIDE-A lunes emitted REVERSED (inward normal) — the wall of the
+//    channel B carves through A. A is the order-honored minuend.
+//
+// The OUTSIDE wall is NOT a simple two-arc strip (it wraps around and reaches the caps at
+// v=vLo/vHi), so — exactly like the through-drill fat wall — it is a STRUCTURED (u,v) grid
+// of the full cylinder with the two inside-lune regions REMOVED as mouths, ribbon-stitched
+// to the arc seams (appendHoledWall). Each inside lune is a CLOSED (u,v) loop bounded by its
+// two arcs meeting at the two poles, so it is a valid "mouth"; the two lunes on one cylinder
+// are the two mouths. The mouth 3D nodes are the SAME resampled arc nodes the reversed B
+// lunes / the other cylinder's mouth use → the whole shell welds through one VertexPool.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// The two INSIDE-the-other lunes on cylinder `which` as (lo,hi) arc-index pairs, ordered by
+// mean v — the SAME clean 2+2 clustering COMMON uses (groupLunes). false → decline.
+bool insideLunesOn(const std::vector<BranchArcData>& arcs, LuneCyl which,
+                   std::array<std::pair<int, int>, 2>& lunesOut) {
+  return groupLunes(arcs, which, lunesOut);
+}
+
+// Build a CLOSED mouth-loop Seam for ONE inside lune on cylinder `which`: walk arc `lo`
+// pole0 → pole1, then arc `hi` pole1 → pole0, so the concatenated (u,v) track forms a single
+// closed loop bounding the lune. The 3D nodes are the shared resampled arc nodes (so the
+// mouth welds against the reversed lune / the other cylinder's fragment that owns the same
+// arcs). The pole endpoints are shared, so drop the duplicate at each junction.
+Seam luneMouthSeam(const BranchArcData& lo, const BranchArcData& hi, LuneCyl which) {
+  Seam m;
+  (void)which;  // the loop tracks BOTH cylinders' (u,v); the caller selects which for the mouth
+  const int n = std::min(static_cast<int>(lo.pts.size()), static_cast<int>(hi.pts.size()));
+  auto push = [&](const BranchArcData& a, int k) {
+    m.pts.push_back(a.pts[k]);
+    m.uvA.push_back(a.uvA[k]);
+    m.uvB.push_back(a.uvB[k]);
+  };
+  for (int k = 0; k < n; ++k) push(lo, k);                 // lo: pole0 → pole1
+  for (int k = n - 2; k >= 1; --k) push(hi, k);            // hi: pole1 → pole0 (skip shared poles)
+  return m;
+}
+
+// v-cell / u-cell resolution for a Steinmetz outer wall — mirrors wallSteps: u finely
+// sampled around the full circle (curvature), v modest but fine enough that a mouth spans
+// several cells. The mouth v-span is the two arcs' v-extent on `which`.
+void steinmetzWallSteps(const CurvedSolid& cs, const std::vector<BranchArcData>& arcs,
+                        LuneCyl which, int& uCells, int& vCells) {
+  const double sagStep = std::sqrt(8.0 * kCapSagitta / std::max(cs.radius, 1e-9));
+  uCells = std::clamp(static_cast<int>(std::ceil(kSsiTwoPi / std::max(sagStep, 1e-6))), 16, 512);
+  double vLoM = 1e300, vHiM = -1e300;
+  for (const BranchArcData& a : arcs)
+    for (const auto& uv : (which == LuneCyl::A ? a.uvA : a.uvB)) {
+      vLoM = std::min(vLoM, uv.second);
+      vHiM = std::max(vHiM, uv.second);
+    }
+  const double mouthVspan = std::max(vHiM - vLoM, 1e-6);
+  const double vCell = std::max(mouthVspan / 6.0, 1e-6);
+  vCells = std::clamp(static_cast<int>(std::ceil((cs.vHi - cs.vLo) / vCell)), 4, 256);
+}
+
+// Emit the OUTSIDE-the-other wall of cylinder `cs` (full wall minus its two inside lunes)
+// + its two disc end caps into (pool, faces). The two inside lunes become the two mouths of
+// appendHoledWall. Declines (false → NULL → OCCT) if the lune split is not a clean 2+2, the
+// wall stitch fails, or a cap plane clips the seam band (a short cylinder whose |vCap| ≤ the
+// mouth v-extent — the disc cap would cross the seam and the mouth is not interior).
+bool appendSteinmetzOuterWall(const CurvedSolid& cs, const std::vector<BranchArcData>& arcs,
+                              LuneCyl which, VertexPool& pool, std::vector<topo::Shape>& faces) {
+  std::array<std::pair<int, int>, 2> lunes;
+  if (!insideLunesOn(arcs, which, lunes)) return false;
+  // SHORT-CYLINDER decline: the two disc caps sit at v=vLo/vHi; the inside-lune mouths must
+  // be strictly interior (else appendHoledWall's mouthBlockRange rejects the v-edge touch).
+  // Guard it up front so the decline is an explicit honest gate, never a faked cap.
+  double vLoM = 1e300, vHiM = -1e300;
+  for (const BranchArcData& a : arcs)
+    for (const auto& uv : (which == LuneCyl::A ? a.uvA : a.uvB)) {
+      vLoM = std::min(vLoM, uv.second);
+      vHiM = std::max(vHiM, uv.second);
+    }
+  if (!(vLoM > cs.vLo + kSsiTol) || !(vHiM < cs.vHi - kSsiTol)) return false;  // cap clips seam
+
+  const Seam m0 = luneMouthSeam(arcs[lunes[0].first], arcs[lunes[0].second], which);
+  const Seam m1 = luneMouthSeam(arcs[lunes[1].first], arcs[lunes[1].second], which);
+  const auto& uv0 = (which == LuneCyl::A) ? m0.uvA : m0.uvB;
+  const auto& uv1 = (which == LuneCyl::A) ? m1.uvA : m1.uvB;
+  int uSteps, vSteps;
+  steinmetzWallSteps(cs, arcs, which, uSteps, vSteps);
+  std::vector<math::Point3> rimLo, rimHi;
+  if (!appendHoledWall(cs, m0, m1, uv0, uv1, uSteps, vSteps, pool, faces, rimLo, rimHi))
+    return false;
+  appendDiskCap(cs, cs.vLo, rimLo, math::Vec3{-cs.frame.z.vec().x, -cs.frame.z.vec().y,
+                -cs.frame.z.vec().z}, pool, faces);
+  appendDiskCap(cs, cs.vHi, rimHi, cs.frame.z.vec(), pool, faces);
+  return true;
+}
+
+// buildSteinmetzFuse(A,B) = A ∪ B: both cylinders' OUTSIDE walls (each with its two inside
+// lunes cut out) + all four disc caps, welded along the four shared arcs.
+topo::Shape buildSteinmetzFuse(const CurvedSolid& A, const CurvedSolid& B,
+                               const SteinmetzTrace& st) {
+  const std::vector<BranchArcData> arcs = orientResampleArcs(A, st);
+  if (arcs.size() != 4) return {};
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  if (!appendSteinmetzOuterWall(A, arcs, LuneCyl::A, pool, faces)) return {};
+  if (!appendSteinmetzOuterWall(B, arcs, LuneCyl::B, pool, faces)) return {};
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildSteinmetzCut(A,B) = A − B: A's OUTSIDE wall + A's caps + B's two INSIDE-A lunes
+// emitted REVERSED (inward normal — the wall of the channel B carves through A). B's inside
+// lunes are kept iff their centroid classifies INSIDE A (the same survival sample COMMON
+// uses); an ON verdict → NULL → OCCT (never faked). A is the order-honored minuend.
+topo::Shape buildSteinmetzCut(const CurvedSolid& A, const CurvedSolid& B,
+                              const SteinmetzTrace& st) {
+  const std::vector<BranchArcData> arcs = orientResampleArcs(A, st);
+  if (arcs.size() != 4) return {};
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  // A's OUTSIDE wall + A's two disc caps.
+  if (!appendSteinmetzOuterWall(A, arcs, LuneCyl::A, pool, faces)) return {};
+  // B's two INSIDE-A lunes, REVERSED (outwardSign = −1) → the carved-channel wall.
+  std::array<std::pair<int, int>, 2> lunesB;
+  if (!insideLunesOn(arcs, LuneCyl::B, lunesB)) return {};
+  for (const auto& [iLo, iHi] : lunesB) {
+    const BranchArcData& lo = arcs[iLo];
+    const BranchArcData& hi = arcs[iHi];
+    const int mid = static_cast<int>(lo.pts.size()) / 2;
+    const auto uvLo = lo.uvB[mid];
+    const auto uvHi = hi.uvB[mid];
+    const double uMid = 0.5 * (uvLo.first + nearU(uvLo.first, uvHi.first));
+    const double vMid = 0.5 * (uvLo.second + uvHi.second);
+    const math::Point3 centroid = B.point(uMid, vMid);
+    const int cls = classifyPoint(A, centroid, kSsiTol);
+    if (cls == 0) return {};   // ON A's wall → tangent → OCCT
+    if (cls != 1) continue;    // OUTSIDE A → not an inside-A lune (should not happen)
+    const int uSamp = luneUSamples(B, lo, hi, LuneCyl::B);
+    appendLunePatch(B, LuneCyl::B, lo, hi, uSamp, /*outwardSign=*/-1.0, pool, faces);
   }
   if (faces.size() < 4) return {};
   const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
@@ -1541,8 +1700,12 @@ topo::Shape tryBranchedSteinmetz(const CurvedSolid& A, const CurvedSolid& B,
   const ssi::TraceSet bt = ssi::trace_intersection(adA, adB, {}, bopts);
   const std::optional<SteinmetzTrace> st = recogniseSteinmetzTrace(bt);
   if (!st) return {};
-  if (op == Op::Common) return buildSteinmetzCommon(A, B, *st);
-  return {};  // FUSE / CUT deferred (COMMON is the guaranteed slice) → OCCT
+  switch (op) {
+    case Op::Common: return buildSteinmetzCommon(A, B, *st);
+    case Op::Fuse:   return buildSteinmetzFuse(A, B, *st);
+    case Op::Cut:    return buildSteinmetzCut(A, B, *st);
+  }
+  return {};
 }
 
 }  // namespace

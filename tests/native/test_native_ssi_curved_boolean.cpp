@@ -450,24 +450,52 @@ CC_TEST(sphere_sphere_fuse_cut_watertight_match_analytic) {
   CC_CHECK(nb::ssi_boolean_solid(o, tan, nb::Op::Cut).isNull());
 }
 
-// ── (3) Honest deferrals around the branched Steinmetz COMMON ────────────────────
-// The equal-R orthogonal Steinmetz COMMON is now a native BRANCHED pass (test 1). Here we
-// pin the honest DEFERRALS: the branched Steinmetz FUSE / CUT (COMMON is the guaranteed
-// slice — FUSE/CUT ship only if they robustly assemble, else NULL → OCCT), and a disjoint
-// pair with no seam. All MUST return NULL — never a fabricated result.
-CC_TEST(branched_fuse_cut_and_disjoint_return_null) {
-  // The equal-R Steinmetz FUSE / CUT are deferred (COMMON only) → NULL → OCCT.
-  const ntopo::Shape eqA = makeCyl(2, 1.0, -3, 3);
-  const ntopo::Shape eqB = makeCyl(0, 1.0, -3, 3);
-  CC_CHECK(nb::ssi_boolean_solid(eqA, eqB, nb::Op::Fuse).isNull());
-  CC_CHECK(nb::ssi_boolean_solid(eqA, eqB, nb::Op::Cut).isNull());
+// ── (3) The branched Steinmetz FUSE / CUT — native watertight passes ──────────────
+// The equal-R orthogonal Steinmetz family is now 3/3 native. FUSE = A∪B (both cylinders'
+// OUTSIDE walls + all four caps) and CUT = A−B (A's OUTSIDE wall + A's caps + B's inside
+// lunes REVERSED) both assemble watertight from the SAME branched trace, with volumes
+// matching the inclusion-exclusion V(A)+V(B)−V(common) / V(A)−V(common) to the
+// tessellation-deflection bar (1% relative, the same bound COMMON passes).
+CC_TEST(branched_fuse_cut_watertight_matches_analytic) {
+  const double r = 1.0;
+  const double vCyl = cylinderVolume(r, -3, 3);      // π r² · 6 = 6π
+  const double vCommon = steinmetzVolume(r);         // 16 r³/3
+  const ntopo::Shape eqA = makeCyl(2, r, -3, 3);     // Z axis
+  const ntopo::Shape eqB = makeCyl(0, r, -3, 3);     // X axis
 
-  // Disjoint (far-away parallel) cylinders → no seam → NULL.
+  // FUSE = A ∪ B, watertight, volume = V(A)+V(B)−V(common).
+  const ntopo::Shape fuse = nb::ssi_boolean_solid(eqA, eqB, nb::Op::Fuse);
+  CC_CHECK(!fuse.isNull());
+  const double vFuse = watertightMeshVolume(fuse);   // < 0 ⇒ NOT watertight
+  CC_CHECK(vFuse > 0.0);
+  const double vFuseTrue = 2.0 * vCyl - vCommon;
+  CC_CHECK(std::fabs(vFuse - vFuseTrue) <= 1e-2 * vFuseTrue);
+  CC_CHECK(vFuse >= vCyl - 1e-9);                     // fuse ≥ each operand
+
+  // CUT = A − B, watertight, volume = V(A)−V(common).
+  const ntopo::Shape cut = nb::ssi_boolean_solid(eqA, eqB, nb::Op::Cut);
+  CC_CHECK(!cut.isNull());
+  const double vCut = watertightMeshVolume(cut);
+  CC_CHECK(vCut > 0.0);
+  const double vCutTrue = vCyl - vCommon;
+  CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
+  CC_CHECK(vCut <= vCyl + 1e-9);                      // cut ≤ A
+  CC_CHECK(vCut < vFuse);                             // strictly a smaller solid than the fuse
+
+  // The dispatcher path also returns them non-null.
+  CC_CHECK(!nb::boolean_solid(eqA, eqB, nb::Op::Fuse).isNull());
+  CC_CHECK(!nb::boolean_solid(eqA, eqB, nb::Op::Cut).isNull());
+}
+
+// ── (3b) Honest deferral: a disjoint pair with no seam → NULL (never fabricated). ──
+CC_TEST(branched_disjoint_returns_null) {
   const ntopo::Shape a = makeCyl(2, 1.0, -2, 2);
   nb::curved::AABox box{Point3{-100, -100, -100}, Point3{100, 100, 100}};
   const ntopo::Shape b =
       nb::curved::buildCommonSegment(box, nb::curved::AxisCylinder{2, 50.0, 0.0, 1.0, -2, 2});
   CC_CHECK(nb::ssi_boolean_solid(a, b, nb::Op::Common).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(a, b, nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(a, b, nb::Op::Cut).isNull());
 }
 
 int main() { return cctest::run_all(); }

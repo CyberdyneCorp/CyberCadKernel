@@ -108,10 +108,12 @@ CC_TEST(ssi_steinmetz_equal_cylinders_branched_common) {
   // assert the dispatcher no longer declines the equal-cylinder COMMON.
   CC_CHECK(!nb::ssi_boolean_solid(a, b, nb::Op::Common).isNull());
   CC_CHECK(!nb::boolean_solid(a, b, nb::Op::Common).isNull());
-  // FUSE / CUT for the branched pair are DEFERRED (COMMON is the guaranteed slice) → NULL
-  // → OCCT. That deferral is honest, not a fabricated pass.
-  CC_CHECK(nb::ssi_boolean_solid(a, b, nb::Op::Fuse).isNull());
-  CC_CHECK(nb::ssi_boolean_solid(a, b, nb::Op::Cut).isNull());
+  // FUSE / CUT for the branched pair are now ALSO native (S5-d completion): the same branched
+  // trace, different fragment selection + caps (outside walls / A outside + reversed B lunes).
+  // Volumes / watertightness are verified in test_native_ssi_curved_boolean; here we only
+  // assert the dispatcher no longer declines them.
+  CC_CHECK(!nb::ssi_boolean_solid(a, b, nb::Op::Fuse).isNull());
+  CC_CHECK(!nb::ssi_boolean_solid(a, b, nb::Op::Cut).isNull());
 }
 
 // ── (e) a disjoint pair (no intersection seam) is declined ───────────────────────

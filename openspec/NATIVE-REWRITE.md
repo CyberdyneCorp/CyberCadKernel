@@ -852,7 +852,7 @@ longest; a native exchange is lower priority than the modelling core.
   non-planar loft, a truly self-intersecting sweep or thread, a general SPLINE
   surface-of-revolution, and a spindle torus.
 - â **#6 `native-blends` â tractable PLANAR slice done at the verification bar (both
-  gates green); the curved CIRCULAR cyl<->plane fillet (CONVEX + CONCAVE) landed natively in a later slice (see the #6 curved-blend entry below); variable / cyl<->cyl-canal / non-circular / fillet_face still OCCT-fallthrough (honest).** Native
+  gates green); the curved CIRCULAR cyl<->plane fillet (CONVEX + CONCAVE constant-radius, AND VARIABLE-radius LINEAR-law convex via `cc_fillet_edges_variable`) landed natively in later slices (see the #6 / #6b curved-blend entries below); non-linear-law / concave-variable / cyl<->cyl-canal / non-circular-crease fillets, curved-edge chamfer, and fillet_face still OCCT-fallthrough (honest).** Native
   `cc_chamfer_edges` / `cc_fillet_edges` (constant radius) / `cc_offset_face` /
   `cc_shell` for the tractable planar cases, built OCCT-free under
   `src/native/blend/` (`blend_geom.h`, `chamfer_edges.h`, `fillet_edges.h`,
@@ -960,6 +960,40 @@ longest; a native exchange is lower priority than the modelling core.
   rim), freeform neighbours, convex `Rc < 2r` near-degenerate, seam-leaves-face, multi-edge.
   Changes `add-native-curved-fillet` archived `2026-07-05`, `add-native-concave-fillet` archived
   `2026-07-06`.
+- **#6b `native-blends` -- VARIABLE-RADIUS curved-fillet slice DONE at all gates: a CONVEX
+  circular cylinder<->coaxial-cap rim with a LINEAR radius law `r(theta) = r1 + (r2-r1)*theta/2pi`,
+  verified vs OCCT `BRepFilletAPI` (evolved).** Generalises the constant-radius convex #6: the
+  rolling-ball radius now VARIES around the rim, so the centre locus is no longer a fixed-offset
+  circle but a SWEPT curve and the two trim seams are NON-circular (varying-radius) curves on the
+  cylinder + plane. Built OCCT-FREE in `src/native/blend/curved_fillet.h` as `variable_fillet_edge(...)`
+  (additive-only; the constant convex `curved_fillet_edge` + concave `concave_fillet_edge` are
+  byte-identical), reusing the same trim + planar-facet weld helpers. The blend is a ring of planar
+  facets swept along the rim, each station using the local `r(theta)` upright meridian arc; **G1-tangent
+  at BOTH varying-radius seams by construction** (canal normal radial at the wall seam `v=0`, axial at
+  the plane seam `v=pi/2`, cos=1.0 at every station). Wired into
+  `NativeEngine::fillet_edges_variable` behind the `cc_fillet_edges_variable` facade, gated by the
+  SAME correctly-signed `blendResultVerified(result, shape, wantGrow=false)` self-verify the constant
+  convex path uses (a variable convex fillet REDUCES volume; a candidate that is not watertight or
+  does not shrink to a sane volume is discarded -> NULL -> OCCT `BRepFilletAPI` evolved; the native
+  OCCT-free shape cannot itself be forwarded to OCCT, same pattern as the constant fillet). Gate 1
+  GREEN -- host `test_native_blend` adds `variable_fillet_cylinder_cap_watertight_volume_between`,
+  `variable_fillet_second_fixture_and_reversed`, `variable_fillet_reduces_to_constant_when_r1_eq_r2`,
+  `variable_fillet_g1_tangent_at_both_seams`, `variable_fillet_scope_defers` (22 cases / 0 failed;
+  host CTest 29/29 OFF, 36/36 ON). Gate 2 GREEN -- `run-sim-native-curved-fillet.sh` now **23/23**
+  (15 constant convex+concave controls unchanged + 8 variable). The HARD native gate: watertight,
+  native volume matches the builder's OWN closed-form SWEPT removed volume -- fixture A (Rc=5,
+  r1=1->r2=2) relX 1.08e-3 (769.963 vs 770.796), fixture B (Rc=6, r1=0.75->r2=2.25) relX 5.37e-4
+  (1338 vs 1338.72) -- REDUCED vs the sharp cylinder, mesh<->B-rep vol ~1e-16, and DISTINCT from the
+  OCCT evolved oracle (769.963 vs 778.957) -- proof the sim exercised native geometry, not an OCCT
+  fall-through. The native-vs-OCCT-evolved parity is a SEPARATE, LOOSER line (relO 1.15e-2 / 1.09e-2,
+  asserted only against 6e-2): the upright-meridian canal differs from OCCT's tilted evolved envelope
+  by O(r') in the INTERIOR, agreeing exactly at both seams and in the `r1=r2` limit -- REPORTED
+  honestly, never hidden behind the HARD bound. STILL OCCT-fallthrough (NULL / self-verify discards,
+  honest error, never faked): NON-LINEAR radius laws (quadratic/spline/per-vertex), CONCAVE variable
+  rim, cyl<->cyl / cyl<->cone canal, NON-circular variable creases (cone/sphere/ellipse/spline rim,
+  tilted/non-coaxial plane), curved-edge chamfer, freeform neighbours, `Rc < 2*rmax` near-degenerate
+  or cap radius `Rc - rmax <= 0`, seam-leaves-face, multi-edge. Change `add-native-variable-fillet`
+  archived `2026-07-06`.
 - **#7 `native-wrap-emboss` -- FIRST NATIVE slice DONE at all gates: emboss a RECTANGULAR
   pad onto a CYLINDER lateral face, verified vs OCCT `cc_wrap_emboss`.** The Phase-3
   `cc_wrap_emboss` (#290) stays the ORACLE; this adds a NATIVE path behind the same ABI.

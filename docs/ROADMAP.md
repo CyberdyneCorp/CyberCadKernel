@@ -196,8 +196,27 @@ robustness tail keeps OCCT linked.** Canonical detail:
     material — engine self-verify `Vr > Vo` (`wantGrow=true`, same branch offset-face grow uses).
   Verified vs OCCT `BRepFilletAPI` (sim `run-sim-native-curved-fillet.sh` **15/15**,
   `activeNative=1`: convex 9/9 + concave 6/6 `grew=1`, vol rel ≤ 3.8e-3, area rel ≤ 2.1e-3).
-  Residual → OCCT: VARIABLE radius, cyl↔cyl / cyl↔cone canals, NON-circular creases (cone/sphere/
-  ellipse/spline rim), blind-hole bottom rim, convex `Rc < 2r`, seam-leaves-face, multi-edge.
+- ✅ **Variable-radius curved fillet (CONVEX circular cyl↔cap rim, LINEAR radius law)** — the same
+  convex cylinder↔coaxial-cap rim as #6, but the rolling-ball radius varies LINEARLY around the rim,
+  `r(θ)=r1+(r2−r1)·θ/2π`. The centre locus is no longer a fixed-offset circle but a SWEPT curve, so
+  the two trim seams are NON-circular (varying-radius) curves; the native builder
+  (`src/native/blend/curved_fillet.h`, `variable_fillet_edge`, OCCT-free) sweeps a ring of planar
+  facets, each station using the local `r(θ)` upright meridian arc, welded watertight, **G1-tangent
+  at both varying-radius seams** by construction (`cos=1.0`). Wired in
+  `NativeEngine::fillet_edges_variable` behind `cc_fillet_edges_variable`, gated by the same
+  correctly-signed `blendResultVerified(wantGrow=false)` self-verify; when it cannot build robustly
+  it returns NULL → OCCT `BRepFilletAPI` (evolved). Verified on two fixtures (Rc=5 r1=1→r2=2; Rc=6
+  r1=0.75→r2=2.25): watertight, native volume matches the builder's own closed-form SWEPT removed
+  volume (rel ≤ 1.1e-3) and is REDUCED vs the sharp cylinder — and is DISTINCT from the OCCT evolved
+  oracle, proving the sim exercises native geometry, not an OCCT fall-through. Native-vs-OCCT-evolved
+  parity is reported SEPARATELY as a looser line (rel ≤ 1.2e-2, the expected O(r′) interior gap; the
+  upright-meridian canal agrees with OCCT's tilted evolved envelope exactly at both seams and in the
+  `r1=r2` limit) — never hidden behind the HARD bound. Sim `run-sim-native-curved-fillet.sh` **23/23**
+  (15 constant convex+concave controls unchanged + 8 variable checks); host `test_native_blend`
+  22/22.
+  Residual → OCCT: NON-LINEAR radius laws, CONCAVE variable rim, cyl↔cyl / cyl↔cone canals,
+  NON-circular creases (cone/sphere/ellipse/spline rim), curved-edge chamfer, blind-hole bottom rim,
+  convex `Rc < 2·rmax`, seam-leaves-face, multi-edge.
 - ✅ **Wrap-emboss #7 FIRST SLICE (rectangular pad on a cylinder lateral face)** — emboss (`boss=1`)
   a rectangular footprint onto a CYLINDER wall. The native builder (`src/native/feature/wrap_emboss.h`,
   OCCT-free) wraps the footprint by the SAME map the OCCT oracle uses (`u = px/R`, `v = py + vMid`),
@@ -237,10 +256,12 @@ robustness tail keeps OCCT linked.** Canonical detail:
   native) → **wider S5
   curved booleans** (Steinmetz fuse/cut, general non-Steinmetz branched pairs,
   more families, consuming the S3 WLines + the S4 typed regions/contacts + multi-arm branch loci).
-- ☐ General curved **booleans** & **blends** beyond the first slices (sit on SSI): CONCAVE / VARIABLE /
-  non-circular-crease / cyl↔cyl-canal fillets; general curved **wrap-emboss** (deboss, non-rectangular
-  profiles, non-cylindrical base, >2π footprints). _(The circular cyl↔cap fillet #6 and the rectangular
-  pad-on-cylinder emboss #7 first slices are now native — see above.)_
+- ☐ General curved **booleans** & **blends** beyond the first slices (sit on SSI): NON-LINEAR-law /
+  CONCAVE-variable / non-circular-crease / cyl↔cyl-canal fillets, curved-edge chamfer; general curved
+  **wrap-emboss** (deboss, non-rectangular profiles, non-cylindrical base, >2π footprints). _(The
+  constant-radius circular cyl↔cap fillet #6 (convex + concave), the VARIABLE-radius (linear-law)
+  convex circular cyl↔cap fillet, and the rectangular pad-on-cylinder emboss #7 first slices are now
+  native — see above.)_
 - ☐ Non-planar/guided/rail sweep robustness; general loft; fine-pitch threads.
 - ☐ **Shape healing residual** (beyond-tolerance gap bridging, missing-pcurve reconstruction,
   self-intersecting-wire repair, arbitrary broken industrial B-rep — the coincident-within-tolerance /

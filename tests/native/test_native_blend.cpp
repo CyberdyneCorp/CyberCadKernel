@@ -278,6 +278,132 @@ CC_TEST(curved_fillet_both_rims_and_engine_dispatch) {
   CC_CHECK(v < v0);
 }
 
+// ── variable-radius convex fillet (swept variable-r torus canal on a cyl↔cap rim) ─--
+
+namespace {
+// Closed-form REMOVED volume of the variable convex fillet over the circular rim, via the
+// per-meridian removed corner area r²(1−π/4) with centroid radius (Pappus per angular
+// slice): V = ∫₀^{2π} r(θ)²[Rc(1−π/4) + r(θ)(π/4−5/6)] dθ, r(θ)=r1+(r2−r1)θ/2π. Using
+// ∫r²dθ=2π(r1²+r1r2+r2²)/3 and ∫r³dθ=2π(r1+r2)(r1²+r2²)/4.
+double variableVremoved(double Rc, double r1, double r2) {
+  const double q = M_PI / 4.0;
+  const double i2 = 2.0 * M_PI * (r1 * r1 + r1 * r2 + r2 * r2) / 3.0;
+  const double i3 = 2.0 * M_PI * (r1 + r2) * (r1 * r1 + r2 * r2) / 4.0;
+  return Rc * (1.0 - q) * i2 + (q - 5.0 / 6.0) * i3;
+}
+}  // namespace
+
+CC_TEST(variable_fillet_cylinder_cap_watertight_volume_between) {
+  // Fixture A: Rc=5, h=10 capped cylinder; roll a ball whose radius ramps r1=1 → r2=2
+  // linearly around the top rim → a swept variable-r torus canal. Watertight, BELOW the
+  // sharp cylinder, BETWEEN the two constant-radius (r1, r2) fillet volumes, and matching
+  // the closed-form removed volume to the deflection bound.
+  const double Rc = 5.0, h = 10.0, r1 = 1.0, r2 = 2.0;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  bool wt0 = false;
+  const double v0 = vol(cyl, wt0);
+  CC_CHECK(wt0);
+  const int rim = findRimAtZ(cyl, h);
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  topo::Shape f = blend::variable_fillet_edge(cyl, ids, 1, r1, r2, 0.005);
+  bool wt = false;
+  const double v = vol(f, wt);
+  CC_CHECK(!f.isNull());
+  CC_CHECK(wt);          // swept canal + seam wall weld watertight to wall + cap
+  CC_CHECK(v < v0);      // a convex (variable) fillet REDUCES the volume
+  // Bracket: larger r removes more, so v(r2) < v(variable) < v(r1).
+  bool wa = false, wb = false;
+  const double vR1 = vol(blend::curved_fillet_edge(cyl, ids, 1, r1, 0.005), wa);
+  const double vR2 = vol(blend::curved_fillet_edge(cyl, ids, 1, r2, 0.005), wb);
+  CC_CHECK(wa && wb);
+  CC_CHECK(vR2 < v && v < vR1);
+  // Closed-form removed volume (14.60 for this fixture).
+  const double expected = v0 - variableVremoved(Rc, r1, r2);
+  CC_CHECK(nearRel(v, expected, 6e-3));  // deflection-bounded facet approximation
+}
+
+CC_TEST(variable_fillet_second_fixture_and_reversed) {
+  // Fixture B: Rc=6, h=12, r1=0.75 → r2=2.25. Also exercise the REVERSED law (r1>r2) to
+  // cover both seam-wall orientations.
+  const double Rc = 6.0, h = 12.0, r1 = 0.75, r2 = 2.25;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  bool wt0 = false;
+  const double v0 = vol(cyl, wt0);
+  const int rim = findRimAtZ(cyl, h);
+  int ids[] = {rim};
+  topo::Shape f = blend::variable_fillet_edge(cyl, ids, 1, r1, r2, 0.005);
+  bool wt = false;
+  const double v = vol(f, wt);
+  CC_CHECK(!f.isNull());
+  CC_CHECK(wt);
+  CC_CHECK(nearRel(v, v0 - variableVremoved(Rc, r1, r2), 6e-3));
+  // Reversed law (r1>r2) → the seam wall faces the other way; still watertight, same volume.
+  topo::Shape fr = blend::variable_fillet_edge(cyl, ids, 1, r2, r1, 0.005);
+  bool wtr = false;
+  const double vr = vol(fr, wtr);
+  CC_CHECK(!fr.isNull());
+  CC_CHECK(wtr);
+  CC_CHECK(nearRel(vr, v0 - variableVremoved(Rc, r2, r1), 6e-3));
+}
+
+CC_TEST(variable_fillet_reduces_to_constant_when_r1_eq_r2) {
+  // r1==r2 must reproduce the constant torus fillet exactly (every band + seam wall
+  // collapses to zero area).
+  const double Rc = 5.0, h = 10.0, r = 1.5;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  const int rim = findRimAtZ(cyl, h);
+  int ids[] = {rim};
+  bool wv = false, wc = false;
+  const double vVar = vol(blend::variable_fillet_edge(cyl, ids, 1, r, r, 0.005), wv);
+  const double vConst = vol(blend::curved_fillet_edge(cyl, ids, 1, r, 0.005), wc);
+  CC_CHECK(wv && wc);
+  CC_CHECK(nearRel(vVar, vConst, 1e-9));  // identical facet soup
+}
+
+CC_TEST(variable_fillet_g1_tangent_at_both_seams) {
+  // ANALYTIC G1 (no OCCT, no mesh): at EVERY station the variable-canal normal at v=0 is
+  // radial (== cylinder normal) and at v=π/2 is axial (== cap normal) — independent of the
+  // radius gradient r'(θ). n(u,v)=radial(u)cos v + axis·sin v, so cos=1 at both seams.
+  const nmath::Vec3 axis{0, 0, 1};
+  for (int k = 0; k < 8; ++k) {
+    const double u = 2.0 * M_PI * k / 8.0;
+    const nmath::Vec3 radial{std::cos(u), std::sin(u), 0.0};
+    const nmath::Vec3 nWall = radial * std::cos(0.0) + axis * std::sin(0.0);
+    CC_CHECK(nearRel(nmath::dot(nmath::Dir3{nWall}.vec(), radial), 1.0, 1e-12));
+    const nmath::Vec3 nCap = radial * std::cos(M_PI / 2.0) + axis * std::sin(M_PI / 2.0);
+    CC_CHECK(nearRel(nmath::dot(nmath::Dir3{nCap}.vec(), axis), 1.0, 1e-12));
+  }
+  // Seam POSITIONS at the two ends of the linear law coincide with the neighbours: at any
+  // station r, radius(0)=Rc (wall) and radius(π/2)=Rc−r (trimmed cap edge).
+  const double Rc = 5.0;
+  for (double r : {1.0, 1.5, 2.0}) {
+    CC_CHECK(nearRel((Rc - r) + r * std::cos(0.0), Rc, 1e-12));
+    CC_CHECK(nearRel((Rc - r) + r * std::cos(M_PI / 2.0), Rc - r, 1e-12));
+  }
+}
+
+CC_TEST(variable_fillet_scope_defers) {
+  const double Rc = 5.0, h = 10.0;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  const int rim = findRimAtZ(cyl, h);
+  int ids[] = {rim};
+  // Ring-torus guard on the DEEPEST station: max(r1,r2)=3 ⇒ Rc<2·rMax ⇒ NULL.
+  CC_CHECK(blend::variable_fillet_edge(cyl, ids, 1, 1.0, 3.0, 0.01).isNull());
+  CC_CHECK(blend::variable_fillet_edge(cyl, ids, 1, 3.0, 1.0, 0.01).isNull());
+  // Zero / negative radius on either end → NULL.
+  CC_CHECK(blend::variable_fillet_edge(cyl, ids, 1, 0.0, 2.0, 0.01).isNull());
+  CC_CHECK(blend::variable_fillet_edge(cyl, ids, 1, 1.0, 0.0, 0.01).isNull());
+  // More than one picked edge → NULL.
+  int ids2[] = {rim, 1};
+  CC_CHECK(blend::variable_fillet_edge(cyl, ids2, 2, 1.0, 2.0, 0.01).isNull());
+  // A straight (Line) box edge is not a circular crease → NULL.
+  topo::Shape b = box(10, 10, 10);
+  const int le = findEdgeId(b, {0, 10, 10}, {10, 10, 10});
+  int idsb[] = {le};
+  CC_CHECK(blend::variable_fillet_edge(b, idsb, 1, 1.0, 2.0, 0.01).isNull());
+}
+
 // ── concave fillet (material-side torus canal on a boss ↔ larger shoulder rim) ────--
 
 namespace {

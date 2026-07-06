@@ -955,10 +955,23 @@ ShapeResult NativeEngine::fillet_edges(EngineShape body, const int* e, int ec, d
 }
 ShapeResult NativeEngine::fillet_edges_variable(EngineShape body, const int* e, int ec, double r1,
                                                 double r2) {
-    // Variable radius is out of the native domain — OCCT-only. (Never forward a
-    // native void; report honestly.)
-    CC_NATIVE_BODY_UNSUPPORTED("fillet_edges_variable", body);
-    return fallback().fillet_edges_variable(body, e, ec, r1, r2);
+    if (!isNative(body)) return fallback().fillet_edges_variable(body, e, ec, r1, r2);
+    const auto* h = static_cast<const NativeShape*>(body.get());
+    // NATIVE slice: a variable-radius rolling-ball fillet on a CONVEX circular
+    // cylinder↔coaxial-cap rim with a LINEAR law r(θ)=r1+(r2−r1)·θ/2π — a swept
+    // variable-r torus canal, G1 at both non-circular (helix/spiral) seams. A convex
+    // variable fillet REMOVES material → verified SHRINK (wantGrow=false), the same
+    // branch the constant convex fillet uses.
+    ntopo::Shape result = nblend::variable_fillet_edge(h->shape, e, ec, r1, r2);
+    if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
+        return track(wrapNative(std::move(result)));
+    // Out of the native domain (non-circular / non-linear / concave-variable / cyl-cyl
+    // canal / Rc<2·max(r) / failed self-verify) → OCCT BRepFilletAPI (variable). A native
+    // void cannot be forwarded to OCCT; report honestly (the body is native here).
+    return make_error(
+        "native fillet_edges_variable: no verified watertight result for this native "
+        "body (non-circular / non-linear / concave-variable / cyl-cyl canal / "
+        "Rc<2·max(r1,r2) → OCCT-only)");
 }
 ShapeResult NativeEngine::chamfer_edges(EngineShape body, const int* e, int ec, double d) {
     if (!isNative(body)) return fallback().chamfer_edges(body, e, ec, d);

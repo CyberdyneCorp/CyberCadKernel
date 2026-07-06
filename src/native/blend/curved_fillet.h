@@ -589,6 +589,152 @@ inline std::vector<nb::Polygon> buildConcaveFillet(const ConcaveGeom& g, double 
   return polys;
 }
 
+// ── VARIABLE-RADIUS convex circular-rim fillet (swept variable-r torus canal) ───────
+// Generalizes buildFilletedCylinder by promoting the constant ball radius r to a LINEAR
+// law r(θ) = r1 + (r2−r1)·θ/(2π), θ∈[0,2π), around the SAME convex cylinder↔coaxial-cap
+// rim. The rolling-ball centre is now a SWEPT curve (radial Rc−r(θ), axial capH−s·r(θ)),
+// and the two trim seams are NON-circular:
+//   * cylinder seam (v=0):  radius Rc, axial capH−s·r(θ)  — a helix;
+//   * cap seam (v=π/2):     radius Rc−r(θ), axial capH    — an Archimedean spiral.
+// The blend is a per-station upright meridian arc
+//   radius(θ,v)=(Rc−r(θ))+r(θ)cos v,  axial(θ,v)=(capH−s·r(θ))+s·r(θ)sin v,  v∈[0,π/2],
+// tiled into planar triangles. G1 holds at BOTH seams for ANY differentiable law: at v=0
+// ∂radius/∂v=0 (normal radial == cylinder) and the helical seam tangent has zero radial
+// component; at v=π/2 ∂axial/∂v=0 (normal axial == cap) and the spiral seam lies in the
+// cap plane — so the blend normal equals the neighbour normal independent of r'(θ).
+//
+// The r-varies-with-θ law makes the two profiles at the azimuth-0 seam DIFFER (r1 vs r2),
+// so the swept body is NOT a closed solid of revolution: a planar SEAM WALL in the
+// azimuth-0 half-plane bridges the r1 and r2 meridians (the material step the larger
+// fillet removes). To weld watertight with NO T-junction, the wall + cap are split at the
+// DEEPEST station (rMax=max(r1,r2)): a closed lower wall (hFar→hLow=capH−s·rMax) + a
+// helical band (hLow→capH−s·r_i) that tapers to zero at the rMax station, and a closed
+// inner cap disk (radius Rin=Rc−rMax) + a spiral band (Rin→Rc−r_i). The seam-wall lens
+// then shares its wall/cap struts exactly with the band edges of the min-r station.
+// r1==r2 collapses every band + the seam wall to zero → byte-identical to the constant
+// torus. Empty on any degeneracy → NULL → OCCT. Requires Rc ≥ 2·rMax (ring torus).
+inline std::vector<nb::Polygon> buildVariableFilletedCylinder(const RimGeom& g, double r1,
+                                                              double r2, double defl) {
+  const double Rc = g.radius;
+  const double rMax = std::max(r1, r2);
+  const double Rin = Rc - rMax;               // inner (deepest) trimmed-cap radius
+  if (!(Rc - 2.0 * rMax >= -1e-12)) return {};  // ring-torus guard at the deepest station
+  if (!(Rin > 1e-9)) return {};
+  const math::Ax3& ax = g.axis;
+
+  const double s = (g.capH >= g.farH) ? 1.0 : -1.0;
+  const double hCap = g.capH;
+  const double hFar = g.farH;
+  const double hLow = hCap - s * rMax;        // deepest wall→canal seam (rMax station)
+  if (s * (hLow - hFar) <= 1e-9) return {};    // the far end must lie beyond the deepest seam
+
+  // Angular stations: the major-radius sagitta bound PLUS a radius-gradient term so the
+  // per-station seam step |r2−r1|/N stays ≤ defl (the swept canal never oversteps).
+  const int Ngrad = static_cast<int>(std::ceil(std::fabs(r2 - r1) / std::max(defl, kCurveEps)));
+  const int N = std::clamp(std::max(sagittaSteps(Rc, kTwoPi, defl, 8, 256), Ngrad), 8, 512);
+  const int M = sagittaSteps(rMax, kTwoPi / 4.0, defl, 3, 64);   // canal meridian
+
+  auto rAt = [&](int i) { return r1 + (r2 - r1) * (static_cast<double>(i) / N); };
+  auto uAt = [&](int i) { return kTwoPi * i / N; };
+  auto seamH = [&](int i) { return hCap - s * rAt(i); };   // helix (v=0) axial at station i
+  auto capR = [&](int i) { return Rc - rAt(i); };          // spiral (v=π/2) radius at station i
+
+  // Blend (canal) point at station i, meridian angle vAbs∈[0,π/2], and its outward normal.
+  auto canalPoint = [&](int i, double vAbs) -> math::Point3 {
+    const double ri = rAt(i);
+    return ringPoint(ax, (Rc - ri) + ri * std::cos(vAbs), uAt(i), (hCap - s * ri) + s * ri * std::sin(vAbs));
+  };
+  auto canalNormal = [&](double u, double vAbs) -> math::Vec3 {
+    const math::Vec3 radial = ax.x.vec() * std::cos(u) + ax.y.vec() * std::sin(u);
+    return radial * std::cos(vAbs) + ax.z.vec() * (s * std::sin(vAbs));
+  };
+
+  std::vector<nb::Polygon> polys;
+  polys.reserve(static_cast<std::size_t>(N) * (M + 3) + 8);
+
+  auto emit = [&](std::vector<math::Point3> loop, const math::Vec3& outward) {
+    const math::Dir3 nd{outward};
+    if (!nd.valid() || loop.size() < 3) return;
+    math::Vec3 area{0, 0, 0};
+    for (std::size_t i = 0; i < loop.size(); ++i)
+      area += math::cross(loop[i].asVec(), loop[(i + 1) % loop.size()].asVec());
+    if (math::dot(area, nd.vec()) < 0.0) std::reverse(loop.begin(), loop.end());
+    const nb::Plane pl = nb::Plane::fromPointNormal(loop.front(), nd.vec());
+    polys.emplace_back(std::move(loop), pl);
+  };
+  // Each curved quad → two exactly-planar triangles carrying their own geometric normal
+  // (oriented to the target outward), so every facet welds cleanly. Degenerate (zero-area)
+  // triangles — e.g. the bands at the rMax station — self-skip via nd.valid()==false.
+  auto emitTri = [&](const math::Point3& a, const math::Point3& b, const math::Point3& c,
+                     const math::Vec3& outward) {
+    math::Vec3 nrm = math::cross(b - a, c - a);
+    if (math::dot(nrm, outward) < 0.0) nrm = nrm * -1.0;
+    emit({a, b, c}, nrm);
+  };
+  auto emitQuad = [&](const math::Point3& p00, const math::Point3& p10, const math::Point3& p11,
+                      const math::Point3& p01, const math::Vec3& outward) {
+    emitTri(p00, p10, p11, outward);
+    emitTri(p00, p11, p01, outward);
+  };
+
+  // 1. Far cap: full disk radius Rc at hFar, outward = −capNormal.
+  {
+    std::vector<math::Point3> ring;
+    ring.reserve(static_cast<std::size_t>(N));
+    for (int i = 0; i < N; ++i) ring.push_back(ringPoint(ax, Rc, kTwoPi * i / N, hFar));
+    emit(std::move(ring), g.capNormal * -1.0);
+  }
+  // 2. Lower cylinder wall: hFar → hLow (closed ring), N quads.
+  for (int i = 0; i < N; ++i) {
+    const double u0 = uAt(i), u1 = uAt(i + 1), um = 0.5 * (u0 + u1);
+    emitQuad(ringPoint(ax, Rc, u0, hFar), ringPoint(ax, Rc, u1, hFar), ringPoint(ax, Rc, u1, hLow),
+             ringPoint(ax, Rc, u0, hLow), ax.x.vec() * std::cos(um) + ax.y.vec() * std::sin(um));
+  }
+  // 3. Helical band: hLow → seamH(i) (the v=0 canal seam), N quads (zero at the rMax station).
+  for (int i = 0; i < N; ++i) {
+    const double u0 = uAt(i), u1 = uAt(i + 1), um = 0.5 * (u0 + u1);
+    emitQuad(ringPoint(ax, Rc, u0, hLow), ringPoint(ax, Rc, u1, hLow),
+             ringPoint(ax, Rc, u1, seamH(i + 1)), ringPoint(ax, Rc, u0, seamH(i)),
+             ax.x.vec() * std::cos(um) + ax.y.vec() * std::sin(um));
+  }
+  // 4. Variable canal quarter-tube: v ∈ [0, π/2] × the N stations, N·M quads.
+  for (int i = 0; i < N; ++i) {
+    const double um = 0.5 * (uAt(i) + uAt(i + 1));
+    for (int j = 0; j < M; ++j) {
+      const double v0 = (kTwoPi / 4.0) * j / M, v1 = (kTwoPi / 4.0) * (j + 1) / M;
+      const double vm = 0.5 * (v0 + v1);
+      emitQuad(canalPoint(i, v0), canalPoint(i + 1, v0), canalPoint(i + 1, v1), canalPoint(i, v1),
+               canalNormal(um, vm));
+    }
+  }
+  // 5. Spiral band: Rin → capR(i) at hCap, N quads (zero at the rMax station). Outward capNormal.
+  for (int i = 0; i < N; ++i) {
+    const double u0 = uAt(i), u1 = uAt(i + 1);
+    emitQuad(ringPoint(ax, Rin, u0, hCap), ringPoint(ax, Rin, u1, hCap),
+             ringPoint(ax, capR(i + 1), u1, hCap), ringPoint(ax, capR(i), u0, hCap), g.capNormal);
+  }
+  // 6. Inner trimmed cap: full disk radius Rin at hCap, outward = +capNormal.
+  {
+    std::vector<math::Point3> ring;
+    ring.reserve(static_cast<std::size_t>(N));
+    for (int i = 0; i < N; ++i) ring.push_back(ringPoint(ax, Rin, kTwoPi * i / N, hCap));
+    emit(std::move(ring), g.capNormal);
+  }
+  // 7. Seam wall (load-bearing): the planar lens in the azimuth-0 half-plane bridging the
+  //    station-0 (r1) and station-N (r2) meridians — the material step the larger fillet
+  //    removes. Its wall strut (Q1_0→Q2_0) coincides with the min-r helical-band edge and
+  //    its cap strut (Q1_M→Q2_M) with the min-r spiral-band edge, so it welds with no
+  //    T-junction. Outward points toward the LARGER-r (more-removed / void) side.
+  {
+    const math::Vec3 seamOut = ax.y.vec() * (r1 > r2 ? 1.0 : -1.0);
+    for (int j = 0; j < M; ++j) {
+      const double v0 = (kTwoPi / 4.0) * j / M, v1 = (kTwoPi / 4.0) * (j + 1) / M;
+      emitQuad(canalPoint(0, v0), canalPoint(0, v1), canalPoint(N, v1), canalPoint(N, v0), seamOut);
+    }
+  }
+  return polys;
+}
+
 }  // namespace detail
 
 // Fillet a single CIRCULAR crease (cylinder lateral face ↔ coaxial planar cap) of
@@ -659,6 +805,40 @@ inline topo::Shape concave_fillet_edge(const topo::Shape& solid, const int* edge
   if (!g) return {};  // not a concave stepped-shaft base rim (→ convex builder / OCCT)
 
   std::vector<nb::Polygon> polys = detail::buildConcaveFillet(*g, r, deflection);
+  if (polys.size() < 4) return {};
+  return nb::assembleSolid(polys);
+}
+
+// Fillet a single CONVEX CIRCULAR crease (cylinder lateral face ↔ coaxial planar cap) of
+// `solid` with a VARIABLE radius that varies LINEARLY around the rim,
+// r(θ) = r1 + (r2−r1)·θ/(2π), θ∈[0,2π). The rolling-ball centre is a swept curve and the
+// blend is a variable-radius torus canal, G1-tangent to both faces at the two NON-circular
+// (helix / spiral) seams. Same convex cyl↔cap classification as curved_fillet_edge (only
+// the radius law differs), so a variable fillet also REMOVES material. Returns the filleted
+// solid (deflection-bounded planar-facet soup, watertight) or a NULL Shape (→ OCCT) when the
+// edge is not a convex circular cylinder↔cap rim, when Rc < 2·max(r1,r2), or on any
+// degeneracy. r1==r2 reduces exactly to the constant torus. Everything else — non-circular /
+// non-linear laws, concave-variable rims, cyl↔cyl canals — returns NULL. Multiple picked
+// edges (edgeCount ≠ 1) → NULL.
+inline topo::Shape variable_fillet_edge(const topo::Shape& solid, const int* edgeIds, int edgeCount,
+                                        double r1, double r2, double deflection = 0.01) {
+  if (edgeIds == nullptr || edgeCount != 1 || !(r1 > kBlendEps) || !(r2 > kBlendEps)) return {};
+  // The picked edge must be a Circle shared by a Cylinder + a Plane face.
+  const topo::ShapeMap emap = topo::mapShapes(solid, topo::ShapeType::Edge);
+  if (edgeIds[0] < 1 || static_cast<std::size_t>(edgeIds[0]) > emap.size()) return {};
+  const auto ce = topo::curveOf(emap.shape(edgeIds[0]));
+  if (!ce || ce->curve->kind != topo::EdgeCurve::Kind::Circle) return {};
+
+  detail::RimFaces rf;
+  if (!detail::facesOnRim(solid, edgeIds[0], rf)) return {};
+  const auto cyl = detail::cylinderInfo(solid, rf.cyl);
+  if (!cyl) return {};
+  const auto cap = facePlane(solid, rf.cap);
+  if (!cap) return {};
+  const auto g = detail::rimGeom(solid, edgeIds[0], *cyl, *cap);
+  if (!g) return {};
+
+  std::vector<nb::Polygon> polys = detail::buildVariableFilletedCylinder(*g, r1, r2, deflection);
   if (polys.size() < 4) return {};
   return nb::assembleSolid(polys);
 }

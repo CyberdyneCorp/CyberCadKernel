@@ -166,17 +166,22 @@ robustness tail keeps OCCT linked.** Canonical detail:
   vs OCCT 13.516 (ΔV = 7.22e-04) — all inside the 1% bar, no tolerance weakened. General
   (non-Steinmetz) branched pairs, other curved-curved families, and non-Steinmetz near-tangent
   pairs still decline to OCCT — honest, measured fallbacks.
-- ✅ **Curved blend #6 FIRST SLICE (constant-radius rolling-ball fillet on a CIRCULAR crease)** —
-  the rim where a CYLINDER lateral face meets a coaxial PLANAR cap. A ball of radius `r` rolled
-  into that convex circular crease traces a **TORUS canal** (major `R = Rc − r`, minor `r`); the
-  native builder (`src/native/blend/curved_fillet.h`, OCCT-free) trims the wall + cap to the two
-  analytic tangent circles, inserts the quarter-tube torus patch, and rebuilds the whole filleted
-  solid as one deflection-bounded planar-facet soup welded watertight via the boolean
-  `assembleSolid`. **G1-tangent** at both seams by construction (torus normal is radial at the wall
-  seam `v=0`, axial at the cap seam `v=π/2`). Engine self-verify (watertight + `0 < Vr < Vo`);
-  verified vs OCCT `BRepFilletAPI` (sim `run-sim-native-curved-fillet.sh` **9/9**, `activeNative=1`,
-  vol rel ≤ 3.8e-3, area rel ≤ 2.1e-3). Requires `Rc ≥ 2r` (ring torus). CONCAVE rims, VARIABLE
-  radius, cyl↔cyl / cyl↔cone canals, NON-circular creases, multi-edge → OCCT.
+- ✅ **Curved blend #6 (constant-radius rolling-ball fillet on a CIRCULAR crease — CONVEX *and*
+  CONCAVE)** — the rim where a CYLINDER lateral face meets a coaxial PLANE. A ball of radius `r`
+  rolled into that circular crease traces a **TORUS canal** (minor `r`); the native builder
+  (`src/native/blend/curved_fillet.h`, OCCT-free) trims the two faces to the analytic tangent
+  circles, inserts the quarter-tube torus patch, and rebuilds the whole filleted solid as one
+  deflection-bounded planar-facet soup welded watertight via the boolean `assembleSolid`.
+  **G1-tangent** at both seams by construction (torus normal radial at the wall seam `v=0`, axial
+  at the plane seam `v=π/2`). Two signs of the ball-centre offset:
+  - **CONVEX** cyl↔coaxial-cap rim: ball seats outside the corner, major `R = Rc − r`, REMOVES
+    material — engine self-verify `0 < Vr < Vo`; requires `Rc ≥ 2r` (ring torus).
+  - **CONCAVE** boss-on-plate base rim: ball seats on the material side, major `R = Rc + r`, ADDS
+    material — engine self-verify `Vr > Vo` (`wantGrow=true`, same branch offset-face grow uses).
+  Verified vs OCCT `BRepFilletAPI` (sim `run-sim-native-curved-fillet.sh` **15/15**,
+  `activeNative=1`: convex 9/9 + concave 6/6 `grew=1`, vol rel ≤ 3.8e-3, area rel ≤ 2.1e-3).
+  Residual → OCCT: VARIABLE radius, cyl↔cyl / cyl↔cone canals, NON-circular creases (cone/sphere/
+  ellipse/spline rim), blind-hole bottom rim, convex `Rc < 2r`, seam-leaves-face, multi-edge.
 - ✅ **Wrap-emboss #7 FIRST SLICE (rectangular pad on a cylinder lateral face)** — emboss (`boss=1`)
   a rectangular footprint onto a CYLINDER wall. The native builder (`src/native/feature/wrap_emboss.h`,
   OCCT-free) wraps the footprint by the SAME map the OCCT oracle uses (`u = px/R`, `v = py + vMid`),

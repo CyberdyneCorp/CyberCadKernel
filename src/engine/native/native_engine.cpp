@@ -924,19 +924,34 @@ namespace nblend = cybercad::native::blend;
 ShapeResult NativeEngine::fillet_edges(EngineShape body, const int* e, int ec, double r) {
     if (!isNative(body)) return fallback().fillet_edges(body, e, ec, r);
     const auto* h = static_cast<const NativeShape*>(body.get());
-    // Planar dihedral fillet (tangent-cylinder). Curved-face inputs return NULL here.
+    // Each candidate is checked with ITS OWN correctly-signed self-verify: a CONVEX
+    // blend REDUCES volume (wantGrow=false, 0 < Vr < Vo), a CONCAVE fillet ADDS material
+    // and GROWS volume (wantGrow=true, Vr > Vo — the same branch offset_face grow uses).
+    // The first candidate passing its guard wins; because a convex candidate can never
+    // pass grow and a concave never passes shrink, the sign cannot be spoofed. NULL from
+    // all / any failed self-verify → OCCT-only (never a wrong or leaky solid).
+
+    // 1. Planar dihedral fillet (tangent-cylinder) — verified SHRINK.
     ntopo::Shape result = nblend::fillet_edges(h->shape, e, ec, r);
-    // First CURVED slice: a single circular crease (cylinder lateral ↔ coaxial planar
-    // cap) → torus rolling-ball blend. Tried when the planar path declines.
-    if (result.isNull()) result = nblend::curved_fillet_edge(h->shape, e, ec, r);
-    // MANDATORY self-verify (a convex blend REDUCES volume: 0 < Vr < Vo); a bad or
-    // leaky native candidate is DISCARDED (never faked). NULL / failure → OCCT-only.
-    if (result.isNull() || !blendResultVerified(result, h->shape, /*wantGrow=*/false))
-        return make_error(
-            "native fillet_edges: no verified watertight result for this native body "
-            "(non-circular curved crease / concave / Rc<2r / ≠cyl-cap rim / "
-            "variable / interference → OCCT-only)");
-    return track(wrapNative(std::move(result)));
+    if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
+        return track(wrapNative(std::move(result)));
+
+    // 2. CONVEX circular crease (cylinder lateral ↔ coaxial planar cap) → torus canal,
+    //    REMOVES material — verified SHRINK.
+    result = nblend::curved_fillet_edge(h->shape, e, ec, r);
+    if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
+        return track(wrapNative(std::move(result)));
+
+    // 3. CONCAVE circular crease (boss cylinder ↔ larger coaxial shoulder) → material-
+    //    side torus canal, ADDS material — verified GROW.
+    result = nblend::concave_fillet_edge(h->shape, e, ec, r);
+    if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/true))
+        return track(wrapNative(std::move(result)));
+
+    return make_error(
+        "native fillet_edges: no verified watertight result for this native body "
+        "(non-circular curved crease / blind-hole rim / Rc<2r convex / ≠cyl-plane rim / "
+        "variable / cyl-cyl canal / interference → OCCT-only)");
 }
 ShapeResult NativeEngine::fillet_edges_variable(EngineShape body, const int* e, int ec, double r1,
                                                 double r2) {

@@ -346,6 +346,249 @@ inline std::vector<nb::Polygon> buildFilletedCylinder(const RimGeom& g, double r
   return polys;
 }
 
+// ── CONCAVE circular-rim fillet (the material-side torus canal) ─────────────────────
+// A CONCAVE rim is where a cylinder (a BOSS, radius Rc) meets a LARGER coaxial planar
+// SHOULDER in a concave dihedral: the base rim of a boss standing on a bigger coaxial
+// disc/plate (a stepped shaft / turned part). The rolling ball of radius r seats on the
+// MATERIAL side of the corner, so THREE signs flip vs the convex builder:
+//   * ball-centre locus radius  R_t = Rc + r  (convex Rc − r);
+//   * tube-centre axial         zTube = capH + s·r  (convex capH − s·r);
+//   * the swept quadrant fills the corner (radius(v) = R_t − r·cos v) and the fillet
+//     ADDS material → the enclosed volume GROWS (convex shrinks).
+// The canal is still a coaxial torus (major R_t = Rc + r, minor r); because R_t > r
+// always, NO ring-torus guard is needed — only the seam-inside-face guard remains.
+// Seams (closed form, on the torus by construction): torus∩cylinder = circle radius Rc
+// at capH + s·r (the v=0 INNER-equator ring); torus∩plane = circle radius Rc + r in the
+// shoulder plane z = capH (the v=π/2 ring). G1-tangent at both (radial at v=0, axial at
+// v=π/2). The whole stepped body is rebuilt as a planar-facet soup that shares the SAME
+// N angular samples across every seam, welded watertight through assembleSolid.
+
+// Axial heights (along ax.z, measured from ax.origin) of coaxial Circle edges whose
+// radius ≈ targetR. Returns the count and fills [hmin,hmax]. Used to read a coaxial
+// cylinder face's two rim heights (its axial extent) without trusting node identity.
+inline int coaxialCircleHeights(const topo::Shape& solid, const math::Ax3& ax, double targetR,
+                                double& hmin, double& hmax) {
+  const topo::ShapeMap emap = topo::mapShapes(solid, topo::ShapeType::Edge);
+  const math::Vec3 az = ax.z.vec();
+  int n = 0;
+  for (std::size_t i = 1; i <= emap.size(); ++i) {
+    const auto c = topo::curveOf(emap.shape(static_cast<int>(i)));
+    if (!c || c->curve->kind != topo::EdgeCurve::Kind::Circle) continue;
+    math::Point3 o = c->curve->frame.origin;
+    math::Vec3 cz = c->curve->frame.z.vec();
+    if (!c->location.isIdentity()) {
+      const math::Transform& t = c->location.transform();
+      o = t.applyToPoint(o);
+      cz = t.applyToVector(cz);
+    }
+    if (std::fabs(std::fabs(math::dot(math::Dir3{cz}.vec(), az)) - 1.0) > 1e-6) continue;
+    const math::Vec3 d = o - ax.origin;
+    if (math::norm(d - az * math::dot(d, az)) > 1e-6) continue;  // centre off the axis
+    if (std::fabs(c->curve->radius - targetR) > 1e-6) continue;
+    const double h = math::dot(o - ax.origin, az);
+    if (n == 0) { hmin = hmax = h; }
+    else { hmin = std::min(hmin, h); hmax = std::max(hmax, h); }
+    ++n;
+  }
+  return n;
+}
+
+// The largest coaxial Cylinder face radius strictly greater than Rc (the PLATE around
+// the boss), or nullopt if none — i.e. this is the convex capped-cylinder case, which
+// the concave builder declines (the convex builder / OCCT owns it).
+inline std::optional<double> plateCylinderRadius(const topo::Shape& solid, const math::Ax3& ax,
+                                                 double Rc) {
+  const topo::ShapeMap fmap = topo::mapShapes(solid, topo::ShapeType::Face);
+  double best = -1.0;
+  for (std::size_t fi = 1; fi <= fmap.size(); ++fi) {
+    const auto info = cylinderInfo(solid, static_cast<int>(fi));
+    if (!info) continue;
+    if (std::fabs(std::fabs(math::dot(info->frame.z.vec(), ax.z.vec())) - 1.0) > 1e-6) continue;
+    const math::Vec3 d = info->frame.origin - ax.origin;
+    if (math::norm(d - ax.z.vec() * math::dot(d, ax.z.vec())) > 1e-6) continue;  // not coaxial
+    if (info->radius > Rc + 1e-6) best = std::max(best, info->radius);
+  }
+  if (best < 0.0) return std::nullopt;
+  return best;
+}
+
+// Every face is either a coaxial Cylinder (radius Rc or Rp) or an axis-normal Plane —
+// the strict stepped-shaft topology the analytic rebuild reproduces exactly. A body
+// with any other face (a rectangular slab's side walls, a tilted plane, a freeform
+// face) → false → NULL → OCCT, so the rebuild can never emit a solid of a DIFFERENT
+// shape than the input (which the volume self-verify might otherwise wrongly accept).
+inline bool isSteppedShaftAboutAxis(const topo::Shape& solid, const math::Ax3& ax, double Rc,
+                                    double Rp) {
+  const topo::ShapeMap fmap = topo::mapShapes(solid, topo::ShapeType::Face);
+  const math::Vec3 az = ax.z.vec();
+  for (std::size_t fi = 1; fi <= fmap.size(); ++fi) {
+    const auto surf = topo::surfaceOf(fmap.shape(static_cast<int>(fi)));
+    if (!surf) return false;
+    if (surf->surface->kind == topo::FaceSurface::Kind::Cylinder) {
+      const auto info = cylinderInfo(solid, static_cast<int>(fi));
+      if (!info) return false;
+      if (std::fabs(std::fabs(math::dot(info->frame.z.vec(), az)) - 1.0) > 1e-6) return false;
+      const math::Vec3 d = info->frame.origin - ax.origin;
+      if (math::norm(d - az * math::dot(d, az)) > 1e-6) return false;
+      if (std::fabs(info->radius - Rc) > 1e-6 && std::fabs(info->radius - Rp) > 1e-6) return false;
+    } else if (surf->surface->kind == topo::FaceSurface::Kind::Plane) {
+      const auto pl = facePlane(solid, static_cast<int>(fi));
+      if (!pl) return false;
+      if (std::fabs(std::fabs(math::dot(pl->normal, az)) - 1.0) > 1e-6) return false;  // not ⟂ axis
+    } else {
+      return false;  // cone / sphere / freeform → defer
+    }
+  }
+  return true;
+}
+
+// The concave stepped-shaft crease resolved in the boss-cylinder frame.
+struct ConcaveGeom {
+  math::Ax3 axis;        // boss cylinder frame (z = axis)
+  double Rc = 0.0;       // boss radius
+  double Rp = 0.0;       // plate (shoulder outer) radius
+  double capH = 0.0;     // shoulder plane axial coord (the concave rim height)
+  double bossTop = 0.0;  // boss cylinder's FAR rim axial coord
+  double plateBottom = 0.0;  // plate cylinder's FAR rim axial coord
+  double s = 1.0;        // axial sign from the shoulder toward the boss
+};
+inline std::optional<ConcaveGeom> concaveGeom(const topo::Shape& solid, const CylInfo& bossCyl,
+                                              const RimCircle& rim) {
+  ConcaveGeom g;
+  g.axis = bossCyl.frame;
+  g.Rc = bossCyl.radius;
+  const math::Vec3 az = g.axis.z.vec();
+  g.capH = math::dot(rim.centre - g.axis.origin, az);
+
+  const auto rp = plateCylinderRadius(solid, g.axis, g.Rc);
+  if (!rp) return std::nullopt;  // no larger coaxial cylinder → convex cap case, not concave
+  g.Rp = *rp;
+
+  // The body must be the strict stepped-shaft (so the analytic rebuild == the input).
+  if (!isSteppedShaftAboutAxis(solid, g.axis, g.Rc, g.Rp)) return std::nullopt;
+
+  double bmin = 0.0, bmax = 0.0;
+  if (coaxialCircleHeights(solid, g.axis, g.Rc, bmin, bmax) < 2) return std::nullopt;
+  g.bossTop = (std::fabs(bmax - g.capH) > std::fabs(bmin - g.capH)) ? bmax : bmin;
+
+  double pmin = 0.0, pmax = 0.0;
+  if (coaxialCircleHeights(solid, g.axis, g.Rp, pmin, pmax) < 2) return std::nullopt;
+  // The plate's TOP rim must sit on the shoulder (share capH); otherwise the picked rim
+  // is not the boss/shoulder crease (e.g. a blind-hole bottom, whose plate cylinder rims
+  // are elsewhere) → defer to OCCT.
+  if (std::fabs(pmin - g.capH) > 1e-6 && std::fabs(pmax - g.capH) > 1e-6) return std::nullopt;
+  g.plateBottom = (std::fabs(pmax - g.capH) > std::fabs(pmin - g.capH)) ? pmax : pmin;
+
+  g.s = (g.bossTop >= g.capH) ? 1.0 : -1.0;
+  if (g.s * (g.plateBottom - g.capH) >= -1e-9) return std::nullopt;  // plate must be below shoulder
+  return g;
+}
+
+// Assemble the concave-filleted stepped shaft as a planar-facet soup (CCW-from-front
+// per facet; assembleSolid welds). Empty on any degeneracy → NULL → OCCT.
+inline std::vector<nb::Polygon> buildConcaveFillet(const ConcaveGeom& g, double r, double defl) {
+  const double Rc = g.Rc, Rp = g.Rp, s = g.s;
+  const double capH = g.capH, bossTop = g.bossTop, plateBottom = g.plateBottom;
+  const math::Ax3& ax = g.axis;
+  const double R_t = Rc + r;             // torus major radius (material-side offset)
+  const double hSeamWall = capH + s * r; // v=0 tangent circle on the boss wall
+  const double zTube = hSeamWall;        // tube-centre axial height
+  // Seam-inside-face guards (no ring-torus guard: R_t = Rc + r > r always).
+  if (!(Rp >= R_t - 1e-9)) return {};                 // shoulder annulus reaches Rc+r
+  if (!(s * (bossTop - hSeamWall) > 1e-9)) return {};  // boss wall covers the v=0 seam
+  if (!(s * (capH - plateBottom) > 1e-9)) return {};   // plate lies below the shoulder
+
+  const int N = sagittaSteps(Rp, kTwoPi, defl, 8, 256);      // angular
+  const int M = sagittaSteps(r, kTwoPi / 4.0, defl, 3, 64);  // torus minor
+
+  // Concave quarter-tube: radius(v) = R_t − r·cos v (Rc at v=0 → Rc+r at v=π/2),
+  // axial(v) = zTube − s·r·sin v (capH+s·r at v=0 → capH at v=π/2). Outward (air-side)
+  // normal = radial·cos v + axis·(s·sin v): radial at v=0, +s·axial at v=π/2.
+  auto torusPoint = [&](double u, double v) -> math::Point3 {
+    return ringPoint(ax, R_t - r * std::cos(v), u, zTube - s * r * std::sin(v));
+  };
+  auto torusNormal = [&](double u, double v) -> math::Vec3 {
+    const math::Vec3 radial = ax.x.vec() * std::cos(u) + ax.y.vec() * std::sin(u);
+    return radial * std::cos(v) + ax.z.vec() * (s * std::sin(v));
+  };
+
+  std::vector<nb::Polygon> polys;
+  polys.reserve(static_cast<std::size_t>(N) * (M + 3) + 4);
+
+  auto emit = [&](std::vector<math::Point3> loop, const math::Vec3& outward) {
+    const math::Dir3 nd{outward};
+    if (!nd.valid() || loop.size() < 3) return;
+    math::Vec3 area{0, 0, 0};
+    for (std::size_t i = 0; i < loop.size(); ++i)
+      area += math::cross(loop[i].asVec(), loop[(i + 1) % loop.size()].asVec());
+    if (math::dot(area, nd.vec()) < 0.0) std::reverse(loop.begin(), loop.end());
+    const nb::Plane pl = nb::Plane::fromPointNormal(loop.front(), nd.vec());
+    polys.emplace_back(std::move(loop), pl);
+  };
+  // Each curved quad is split into two exactly-planar triangles carrying their own
+  // geometric normal (oriented to the target outward), so every facet welds cleanly.
+  auto emitTri = [&](const math::Point3& a, const math::Point3& b, const math::Point3& c,
+                     const math::Vec3& outward) {
+    math::Vec3 nrm = math::cross(b - a, c - a);
+    if (math::dot(nrm, outward) < 0.0) nrm = nrm * -1.0;
+    emit({a, b, c}, nrm);
+  };
+  auto emitQuad = [&](const math::Point3& p00, const math::Point3& p10, const math::Point3& p11,
+                      const math::Point3& p01, const math::Vec3& outward) {
+    emitTri(p00, p10, p11, outward);
+    emitTri(p00, p11, p01, outward);
+  };
+
+  const math::Vec3 upN = ax.z.vec() * s;         // shoulder / boss-top outward (toward boss)
+  const math::Vec3 downN = ax.z.vec() * (-s);    // plate-bottom outward (away from boss)
+
+  // 1. Plate bottom disk (radius Rp at plateBottom).
+  {
+    std::vector<math::Point3> ring;
+    ring.reserve(static_cast<std::size_t>(N));
+    for (int i = 0; i < N; ++i) ring.push_back(ringPoint(ax, Rp, kTwoPi * i / N, plateBottom));
+    emit(std::move(ring), downN);
+  }
+  // 2. Plate outer wall: plateBottom → capH, N quads.
+  for (int i = 0; i < N; ++i) {
+    const double u0 = kTwoPi * i / N, u1 = kTwoPi * (i + 1) / N, um = 0.5 * (u0 + u1);
+    emitQuad(ringPoint(ax, Rp, u0, plateBottom), ringPoint(ax, Rp, u1, plateBottom),
+             ringPoint(ax, Rp, u1, capH), ringPoint(ax, Rp, u0, capH),
+             ax.x.vec() * std::cos(um) + ax.y.vec() * std::sin(um));
+  }
+  // 3. Shoulder annulus: inner radius R_t (=Rc+r, the v=π/2 seam) → outer Rp at capH.
+  for (int i = 0; i < N; ++i) {
+    const double u0 = kTwoPi * i / N, u1 = kTwoPi * (i + 1) / N;
+    emitQuad(ringPoint(ax, R_t, u0, capH), ringPoint(ax, R_t, u1, capH),
+             ringPoint(ax, Rp, u1, capH), ringPoint(ax, Rp, u0, capH), upN);
+  }
+  // 4. Concave torus quarter-tube: v ∈ [0, π/2] × u full turn, N·M quads.
+  for (int i = 0; i < N; ++i) {
+    const double u0 = kTwoPi * i / N, u1 = kTwoPi * (i + 1) / N, um = 0.5 * (u0 + u1);
+    for (int j = 0; j < M; ++j) {
+      const double v0 = (kTwoPi / 4.0) * j / M, v1 = (kTwoPi / 4.0) * (j + 1) / M;
+      const double vm = 0.5 * (v0 + v1);
+      emitQuad(torusPoint(u0, v0), torusPoint(u1, v0), torusPoint(u1, v1), torusPoint(u0, v1),
+               torusNormal(um, vm));
+    }
+  }
+  // 5. Boss wall: hSeamWall (v=0 seam) → bossTop, N quads.
+  for (int i = 0; i < N; ++i) {
+    const double u0 = kTwoPi * i / N, u1 = kTwoPi * (i + 1) / N, um = 0.5 * (u0 + u1);
+    emitQuad(ringPoint(ax, Rc, u0, hSeamWall), ringPoint(ax, Rc, u1, hSeamWall),
+             ringPoint(ax, Rc, u1, bossTop), ringPoint(ax, Rc, u0, bossTop),
+             ax.x.vec() * std::cos(um) + ax.y.vec() * std::sin(um));
+  }
+  // 6. Boss top cap (radius Rc at bossTop).
+  {
+    std::vector<math::Point3> ring;
+    ring.reserve(static_cast<std::size_t>(N));
+    for (int i = 0; i < N; ++i) ring.push_back(ringPoint(ax, Rc, kTwoPi * i / N, bossTop));
+    emit(std::move(ring), upN);
+  }
+  return polys;
+}
+
 }  // namespace detail
 
 // Fillet a single CIRCULAR crease (cylinder lateral face ↔ coaxial planar cap) of
@@ -372,6 +615,50 @@ inline topo::Shape curved_fillet_edge(const topo::Shape& solid, const int* edgeI
   if (!g) return {};
 
   std::vector<nb::Polygon> polys = detail::buildFilletedCylinder(*g, r, deflection);
+  if (polys.size() < 4) return {};
+  return nb::assembleSolid(polys);
+}
+
+// Fillet a single CONCAVE CIRCULAR crease (a boss cylinder ↔ a LARGER coaxial planar
+// shoulder — a stepped shaft base rim) of `solid` with constant radius `r`. The rolling
+// ball seats on the MATERIAL side (offset Rc + r), so the coaxial torus canal ADDS
+// material and the enclosed volume GROWS (the engine gates it with wantGrow=true).
+// Returns the filleted solid (faceted torus blend, deflection-bounded, watertight) or a
+// NULL Shape (→ OCCT) when the edge is not a concave boss/shoulder rim, when a seam would
+// leave its face, or on any degeneracy. Mutually exclusive with curved_fillet_edge (that
+// one needs NO larger coaxial cylinder; this one requires exactly one). Multiple edges
+// (edgeCount ≠ 1) → NULL.
+inline topo::Shape concave_fillet_edge(const topo::Shape& solid, const int* edgeIds, int edgeCount,
+                                       double r, double deflection = 0.01) {
+  if (edgeIds == nullptr || edgeCount != 1 || !(r > kBlendEps)) return {};
+  const topo::ShapeMap emap = topo::mapShapes(solid, topo::ShapeType::Edge);
+  if (edgeIds[0] < 1 || static_cast<std::size_t>(edgeIds[0]) > emap.size()) return {};
+  const auto ce = topo::curveOf(emap.shape(edgeIds[0]));
+  if (!ce || ce->curve->kind != topo::EdgeCurve::Kind::Circle) return {};
+
+  const auto rim = detail::circleOf(solid, edgeIds[0]);
+  if (!rim) return {};
+  const math::Dir3 axisDir{rim->axis};
+  if (!axisDir.valid()) return {};
+
+  // Find the BOSS cylinder: any Cylinder face coaxial with the rim at the rim radius.
+  // (A body-of-revolution splits the wall into angular sectors, so we do NOT require a
+  // single face here — the stepped-shaft topology is validated wholesale by concaveGeom
+  // / isSteppedShaftAboutAxis.)
+  const topo::ShapeMap fmap = topo::mapShapes(solid, topo::ShapeType::Face);
+  std::optional<detail::CylInfo> bossCyl;
+  for (std::size_t fi = 1; fi <= fmap.size(); ++fi) {
+    if (detail::isRimCylinder(solid, static_cast<int>(fi), *rim, axisDir)) {
+      bossCyl = detail::cylinderInfo(solid, static_cast<int>(fi));
+      break;
+    }
+  }
+  if (!bossCyl) return {};
+
+  const auto g = detail::concaveGeom(solid, *bossCyl, *rim);
+  if (!g) return {};  // not a concave stepped-shaft base rim (→ convex builder / OCCT)
+
+  std::vector<nb::Polygon> polys = detail::buildConcaveFillet(*g, r, deflection);
   if (polys.size() < 4) return {};
   return nb::assembleSolid(polys);
 }

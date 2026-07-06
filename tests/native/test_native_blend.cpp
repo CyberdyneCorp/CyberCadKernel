@@ -278,6 +278,123 @@ CC_TEST(curved_fillet_both_rims_and_engine_dispatch) {
   CC_CHECK(v < v0);
 }
 
+// ── concave fillet (material-side torus canal on a boss ↔ larger shoulder rim) ────--
+
+namespace {
+// A stepped shaft (a boss cylinder standing on a larger coaxial disc plate) built by a
+// native REVOLVE of a stepped meridian about the world Y axis. Faces: plate bottom
+// disc (Rp), plate outer wall (Rp), shoulder annulus (Rc..Rp, the LARGER plane), boss
+// wall (Rc), boss top cap (Rc). The concave base rim is the circle radius Rc at axial t.
+topo::Shape steppedShaft(double Rp, double t, double Rc, double H) {
+  const double prof[] = {0, 0, Rp, 0, Rp, t, Rc, t, Rc, t + H, 0, t + H};
+  return cst::build_revolution(prof, 6, cst::RevolveAxis{0, 0, 0, 1}, 2.0 * M_PI);
+}
+// The Circle rim edge id at axial coord `h` along `az` with the given radius.
+int findRimAtAxial(const topo::Shape& s, const nmath::Vec3& az, double h, double radius) {
+  const topo::ShapeMap emap = topo::mapShapes(s, topo::ShapeType::Edge);
+  for (std::size_t i = 1; i <= emap.size(); ++i) {
+    const auto c = topo::curveOf(emap.shape(static_cast<int>(i)));
+    if (!c || c->curve->kind != topo::EdgeCurve::Kind::Circle) continue;
+    nmath::Point3 o = c->curve->frame.origin;
+    if (!c->location.isIdentity()) o = c->location.transform().applyToPoint(o);
+    if (std::fabs(nmath::dot(nmath::Vec3{o.x, o.y, o.z}, az) - h) < 1e-6 &&
+        std::fabs(c->curve->radius - radius) < 1e-6)
+      return static_cast<int>(i);
+  }
+  return 0;
+}
+// Closed-form ADDED rim-band volume (Pappus): the square corner r² minus the
+// quarter-disc, that region's centroid revolved about the axis.
+double concaveVfill(double Rc, double r) {
+  return M_PI * ((Rc + r) * (Rc + r) - Rc * Rc) * r -
+         2.0 * M_PI * ((Rc + r) - 4.0 * r / (3.0 * M_PI)) * (M_PI / 4.0) * r * r;
+}
+}  // namespace
+
+CC_TEST(concave_fillet_boss_on_plate_watertight_volume_grown) {
+  // Boss Rc=5, H=6 on a coaxial disc plate Rp=12, t=4; roll a ball r=1.5 into the
+  // CONCAVE base rim → a material-side torus canal (major Rc+r=6.5, minor 1.5) that
+  // ADDS material. Watertight, volume ABOVE the sharp shaft by the closed-form V_fill.
+  const double Rp = 12, t = 4, Rc = 5, H = 6, r = 1.5;
+  topo::Shape shaft = steppedShaft(Rp, t, Rc, H);
+  const nmath::Vec3 axisY{0, 1, 0};
+  bool wt0 = false;
+  const double v0 = vol(shaft, wt0);
+  CC_CHECK(wt0);
+  const int rim = findRimAtAxial(shaft, axisY, t, Rc);
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  topo::Shape f = blend::concave_fillet_edge(shaft, ids, 1, r, 0.005);
+  bool wt = false;
+  const double v = vol(f, wt);
+  CC_CHECK(!f.isNull());
+  CC_CHECK(wt);            // torus quarter-tube welds watertight to wall + shoulder
+  CC_CHECK(v > v0);        // a CONCAVE fillet ADDS material (volume GROWS)
+  const double expected = v0 + concaveVfill(Rc, r);
+  CC_CHECK(nearRel(v, expected, 5e-3));  // deflection-bounded facet approximation
+}
+
+CC_TEST(concave_fillet_g1_tangent_at_both_seams) {
+  // ANALYTIC G1 (no OCCT, no mesh): the concave canal normal at each seam matches the
+  // adjacent primary-face normal exactly. n(u,v) = radial(u)·cos v + axis·sin v with
+  // radius(v) = (Rc+r) − r·cos v.
+  //   * v=0   (wall seam, radius Rc):     n = radial → CYLINDER outward normal. cos=1.
+  //   * v=π/2 (shoulder seam, radius Rc+r): n = axis   → SHOULDER outward normal. cos=1.
+  const double Rc = 5.0, r = 1.5;
+  const nmath::Vec3 axis{0, 0, 1};
+  for (int k = 0; k < 8; ++k) {
+    const double u = 2.0 * M_PI * k / 8.0;
+    const nmath::Vec3 radial{std::cos(u), std::sin(u), 0.0};
+    const nmath::Vec3 nWall = radial * std::cos(0.0) + axis * std::sin(0.0);
+    CC_CHECK(nearRel(nmath::dot(nmath::Dir3{nWall}.vec(), radial), 1.0, 1e-12));
+    const nmath::Vec3 nSh = radial * std::cos(M_PI / 2.0) + axis * std::sin(M_PI / 2.0);
+    CC_CHECK(nearRel(nmath::dot(nmath::Dir3{nSh}.vec(), axis), 1.0, 1e-12));
+  }
+  // Seam POSITIONS: radius(0)=Rc (wall), radius(π/2)=Rc+r (shoulder). Both flipped in
+  // sign vs the convex builder (which trims the cap to Rc−r).
+  const double Rt = Rc + r;  // concave torus major radius
+  CC_CHECK(nearRel(Rt - r * std::cos(0.0), Rc, 1e-12));          // radius(0)=Rc (wall)
+  CC_CHECK(nearRel(Rt - r * std::cos(M_PI / 2.0), Rc + r, 1e-12));  // radius(π/2)=Rc+r
+}
+
+CC_TEST(concave_fillet_scope_defers) {
+  const double Rp = 12, t = 4, Rc = 5, H = 6;
+  topo::Shape shaft = steppedShaft(Rp, t, Rc, H);
+  const nmath::Vec3 axisY{0, 1, 0};
+  const int rim = findRimAtAxial(shaft, axisY, t, Rc);
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  // Zero radius → NULL.
+  CC_CHECK(blend::concave_fillet_edge(shaft, ids, 1, 0.0, 0.01).isNull());
+  // More than one picked edge → NULL.
+  int ids2[] = {rim, 1};
+  CC_CHECK(blend::concave_fillet_edge(shaft, ids2, 2, 1.5, 0.01).isNull());
+  // Seam leaves the shoulder: r so large that Rc+r > Rp → NULL.
+  CC_CHECK(blend::concave_fillet_edge(shaft, ids, 1, 8.0, 0.01).isNull());
+  // The CONVEX builder must DECLINE this concave rim (a larger coaxial cylinder exists),
+  // so at most one curved builder fires — no sign confusion.
+  CC_CHECK(blend::curved_fillet_edge(shaft, ids, 1, 1.5, 0.01).isNull());
+  // A blind-hole bottom rim (a cup: outer Rp, hole Rc, flat bottom) is a DIFFERENT
+  // concave config (offset Rc−r, plate top rim not on the crease) → deferred to OCCT.
+  const double d = 3, Htop = 8;
+  const double cupProf[] = {0, 0, Rp, 0, Rp, Htop, Rc, Htop, Rc, d, 0, d};
+  topo::Shape cup = cst::build_revolution(cupProf, 6, cst::RevolveAxis{0, 0, 0, 1}, 2.0 * M_PI);
+  const int brim = findRimAtAxial(cup, axisY, d, Rc);
+  CC_CHECK(brim != 0);
+  int cids[] = {brim};
+  CC_CHECK(blend::concave_fillet_edge(cup, cids, 1, 1.0, 0.01).isNull());
+  // The CONVEX capped cylinder rim is NOT concave (no larger coaxial cylinder) → the
+  // concave builder declines it (control: no cross-firing).
+  cst::ProfileSegment seg;
+  seg.kind = 2;
+  seg.cx = 0; seg.cy = 0; seg.r = 5.0;
+  topo::Shape capped = cst::build_prism_profile({seg}, {}, {}, 10.0);
+  const int caprim = findRimAtAxial(capped, nmath::Vec3{0, 0, 1}, 10.0, 5.0);
+  CC_CHECK(caprim != 0);
+  int capids[] = {caprim};
+  CC_CHECK(blend::concave_fillet_edge(capped, capids, 1, 1.5, 0.01).isNull());
+}
+
 // ── offset_face ────────────────────────────────────────────────────────────────--
 
 CC_TEST(offset_top_face_grows_slab) {

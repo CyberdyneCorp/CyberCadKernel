@@ -851,7 +851,7 @@ longest; a native exchange is lower priority than the modelling core.
   non-planar loft, a truly self-intersecting sweep or thread, a general SPLINE
   surface-of-revolution, and a spindle torus.
 - â **#6 `native-blends` â tractable PLANAR slice done at the verification bar (both
-  gates green); curved / concave / variable / fillet_face OCCT-fallthrough (honest).** Native
+  gates green); the curved CIRCULAR cyl<->plane fillet (CONVEX + CONCAVE) landed natively in a later slice (see the #6 curved-blend entry below); variable / cyl<->cyl-canal / non-circular / fillet_face still OCCT-fallthrough (honest).** Native
   `cc_chamfer_edges` / `cc_fillet_edges` (constant radius) / `cc_offset_face` /
   `cc_shell` for the tractable planar cases, built OCCT-free under
   `src/native/blend/` (`blend_geom.h`, `chamfer_edges.h`, `fillet_edges.h`,
@@ -899,10 +899,11 @@ longest; a native exchange is lower priority than the modelling core.
   ops' edge lookup) via the shared `EdgeCache`, so native-body edges are pickable exactly
   as OCCT-body edges are. On `run-sim-suite.sh`'s SKIP list (own `main()`); 221/221
   re-verified.
-- **#6 `native-blends` -- FIRST CURVED-blend slice DONE at all gates: constant-radius
-  rolling-ball fillet on a CIRCULAR crease (cylinder lateral <-> coaxial planar cap) ->
-  TORUS canal, G1-tangent, verified vs OCCT `BRepFilletAPI`.** Extends the planar
-  tangent-cylinder fillet to the first curved crease. A ball of radius `r` rolled into
+- **#6 `native-blends` -- CURVED-blend slice DONE at all gates for BOTH a CONVEX and a
+  CONCAVE constant-radius rolling-ball fillet on a CIRCULAR crease (cylinder lateral <->
+  coaxial plane) -> TORUS canal, G1-tangent, verified vs OCCT `BRepFilletAPI`.** Extends the
+  planar tangent-cylinder fillet to the curved crease, in two ball-centre-offset signs.
+  **CONVEX (cyl <-> coaxial cap rim, REMOVES material):** a ball of radius `r` rolled into
   the convex circular rim (cylinder radius `Rc`, coaxial cap at axial `H`) stays tangent
   to both: its centre traces a circle of radius `Rc - r` at height `H - r` -- the
   tube-centre circle of a TORUS coaxial with the cylinder (major `R = Rc - r`, minor
@@ -932,11 +933,32 @@ longest; a native exchange is lower priority than the modelling core.
   vol rel <= 3.8e-3, area rel <= 2.1e-3, watertight, mesh-vol == B-rep, across
   `Rc in {5,4,6}` incl. the `Rc=2r` ring-torus boundary; the reported `cos(wall seam)=1.0
   / cos(cap seam)=1.0` is the ANALYTIC G1 the construction guarantees (flagged
-  analytic-not-mesh-sampled, honestly). STILL OCCT-fallthrough (NULL / self-verify
-  discards, honest error, never faked): CONCAVE rims, VARIABLE radius, cyl<->cyl /
-  cyl<->cone canal fillets, NON-circular curved creases (cone/sphere/ellipse/spline rim),
-  freeform neighbours, `Rc < 2r` near-degenerate, multi-edge. Change
-  `add-native-curved-fillet` archived `2026-07-05`.
+  analytic-not-mesh-sampled, honestly). **CONCAVE (boss cylinder <-> larger coaxial plane
+  base rim, ADDS material):** the everyday inside fillet -- a boss standing on a larger
+  slab, filleting the base rim (a CONCAVE dihedral). The ball seats on the MATERIAL side, so
+  the ball-centre offset sign FLIPS: the torus tube-centre circle has major `R = Rc + r`
+  (convex was `Rc - r`) at height `H + r`, still a coaxial TORUS quarter-tube, tangent to the
+  wall at the `v=0` circle of radius `Rc` and to the plane at the `v=pi/2` circle of radius
+  `Rc + r` (the plane is rebuilt as an ANNULUS with inner radius `Rc + r`). Because it fills
+  the reflex corner, the fillet ADDS material and the enclosed volume GROWS. Built in the same
+  OCCT-free `curved_fillet.h` as `concave_fillet_edge(...)` (additive-only; the convex
+  `curved_fillet_edge` is byte-identical), reusing the same trim + weld helpers. Dispatched in
+  `NativeEngine::fillet_edges` as the THIRD candidate (planar SHRINK -> convex-curved SHRINK ->
+  concave-curved GROW), each gated by its OWN correctly-signed `blendResultVerified`: the
+  concave path uses `wantGrow=true` (watertight + `Vr > Vo`, the SAME grow branch offset-face
+  uses) -- no new guard, no weakened tolerance; a convex candidate can never pass grow and a
+  concave never passes shrink, so the sign cannot be spoofed. Gate 1 GREEN -- host
+  `test_native_blend` adds `concave_fillet_boss_on_plate_watertight_volume_grown`,
+  `concave_fillet_g1_tangent_at_both_seams` (analytic, seams `Rc` / `Rc+r`), and
+  `concave_fillet_scope_defers` (17 cases / 0 failed; host CTest 29/29 OFF, 36/36 ON). Gate 2
+  GREEN -- `run-sim-native-curved-fillet.sh` now **15/15** (convex 9/9 + concave 6/6,
+  `grew=1`, native `n` != OCCT `o`, e.g. boss `Rc=5` on plate `Rp=12` r=1.5: native 2294.95 vs
+  OCCT 2296.98, relO 8.85e-4, watertight). STILL OCCT-fallthrough (NULL / self-verify discards,
+  honest error, never faked): the blind-hole bottom rim (deferred this slice), VARIABLE radius,
+  cyl<->cyl / cyl<->cone canal fillets, NON-circular curved creases (cone/sphere/ellipse/spline
+  rim), freeform neighbours, convex `Rc < 2r` near-degenerate, seam-leaves-face, multi-edge.
+  Changes `add-native-curved-fillet` archived `2026-07-05`, `add-native-concave-fillet` archived
+  `2026-07-06`.
 - **#7 `native-wrap-emboss` -- FIRST NATIVE slice DONE at all gates: emboss a RECTANGULAR
   pad onto a CYLINDER lateral face, verified vs OCCT `cc_wrap_emboss`.** The Phase-3
   `cc_wrap_emboss` (#290) stays the ORACLE; this adds a NATIVE path behind the same ABI.

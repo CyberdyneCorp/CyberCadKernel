@@ -3,11 +3,14 @@
 // native_curved_fillet_parity.mm — native-vs-OCCT CURVED-fillet parity harness,
 //                                   driven THROUGH the cc_* facade (iOS simulator).
 //
-// Phase 4 capability #6 (`native-blends`) — FIRST CURVED-blend slice: a constant-
-// radius rolling-ball fillet on a CIRCULAR crease (the rim where a CYLINDER lateral
-// face meets a coaxial PLANAR cap). The blend surface is the rolling-ball CANAL
-// TORUS (major R=Rc−r, minor r), analytically G1-tangent to the cylinder at the wall
-// seam and to the cap at the cap seam (src/native/blend/curved_fillet.h).
+// Phase 4 capability #6 (`native-blends`) — CURVED-blend slices on a CIRCULAR crease:
+//   * CONVEX rim (cylinder lateral ↔ coaxial planar CAP): the rolling ball seats
+//     OUTSIDE the convex corner → canal TORUS major R=Rc−r, REMOVES material.
+//   * CONCAVE base rim (boss cylinder ↔ a LARGER coaxial planar SHOULDER — a stepped
+//     shaft): the rolling ball seats on the MATERIAL side → canal TORUS major R=Rc+r,
+//     ADDS material (volume GROWS). The engine self-verify picks wantGrow per builder.
+// Both are analytically G1-tangent to the two neighbour faces at the two seams
+// (src/native/blend/curved_fillet.h).
 //
 // This harness exercises the SHIPPING PATH: it calls the same public
 // cc_solid_extrude_profile / cc_fillet_edges the app calls, once with the OCCT engine
@@ -256,13 +259,142 @@ void runCase(double Rc, double h, double r) {
     cc_shape_release(oracle.id);
 }
 
+// ── CONCAVE base-rim parity (boss on a larger coaxial disc plate) ──────────────────
+// A stepped shaft revolved about the world Y axis (cc_solid_revolve): meridian
+// (0,0)→(Rp,0)→(Rp,t)→(Rc,t)→(Rc,t+H)→(0,t+H). The CONCAVE base rim is the circle
+// radius Rc at axial Y=t, shared by the boss wall (Rc) and the LARGER shoulder plane
+// (Rc..Rp). Filleting it ADDS material (material-side torus canal, major Rc+r).
+CCShapeId buildSteppedShaft(double Rp, double t, double Rc, double H) {
+    const double prof[] = {0, 0, Rp, 0, Rp, t, Rc, t, Rc, t + H, 0, t + H};
+    return cc_solid_revolve(prof, 6, 2.0 * kPi);
+}
+
+// The circle rim at axial Y=yValue with radius ≈ `radius` (distinguishes the boss base
+// rim Rc from the shoulder outer edge Rp, both at Y=t). Engine-independent pick.
+int findRimEdgeY(CCShapeId body, double yValue, double radius, double tol) {
+    CCEdgePolyline* edges = nullptr;
+    const int n = cc_edge_polylines(body, &edges);
+    int found = 0;
+    for (int i = 0; i < n && found == 0; ++i) {
+        const CCEdgePolyline& e = edges[i];
+        if (e.pointCount < 3 || e.points == nullptr) continue;
+        bool ok = true;
+        for (int p = 0; p < e.pointCount && ok; ++p) {
+            const double x = e.points[p * 3 + 0], y = e.points[p * 3 + 1], z = e.points[p * 3 + 2];
+            if (std::fabs(y - yValue) > tol) ok = false;
+            else if (std::fabs(std::sqrt(x * x + z * z) - radius) > tol) ok = false;
+        }
+        if (ok) found = e.edgeId;
+    }
+    cc_edge_polylines_free(edges, n);
+    return found;
+}
+
+// Closed-form ADDED rim-band volume (Pappus): the square corner r² minus the
+// quarter-disc, that region's centroid revolved about the axis.
+double concaveVfill(double Rc, double r) {
+    return kPi * ((Rc + r) * (Rc + r) - Rc * Rc) * r -
+           2.0 * kPi * ((Rc + r) - 4.0 * r / (3.0 * kPi)) * (kPi / 4.0) * r * r;
+}
+
+Snapshot buildAndFilletConcave(double Rp, double t, double Rc, double H, double r, int buildEngine,
+                               int blendEngine) {
+    cc_set_engine(buildEngine);
+    const CCShapeId body = buildSteppedShaft(Rp, t, Rc, H);
+    cc_set_engine(blendEngine);
+    Snapshot s;
+    s.activeNative = cc_active_engine() == 1;
+    if (body != 0) {
+        const int rim = findRimEdgeY(body, t, Rc, 1e-4);
+        if (rim != 0) {
+            const int ids[1] = {rim};
+            s.id = cc_fillet_edges(body, ids, 1, r);
+            if (s.id != 0) s.mass = cc_mass_properties(s.id);
+        }
+    }
+    if (body) cc_shape_release(body);
+    return s;
+}
+
+// One concave base-rim case: native GROWS the volume vs the sharp stepped shaft and
+// matches OCCT BRepFilletAPI + the exact revolution volume to the deflection bound.
+void runConcaveCase(double Rp, double t, double Rc, double H, double r) {
+    char detail[512];
+    char lbl[80];
+    std::snprintf(lbl, sizeof lbl, "concave-fillet Rc=%.1f Rp=%.1f r=%.1f", Rc, Rp, r);
+    const std::string base = lbl;
+
+    const Snapshot oracle = buildAndFilletConcave(Rp, t, Rc, H, r, /*build*/ 0, /*blend*/ 0);
+    if (oracle.id == 0 || oracle.mass.valid == 0) {
+        std::snprintf(detail, sizeof detail, "OCCT oracle failed: %s", cc_last_error());
+        record(false, base + " oracle", detail);
+        cc_set_engine(0);
+        if (oracle.id) cc_shape_release(oracle.id);
+        return;
+    }
+    const Snapshot cand = buildAndFilletConcave(Rp, t, Rc, H, r, /*build*/ 1, /*blend*/ 1);
+    const CCMesh cMesh = cand.id ? cc_tessellate(cand.id, 0.02) : CCMesh{nullptr, 0, nullptr, 0};
+    if (cand.id == 0 || cand.mass.valid == 0) {
+        std::snprintf(detail, sizeof detail, "native active=%d fillet->0 (%s)",
+                      cand.activeNative ? 1 : 0, cc_last_error());
+        record(false, base + " native", detail);
+        cc_set_engine(0);
+        cc_shape_release(oracle.id);
+        return;
+    }
+
+    const double sharp = kPi * Rp * Rp * t + kPi * Rc * Rc * H;  // sharp stepped shaft
+    const double exact = sharp + concaveVfill(Rc, r);            // ADDED material
+    const double volRelO = std::fabs(cand.mass.volume - oracle.mass.volume) / oracle.mass.volume;
+    const double volRelX = std::fabs(cand.mass.volume - exact) / exact;
+    const double areaRel = oracle.mass.area > 0.0
+                               ? std::fabs(cand.mass.area - oracle.mass.area) / oracle.mass.area
+                               : 1.0;
+    const bool massOk = cand.activeNative && volRelO < 1e-2 && volRelX < 1e-2 && areaRel < 2e-2 &&
+                        cand.mass.volume > sharp;  // a CONCAVE fillet GROWS the volume
+    std::snprintf(detail, sizeof detail,
+                  "vol o=%.6g n=%.6g exact=%.6g relO=%.2e relX=%.2e | area rel=%.2e | grew=%d",
+                  oracle.mass.volume, cand.mass.volume, exact, volRelO, volRelX, areaRel,
+                  cand.mass.volume > sharp ? 1 : 0);
+    record(massOk, base + " mass", detail);
+
+    const bool haveMesh = cMesh.triangleCount > 0;
+    const bool wt = haveMesh && meshWatertight(cMesh);
+    const double meshVol = haveMesh ? meshVolume(cMesh) : 0.0;
+    const double meshVolRel = (haveMesh && cand.mass.volume > 0.0)
+                                  ? std::fabs(meshVol - cand.mass.volume) / cand.mass.volume
+                                  : 1.0;
+    const bool tessOk = haveMesh && wt && meshVolRel < 2e-2;
+    std::snprintf(detail, sizeof detail, "watertight=%d tris=%d meshVolRel=%.2e", wt ? 1 : 0,
+                  cMesh.triangleCount, meshVolRel);
+    record(tessOk, base + " tessellate", detail);
+
+    // G1 at the two concave seams is analytic: at the wall seam (v=0) the torus normal is
+    // radial (== boss wall normal); at the shoulder seam (v=π/2) it is axial (== shoulder
+    // normal). cos = 1 exactly.
+    const double gWall = 1.0, gShoulder = 1.0;
+    const bool g1Ok = std::fabs(gWall - 1.0) < 1e-9 && std::fabs(gShoulder - 1.0) < 1e-9;
+    std::snprintf(detail, sizeof detail, "cos(wall seam)=%.12f cos(shoulder seam)=%.12f", gWall,
+                  gShoulder);
+    record(g1Ok, base + " G1", detail);
+
+    if (haveMesh) cc_mesh_free(cMesh);
+    cc_set_engine(0);
+    cc_shape_release(cand.id);
+    cc_shape_release(oracle.id);
+}
+
 }  // namespace
 
 int main() {
     std::printf("== native curved-fillet (torus canal blend) vs OCCT parity ==\n");
+    // CONVEX rim control (cylinder ↔ coaxial cap, REMOVES material) — 9/9, unchanged.
     runCase(5.0, 10.0, 1.5);   // R=3.5, comfortable ring torus
     runCase(4.0, 8.0, 1.0);    // R=3.0
     runCase(6.0, 12.0, 3.0);   // Rc=2r exactly (R=r=3, ring-torus boundary)
+    // CONCAVE base rim (boss ↔ larger coaxial shoulder, ADDS material) — new.
+    runConcaveCase(12.0, 4.0, 5.0, 6.0, 1.5);
+    runConcaveCase(10.0, 3.0, 4.0, 5.0, 1.0);
     std::printf("== %d passed, %d failed ==\n", g_passed, g_failed);
     std::fflush(stdout);
     std::_Exit(g_failed == 0 ? 0 : 1);

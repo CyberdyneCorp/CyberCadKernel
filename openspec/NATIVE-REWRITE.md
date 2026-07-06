@@ -852,7 +852,7 @@ longest; a native exchange is lower priority than the modelling core.
   non-planar loft, a truly self-intersecting sweep or thread, a general SPLINE
   surface-of-revolution, and a spindle torus.
 - â **#6 `native-blends` â tractable PLANAR slice done at the verification bar (both
-  gates green); the curved CIRCULAR cyl<->plane fillet (CONVEX + CONCAVE constant-radius, AND VARIABLE-radius LINEAR-law convex via `cc_fillet_edges_variable`) landed natively in later slices (see the #6 / #6b curved-blend entries below); non-linear-law / concave-variable / cyl<->cyl-canal / non-circular-crease fillets, curved-edge chamfer, and fillet_face still OCCT-fallthrough (honest).** Native
+  gates green); the curved CIRCULAR cyl<->plane fillet (CONVEX + CONCAVE constant-radius, AND VARIABLE-radius LINEAR-law convex via `cc_fillet_edges_variable`) and the curved CIRCULAR cyl<->cap CHAMFER (CONVEX, CONE-FRUSTUM straight bevel, C0) landed natively in later slices (see the #6 / #6b / #6c curved-blend entries below); non-linear-law / concave-variable / cyl<->cyl-canal / non-circular-crease fillets, non-circular / asymmetric / concave / cyl<->cyl chamfer, and fillet_face still OCCT-fallthrough (honest).** Native
   `cc_chamfer_edges` / `cc_fillet_edges` (constant radius) / `cc_offset_face` /
   `cc_shell` for the tractable planar cases, built OCCT-free under
   `src/native/blend/` (`blend_geom.h`, `chamfer_edges.h`, `fillet_edges.h`,
@@ -991,9 +991,50 @@ longest; a native exchange is lower priority than the modelling core.
   honestly, never hidden behind the HARD bound. STILL OCCT-fallthrough (NULL / self-verify discards,
   honest error, never faked): NON-LINEAR radius laws (quadratic/spline/per-vertex), CONCAVE variable
   rim, cyl<->cyl / cyl<->cone canal, NON-circular variable creases (cone/sphere/ellipse/spline rim,
-  tilted/non-coaxial plane), curved-edge chamfer, freeform neighbours, `Rc < 2*rmax` near-degenerate
-  or cap radius `Rc - rmax <= 0`, seam-leaves-face, multi-edge. Change `add-native-variable-fillet`
-  archived `2026-07-06`.
+  tilted/non-coaxial plane), freeform neighbours, `Rc < 2*rmax` near-degenerate
+  or cap radius `Rc - rmax <= 0`, seam-leaves-face, multi-edge (the convex-circular curved CHAMFER is
+  now its own native slice #6c below). Change `add-native-variable-fillet` archived `2026-07-06`.
+- **#6c `native-blends` -- CURVED CHAMFER slice DONE at all gates: a CONVEX circular
+  cylinder<->coaxial-planar-cap rim chamfered as a CONE FRUSTUM (straight bevel, C0 NOT G1),
+  verified vs OCCT `BRepFilletAPI_MakeChamfer`.** Unlike the #6 fillet (a curved TORUS arc, G1-tangent),
+  a chamfer cuts a FLAT bevel: for a circular rim it is a CONE-FRUSTUM band between the two SETBACK
+  circles -- one on the cylinder wall at axial setback `= d`, one on the cap at radial setback `= d` --
+  meeting each face at the chamfer angle (**C0, NOT G1**; asserting tangency would be geometrically
+  WRONG for a chamfer). Built OCCT-FREE in a NEW header `src/native/blend/curved_chamfer.h` as
+  `curved_chamfer_edge(...)` (additive-only; it `#include`s `curved_fillet.h` to REUSE the rim
+  recognition (`detail::facesOnRim`, `cylinderInfo`, `rimGeom`), the `sagittaSteps` angular tiling, and
+  the `emit*`/planar-facet weld helpers). It rebuilds the capped-cylinder region as one
+  deflection-bounded planar-triangle soup -- far cap, wall up to the cylinder setback circle
+  (`Rc @ H-s*d`), the straight cone-FRUSTUM bevel band (`Rc @ H-s*d -> Rc-d @ H`, ONE meridian step,
+  no minor subdivision), and the cap trimmed to the cap setback circle (`Rc-d @ H`) -- all sharing the
+  same `N` angular samples, welded watertight via the boolean `assembleSolid`. The two seams are
+  closed-form CIRCLES (cylinder seam radius `Rc`; cap seam radius `Rc-d`) -- no solver, no NUMSCI.
+  `native_blend.h` gains the new `#include`. Wired into `NativeEngine::chamfer_edges` as a THREE-way
+  dispatch: planar `nblend::chamfer_edges` (SHRINK) -> `nblend::curved_chamfer_edge` (SHRINK) -> honest
+  error/OCCT, each candidate accepted ONLY through the SAME `blendResultVerified(result, body,
+  wantGrow=false)` self-verify (watertight + `0 < Vr < Vo`); a chamfer REMOVES material so both native
+  slices use the SHRINK branch. The planar builder is tried FIRST and is byte-identical (a circular rim
+  declines it), so the planar chamfer path does not regress. Gate 1 GREEN -- host `test_native_blend`
+  adds `curved_chamfer_cylinder_cap_watertight_volume_reduced` (Fixture A Rc=5 h=10 d=1: watertight +
+  volume matches the EXACT closed-form Pappus removed volume `pi*d^2*(Rc - d/3)`),
+  `curved_chamfer_second_fixture_and_removes_more_than_fillet` (Fixture B d=2: `V_chamfer < V_fillet <
+  V0`), `curved_chamfer_is_c0_bevel_not_g1` (bevel normal = the `radial + s*axis` bisector, cos=1/sqrt2
+  with BOTH faces and explicitly `!= 1` -- C0, not tangent), `curved_chamfer_scope_defers`,
+  `curved_chamfer_both_rims_and_planar_declines` (27 cases / 0 failed; host CTest 29/29 OFF, 36/36 ON).
+  Gate 2 GREEN -- `run-sim-native-curved-chamfer.sh` **9/9** through `cc_chamfer_edges` under
+  `cc_set_engine(1)` (`activeNative=1`), native cone-frustum chamfer vs OCCT `BRepFilletAPI_MakeChamfer`
+  `Add(distance, edge)` (symmetric): because a symmetric chamfer IS EXACTLY a cone frustum, the
+  native<->OCCT vol parity is TIGHT (rel <= 3.25e-3, angular-deflection-bounded, NOT a loosened band)
+  AND matches the exact Pappus removed volume (rel <= 3.25e-3), area rel <= 1.61e-3, watertight,
+  mesh-vol == B-rep, reduced vs the sharp cylinder; the C0-bevel line `cos(wall)=cos(cap)=1/sqrt2 (!=1)`
+  is analytic (the sim line restates the analytic value rather than re-measuring facet normals -- the
+  genuine independent bevel-angle measurement is the host `curved_chamfer_is_c0_bevel_not_g1`).
+  Fixtures: Rc=5/d=1, Rc=5/d=2, Rc=4/d=1. STILL OCCT-fallthrough (NULL / self-verify discards, honest
+  error, never faked): NON-circular curved creases (cone/sphere/ellipse/spline rim, tilted/non-coaxial
+  plane), ASYMMETRIC two-distance / distance+angle (oblique) chamfer, CONCAVE circular rim (frustum
+  would ADD material), cyl<->cyl (curved<->curved) chamfer, freeform neighbours, `Rc <= d` (cap circle
+  collapses) or wall shorter than `d`, multi-edge. Change `add-native-curved-chamfer` archived
+  `2026-07-06`.
 - **#7 `native-wrap-emboss` -- FIRST NATIVE slice DONE at all gates: emboss a RECTANGULAR
   pad onto a CYLINDER lateral face, verified vs OCCT `cc_wrap_emboss`.** The Phase-3
   `cc_wrap_emboss` (#290) stays the ORACLE; this adds a NATIVE path behind the same ABI.

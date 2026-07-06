@@ -404,6 +404,127 @@ CC_TEST(variable_fillet_scope_defers) {
   CC_CHECK(blend::variable_fillet_edge(b, idsb, 1, 1.0, 2.0, 0.01).isNull());
 }
 
+// ── curved chamfer (cone-frustum straight bevel on a cylinder↔cap rim) ────────────--
+
+namespace {
+// Exact removed corner-ring volume of a symmetric distance-d chamfer on a circular rim
+// (radius Rc): the right triangle legs d×d (area d²/2, centroid radial Rc−d/3) revolved
+// about the axis (Pappus): V_removed = π·d²·(Rc − d/3). Volume REDUCES.
+double chamferVremoved(double Rc, double d) {
+  return M_PI * d * d * (Rc - d / 3.0);
+}
+}  // namespace
+
+CC_TEST(curved_chamfer_cylinder_cap_watertight_volume_reduced) {
+  // Fixture A: Rc=5, h=10 capped cylinder; chamfer the top rim with distance d=1.0 → a
+  // CONE-FRUSTUM straight bevel between the two setback circles (wall circle r=Rc at
+  // z=h−d, cap circle r=Rc−d at z=h). Watertight, BELOW the sharp cylinder, matching the
+  // exact Pappus removed volume to the deflection bound.
+  const double Rc = 5.0, h = 10.0, d = 1.0;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  bool wt0 = false;
+  const double v0 = vol(cyl, wt0);
+  CC_CHECK(wt0);
+  const int rim = findRimAtZ(cyl, h);
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  topo::Shape ch = blend::curved_chamfer_edge(cyl, ids, 1, d, 0.005);
+  bool wt = false;
+  const double v = vol(ch, wt);
+  CC_CHECK(!ch.isNull());
+  CC_CHECK(wt);                 // frustum band welds watertight to wall + trimmed cap
+  CC_CHECK(v < v0);             // a convex chamfer REDUCES the volume
+  const double expected = v0 - chamferVremoved(Rc, d);
+  CC_CHECK(nearRel(v, expected, 5e-3));  // deflection-bounded facet approximation
+}
+
+CC_TEST(curved_chamfer_second_fixture_and_removes_more_than_fillet) {
+  // Fixture B: same body, d=2.0. Also assert the chamfer removes MORE than a fillet of
+  // radius d (cross-section d²/2 > d²(1−π/4)), so V_chamfer < V_fillet < V0.
+  const double Rc = 5.0, h = 10.0, d = 2.0;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  bool wt0 = false;
+  const double v0 = vol(cyl, wt0);
+  const int rim = findRimAtZ(cyl, h);
+  int ids[] = {rim};
+  topo::Shape ch = blend::curved_chamfer_edge(cyl, ids, 1, d, 0.005);
+  bool wt = false;
+  const double v = vol(ch, wt);
+  CC_CHECK(!ch.isNull());
+  CC_CHECK(wt);
+  CC_CHECK(nearRel(v, v0 - chamferVremoved(Rc, d), 5e-3));
+  // Chamfer removes more than the equal-distance fillet → smaller volume.
+  bool wf = false;
+  const double vFillet = vol(blend::curved_fillet_edge(cyl, ids, 1, d, 0.005), wf);
+  CC_CHECK(wf);
+  CC_CHECK(v < vFillet && vFillet < v0);
+}
+
+CC_TEST(curved_chamfer_is_c0_bevel_not_g1) {
+  // ANALYTIC bevel-angle assertion (no OCCT, no mesh): the frustum outward normal is the
+  // 45° BISECTOR of the two face normals — cos = 1/√2 with BOTH the cylinder radial
+  // normal and the cap axial normal, and explicitly NOT 1 (a chamfer is C0, NOT tangent).
+  // This is the load-bearing inversion vs the fillet (whose seam normals give cos=1).
+  const nmath::Vec3 axis{0, 0, 1};  // capped-cylinder axis; s=+1 (cap at the top)
+  const double invSqrt2 = 1.0 / std::sqrt(2.0);
+  for (int k = 0; k < 8; ++k) {
+    const double u = 2.0 * M_PI * k / 8.0;
+    const nmath::Vec3 radial{std::cos(u), std::sin(u), 0.0};
+    // Frustum bevel outward normal = (radial + s·axis)/√2.
+    const nmath::Vec3 bevel = nmath::Dir3{radial + axis}.vec();
+    // Meets the cylinder wall (radial normal) at 45°, NOT tangent.
+    const double cosWall = nmath::dot(bevel, radial);
+    CC_CHECK(nearRel(cosWall, invSqrt2, 1e-12));
+    CC_CHECK(std::fabs(cosWall - 1.0) > 0.2);  // NOT G1 (not tangent to the wall)
+    // Meets the cap (axial normal) at 45°, NOT tangent.
+    const double cosCap = nmath::dot(bevel, axis);
+    CC_CHECK(nearRel(cosCap, invSqrt2, 1e-12));
+    CC_CHECK(std::fabs(cosCap - 1.0) > 0.2);  // NOT G1 (not tangent to the cap)
+  }
+  // The two faces meet at 90°, so the bevel bisects them exactly (radial·axis = 0).
+  CC_CHECK(nearRel(nmath::dot(nmath::Vec3{1, 0, 0}, axis), 0.0, 1e-12));
+}
+
+CC_TEST(curved_chamfer_scope_defers) {
+  const double Rc = 5.0, h = 10.0;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  const int rim = findRimAtZ(cyl, h);
+  int ids[] = {rim};
+  // Rc − d ≤ 0 guard: d=5 ⇒ the bevel would cross the axis ⇒ NULL (defers to OCCT).
+  CC_CHECK(blend::curved_chamfer_edge(cyl, ids, 1, 5.0, 0.01).isNull());
+  CC_CHECK(blend::curved_chamfer_edge(cyl, ids, 1, 6.0, 0.01).isNull());
+  // Zero / negative distance → NULL.
+  CC_CHECK(blend::curved_chamfer_edge(cyl, ids, 1, 0.0, 0.01).isNull());
+  // More than one picked edge → NULL (this slice handles a single rim).
+  int ids2[] = {rim, 1};
+  CC_CHECK(blend::curved_chamfer_edge(cyl, ids2, 2, 1.0, 0.01).isNull());
+  // A straight (Line) box edge is not a circular crease → NULL.
+  topo::Shape b = box(10, 10, 10);
+  const int le = findEdgeId(b, {0, 10, 10}, {10, 10, 10});
+  int idsb[] = {le};
+  CC_CHECK(blend::curved_chamfer_edge(b, idsb, 1, 1.0, 0.01).isNull());
+}
+
+CC_TEST(curved_chamfer_both_rims_and_planar_declines) {
+  // The engine chamfer_edges dispatches the circular rim through the curved path when
+  // the planar path declines. Exercise the builder on the BOTTOM rim too (z=0), and
+  // confirm the planar chamfer_edges still returns NULL on this curved solid (so the
+  // engine's fall-through to curved_chamfer_edge is what lands it).
+  const double Rc = 4.0, h = 8.0, d = 1.0;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  const int bottom = findRimAtZ(cyl, 0.0);
+  CC_CHECK(bottom != 0);
+  int ids[] = {bottom};
+  CC_CHECK(blend::chamfer_edges(cyl, ids, 1, d).isNull());  // planar path declines
+  topo::Shape ch = blend::curved_chamfer_edge(cyl, ids, 1, d, 0.005);
+  bool wt = false, wt0 = false;
+  const double v = vol(ch, wt);
+  const double v0 = vol(cyl, wt0);
+  CC_CHECK(!ch.isNull());
+  CC_CHECK(wt);
+  CC_CHECK(nearRel(v, v0 - chamferVremoved(Rc, d), 5e-3));
+}
+
 // ── concave fillet (material-side torus canal on a boss ↔ larger shoulder rim) ────--
 
 namespace {

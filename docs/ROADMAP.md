@@ -67,7 +67,8 @@ robustness tail keeps OCCT linked.** Canonical detail:
   (RMF) sweep, tapered-shank, watertight helical/tapered threads.
 - ✅ Booleans — planar-polyhedron fuse/cut/common (BSP-CSG, exact) + axis-aligned
   box∩cylinder curved slice.
-- ✅ Blends — planar chamfer, constant-radius planar-dihedral fillet, offset-face, shell.
+- ✅ Blends — planar chamfer, constant-radius planar-dihedral fillet, offset-face, shell,
+  + CURVED-circular chamfer (convex cylinder↔cap rim → cone-frustum straight bevel, C0).
 - ✅ **STEP export** (native AP203).
 - ✅ **STEP import — native slice, now WIDENED** (OCCT-free Part-21 reader for the elementary/B-spline
   AP203 subset the native writer emits + foreign OCCT-written box/cylinder; healed via the healing
@@ -215,8 +216,23 @@ robustness tail keeps OCCT linked.** Canonical detail:
   (15 constant convex+concave controls unchanged + 8 variable checks); host `test_native_blend`
   22/22.
   Residual → OCCT: NON-LINEAR radius laws, CONCAVE variable rim, cyl↔cyl / cyl↔cone canals,
-  NON-circular creases (cone/sphere/ellipse/spline rim), curved-edge chamfer, blind-hole bottom rim,
-  convex `Rc < 2·rmax`, seam-leaves-face, multi-edge.
+  NON-circular creases (cone/sphere/ellipse/spline rim), blind-hole bottom rim,
+  convex `Rc < 2·rmax`, seam-leaves-face, multi-edge (the convex-circular curved *chamfer* is now native — see #6b below).
+- ✅ **Curved-circular chamfer #6b (CONVEX cyl↔cap rim → CONE-FRUSTUM straight bevel)** — a chamfer
+  cuts a FLAT bevel, so unlike the #6 fillet (a G1-tangent torus arc) it is a CONE FRUSTUM band
+  between the two setback circles (cylinder-wall circle at axial setback = `d`, cap circle at radial
+  setback = `d`), meeting each face at the chamfer angle **C0, NOT G1** (asserting tangency would be
+  wrong for a chamfer). Native builder `src/native/blend/curved_chamfer.h` (`curved_chamfer_edge`,
+  OCCT-free) reuses #6's rim recognition, trims the wall to the cylinder setback circle and the cap
+  to the radial setback circle, and fills the band with a single-meridian-step deflection-bounded
+  frustum, welded watertight; wired in `NativeEngine::chamfer_edges` as planar → curved-circular →
+  OCCT, each gated by the SAME shrink self-verify `blendResultVerified(wantGrow=false)`. Because a
+  symmetric chamfer IS EXACTLY a cone frustum, native-vs-OCCT `BRepFilletAPI_MakeChamfer`
+  (`Add(distance, edge)`) parity is TIGHT (vol rel ≤ 3.25e-3, angular-deflection-bounded), and the
+  native volume matches the exact closed-form Pappus removed volume `π·d²·(Rc − d/3)` (rel ≤ 3.25e-3);
+  bevel normal cos=1/√2 to BOTH faces, explicitly ≠1. Sim `run-sim-native-curved-chamfer.sh` **9/9**
+  (3 fixtures), host `test_native_blend` chamfer cases green.
+  Residual → OCCT: non-circular / asymmetric two-distance / concave / cyl↔cyl (curved↔curved) chamfer.
 - ✅ **Wrap-emboss #7 FIRST SLICE (rectangular pad on a cylinder lateral face)** — emboss (`boss=1`)
   a rectangular footprint onto a CYLINDER wall. The native builder (`src/native/feature/wrap_emboss.h`,
   OCCT-free) wraps the footprint by the SAME map the OCCT oracle uses (`u = px/R`, `v = py + vMid`),
@@ -257,10 +273,12 @@ robustness tail keeps OCCT linked.** Canonical detail:
   curved booleans** (Steinmetz fuse/cut, general non-Steinmetz branched pairs,
   more families, consuming the S3 WLines + the S4 typed regions/contacts + multi-arm branch loci).
 - ☐ General curved **booleans** & **blends** beyond the first slices (sit on SSI): NON-LINEAR-law /
-  CONCAVE-variable / non-circular-crease / cyl↔cyl-canal fillets, curved-edge chamfer; general curved
+  CONCAVE-variable / non-circular-crease / cyl↔cyl-canal fillets, non-circular / asymmetric two-distance /
+  concave / cyl↔cyl curved chamfer; general curved
   **wrap-emboss** (deboss, non-rectangular profiles, non-cylindrical base, >2π footprints). _(The
   constant-radius circular cyl↔cap fillet #6 (convex + concave), the VARIABLE-radius (linear-law)
-  convex circular cyl↔cap fillet, and the rectangular pad-on-cylinder emboss #7 first slices are now
+  convex circular cyl↔cap fillet, the convex-circular cyl↔cap CONE-FRUSTUM chamfer #6b, and the
+  rectangular pad-on-cylinder emboss #7 first slices are now
   native — see above.)_
 - ☐ Non-planar/guided/rail sweep robustness; general loft; fine-pitch threads.
 - ☐ **Shape healing residual** (beyond-tolerance gap bridging, missing-pcurve reconstruction,

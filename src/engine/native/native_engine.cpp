@@ -976,12 +976,24 @@ ShapeResult NativeEngine::fillet_edges_variable(EngineShape body, const int* e, 
 ShapeResult NativeEngine::chamfer_edges(EngineShape body, const int* e, int ec, double d) {
     if (!isNative(body)) return fallback().chamfer_edges(body, e, ec, d);
     const auto* h = static_cast<const NativeShape*>(body.get());
+    // Candidates in order; each gated by the identical SHRINK self-verify (a chamfer
+    // REMOVES material). The first passing candidate wins; NULL/failed → next → OCCT.
+
+    // 1. PLANAR dihedral chamfer — slice the convex corner with the setback plane.
     ntopo::Shape result = nblend::chamfer_edges(h->shape, e, ec, d);
-    if (result.isNull() || !blendResultVerified(result, h->shape, /*wantGrow=*/false))
-        return make_error(
-            "native chamfer_edges: no verified watertight result for this native body "
-            "(curved face / concave edge / ≠2-face edge → OCCT-only)");
-    return track(wrapNative(std::move(result)));
+    if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
+        return track(wrapNative(std::move(result)));
+
+    // 2. CONVEX circular crease (cylinder lateral ↔ coaxial planar cap) → CONE-FRUSTUM
+    //    straight bevel (C0, not G1) between the two setback circles — verified SHRINK.
+    result = nblend::curved_chamfer_edge(h->shape, e, ec, d);
+    if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
+        return track(wrapNative(std::move(result)));
+
+    return make_error(
+        "native chamfer_edges: no verified watertight result for this native body "
+        "(curved face / concave edge / ≠2-face edge / asymmetric / non-circular / "
+        "Rc<d convex / cyl-cyl rim → OCCT-only)");
 }
 ShapeResult NativeEngine::shell(EngineShape body, const int* f, int fc, double t) {
     if (!isNative(body)) return fallback().shell(body, f, fc, t);

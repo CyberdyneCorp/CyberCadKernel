@@ -25,8 +25,9 @@
 //     now a NATIVE pass (the S5-d branched assembler, volume 16 r³/3); FUSE / CUT defer.
 //   * cylinder ∩ cylinder (UNEQUAL radii, orthogonal axes) — the through-drill: COMMON
 //     (S5-a) + FUSE / CUT (S5-b) are NATIVE passes; only its self-verify gate decides.
-//   * sphere ∩ sphere (overlapping, equal + unequal radii) — the S5-c lens: COMMON is a
-//     NATIVE pass; sphere FUSE / CUT are deferred (fall-back).
+//   * sphere ∩ sphere (overlapping, equal + unequal radii) — the S5-c lens: COMMON, FUSE
+//     and CUT are ALL NATIVE passes (same single seam, different cap selection: COMMON =
+//     two inner caps, FUSE = two outer caps, CUT = outer-A + reversed inner-B).
 //   * sphere ∩ box, cone ∩ box (a box is not a curved solid → gate declines → fall-back).
 //
 // ── THE HONEST NATIVE-vs-FALLBACK SPLIT (measured, NOT fabricated) ─────────────────
@@ -53,8 +54,8 @@
 //      declines it and ssi_boolean_solid returns NULL for every op → OCCT. FALL-BACK.
 //
 // The recognised transversal / branched sub-cases (through-drill COMMON/FUSE/CUT, the
-// two sphere lenses, and now the Steinmetz COMMON) are NATIVE passes; the remaining
-// sub-cases (Steinmetz FUSE/CUT, sphere/cone∩box, sphere FUSE/CUT) are honest fall-backs.
+// two sphere lenses' COMMON/FUSE/CUT, and the Steinmetz COMMON) are NATIVE passes; the
+// remaining sub-cases (Steinmetz FUSE/CUT, sphere/cone∩box) are honest fall-backs.
 // The harness DOES NOT count a fall-back as a native pass; runPair auto-detects which each
 // case is at runtime from the native candidate itself (non-null + watertight + volume/area
 // vs OCCT within tol → native pass; else → fall-back). For each fall-back it asserts the
@@ -438,9 +439,9 @@ int main() {
   // ── (3b) sphere ∩ sphere, overlapping (S5-c) — a NATIVE COMMON pass ───────────────
   // Two spheres (both about world +Y) centred on the Y axis a distance d=1 apart, radii
   // r=1 each, overlap in a lens. The trace is ONE closed seam circle (nearTangentGaps==0);
-  // the S5-c assembler welds the two inside-the-other spherical caps → a watertight native
-  // COMMON that matches BRepAlgoAPI_Common. Fuse/Cut for spheres are deferred → OCCT
-  // (honest fall-back). An equal-radius and an unequal-radius pair are both exercised.
+  // the S5-c assembler welds the caps → a watertight native COMMON that matches
+  // BRepAlgoAPI_Common. FUSE (two outer caps) and CUT (outer-A + reversed inner-B) are now
+  // native passes too, matching BRepAlgoAPI_{Fuse,Cut}. Equal + unequal radii both exercised.
   {
     PairCase pc;
     pc.pairName = "sphere=sphere(lens)";

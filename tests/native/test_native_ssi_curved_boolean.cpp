@@ -357,6 +357,99 @@ CC_TEST(sphere_sphere_common_watertight_matches_analytic_lens) {
   CC_CHECK(nb::ssi_boolean_solid(makeSphere(0.0, 1.0), makeSphere(2.0, 1.0), nb::Op::Common).isNull());
 }
 
+// ── (2d) TRANSVERSAL sphere∩sphere FUSE / CUT: REAL native watertight passes (S5-c) ──
+// Completing the sphere∩sphere family to 3/3 native. Same single-seam geometry as the
+// COMMON lens, different cap (fragment) selection welded on the SAME decimated seam:
+//   * FUSE (A ∪ B) = the two OUTER caps (each sphere's far-pole cap, outside the other) →
+//     the peanut/dumbbell outer shell. Volume V(A)+V(B)−V(lens) (GROWS: ≥ max(VA,VB)).
+//   * CUT (A − B) = OUTER cap of A + INNER cap of B emitted REVERSED (inward normal, so it
+//     bounds the scooped cavity). Volume V(A)−V(lens) (SHRINKS: ≤ VA). ORDER-SENSITIVE —
+//     B − A is a DIFFERENT solid (V(B)−V(lens)), asserted separately, not interchangeable.
+// Both must PASS the watertight gate and match the analytic closed forms to the engine's
+// curved-parity bar (1% — a tessellation-deflection bound, NOT a relaxed tolerance). We
+// assert equal AND unequal radii. Disjoint / tangent still decline → OCCT (honest NULL).
+CC_TEST(sphere_sphere_fuse_cut_watertight_match_analytic) {
+  const double fourThirdsPi = 4.0 / 3.0 * sd::kSsiPi;
+  auto sphereVol = [&](double R) { return fourThirdsPi * R * R * R; };
+
+  // Equal radii r=1, centres 1 apart (same fixture as the COMMON lens test).
+  {
+    const double r = 1.0, dEq = 1.0;
+    const ntopo::Shape sA = makeSphere(0.0, r);
+    const ntopo::Shape sB = makeSphere(dEq, r);
+    CC_CHECK(!sA.isNull() && !sB.isNull());
+
+    const double vLens = lensVolumeEqual(r, dEq);
+    const double vFuseTrue = sphereVol(r) + sphereVol(r) - vLens;  // V(A)+V(B)−lens
+    const double vCutTrue = sphereVol(r) - vLens;                  // V(A)−lens
+
+    // FUSE: two OUTER caps → grows.
+    const ntopo::Shape fuse = nb::ssi_boolean_solid(sA, sB, nb::Op::Fuse);
+    CC_CHECK(!fuse.isNull());
+    const double vFuse = watertightMeshVolume(fuse);
+    CC_CHECK(vFuse > 0.0);                                    // watertight → engine accepts
+    CC_CHECK(std::fabs(vFuse - vFuseTrue) <= 1e-2 * vFuseTrue);
+    CC_CHECK(vFuse >= sphereVol(r) - 1e-9);                   // fuse ≥ max(A,B)
+
+    // CUT (A − B): outer-A + reversed inner-B → shrinks.
+    const ntopo::Shape cut = nb::ssi_boolean_solid(sA, sB, nb::Op::Cut);
+    CC_CHECK(!cut.isNull());
+    const double vCut = watertightMeshVolume(cut);
+    CC_CHECK(vCut > 0.0);
+    CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
+    CC_CHECK(vCut <= sphereVol(r) + 1e-9);                    // cut ≤ A
+    CC_CHECK(vCut >= 0.0);
+    // Equal-R: CUT is symmetric in magnitude (V(A)=V(B)) but still a real native pass B−A.
+    const ntopo::Shape cutBA = nb::ssi_boolean_solid(sB, sA, nb::Op::Cut);
+    CC_CHECK(!cutBA.isNull());
+    CC_CHECK(std::fabs(watertightMeshVolume(cutBA) - (sphereVol(r) - vLens)) <= 1e-2 * vCutTrue);
+  }
+
+  // Unequal radii rA=1.2, rB=0.8, centres 1 apart — the general lens closed form. This is
+  // where CUT order-sensitivity is unambiguous: V(A)−lens ≠ V(B)−lens.
+  {
+    const double rA = 1.2, rB = 0.8, dUn = 1.0;
+    const ntopo::Shape uA = makeSphere(0.0, rA);
+    const ntopo::Shape uB = makeSphere(dUn, rB);
+
+    const double vLens = lensVolumeGeneral(rA, rB, dUn);
+    const double vFuseTrue = sphereVol(rA) + sphereVol(rB) - vLens;
+    const double vCutAB = sphereVol(rA) - vLens;  // A − B (A minuend)
+    const double vCutBA = sphereVol(rB) - vLens;  // B − A (different solid)
+
+    const ntopo::Shape fuse = nb::ssi_boolean_solid(uA, uB, nb::Op::Fuse);
+    CC_CHECK(!fuse.isNull());
+    const double vFuse = watertightMeshVolume(fuse);
+    CC_CHECK(vFuse > 0.0);
+    CC_CHECK(std::fabs(vFuse - vFuseTrue) <= 1e-2 * vFuseTrue);
+    CC_CHECK(vFuse >= std::max(sphereVol(rA), sphereVol(rB)) - 1e-9);
+
+    // CUT A − B: outer cap of the LARGER A + reversed inner cap of B.
+    const ntopo::Shape cutAB = nb::ssi_boolean_solid(uA, uB, nb::Op::Cut);
+    CC_CHECK(!cutAB.isNull());
+    const double vAB = watertightMeshVolume(cutAB);
+    CC_CHECK(vAB > 0.0);
+    CC_CHECK(std::fabs(vAB - vCutAB) <= 1e-2 * vCutAB);
+    CC_CHECK(vAB <= sphereVol(rA) + 1e-9);
+
+    // CUT B − A: a DIFFERENT native solid (order-sensitive), matches V(B)−lens, not V(A)−lens.
+    const ntopo::Shape cutBA = nb::ssi_boolean_solid(uB, uA, nb::Op::Cut);
+    CC_CHECK(!cutBA.isNull());
+    const double vBA = watertightMeshVolume(cutBA);
+    CC_CHECK(vBA > 0.0);
+    CC_CHECK(std::fabs(vBA - vCutBA) <= 1e-2 * vCutBA);
+    CC_CHECK(std::fabs(vAB - vBA) > 1e-3);  // genuinely different solids (order matters)
+  }
+
+  // Disjoint spheres (no seam) and externally-tangent spheres (near-tangent apex) decline
+  // for FUSE and CUT too → OCCT (honest NULL, never a fabricated peanut/bite).
+  const ntopo::Shape far = makeSphere(5.0, 1.0), tan = makeSphere(2.0, 1.0), o = makeSphere(0.0, 1.0);
+  CC_CHECK(nb::ssi_boolean_solid(o, far, nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(o, far, nb::Op::Cut).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(o, tan, nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(o, tan, nb::Op::Cut).isNull());
+}
+
 // ── (3) Honest deferrals around the branched Steinmetz COMMON ────────────────────
 // The equal-R orthogonal Steinmetz COMMON is now a native BRANCHED pass (test 1). Here we
 // pin the honest DEFERRALS: the branched Steinmetz FUSE / CUT (COMMON is the guaranteed

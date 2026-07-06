@@ -866,26 +866,41 @@ math::Vec3 slerpDir(const math::Vec3& a, const math::Vec3& b, double t) {
 }
 
 // A spherical cap of `sph` bounded by the shared seam loop: a radial fan from the cap
-// APEX (surface point nearest the other centre) through `rings` concentric rings out to
-// the exact traced seam nodes. Interior ring/apex points are placed ON the sphere by
-// SLERPing the unit radial direction from the apex direction to each seam node's radial
-// direction (great-circle interpolation — geometrically exact on the sphere and free of
-// the (u,v) parametric-pole singularity, so it is robust even when the apex sits at the
-// sphere's pole). The cap follows the true spherical bulge to O(1/rings²); the OUTER ring
-// is the shared pooled seam nodes so the two caps weld along the one seam. Every facet is
-// a PLANAR triangle oriented with the sphere's OUTWARD radial normal (the lens boundary's
-// outward normal there). Mirrors appendMouthCap's radial-ring discipline.
+// APEX through `rings` concentric rings out to the exact traced seam nodes. Interior
+// ring/apex points are placed ON the sphere by SLERPing the unit radial direction from the
+// apex direction to each seam node's radial direction (great-circle interpolation —
+// geometrically exact on the sphere and free of the (u,v) parametric-pole singularity, so
+// it is robust even when the apex sits at the sphere's pole). The cap follows the true
+// spherical bulge to O(1/rings²); the OUTER ring is the shared pooled seam nodes so the
+// two caps weld along the one seam.
 //
-// systems-band (~13 — radial ring slerp + outward orientation); flagged.
+// APEX SELECTION (`outer`):
+//   * outer=false (INNER cap, COMMON default): apex = surface point NEAREST otherCentre
+//     (centre + R·unit(centre→other)) — the cap that bulges into the other solid (lens).
+//   * outer=true (OUTER cap, FUSE / CUT-minuend): apex = FAR pole
+//     (centre − R·unit(centre→other)) — the cap that bulges away from the other solid.
+// NORMAL ORIENTATION (`reversed`):
+//   * reversed=false (default): every facet is oriented with the sphere's OUTWARD radial
+//     normal (the lens/fuse boundary's outward normal there).
+//   * reversed=true (CUT inner-cap-of-B): facet normal points INWARD (centre−centroid) so
+//     the cap correctly bounds the scooped cavity of A−B.
+// The ring/slerp/fan loop and the `r==rings → seam.pts[k]` outer ring are identical across
+// all four (outer,reversed) modes — only the apex direction and the outward reference flip;
+// the COMMON caller uses the (false,false) defaults so its output is byte-identical.
+//
+// systems-band (~14 — radial ring slerp + apex/orientation selection); flagged.
 void appendSphereCap(const CurvedSolid& sph, const math::Point3& otherCentre, const Seam& seam,
-                     int rings, VertexPool& pool, std::vector<topo::Shape>& faces) {
+                     int rings, VertexPool& pool, std::vector<topo::Shape>& faces,
+                     bool outer = false, bool reversed = false) {
   const int n = static_cast<int>(seam.pts.size());
   if (n < 3 || rings < 1) return;
-  // Apex = surface point of `sph` nearest `otherCentre` (centre + R·unit(centre→other)).
+  // Apex = surface point of `sph` nearest `otherCentre` (inner) or the far pole (outer).
   const math::Vec3 toOther = otherCentre - sph.frame.origin;
   const double dToOther = math::norm(toOther);
   if (dToOther < 1e-12) return;
-  const math::Vec3 apexDir{toOther.x / dToOther, toOther.y / dToOther, toOther.z / dToOther};
+  const double sgn = outer ? -1.0 : 1.0;
+  const math::Vec3 apexDir{sgn * toOther.x / dToOther, sgn * toOther.y / dToOther,
+                           sgn * toOther.z / dToOther};
   const math::Point3 apex{sph.frame.origin.x + apexDir.x * sph.radius,
                           sph.frame.origin.y + apexDir.y * sph.radius,
                           sph.frame.origin.z + apexDir.z * sph.radius};
@@ -905,8 +920,10 @@ void appendSphereCap(const CurvedSolid& sph, const math::Point3& otherCentre, co
   };
   auto tri = [&](const math::Point3& a, const math::Point3& b, const math::Point3& c) {
     const math::Point3 ctr{(a.x + b.x + c.x) / 3, (a.y + b.y + c.y) / 3, (a.z + b.z + c.z) / 3};
-    // Outward = sphere radial normal at the centroid (the lens boundary's outward normal).
-    const math::Vec3 out = ctr - sph.frame.origin;
+    // Reference = sphere radial normal at the centroid; OUTWARD (ctr−centre) for the lens/fuse
+    // boundary, INWARD (centre−ctr) for the reversed CUT cavity cap.
+    const math::Vec3 radial = ctr - sph.frame.origin;
+    const math::Vec3 out = reversed ? math::Vec3{-radial.x, -radial.y, -radial.z} : radial;
     pushPlanarTri(a, b, c, out, pool, faces);
   };
   for (int k = 0; k < n; ++k) tri(apex, ringPt(1, k), ringPt(1, (k + 1) % n));
@@ -1008,6 +1025,105 @@ topo::Shape buildLensCommon(const CurvedSolid& A, const CurvedSolid& B,
   };
   appendSphereCap(A, B.frame.origin, capSeam, ringsFor(A, apexA), pool, faces);
   appendSphereCap(B, A.frame.origin, capSeam, ringsFor(B, apexB), pool, faces);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// Shared prologue for the three single-seam sphere∩sphere lens assemblers: validate the
+// trace/kinds, compute the two candidate apices (inner near-apex of each sphere and each
+// far pole), the decimated shared seam, and the per-cap ring-count functor. Factored out so
+// buildLensCommon / buildLensFuse / buildLensCut differ ONLY in cap selection (which caps,
+// which orientation) — never in seam decimation or ring discipline, so all three caps weld
+// on the identical pooled seam nodes.
+struct LensSetup {
+  bool ok = false;
+  Seam capSeam;
+  math::Point3 innerApexA, innerApexB, outerApexA, outerApexB;
+};
+LensSetup lensSetup(const CurvedSolid& A, const CurvedSolid& B, const std::vector<Seam>& seams) {
+  LensSetup s;
+  if (seams.size() != 1) return s;
+  const Seam& seam = seams[0];
+  if (!seam.closed || seam.pts.size() < 4) return s;
+  if (A.kind != CurvedKind::Sphere || B.kind != CurvedKind::Sphere) return s;
+  const math::Vec3 ab = B.frame.origin - A.frame.origin;
+  const double d = math::norm(ab);
+  if (d < 1e-9) return s;  // concentric → not a transversal lens
+  const math::Vec3 abU{ab.x / d, ab.y / d, ab.z / d};
+  s.innerApexA = {A.frame.origin.x + abU.x * A.radius, A.frame.origin.y + abU.y * A.radius,
+                  A.frame.origin.z + abU.z * A.radius};
+  s.innerApexB = {B.frame.origin.x - abU.x * B.radius, B.frame.origin.y - abU.y * B.radius,
+                  B.frame.origin.z - abU.z * B.radius};
+  s.outerApexA = {A.frame.origin.x - abU.x * A.radius, A.frame.origin.y - abU.y * A.radius,
+                  A.frame.origin.z - abU.z * A.radius};
+  s.outerApexB = {B.frame.origin.x + abU.x * B.radius, B.frame.origin.y + abU.y * B.radius,
+                  B.frame.origin.z + abU.z * B.radius};
+  s.capSeam = decimateSeam(seam, seamNodeTarget(seam));
+  s.ok = true;
+  return s;
+}
+
+// Ring count from a cap's TRUE polar half-angle θ (max angle at the sphere centre between
+// the apex direction and any seam node) + the radial curvature-per-facet target kCapSagitta
+// — identical discipline for inner and outer caps (the far-pole apex has a larger θ, giving
+// more rings, which is correct). Shared by all three lens assemblers.
+int lensRingsFor(const CurvedSolid& sph, const math::Point3& apex, const Seam& capSeam) {
+  const math::Vec3 aDir = apex - sph.frame.origin;
+  double theta = 0.0;
+  for (const auto& p : capSeam.pts) {
+    const math::Vec3 sDir{p.x - sph.frame.origin.x, p.y - sph.frame.origin.y,
+                          p.z - sph.frame.origin.z};
+    const double denom = std::max(math::norm(aDir) * math::norm(sDir), 1e-12);
+    theta = std::max(theta, std::acos(std::clamp(math::dot(aDir, sDir) / denom, -1.0, 1.0)));
+  }
+  const double rings = std::max(theta, 1e-6) * std::sqrt(sph.radius / (2.0 * kCapSagitta));
+  return std::clamp(static_cast<int>(std::ceil(rings)), 4, 48);
+}
+
+// buildLensFuse(A,B) = the FUSE (A ∪ B) of two overlapping SPHERES: the peanut/dumbbell
+// outer shell bounded by the two OUTER caps (each sphere's far-pole cap, the part OUTSIDE
+// the other solid) sharing the single seam circle. Volume = V(A)+V(B)−V(lens) (grows).
+// Survival rule: each far pole must classify strictly OUTSIDE the other solid (a proper
+// transversal overlap); tangent/containment/degenerate → {} → OCCT (never faked).
+topo::Shape buildLensFuse(const CurvedSolid& A, const CurvedSolid& B,
+                          const std::vector<Seam>& seams) {
+  const LensSetup s = lensSetup(A, B, seams);
+  if (!s.ok) return {};
+  // Each retained cap's far-pole apex must be OUTSIDE the other solid (the FUSE survival rule).
+  if (classifyPoint(B, s.outerApexA, kSsiTol) != -1) return {};  // ON/inside → not a proper fuse shell
+  if (classifyPoint(A, s.outerApexB, kSsiTol) != -1) return {};
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  // Two OUTER caps (outer=true, reversed=false), both outward, on the shared decimated seam.
+  appendSphereCap(A, B.frame.origin, s.capSeam, lensRingsFor(A, s.outerApexA, s.capSeam), pool,
+                  faces, /*outer=*/true, /*reversed=*/false);
+  appendSphereCap(B, A.frame.origin, s.capSeam, lensRingsFor(B, s.outerApexB, s.capSeam), pool,
+                  faces, /*outer=*/true, /*reversed=*/false);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildLensCut(A,B) = the CUT (A − B) of two overlapping SPHERES: the OUTER cap of A (the
+// part of A OUTSIDE B, outward) welded to the INNER cap of B emitted REVERSED (inward
+// normal — B's near-apex cap now bounds the scooped cavity), sharing the single seam.
+// Volume = V(A)−V(lens) (shrinks). ORDER-SENSITIVE: A is the minuend (matches
+// BRepAlgoAPI_Cut(a,b)); the two caps are not interchangeable. Survival rule: A's far pole
+// OUTSIDE B AND B's near-apex INSIDE A (a proper transversal bite); else {} → OCCT.
+topo::Shape buildLensCut(const CurvedSolid& A, const CurvedSolid& B,
+                         const std::vector<Seam>& seams) {
+  const LensSetup s = lensSetup(A, B, seams);
+  if (!s.ok) return {};
+  if (classifyPoint(B, s.outerApexA, kSsiTol) != -1) return {};  // A's far pole must be outside B
+  if (classifyPoint(A, s.innerApexB, kSsiTol) != 1) return {};   // B's near-apex must be inside A
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  // OUTER cap of A (outer=true, outward) + INNER cap of B REVERSED (outer=false, reversed=true).
+  appendSphereCap(A, B.frame.origin, s.capSeam, lensRingsFor(A, s.outerApexA, s.capSeam), pool,
+                  faces, /*outer=*/true, /*reversed=*/false);
+  appendSphereCap(B, A.frame.origin, s.capSeam, lensRingsFor(B, s.innerApexB, s.capSeam), pool,
+                  faces, /*outer=*/false, /*reversed=*/true);
   if (faces.size() < 4) return {};
   const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
   return topo::ShapeBuilder::makeSolid({shell});
@@ -1484,10 +1600,20 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       if (!drill.isNull()) return drill;
       return buildLensCommon(*csA, *csB, seams);
     }
-    case Op::Fuse:
-      return buildFuse(*csA, *csB, seams);
-    case Op::Cut:
-      return buildCut(*csA, *csB, seams);
+    case Op::Fuse: {
+      // Through-drill (two rim seams) → buildFuse; single-seam sphere∩sphere lens (S5-c
+      // fuse) → buildLensFuse (two OUTER caps). buildFuse declines the single seam.
+      const topo::Shape drill = buildFuse(*csA, *csB, seams);
+      if (!drill.isNull()) return drill;
+      return buildLensFuse(*csA, *csB, seams);
+    }
+    case Op::Cut: {
+      // Through-drill → buildCut; single-seam sphere∩sphere lens (S5-c cut) → buildLensCut
+      // (outer-cap-of-A + reversed inner-cap-of-B). buildCut declines the single seam.
+      const topo::Shape drill = buildCut(*csA, *csB, seams);
+      if (!drill.isNull()) return drill;
+      return buildLensCut(*csA, *csB, seams);
+    }
   }
   return {};
 }

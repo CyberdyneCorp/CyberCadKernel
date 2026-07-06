@@ -472,17 +472,26 @@ mesher). Extends `src/native/boolean/` from planar/axis-aligned to general curve
 `2026-07-05`):** the SSI-curve-driven split→classify→select→weld pipeline lives in
 `src/native/boolean/ssi_boolean.{h,cpp}` (OCCT-free, `CYBERCAD_HAS_NUMSCI`-gated, consumes the
 S3 `TraceSet` — and, for S5-d, the S4-d branched re-trace with `MarchOptions.enableBranchPoints
-= true`). It now produces **six native curved-boolean sub-cases verified vs OCCT
-`BRepAlgoAPI_{Fuse,Cut,Common}`** (sim parity `native-pass=6`, 12 honest fallbacks):
+= true`). It now produces **eight native curved-boolean sub-cases verified vs OCCT
+`BRepAlgoAPI_{Fuse,Cut,Common}`** (sim parity `native-pass=10` — the sphere∩sphere op-set is now
+COMPLETE 3/3 native, and the harness runs each of the sphere FUSE/CUT as an equal-R AND an
+unequal-R fixture; 8 honest fallbacks):
 - **S5-a — through-drill cylinder∩cylinder COMMON** (unequal radii, transversal two-loop
   trace) — watertight, ΔV = 8.1e-04, ΔA = 2.8e-04.
 - **S5-b — through-drill cylinder∩cylinder FUSE + CUT** (assembler-only extension: fat wall
   with the two mouths cut out + planar-facet caps + reversed tunnel band / protruding end
   tubes) — watertight, ΔV = 8.8e-05 (fuse) / 4.0e-05 (cut).
-- **S5-c — sphere∩sphere COMMON** (single closed seam → the lens of the two inside-the-other
-  spherical caps, welded along the one seam; direction-slerp cap facets, robust even when the
-  cap apex sits at the sphere's parametric pole) — watertight, ΔV = 4.1e-04 (equal radii) /
-  4.7e-04 (unequal radii).
+- **S5-c — sphere∩sphere COMMON / FUSE / CUT** (single closed seam; the op-set is now COMPLETE
+  3/3 native). COMMON = the lens of the two inside-the-other (INNER) spherical caps; FUSE (A∪B)
+  = the two OUTER caps (each sphere's far-pole cap) welded on the shared seam, `V = V(A)+V(B)−lens`;
+  CUT (A−B, order-sensitive) = the OUTER cap of A + the INNER cap of B emitted REVERSED (inward
+  normal, bounding the scooped cavity), `V = V(A)−lens`. All three share the SAME decimated seam
+  and reuse one generalised `appendSphereCap(outer,reversed)` cap builder + `VertexPool` weld;
+  direction-slerp cap facets, robust even when a cap apex sits at the sphere's parametric pole.
+  Watertight, verified vs BOTH the analytic closed forms AND OCCT `BRepAlgoAPI`: COMMON ΔV = 4.1e-04
+  (eq) / 4.7e-04 (uneq); FUSE ΔV = 6.5e-04 (eq) / 8.3e-04 (uneq); CUT ΔV = 7.0e-04 (eq) / 9.3e-04
+  (uneq) — all inside the 1% curved-parity bar, no tolerance weakened. Survival gate declines
+  (→ NULL → OCCT) any non-transversal pair (tangent / containment / concentric).
 - **S5-d — Steinmetz (equal-radius orthogonal cyl∩cyl) COMMON** (the *branched-trace*
   assembler): a `steinmetzPreGate` (equal-R, orthogonal, crossing axes) fires ONLY on the S4
   decline edge (`nearTangentGaps > 0`), RE-TRACES with branch points enabled, and
@@ -500,12 +509,11 @@ Honest scope still declining → OCCT (measured NULL fallbacks, never faked):
   branched builder; FUSE/CUT return NULL → OCCT (valid+closed, volO 32.366 / 13.516). COMMON is
   the guaranteed slice; FUSE/CUT ship only once their outside-fragment + reversed-tunnel +
   end-cap re-trim assembles a watertight, correct-volume shell.
-- **sphere FUSE / CUT** (outer-cap union + re-trimmed remainder weld) → deferred → declines.
 - **oblique / multi-tube cyl∩cyl**, and other curved-curved families (cyl∩cone, cyl∩sphere,
   cone∩cone, sphere∩box, freeform), plus any branched pair that is NOT equal-R orthogonal
   Steinmetz (unequal-R / non-orthogonal / ≠ 2 branch points / ≠ 4 arms / `nearTangentGaps > 0`)
-  → decline.
-Remaining S5 work: Steinmetz FUSE/CUT, sphere fuse/cut, general (non-Steinmetz) branched pairs,
+  → decline. (sphere∩sphere FUSE/CUT are now NATIVE — see S5-c above.)
+Remaining S5 work: Steinmetz FUSE/CUT, general (non-Steinmetz) branched pairs,
 and more curved-curved families.
 
 ## Sequencing & effort
@@ -518,7 +526,7 @@ substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ─
                              │                                    │                          ├─ S4-c near-tangent march-through (FIRST SLICE DONE)
                              │                                    │                          └─ S4-d…f marching-core tail (PENDING)
                              └──────────────► S5 curved booleans ◄─┘  ──► #6 blends ──► #7 wrap-emboss
-                                              (S5-a/b/c/d: drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON + Steinmetz COMMON native ✓)
+                                              (S5-a/b/c/d: drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON/FUSE/CUT (3/3) + Steinmetz COMMON native ✓)
 ```
 
 | Stage | Effort (robust) | Nature |
@@ -530,7 +538,7 @@ substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ─
 | S4-b tangent-classify | ✅ DONE at the bar | typed `TangentContact` (point/curve/near-tangent/undecided) — 8 pairs vs OCCT, 0 deferred |
 | S4-c near-tangent march-through | ◐ FIRST SLICE DONE at the bar | fixed-plane-cut corrector marches a single-branch graze the S3 truncated (sphere∩offset-cyl: `nearTangentGaps → 0`, full loop on OCCT locus); branch saddle still defers |
 | S4-d…f marching-core tail | multi-year, ongoing | the moat tail — branch points, singularities, self-intersect, deeper near-coincident bands; best-effort + fallback |
-| S5 curved booleans | ◐ slices S5-a/b/c/d DONE at the bar (~months for full) | through-drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON + branched Steinmetz COMMON (`16R³/3` + OCCT) native (wt, ΔV ≤ 9e-4); Steinmetz fuse/cut + sphere fuse/cut + general branched + more families remain |
+| S5 curved booleans | ◐ slices S5-a/b/c/d DONE at the bar (~months for full) | through-drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON/FUSE/CUT (op-set COMPLETE 3/3) + branched Steinmetz COMMON (`16R³/3` + OCCT) native (wt, ΔV ≤ 9e-4); Steinmetz fuse/cut + general branched + more families remain |
 
 SSI + curved booleans total ≈ **1.5–3 py** (substrate-accelerated) for *usable*
 coverage; full OCCT-grade robustness (S4) is the long tail. Recommended cadence:

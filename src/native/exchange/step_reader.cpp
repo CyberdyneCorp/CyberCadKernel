@@ -389,6 +389,18 @@ class Mapper {
   std::unordered_map<int, topo::Shape> vertexCache_;
   std::unordered_map<int, topo::Shape> edgeCache_;   // EDGE_CURVE #id → Forward edge
 
+  // A resolved TRIMMED_CURVE's parameter bounds, keyed by the TRIMMED_CURVE #id. A
+  // TRIMMED_CURVE wraps a basis curve with two parameter/point trims; curve() unwraps
+  // it to the basis EdgeCurve and records the trims here so edgeCurve() can bound the
+  // edge by the trims where they add representable value (a B-spline sub-domain). For
+  // an analytic basis the endpoint VERTICES already fix the range exactly, so the trim
+  // is validated but the vertex-derived range (curveRange) is kept.
+  struct TrimInfo {
+    bool hasT0 = false, hasT1 = false;
+    double t0 = 0.0, t1 = 0.0;
+  };
+  std::unordered_map<int, TrimInfo> trimCache_;
+
   const Record* rec(long id) {
     auto it = recs_.find(static_cast<int>(id));
     return it == recs_.end() ? nullptr : &it->second;
@@ -791,7 +803,41 @@ class Mapper {
     if (r->keyword == "CIRCLE") return circleCurve(*r);
     if (r->keyword == "ELLIPSE") return ellipseCurve(*r);
     if (r->keyword == "B_SPLINE_CURVE_WITH_KNOTS") return bsplineCurve(*r);
-    // Any other curve keyword (TRIMMED_CURVE, RATIONAL_B_SPLINE_*, …) is out of scope.
+    if (r->keyword == "TRIMMED_CURVE") return trimmedCurve(id, *r);
+    // Any other curve keyword (RATIONAL_B_SPLINE_*, …) is out of scope.
+    return std::nullopt;
+  }
+
+  // TRIMMED_CURVE('',#basis,trim_1,trim_2,sense_agreement,master_representation):
+  // a basis curve (LINE/CIRCLE/ELLIPSE/B_SPLINE_CURVE_WITH_KNOTS) bounded by two
+  // trims. Each trim is a SET holding a PARAMETER_VALUE(real) and/or a CARTESIAN_POINT
+  // ref. We unwrap to the basis EdgeCurve (mirroring the SURFACE_CURVE unwrap) and
+  // cache the two PARAMETER_VALUE trims by this TRIMMED_CURVE's #id; edgeCurve() honors
+  // them for a B-spline sub-domain (where the vertices alone cannot recover the covered
+  // knot span). A basis outside the supported slice DECLINES → OCCT.
+  std::optional<topo::EdgeCurve> trimmedCurve(long id, const Record& r) {
+    if (r.args.size() < 4 || !r.args[1].isRef()) return std::nullopt;
+    auto basis = curve(r.args[1].ref);
+    if (!basis) return std::nullopt;
+    TrimInfo ti;
+    if (auto t = trimParam(r.args[2])) { ti.hasT0 = true; ti.t0 = *t; }
+    if (auto t = trimParam(r.args[3])) { ti.hasT1 = true; ti.t1 = *t; }
+    trimCache_[static_cast<int>(id)] = ti;
+    return basis;
+  }
+
+  // Extract the PARAMETER_VALUE(real) of a trim SET, if present. The tokenizer already
+  // unwraps a unary typed value (PARAMETER_VALUE(x) → x), so a SET member is either a
+  // Real (the parameter) or a Ref (a CARTESIAN_POINT — ignored: the edge vertices carry
+  // the exact endpoints). A bare Real (SET-less writer) is accepted too. Non-finite → none.
+  static std::optional<double> trimParam(const Arg& a) {
+    auto finite = [](double v) -> std::optional<double> {
+      return std::isfinite(v) ? std::optional<double>{v} : std::nullopt;
+    };
+    if (a.isNumber()) return finite(a.asReal());
+    if (a.isList())
+      for (const Arg& m : a.list)
+        if (m.isNumber()) return finite(m.asReal());
     return std::nullopt;
   }
 
@@ -874,7 +920,75 @@ class Mapper {
     if (r->keyword == "SPHERICAL_SURFACE") return placedSurface(*r, K::Sphere, 1);
     if (r->keyword == "CONICAL_SURFACE") return placedSurface(*r, K::Cone, 2);
     if (r->keyword == "B_SPLINE_SURFACE_WITH_KNOTS") return bsplineSurface(*r);
+    if (r->keyword == "SURFACE_OF_REVOLUTION") return surfaceOfRevolution(*r);
     return std::nullopt;  // any other surface keyword is out of scope
+  }
+
+  // AXIS1_PLACEMENT('',#location,#axis?) → (location, axis direction). Unlike an
+  // AXIS2_PLACEMENT_3D it carries ONLY the main axis (the revolution axis); the axis
+  // direction is optional ($) and defaults to +Z. Used by SURFACE_OF_REVOLUTION.
+  std::optional<std::pair<math::Point3, math::Dir3>> axis1placement(long id) {
+    const Record* r = recOfKind(id, "AXIS1_PLACEMENT");
+    if (!r || r->args.size() < 2 || !r->args[1].isRef()) return std::nullopt;
+    const auto loc = point(r->args[1].ref);
+    if (!loc) return std::nullopt;
+    math::Dir3 axis{0, 0, 1};
+    if (r->args.size() >= 3 && r->args[2].isRef())
+      if (auto d = direction(r->args[2].ref)) axis = *d;
+    if (!axis.valid()) return std::nullopt;
+    return std::make_pair(*loc, axis);
+  }
+
+  // SURFACE_OF_REVOLUTION('',#profileCurve,#axis1placement): a profile (generatrix)
+  // curve revolved about an axis. Only a STRAIGHT (LINE) generatrix reduces to a native
+  // analytic FaceSurface faithfully (cylinder / cone / plane — see revolvedLine); any
+  // other profile revolves to a torus (off-axis arc), a sphere (on-axis arc — OCCT
+  // authors that as SPHERICAL_SURFACE directly), or a general revolved surface with no
+  // faithful native FaceSurface kind → honest DECLINE → OCCT, exactly like the landed
+  // TOROIDAL_SURFACE decline. Never a forced/approximate mapping.
+  std::optional<topo::FaceSurface> surfaceOfRevolution(const Record& r) {
+    if (r.args.size() != 3 || !r.args[1].isRef() || !r.args[2].isRef()) return std::nullopt;
+    const auto profile = curve(r.args[1].ref);
+    const auto ax = axis1placement(r.args[2].ref);
+    if (!profile || !ax) return std::nullopt;
+    if (profile->kind != topo::EdgeCurve::Kind::Line) return std::nullopt;  // DECLINE
+    return revolvedLine(*profile, ax->first, ax->second);
+  }
+
+  // Revolve a straight generatrix (line through P, unit direction D) about the axis
+  // (through L, unit direction A) onto an EXACT native surface, or nullopt to DECLINE.
+  //
+  // Only the PARALLEL case (D ∥ A) is mapped — it revolves to a CYLINDER of radius =
+  // dist(line, axis), a native FaceSurface::Kind::Cylinder that reconstructs WATERTIGHT
+  // (proven end-to-end). The other faithful geometric reductions are deliberately
+  // DECLINED, not because they lack a native kind, but because the reader's current
+  // apex-carrying reconstruction of them is NOT watertight, so a mapping could not pass
+  // the engine's watertight self-verify — an honest DECLINE → OCCT is the correct result:
+  //   * D meets A at an angle → a CONE (apex singular; the native cone round-trip is not
+  //     yet watertight — a separate reader gap, out of this slice).
+  //   * D ⟂ A                  → a PLANE annulus (only meaningful attached to such a cone
+  //     face, which itself declines).
+  //   * skew / on-axis / general (non-line) profile → hyperboloid / torus / general
+  //     revolved surface with no faithful native kind (the TOROIDAL_SURFACE decline).
+  std::optional<topo::FaceSurface> revolvedLine(const topo::EdgeCurve& line,
+                                                const math::Point3& L, const math::Dir3& A) {
+    const math::Dir3 D = line.frame.x;
+    if (!D.valid()) return std::nullopt;
+    const double dpa = math::dot(A.vec(), D.vec());   // cos∠(axis, line)
+    if (std::fabs(std::fabs(dpa) - 1.0) > 1e-7) return std::nullopt;  // not ∥ → DECLINE
+
+    const math::Point3 P = line.frame.origin;
+    const math::Vec3 Av = A.vec();
+    const math::Point3 foot = L + Av * math::dot(P - L, Av);  // foot of P on the axis
+    const math::Vec3 radial = P - foot;                       // perpendicular axis→P
+    const double r = math::norm(radial);
+    if (r < 1e-9) return std::nullopt;                // line ON the axis is degenerate
+
+    topo::FaceSurface s;
+    s.kind = topo::FaceSurface::Kind::Cylinder;
+    s.frame = math::Ax3::fromAxisAndRef(foot, A, math::Dir3{radial});
+    s.radius = r;
+    return s;
   }
 
   // PLANE/CYLINDRICAL/SPHERICAL/CONICAL_SURFACE: an AXIS2_PLACEMENT_3D plus `nRadii`
@@ -961,7 +1075,7 @@ class Mapper {
     const auto p0 = topo::pointOf(v0);
     const auto p1 = topo::pointOf(v1);
     if (!p0 || !p1) { decline(); return {}; }
-    const auto range = curveRange(*cv, *p0, *p1);
+    const auto range = trimmedRange(r->args[3].ref, *cv, *p0, *p1);
     topo::EdgeCurve cc = *cv;
     if (cc.kind == topo::EdgeCurve::Kind::Line) {
       // Recompute the Line direction from the actual endpoints so C(first)=p0,
@@ -1015,6 +1129,27 @@ class Mapper {
         return {c.knots.empty() ? 0.0 : c.knots.front(),
                 c.knots.empty() ? 1.0 : c.knots.back()};
     }
+  }
+
+  // The edge parameter range, honoring a TRIMMED_CURVE's cached trims when `curveId`
+  // resolved through one. For a B-spline basis the two PARAMETER_VALUE trims select the
+  // covered knot sub-domain — information the endpoint vertices cannot recover (a
+  // sub-arc of a periodic/looping spline shares endpoints with the whole curve). We
+  // clamp the trims to the clamped knot span so a wide/degenerate trim reduces to the
+  // full curve. For an analytic basis (line/circle/ellipse) the vertices fix the
+  // endpoints exactly, so we keep the vertex-derived range (curveRange) and use the
+  // trims only implicitly (validated in trimmedCurve).
+  std::pair<double, double> trimmedRange(long curveId, const topo::EdgeCurve& c,
+                                         const math::Point3& p0, const math::Point3& p1) {
+    const auto it = trimCache_.find(static_cast<int>(curveId));
+    if (it != trimCache_.end() && c.kind == topo::EdgeCurve::Kind::BSpline && !c.knots.empty() &&
+        it->second.hasT0 && it->second.hasT1) {
+      const double lo = c.knots.front(), hi = c.knots.back();
+      double a = std::clamp(std::min(it->second.t0, it->second.t1), lo, hi);
+      double b = std::clamp(std::max(it->second.t0, it->second.t1), lo, hi);
+      if (b - a > 1e-9) return {a, b};  // a genuine sub-domain; degenerate → full curve
+    }
+    return curveRange(c, p0, p1);
   }
 
   // Angle of a point on a circle's frame: atan2(dot(p-O,Y), dot(p-O,X)).

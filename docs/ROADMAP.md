@@ -72,7 +72,7 @@ robustness tail keeps OCCT linked.** Canonical detail:
 - ✅ **STEP export** (native AP203).
 - ✅ **STEP import — native slice, now WIDENED** (OCCT-free Part-21 reader for the elementary/B-spline
   AP203 subset the native writer emits + foreign OCCT-written box/cylinder; healed via the healing
-  slice, self-verified watertight else → OCCT). Host round-trip exact + sim OCCT parity, now 41/41.
+  slice, self-verified watertight else → OCCT). Host round-trip exact + sim OCCT parity, now 53/53.
   Widened along honestly-gated tracks: **multi-solid** files (>1 `MANIFOLD_SOLID_BREP`, no
   transform tree) import as a native `Compound` of watertight solids (rel 2.14e-16 vs OCCT re-import);
   a native **B-spline-FACE** solid round-trips native-export→import EXACT (the deferred bspline-face
@@ -99,12 +99,21 @@ robustness tail keeps OCCT linked.** Canonical detail:
   representation-relationship that reaches no `MANIFOLD_SOLID_BREP` is skipped, not fatal), so an
   AP242 solid + PMI imports the SOLID identically to OCCT (vol 1000, bbox Δ=0, faces 6/6) instead of
   declining the whole file. The reader is **schema-independent** (enters at `DATA;`, never gates on
-  `FILE_SCHEMA`), so AP203/AP214/AP242 headers all import.
+  `FILE_SCHEMA`), so AP203/AP214/AP242 headers all import. Two general-surface families are also
+  accepted where they reduce to an exact native kind and self-verify: a **`TRIMMED_CURVE` edge**
+  unwraps onto the native trimmed edge (a `B_SPLINE_CURVE_WITH_KNOTS` basis honoring its
+  `PARAMETER_VALUE` knot-span trims; an analytic `LINE`/`CIRCLE`/`ELLIPSE` basis keeping its exact
+  vertex-derived range), and a **`SURFACE_OF_REVOLUTION` of a straight generatrix parallel to the
+  axis** reduces to an EXACT native `Cylinder` — both watertight == OCCT re-import (rel 1.27e-3).
+  A `SURFACE_OF_REVOLUTION` of any non-parallel-line / non-line profile (cone / sphere / torus /
+  general revolved surface) is an honest DECLINE → OCCT (no faithful native kind, consistent with the
+  `TOROIDAL_SURFACE` decline; the reader authors no cone or revolved-B-spline surface).
   **Residual → OCCT** (honest): PMI/GD&T **semantics** (never turned into geometry),
   **non-uniform-scale / shear** transforms, deep-nested
   (multi-level) assemblies, `TOROIDAL_SURFACE` (no native torus surface kind), ellipse-bearing
   solids whose ellipse lies on a quadric (fails the watertight self-verify → whole solid falls back),
-  complex/trimmed profiles, rational/weighted B-splines, non-mm units;
+  a non-cylinder `SURFACE_OF_REVOLUTION` (cone / sphere / torus / general revolved surface),
+  complex/trimmed surfaces, rational/weighted B-splines, non-mm units;
   **all IGES import/export stays OCCT / dropped per the earlier decision.**
 - ✅ **Numeric foundations (#2)** — adopted **NumPP + SciPP** (MIT C++20 NumPy/SciPy
   ports) as the OCCT-free numeric substrate + native closest-point (Extrema).
@@ -293,8 +302,8 @@ robustness tail keeps OCCT linked.** Canonical detail:
 - ☐ **Shape healing residual** (beyond-tolerance gap bridging, missing-pcurve reconstruction,
   self-intersecting-wire repair, arbitrary broken industrial B-rep — the coincident-within-tolerance /
   degenerate / orientation first slice is now native, above); **full STEP import** beyond the native
-  subset (PMI SEMANTICS, non-uniform/shear transforms, deep-nested assemblies, complex/trimmed profiles, torus → OCCT —
-  the native slices landed incl. rigid/uniform-scale/mirror placed assemblies + AP242 geometry with PMI skipped, above),
+  subset (PMI SEMANTICS, non-uniform/shear transforms, deep-nested assemblies, a non-cylinder SURFACE_OF_REVOLUTION (cone/sphere/torus/general revolved surface), complex/trimmed surfaces, torus → OCCT —
+  the native slices landed incl. rigid/uniform-scale/mirror placed assemblies + AP242 geometry with PMI skipped + TRIMMED_CURVE edges + a cylinder-reducing SURFACE_OF_REVOLUTION, above),
   and **all IGES import/export** (stays OCCT / dropped per the earlier decision).
 - ☐ **`drop-occt`** — BLOCKED until the above are native (research-grade, multi-year).
 

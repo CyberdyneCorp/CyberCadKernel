@@ -735,4 +735,177 @@ CC_TEST(ap242_pmi_skipped_imports_solid) {
   }
 }
 
+namespace {
+
+// Wrap the FIRST `#id = keyword(` basis-curve declaration in a TRIMMED_CURVE: rename the
+// basis record to a fresh #id and insert `#origId = TRIMMED_CURVE('',#newId,<trims>)` at
+// the old id, so every EDGE_CURVE that referenced the basis now reaches it THROUGH a
+// TRIMMED_CURVE (the reader must unwrap it). Returns the rewritten file (unchanged if the
+// keyword is absent).
+std::string wrapBasisInTrimmedCurve(std::string step, const std::string& keyword,
+                                    const std::string& trims, long idOffset = 700000) {
+  const std::string needle = "= " + keyword + "(";
+  const std::size_t k = step.find(needle);
+  if (k == std::string::npos) return step;
+  const std::size_t hash = step.rfind('#', k);
+  std::size_t j = hash + 1; std::string num;
+  while (j < step.size() && std::isdigit(static_cast<unsigned char>(step[j]))) num += step[j++];
+  const long oldId = std::stol(num);
+  const long newId = oldId + idOffset;
+  step.replace(hash, j - hash, "#" + std::to_string(newId));  // move the basis to newId
+  const std::size_t ins = step.find('\n', step.find("DATA;")) + 1;
+  step.insert(ins, "#" + std::to_string(oldId) + " = TRIMMED_CURVE('',#" +
+                       std::to_string(newId) + "," + trims + ");\n");
+  return step;
+}
+
+// Rewrite every `<surfaceKeyword>('',...)` record into a SURFACE_OF_REVOLUTION of an
+// injected generatrix about the +Y axis through the origin (the revolution axis of the
+// cylinder()/cone() fixtures). `profileRecords` declare the generatrix; `profileRef` is
+// its #id. The reader's revolvedLine arm must reduce the revolution back to the EXACT
+// native analytic surface the fixture originally carried. Choosing a non-line / off-axis
+// generatrix drives the honest-decline path.
+std::string revolveSurfaces(std::string step, const std::string& surfaceKeyword,
+                            const std::string& profileRecords, const std::string& profileRef) {
+  const std::size_t ins = step.find('\n', step.find("DATA;")) + 1;
+  step.insert(ins, profileRecords +
+                       "#800005 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+                       "#800006 = DIRECTION('',(0.,1.,0.));\n"
+                       "#800007 = AXIS1_PLACEMENT('',#800005,#800006);\n");
+  const std::string what = surfaceKeyword + "(";
+  for (std::size_t k = step.find(what); k != std::string::npos; k = step.find(what, k)) {
+    const std::size_t close = step.find(')', k);
+    step.replace(k, close - k, "SURFACE_OF_REVOLUTION('',#" + profileRef + ",#800007");
+    k += 1;
+  }
+  return step;
+}
+
+// A native cone (base radius 5 at y=0, apex at (0,20,0)): revolve a right triangle about
+// +Y — the writer emits CONICAL_SURFACE walls, exercising the reader's oblique (cone)
+// revolvedLine reduction when re-authored as a SURFACE_OF_REVOLUTION.
+topo::Shape cone20() {
+  const double p[] = {0, 0, 5, 0, 0, 20};
+  return cst::build_revolution(p, 3, cst::RevolveAxis{0.0, 0.0, 0.0, 1.0}, 6.28318530717958647692);
+}
+
+}  // namespace
+
+// ── T1 (TRIMMED_CURVE, LINE basis) — accepted + unwrapped, box stays watertight ──
+// A foreign file may wrap an edge's 3D geometry in a TRIMMED_CURVE. The reader must
+// unwrap it to the basis LINE and bound the edge by its vertices exactly (a straight
+// segment between two points is unique — the trims are redundant). The box round-trips
+// watertight with EXACT volume, proving the keyword is accepted (it declined before).
+CC_TEST(trimmed_curve_line_basis_imports_watertight) {
+  const std::string base = ex::writeStepString(box10(), "box");
+  const std::string wrapped = wrapBasisInTrimmedCurve(
+      base, "LINE", "(PARAMETER_VALUE(0.0)),(PARAMETER_VALUE(1.0)),.T.,.PARAMETER.");
+  CC_CHECK(wrapped.find("TRIMMED_CURVE") != std::string::npos);
+  const topo::Shape s = ex::readStepString(wrapped);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+  CC_CHECK(watertight(s));
+  CC_CHECK(std::fabs(volumeOf(s) - 1000.0) < 1e-6);
+}
+
+// ── T1 (TRIMMED_CURVE, CIRCLE basis) — a wrapped rim arc unwraps, cylinder watertight ─
+// A CIRCLE rim wrapped in a TRIMMED_CURVE must unwrap to the basis circle; the edge's
+// vertices fix the arc endpoints (CCW convention), so the cylinder stays watertight with
+// the analytic volume π·r²·h.
+CC_TEST(trimmed_curve_circle_basis_imports_watertight) {
+  const std::string base = ex::writeStepString(cylinder(), "cyl");
+  const std::string wrapped = wrapBasisInTrimmedCurve(
+      base, "CIRCLE", "(PARAMETER_VALUE(0.0)),(PARAMETER_VALUE(6.2831853)),.T.,.PARAMETER.");
+  CC_CHECK(wrapped.find("TRIMMED_CURVE") != std::string::npos);
+  const topo::Shape s = ex::readStepString(wrapped);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+  CC_CHECK(watertight(s));
+  const double expected = 3.14159265358979323846 * 25.0 * 20.0;  // π·5²·20
+  CC_CHECK(std::fabs(volumeOf(s) - expected) / expected < 5e-3);
+}
+
+// ── T1 (TRIMMED_CURVE, B_SPLINE basis) — trim bounds select the covered knot span ─────
+// For a B-spline basis the endpoint vertices cannot recover the covered knot sub-domain,
+// so the reader honors the PARAMETER_VALUE trims (clamped to the clamped knot span). WIDE
+// trims clamp to the FULL span → the whole spline curve → the spline-wall prism round-trips
+// watertight with EXACT volume, exercising the trim-cache B-spline arm.
+CC_TEST(trimmed_curve_bspline_basis_full_span_watertight) {
+  const topo::Shape orig = splineWallPrism();
+  CC_CHECK(!orig.isNull());
+  if (orig.isNull()) return;
+  const std::string base = ex::writeStepString(orig, "spline");
+  const std::string wrapped = wrapBasisInTrimmedCurve(
+      base, "B_SPLINE_CURVE_WITH_KNOTS",
+      "(PARAMETER_VALUE(-1000000.)),(PARAMETER_VALUE(1000000.)),.T.,.PARAMETER.");
+  CC_CHECK(wrapped.find("TRIMMED_CURVE") != std::string::npos);
+  const topo::Shape s = ex::readStepString(wrapped);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+  CC_CHECK(watertight(s));
+  CC_CHECK(std::fabs(volumeOf(s) - volumeOf(orig)) / volumeOf(orig) < 1e-9);
+}
+
+// ── T2 (SURFACE_OF_REVOLUTION → cylinder) — line ∥ axis reduces to a native Cylinder ──
+// A straight generatrix parallel to the axis revolves to an EXACT cylinder. Rewriting the
+// cylinder's CYLINDRICAL_SURFACE walls as SURFACE_OF_REVOLUTION(line, axis1) must import to
+// the same watertight solid with the analytic volume — proving the revolvedLine analytic
+// reduction (the keyword declined before).
+CC_TEST(surface_of_revolution_line_parallel_maps_to_cylinder) {
+  const std::string base = ex::writeStepString(cylinder(), "cyl");
+  const std::string rev = revolveSurfaces(
+      base, "CYLINDRICAL_SURFACE",
+      "#800001 = CARTESIAN_POINT('',(5.,0.,0.));\n"
+      "#800002 = DIRECTION('',(0.,1.,0.));\n"
+      "#800003 = VECTOR('',#800002,1.);\n"
+      "#800004 = LINE('',#800001,#800003);\n",
+      "800004");
+  CC_CHECK(rev.find("SURFACE_OF_REVOLUTION") != std::string::npos);
+  CC_CHECK(rev.find("CYLINDRICAL_SURFACE") == std::string::npos);
+  const topo::Shape s = ex::readStepString(rev);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+  CC_CHECK(watertight(s));
+  const double expected = 3.14159265358979323846 * 25.0 * 20.0;
+  CC_CHECK(std::fabs(volumeOf(s) - expected) / expected < 5e-3);
+}
+
+// ── T2 (DECLINE) — an OBLIQUE line (→ cone) is honestly declined ───────────────────────
+// A generatrix that meets the axis at an angle revolves to an EXACT cone — a native
+// FaceSurface::Kind::Cone geometrically — but the reader's apex-carrying cone
+// reconstruction is not yet watertight (a separate reader gap: a plain native cone does
+// not round-trip watertight either), so mapping it could not pass the engine's watertight
+// self-verify. The honest result is a DECLINE → NULL → OCCT, never a non-watertight solid.
+CC_TEST(surface_of_revolution_oblique_line_declines) {
+  const std::string base = ex::writeStepString(cone20(), "cone");
+  const std::string rev = revolveSurfaces(
+      base, "CONICAL_SURFACE",
+      "#800001 = CARTESIAN_POINT('',(5.,0.,0.));\n"
+      "#800002 = DIRECTION('',(-5.,20.,0.));\n"   // oblique — toward the apex (0,20,0)
+      "#800003 = VECTOR('',#800002,1.);\n"
+      "#800004 = LINE('',#800001,#800003);\n",
+      "800004");
+  CC_CHECK(rev.find("SURFACE_OF_REVOLUTION") != std::string::npos);
+  CC_CHECK(ex::readStepString(rev).isNull());  // honest decline → OCCT
+}
+
+// ── T2 (DECLINE) — a non-line generatrix revolves to a torus/general surface → NULL ────
+// SURFACE_OF_REVOLUTION of a CIRCLE generatrix is a torus (off-axis) / sphere (on-axis) /
+// general revolved surface. There is NO faithful native FaceSurface kind for the torus /
+// general case (no Kind::Torus), so the reader must DECLINE the whole file → NULL → OCCT,
+// exactly like the landed TOROIDAL_SURFACE decline. Never a forced mapping.
+CC_TEST(surface_of_revolution_circle_generatrix_declines) {
+  const std::string base = ex::writeStepString(cylinder(), "cyl");
+  const std::string rev = revolveSurfaces(
+      base, "CYLINDRICAL_SURFACE",
+      "#800010 = CARTESIAN_POINT('',(10.,0.,0.));\n"
+      "#800011 = DIRECTION('',(0.,1.,0.));\n"
+      "#800012 = DIRECTION('',(1.,0.,0.));\n"
+      "#800013 = AXIS2_PLACEMENT_3D('',#800010,#800011,#800012);\n"
+      "#800004 = CIRCLE('',#800013,2.);\n",  // off-axis circle → a torus generatrix
+      "800004");
+  CC_CHECK(rev.find("SURFACE_OF_REVOLUTION") != std::string::npos);
+  CC_CHECK(ex::readStepString(rev).isNull());  // honest decline → OCCT
+}
+
 CC_RUN_ALL()

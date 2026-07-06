@@ -535,6 +535,56 @@ void writeFile(const std::string& path, const std::string& text) {
     if (FILE* f = std::fopen(path.c_str(), "wb")) { std::fwrite(text.data(), 1, text.size(), f); std::fclose(f); }
 }
 
+// ── T1/T2 string-surgery helpers (author a native STEP, then inject a foreign entity the
+//    native writer never emits: a TRIMMED_CURVE edge or a SURFACE_OF_REVOLUTION face) ────
+// Both entities are standard ISO-10303-42 curves/surfaces OCCT's STEPControl_Reader reads,
+// so the OCCT re-import is a valid oracle; the NATIVE reader is what this task widened.
+
+// Wrap the FIRST `#id = keyword(` basis declaration in a TRIMMED_CURVE: move the basis to
+// a fresh #id and declare `#origId = TRIMMED_CURVE('',#newId,<trims>)` at the old id, so
+// every reference reaches the basis THROUGH the TRIMMED_CURVE (the reader must unwrap it).
+std::string wrapBasisInTrimmedCurve(std::string step, const std::string& keyword,
+                                    const std::string& trims, long idOffset = 700000) {
+    const std::string needle = "= " + keyword + "(";
+    const std::size_t k = step.find(needle);
+    if (k == std::string::npos) return step;
+    const std::size_t hash = step.rfind('#', k);
+    std::size_t j = hash + 1; std::string num;
+    while (j < step.size() && std::isdigit((unsigned char)step[j])) num += step[j++];
+    const long oldId = std::stol(num), newId = oldId + idOffset;
+    step.replace(hash, j - hash, "#" + std::to_string(newId));
+    const std::size_t ins = step.find('\n', step.find("DATA;")) + 1;
+    step.insert(ins, "#" + std::to_string(oldId) + " = TRIMMED_CURVE('',#" +
+                         std::to_string(newId) + "," + trims + ");\n");
+    return step;
+}
+
+// Rewrite every `<surfaceKeyword>('',...)` record into a SURFACE_OF_REVOLUTION of an
+// injected generatrix about +Y through the origin (the native cylinder's revolution axis).
+std::string revolveSurfaces(std::string step, const std::string& surfaceKeyword,
+                            const std::string& profileRecords, const std::string& profileRef) {
+    const std::size_t ins = step.find('\n', step.find("DATA;")) + 1;
+    step.insert(ins, profileRecords +
+                         "#800005 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+                         "#800006 = DIRECTION('',(0.,1.,0.));\n"
+                         "#800007 = AXIS1_PLACEMENT('',#800005,#800006);\n");
+    const std::string what = surfaceKeyword + "(";
+    for (std::size_t k = step.find(what); k != std::string::npos; k = step.find(what, k)) {
+        const std::size_t close = step.find(')', k);
+        step.replace(k, close - k, "SURFACE_OF_REVOLUTION('',#" + profileRef + ",#800007");
+        k += 1;
+    }
+    return step;
+}
+
+std::string nativeCylinderStep() {
+    const double p[] = {0, 0, 5, 0, 5, 20, 0, 20};
+    return nex::writeStepString(
+        cybercad::native::construct::build_revolution(
+            p, 4, cybercad::native::construct::RevolveAxis{0.0, 0.0, 0.0, 1.0}, 2.0 * kPi),
+        "cyl");
+}
+
 // ── (J) SCALED assembly — OCCT degrades to rigid; native applies a genuine CTO scale ─
 void runScaledAssembly() {
     // (J1) OCCT-authored 2× scaled component → HONEST report that OCCT CANNOT serialize a
@@ -686,6 +736,78 @@ void runAp242Pmi() {
     compare("ap242", "pmi_box", nat, oracle, 5e-3, 5e-3);
 }
 
+// ── (M) TRIMMED_CURVE edge (T1) — a wrapped CIRCLE rim unwraps to the native arc ──────
+// Author a native cylinder, wrap its CIRCLE rim geometry in a TRIMMED_CURVE (a foreign
+// bounded-curve the native writer never emits), and import it. The NATIVE reader must
+// unwrap the TRIMMED_CURVE onto the basis arc (vertices fix the endpoints) → a watertight
+// cylinder with volume π·r²·h, matching the OCCT re-import of the same file.
+void runTrimmedCurveEdge() {
+    const std::string path = "/tmp/cck_nimport_trimmed_curve.step";
+    writeFile(path, wrapBasisInTrimmedCurve(
+                        nativeCylinderStep(), "CIRCLE",
+                        "(PARAMETER_VALUE(0.0)),(PARAMETER_VALUE(6.2831853)),.T.,.PARAMETER."));
+    const NativeProbe pr = probeNative(path);
+    const double ov = occtStepVolume(path);
+    const double want = kPi * 25.0 * 20.0;  // π·5²·20 ≈ 1570.8
+    char d[320];
+    std::snprintf(d, sizeof d, "native parsed=%d watertight=%d vol=%.6g occtVol=%.6g (want %.6g)",
+                  pr.parsed, pr.parsed && pr.allWatertight, pr.vol, ov, want);
+    const bool volOk = ov > 0 && std::fabs(pr.vol - ov) / ov < 5e-3 &&
+                       std::fabs(pr.vol - want) / want < 5e-3;
+    record(pr.parsed && pr.allWatertight && pr.solids == 1 && volOk, "foreign", "trimmed-curve edge", d);
+    const Props nat = importUnder(1, path);
+    const Props oracle = importUnder(0, path);
+    compare("foreign", "trimmed_curve", nat, oracle, 5e-3, 5e-3);
+}
+
+// ── (N) SURFACE_OF_REVOLUTION → cylinder (T2) — a line ∥ axis reduces to a native Cylinder
+// Rewrite the native cylinder's CYLINDRICAL_SURFACE walls as SURFACE_OF_REVOLUTION of a
+// straight generatrix parallel to the axis. The NATIVE reader's revolvedLine reduction must
+// map it back to the EXACT cylinder → watertight, volume matches the OCCT re-import.
+void runRevolvedCylinder() {
+    const std::string path = "/tmp/cck_nimport_revolved_cyl.step";
+    writeFile(path, revolveSurfaces(nativeCylinderStep(), "CYLINDRICAL_SURFACE",
+                                    "#800001 = CARTESIAN_POINT('',(5.,0.,0.));\n"
+                                    "#800002 = DIRECTION('',(0.,1.,0.));\n"
+                                    "#800003 = VECTOR('',#800002,1.);\n"
+                                    "#800004 = LINE('',#800001,#800003);\n",
+                                    "800004"));
+    const NativeProbe pr = probeNative(path);
+    const double ov = occtStepVolume(path);
+    const double want = kPi * 25.0 * 20.0;
+    char d[320];
+    std::snprintf(d, sizeof d, "native parsed=%d watertight=%d vol=%.6g occtVol=%.6g (want %.6g)",
+                  pr.parsed, pr.parsed && pr.allWatertight, pr.vol, ov, want);
+    const bool volOk = ov > 0 && std::fabs(pr.vol - ov) / ov < 5e-3 &&
+                       std::fabs(pr.vol - want) / want < 5e-3;
+    record(pr.parsed && pr.allWatertight && pr.solids == 1 && volOk, "foreign", "revolution→cylinder", d);
+    const Props nat = importUnder(1, path);
+    const Props oracle = importUnder(0, path);
+    compare("foreign", "revolution_cyl", nat, oracle, 5e-3, 5e-3);
+}
+
+// ── (O) SURFACE_OF_REVOLUTION honest DECLINE (T2) — a non-line generatrix → OCCT ──────
+// A CIRCLE generatrix revolves to a torus / sphere / general revolved surface with no
+// faithful native FaceSurface kind (like TOROIDAL_SURFACE). The NATIVE reader must DECLINE
+// (parse null); cc_step_import must still import via the OCCT fallback matching OCCT-only.
+void runRevolvedDecline() {
+    const std::string path = "/tmp/cck_nimport_revolved_decline.step";
+    writeFile(path, revolveSurfaces(nativeCylinderStep(), "CYLINDRICAL_SURFACE",
+                                    "#800010 = CARTESIAN_POINT('',(10.,0.,0.));\n"
+                                    "#800011 = DIRECTION('',(0.,1.,0.));\n"
+                                    "#800012 = DIRECTION('',(1.,0.,0.));\n"
+                                    "#800013 = AXIS2_PLACEMENT_3D('',#800010,#800011,#800012);\n"
+                                    "#800004 = CIRCLE('',#800013,2.);\n",  // off-axis → torus
+                                    "800004"));
+    const NativeProbe pr = probeNative(path);
+    char d[256];
+    std::snprintf(d, sizeof d, "native parsed=%d (expected 0 — no native torus/general kind)", pr.parsed);
+    record(!pr.parsed, "foreign", "revolution decline", d);
+    const Props nat = importUnder(1, path);     // OCCT fallback
+    const Props oracle = importUnder(0, path);
+    compare("fallback", "revolution_torus", nat, oracle, 5e-3, 5e-3);
+}
+
 }  // namespace
 
 int main() {
@@ -722,6 +844,13 @@ int main() {
     runScaledAssembly();     // T1a: uniform-scale component (native k³; OCCT→rigid)
     runMirroredAssembly();   // T1b: mirrored component (native reflect; OCCT→rigid)
     runAp242Pmi();           // T2 : AP242 file (solid imported, PMI skipped) vs OCCT
+
+    // ── GENERAL SURFACES (this task) — a TRIMMED_CURVE edge + a SURFACE_OF_REVOLUTION
+    //    face the reader previously declined. The cylinder revolution reduces to a native
+    //    Cylinder (watertight, exact volume); a non-line generatrix stays an honest DECLINE.
+    runTrimmedCurveEdge();   // T1 : TRIMMED_CURVE(CIRCLE) edge unwraps → watertight cylinder
+    runRevolvedCylinder();   // T2 : SURFACE_OF_REVOLUTION(line ∥ axis) → native Cylinder
+    runRevolvedDecline();    // T2 : SURFACE_OF_REVOLUTION(circle) → honest DECLINE → OCCT
 
     cc_set_engine(0);  // restore the default engine before we leave
     std::printf("[NIMPORT] DONE  passed=%d failed=%d\n", g_passed, g_failed);

@@ -1790,6 +1790,50 @@ tessellator, `src/engine/**`, and the `cc_*` ABI are PRISTINE; `src/native/**` s
 IGES. #8 `drop-occt` stays blocked (a general STEP/AP242 reader + IGES + a general-curved kernel
 still block it).
 
+### Native STEP IMPORT WIDENED (`add-native-step-general-surfaces`) — TRIMMED_CURVE edges (T1) + a cylinder-reducing SURFACE_OF_REVOLUTION (T2)
+
+Two leaf-geometry families the dispatchers previously declined outright now import natively where
+they reduce to an EXACT native kind and self-verify; everything else DECLINES honestly → OCCT
+(change `add-native-step-general-surfaces`, archived `2026-07-06`, validate --strict green; host
+CTest **29/29** NUMSCI OFF / **36/36** NUMSCI ON, `test_native_step_reader` **26 cases**; sim
+**`[NIMPORT]` 53/53**).
+
+- **LANDED — T1 `TRIMMED_CURVE` edge.** `curve()` accepts `TRIMMED_CURVE('',#basis,trim_1,trim_2,
+  sense,master)`: `trimmedCurve()` unwraps the basis (`LINE`/`CIRCLE`/`ELLIPSE`/
+  `B_SPLINE_CURVE_WITH_KNOTS`, incl. through the SURFACE_CURVE wrapper) onto the native `EdgeCurve`
+  and caches its two `PARAMETER_VALUE` trims. For a **B-spline** basis those trims drive the edge
+  `[first,last]` (`trimmedRange` — the covered knot sub-domain, clamped to the clamped span; a wide /
+  degenerate trim → the full curve), information the endpoint vertices cannot recover. For an
+  **analytic** basis the exact vertex-derived range is kept (trims redundant). `sense_agreement` /
+  `master_representation` are not consulted. Host: `trimmed_curve_line_basis_imports_watertight`,
+  `trimmed_curve_circle_basis_imports_watertight`, `trimmed_curve_bspline_basis_full_span_watertight`.
+  Sim: a foreign OCCT-authored solid whose CIRCLE rim is wrapped in a TRIMMED_CURVE imports NATIVELY
+  watertight — `vol nat=1568.8 occtVol=1570.8 rel=1.27e-3`, bboxΔ=0, faces 9/9 == OCCT re-import.
+- **LANDED — T2 `SURFACE_OF_REVOLUTION` (cylinder case ONLY).** `surface()` accepts
+  `SURFACE_OF_REVOLUTION('',#profile,#axis1)` via `axis1placement` + `surfaceOfRevolution` +
+  `revolvedLine`, mapping it ONLY when the profile is a straight `LINE` **parallel** to the axis → an
+  EXACT native `Cylinder` (radius = ⊥-distance from line to axis, frame on the axis). Host:
+  `surface_of_revolution_line_parallel_maps_to_cylinder`. Sim: `revolution→cylinder` imports
+  NATIVELY watertight `rel=1.27e-3` == OCCT re-import.
+- **DEFERRED — honest DECLINE → OCCT (NOT implemented; no faithful native kind AND/OR not
+  watertight).** The code has **no** `reduceToQuadric` and **no** `revolveToRationalBSpline`: a
+  SURFACE_OF_REVOLUTION of an **oblique** line (a cone — the reader's apex-carrying cone does not
+  round-trip watertight, a pre-existing gap), a **perpendicular** line (a planar annulus), or **any
+  non-line** profile (a circle/arc → sphere/torus, an ellipse/B-spline → general revolved surface)
+  returns `nullopt` → OCCT, kept consistent with the landed `TOROIDAL_SURFACE` decline. Host:
+  `surface_of_revolution_oblique_line_declines`, `surface_of_revolution_circle_generatrix_declines`.
+  Sim: `revolution decline native parsed=0`, OCCT fallback `revolution_torus vol 523.599 rel 0` ==
+  `cc_set_engine(0)`.
+
+**Residual → OCCT after the general-surfaces slice (honest, narrowed):** the DEFERRED revolution
+cases above (cone / sphere / torus / general revolved surface), PMI/GD&T **semantics**,
+**non-uniform-scale / shear** transforms, deep-nested assemblies, Form-B `MAPPED_ITEM`,
+`TOROIDAL_SURFACE`, ellipse-on-quadric solids, a `TRIMMED_CURVE` over an out-of-slice basis,
+foreign arbitrary-rational/weighted B-splines, `BEZIER`, general swept/bounded/offset surfaces,
+non-mm units, all IGES. Exactly 3 files changed (`step_reader.cpp`, `test_native_step_reader.cpp`,
+`native_step_import_parity.mm`); `step_writer.cpp`, tessellator, `src/engine/**`, and the `cc_*` ABI
+PRISTINE; `src/native/**` OCCT-free. #8 `drop-occt` stays blocked.
+
 ### Files (#7)
 
 - `src/native/exchange/step_writer.h` / `step_writer.cpp` — OCCT-free ISO-10303-21 text

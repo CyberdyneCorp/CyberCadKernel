@@ -15,10 +15,12 @@ slice AND the first native STEP IMPORT slice (#7). Phase 4 is therefore **COMPLE
 fully drop-OCCT**: #8 `drop-occt` is BLOCKED because two hard dependencies remain
 research-grade multi-year efforts â (1) a general robust curved boolean / blend
 kernel (arbitrary surface-surface intersection + shape healing) and (2) native
-FULL STEP/IGES IMPORT (the native reader covers only the elementary/B-spline
+a FULL native STEP IMPORT (the native reader covers only the elementary/B-spline
 AP203 subset the writer produces plus foreign OCCT-written box/cylinder; assemblies,
-AP242, complex profiles, and all IGES still fall back to OCCT). Until both exist,
-OCCT stays linked.
+AP242, and complex profiles still fall back to OCCT). **IGES import/export are DESCOPED
+(STEP-only interchange): no native IGES will be built; the `cc_iges_*` ABI stays
+OCCT-backed until `drop-occt`, then removed/stubbed, never reimplemented.** Until both
+the curved kernel and general STEP import exist, OCCT stays linked.
 
 ## Method (locked)
 
@@ -1021,9 +1023,9 @@ longest; a native exchange is lower priority than the modelling core.
 - â #8 `drop-occt` â planned; **NOT reachable** at the current native ceiling. Two
   hard, research-grade multi-year dependencies remain: (1) a general robust curved
   boolean / blend kernel (arbitrary surface-surface intersection + shape healing) and
-  (2) FULL native STEP/IGES IMPORT (a full AP203/AP214/AP242 + IGES parser and B-rep
+  (2) a FULL native STEP IMPORT (a full AP203/AP214/AP242 parser and B-rep
   reconstructor â the native reader today covers only the elementary/B-spline AP203
-  subset; assemblies, AP242, complex profiles, and all IGES still fall back to OCCT). Until BOTH exist, OCCT stays linked
+  subset; assemblies, AP242, and complex profiles still fall back to OCCT. IGES import/export are DESCOPED — STEP-only). Until BOTH exist, OCCT stays linked
   and Phase 4 stands COMPLETE AT ITS ACHIEVABLE NATIVE CEILING, not fully drop-OCCT.
 
 ## Remaining work to drop OCCT â ordered by difficulty (+ effort)
@@ -1039,7 +1041,7 @@ LOC are OCCT's (the port/reference size).
 |---|---|---|---|---|---|
 | 1 | Twist/scale sweep, guided/rail sweep+loft, mismatched loft (self-verify-clean cases) | ~48k (TKOffset/BRepFill) | frame math | ~1â2 w | 0.5â1.5 py |
 | 2 | ~~**Numeric foundations**~~ â **DONE at the bar.** `math_` solvers (Newton/FunctionSetRoot/BFGS) + `Extrema` (45k) + `Adaptor3d` (7k). **NumPP + SciPP ADOPTED** as the OCCT-free substrate (`add-native-numerics`, archived); generic solvers + native closest-point / projection are NATIVE + verified vs OCCT `Extrema` (22/22 `[NNUM]`, dDist â¤ 1.776e-15); SSI stays #5 | ~55k | â | done | **~0.15â0.35 py REALIZED** (was 0.5â1 py) â *~60â75% saving banked; on-ramp to everything below now native* |
-| 3 | STEP/IGES **import** (full AP203/214/242 + IGES parse + reconstruct) â **FIRST NATIVE SLICE DONE at the bar**: OCCT-free Part-21 reader for the elementary/B-spline AP203 subset the native writer emits + foreign OCCT-written box/cylinder, healed via #4, self-verified watertight else â OCCT (`[NIMPORT] 15/15`, host round-trip 9/9 exact). Residual â OCCT: assemblies, AP242, complex profiles, bspline-face solids, all IGES | ~300â600k | uses #4 | done (narrow subset) | 2â4 py |
+| 3 | STEP **import** (AP203/214/242 parse + reconstruct; **IGES DESCOPED — STEP-only**) â **FIRST NATIVE SLICE DONE at the bar**: OCCT-free Part-21 reader for the elementary/B-spline AP203 subset the native writer emits + foreign OCCT-written box/cylinder, healed via #4, self-verified watertight else â OCCT (`[NIMPORT] 15/15`, host round-trip 9/9 exact). Residual â OCCT: assemblies, AP242, complex profiles, bspline-face solids. IGES import/export stay OCCT until `drop-occt`, then removed/stubbed (never native) | ~300â600k | uses #4 | done (narrow subset) | 2â4 py |
 | 4 | **Shape healing** (`ShapeFix`/`ShapeUpgrade`/`ShapeAnalysis`) — **FIRST NATIVE SLICE DONE at the bar**: tolerant sewing + vertex/tolerance unification + degenerate removal + orientation fix, verified vs OCCT `BRepBuilderAPI_Sewing`/`ShapeFix` (`[NHEAL] 4/4`; in-scope soup-cube/flipped-face heal to V=1 watertight matching OCCT; un-healable → honest UNHEALED matching OCCT). **Gates #3 import.** Residual still OCCT: beyond-tol gaps, missing pcurves, self-intersecting wires, arbitrary broken industrial B-rep | 87,647 | — | done (in-scope defect family) | 2–4 py (arbitrary B-rep) |
 | 5 | **SSI + general curved booleans** (`IntPatch`/`IntWalk` 89k + BOPAlgo 76k). **SSI-ROADMAP S1 analytic + S2 subdivision seeding DONE at the bar** (S1: 17 elementary pairs vs OCCT `GeomAPI_IntSS`, `add-native-ssi-analytic` archived; S2: transversal branch recall 1.00 on freeform/skew-quadric pairs, seeds on both surfaces ≤ 3.51e-16); **S3 marching-line tracer is NEXT** | ~165k | #2 | ~w/case | **3â6 py** (clean-room) / ~1.5â3 py (port from OCCT) â *the moat* |
 | 6 | Curved / variable-radius / fillet-face / concave **blends** (`ChFi3d`) | 95,710 | #5 | ~w/case | 2â4 py |

@@ -123,8 +123,8 @@ seeding / subdivision, and tangent / coincident-surface robustness (OCCT `IntPat
 state this split truthfully: `native-numerics` is the numeric **substrate** plus the
 closest-point / projection **on-ramp** to SSI; the hard SSI core is NOT bought by adopting
 NumPP/SciPP (the eval's EXP2b naive-seed 0/7 and EXP2c near-tangent both-solver-fail are the
-evidence) and remains the moat that, with shape healing and STEP/IGES import, blocks #8
-`drop-occt`.
+evidence) and remains the moat that, with shape healing and general STEP import, blocks #8
+`drop-occt` (IGES is descoped — STEP-only interchange).
 
 #### Scenario: No SSI / curved-boolean code path is added
 - GIVEN the `native-numerics` change

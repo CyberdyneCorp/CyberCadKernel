@@ -396,7 +396,7 @@ the numeric oracle; native code is host-buildable (OCCT-free).
   holed-plate 6457 B); a foreign OCCT-built body falls through to OCCT `STEPControl_Writer`
   (re-read relV 0.00e+00). No regressions (`run-sim-suite.sh` 221/221 against a rebuilt sim
   slice, `test_native_tessellate` green); archived to `openspec/specs/native-exchange`.
-  STILL OCCT (never faked, out of scope): **STEP import**, **IGES export/import**, and an
+  STILL OCCT (never faked): general **STEP import** (AP242/assemblies; the AP203 subset is native), and an
   out-of-scope geometry kind (Ellipse/Bezier curve, rational spline, Bezier surface).
   Change **`add-native-stl-exchange`** extends the capability with native OCCT-free **STL**:
   `cc_stl_export(body, path, deflection, binary)` serializes the reused tessellation
@@ -433,7 +433,7 @@ the numeric oracle; native code is host-buildable (OCCT-free).
   **`drop-occt`** would retire the OCCT adapter, but it requires EVERY `cc_*` path to be
   native. Two hard dependencies remain research-grade multi-year efforts: (1) a general
   robust curved boolean / blend kernel (arbitrary surface-surface intersection + shape
-  healing) and (2) native STEP/IGES IMPORT (the #7 slice delivered EXPORT only). Until
+  healing) and (2) general native STEP IMPORT (a first AP203 import slice landed; IGES DESCOPED, STEP-only). Until
   both exist, OCCT stays linked and **Phase 4 stands COMPLETE AT ITS ACHIEVABLE NATIVE
   CEILING, not fully drop-OCCT.**
 

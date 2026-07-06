@@ -2465,7 +2465,7 @@ All from the 4 corner nodes (so `quality(C3D10) == quality(C3D4)` of its corners
 
 Phase 4 is **COMPLETE AT ITS ACHIEVABLE NATIVE CEILING**, NOT fully drop-OCCT. The tractable
 native slice of every planned capability now runs native at the verification bar; what
-remains is research-grade (a general robust curved kernel + native STEP/IGES import) and is
+remains is research-grade (a general robust curved kernel + general native STEP import; IGES descoped, STEP-only) and is
 NOT reachable in this program's horizon.
 
 **NATIVE at the bar (both gates green):**
@@ -2504,9 +2504,9 @@ self-verify / `canSerialize` gate defers), never faked.
 implementation. Two hard dependencies remain, and both are research-grade multi-year efforts,
 not incremental slices: (1) a **general robust curved boolean / blend kernel** (arbitrary
 surface-surface intersection with exact tolerance handling — the single hardest problem in solid
-modelling, plus the healing that goes with it), and (2) **native STEP/IGES IMPORT** (a full
-AP203/AP214 + IGES parser and B-rep reconstructor — the native slice deliberately did EXPORT
-only). Until both exist, OCCT stays linked. Phase 4 therefore stops HONESTLY at its native
+modelling, plus the healing that goes with it), and (2) **general native STEP IMPORT** (a full
+AP203/AP214/AP242 parser + B-rep reconstructor — a first AP203 import slice has landed;
+**IGES is DESCOPED, STEP-only**). Until both exist, OCCT stays linked. Phase 4 therefore stops HONESTLY at its native
 ceiling: the tractable analytic / planar / export slices are native and verified; the
 general-curved and import frontier is explicitly deferred and remains OCCT-backed.
 

@@ -550,5 +550,6 @@ as S1 (elementary) or S3 (freeform) curves are available.
   (S4-c march-through-tangency, S4-d branch points, S4-e singularities, S4-f
   self-intersection) is the remaining tail — a `NearTangentTransversal` is typed
   and handed to OCCT, never traced natively yet.
-- Shape healing (#4) and STEP/IGES import (#3) remain **separate parallel tracks**
-  also gating `drop-occt`; they are not part of this SSI roadmap.
+- Shape healing (#4) and STEP import (#3) remain **separate parallel tracks**
+  also gating `drop-occt` (both have landed first native slices); IGES is DESCOPED
+  (STEP-only). They are not part of this SSI roadmap.

@@ -1,130 +1,36 @@
-# native-exchange Specification
+# native-exchange
 
-## Purpose
-TBD - created by archiving change add-native-data-exchange. Update Purpose after archive.
-## Requirements
-### Requirement: Native STEP AP203 export of a native-representable solid
+This change (Phase 4 #7) **widens the working native STEP import reader** (landed by
+`add-native-step-import` and widened by `widen-native-step-import`) from a **flat** multi-solid
+`Compound` to a **placed** `Compound`: it parses the STEP assembly transform tree
+(`NEXT_ASSEMBLY_USAGE_OCCURRENCE` /
+`REPRESENTATION_RELATIONSHIP[_WITH_TRANSFORMATION]` + `ITEM_DEFINED_TRANSFORMATION`, and/or
+`MAPPED_ITEM` + `REPRESENTATION_MAP`), composes each component's **rigid** placement
+(rotation + translation, from the `AXIS2_PLACEMENT_3D` pair) into a native
+`topology::Location` (`math::Transform`), applies it per component `MANIFOLD_SOLID_BREP` via
+`Shape::located()`, and returns a placed `Compound`. It also **confirms + regression-pins**
+that AP214 (`AUTOMOTIVE_DESIGN`) / AP242 `FILE_SCHEMA` headers are accepted (the reader was
+already schema-independent — it enters at `DATA;` and never gated on the schema string). No
+`cc_*` ABI change; the default engine stays OCCT. The STEP writer (`step_writer.cpp`) and the
+tessellator are NOT modified. The native topology already models a placed sub-shape (a located
+node resolves world coordinates by composing its `Location` down the graph), so a placed solid
+tessellates + self-verifies watertight unchanged — no tessellator arm is added.
 
-The native exchange library SHALL serialize a native-built solid (`topology::Shape` of
-type `Solid`) to a valid **ISO 10303-21** (STEP AP203) exchange file when the solid is
-**native-representable** — it contains a closed / manifold `Shell` whose faces carry a
-`FaceSurface` of kind `Plane`, `Cylinder`, `Cone`, `Sphere`, or `BSpline`, and whose edges
-carry an `EdgeCurve` of kind `Line`, `Circle`, or `BSpline`. The emitted file SHALL
-contain (a) the ISO-10303-21 framing (`ISO-10303-21;` … `HEADER;` … `DATA;` … `ENDSEC;` …
-`END-ISO-10303-21;`) with a `FILE_SCHEMA` naming the AP203 configuration-controlled-3d
-schema; (b) a **millimetre** unit context (`SI_UNIT(.MILLI.,.METRE.)` length plus plane /
-solid angle units, an `UNCERTAINTY_MEASURE_WITH_UNIT`, and a
-`GEOMETRIC_REPRESENTATION_CONTEXT`); (c) the Part-42 B-rep entity graph — exactly one
-`MANIFOLD_SOLID_BREP` referencing one `CLOSED_SHELL`, one `ADVANCED_FACE` per native face
-whose surface entity matches the native `FaceSurface::kind` (`PLANE` /
-`CYLINDRICAL_SURFACE` / `CONICAL_SURFACE` / `SPHERICAL_SURFACE` / `B_SPLINE_SURFACE`), each
-face bounded by `FACE_OUTER_BOUND` / `FACE_BOUND` → `EDGE_LOOP` → `ORIENTED_EDGE` →
-`EDGE_CURVE` with `LINE` / `CIRCLE` / `B_SPLINE_CURVE_WITH_KNOTS` curves and `VERTEX_POINT`
-/ `CARTESIAN_POINT` / `DIRECTION` leaves; and (d) the AP203 product / context wrapper
-(`APPLICATION_CONTEXT` … `PRODUCT_DEFINITION` …) with an
-`ADVANCED_BREP_SHAPE_REPRESENTATION` binding the `MANIFOLD_SOLID_BREP` to the mm context.
-All coordinates SHALL be in **true millimetres**. Shared native nodes (a `CARTESIAN_POINT`,
-`DIRECTION`, `VERTEX_POINT`, or an `EDGE_CURVE` used by two adjacent faces) SHALL emit ONE
-deduplicated entity record, and every `#n` reference SHALL be defined before it is used (no
-dangling forward reference). This writer SHALL remain OCCT-free and host-buildable and
-SHALL reference no OCCT / `IEngine` / `EngineShape` type.
+> NOTE (honest scope): this WIDENS the working import slice to **rigid, single-level
+> assemblies of in-slice solids**; it is NOT a general product-structure importer. A
+> **non-rigid / scaled / mirrored** placement transform, a **deep multi-level nested** product
+> structure, an **external part reference**, a component whose geometry is out of the import
+> slice (`TOROIDAL_SURFACE`, `SURFACE_OF_REVOLUTION`, rational/weighted B-splines, `BEZIER`),
+> a placement chain the reader **cannot compose**, PMI / GD&T / colours / names, non-mm units,
+> and non-manifold / unhealable component B-reps all still DECLINE → OCCT
+> `STEPControl_Reader`. IGES import/export stay OCCT `IGESControl_*`. A general native
+> STEP/AP242 reader + IGES + a general-curved kernel still block #8 `drop-occt`; this change
+> does NOT unblock it. **No placement or solid is ever fabricated: the reader composes only
+> the transforms the file carries and maps only the solids it genuinely supports; a structure
+> it cannot compose to a rigid placement for every component DECLINES rather than defaulting a
+> component to identity or inventing geometry. No tolerance is weakened.**
 
-#### Scenario: A native box exports a well-formed AP203 STEP file with mm units (host)
-- GIVEN a native-built axis-aligned box `Solid` (six `Plane` faces, `Line`-edged loops), built on the host with no OCCT
-- WHEN the native writer serializes it to an ISO-10303-21 buffer
-- THEN the buffer SHALL be framed `ISO-10303-21;` … `END-ISO-10303-21;` with a `FILE_SCHEMA` naming the AP203 schema and a `SI_UNIT(.MILLI.,.METRE.)` length unit AND SHALL contain exactly one `MANIFOLD_SOLID_BREP` referencing one `CLOSED_SHELL` with six `ADVANCED_FACE`s over `PLANE` surfaces AND every `#n` reference SHALL resolve
-
-#### Scenario: A native cylinder emits the correct curved surface and circle edge entities (host)
-- GIVEN a native-built cylinder `Solid` (a `Cylinder` lateral face + two `Plane` caps bounded by `Circle` edges), built on the host with no OCCT
-- WHEN the native writer serializes it
-- THEN the lateral `ADVANCED_FACE` SHALL reference a `CYLINDRICAL_SURFACE` (placement + radius in mm) AND the cap boundary edges SHALL be `EDGE_CURVE`s over `CIRCLE` curves AND the two caps SHALL share the same `VERTEX_POINT` / `EDGE_CURVE` records with the lateral face (deduplicated shared nodes)
-
-#### Scenario: A native B-spline-surfaced solid emits B_SPLINE entities (host)
-- GIVEN a native-built solid with a `FaceSurface::Kind::BSpline` face and `BSpline` edges, built on the host with no OCCT
-- WHEN the native writer serializes it
-- THEN the face SHALL reference a `B_SPLINE_SURFACE_WITH_KNOTS` (degrees, control-point grid, knots + multiplicities; weight-wrapped when rational) AND its boundary curves SHALL be `B_SPLINE_CURVE_WITH_KNOTS` entities, all with coordinates in mm
-
-### Requirement: Native STEP export is native-else-fallback, guarded by an OCCT-read round-trip self-check
-
-`NativeEngine::step_export(body, path)` SHALL, when `body` is a native body, attempt the
-native writer; when the writer returns a non-empty buffer it SHALL write the buffer to
-`path` and then run a **mandatory OCCT-read round-trip self-check**: OCCT
-`STEPControl_Reader` SHALL re-read the written file, the reconstructed shape SHALL be a
-**valid** single solid (`BRepCheck`), and its **volume**, **bounding box**, and
-**sub-shape counts / topology** SHALL match the source native solid within tolerance (the
-SOLID geometrically identical, up to OCCT's shared / periodic representation). Only when
-the self-check passes SHALL `step_export` return `1` (per the `cc_step_export` contract).
-If the native writer DECLINES (empty buffer — an unrepresentable / non-manifold solid), or
-the round-trip self-check FAILS, or `body` is a foreign / OCCT-built solid, the engine
-SHALL **DISCARD** any native file and fall through to OCCT `STEPControl_Writer` (labelled)
-— except that a native body which DECLINEs (no OCCT B-rep available to serialize) SHALL
-report an honest failure (`0`) rather than a faked or lossy file. The engine SHALL NEVER
-leave a STEP file on disk that re-reads as a different or invalid solid. The native writer
-and the round-trip check SHALL keep OCCT behind `CYBERCAD_HAS_OCCT`; on the host the
-structural buffer tests stand in for the round-trip. This SHALL NOT change the `cc_*` ABI
-and SHALL NOT change the default engine (stays OCCT).
-
-#### Scenario: A native STEP file re-reads through OCCT to the same solid (parity — the correctness gate)
-- GIVEN a native-representable solid and the native engine active (`cc_set_engine(1)`) on a booted iOS simulator (OCCT linked)
-- WHEN `cc_step_export(body, path)` writes the file and OCCT `STEPControl_Reader` re-reads it
-- THEN `cc_step_export` SHALL return `1` AND the round-tripped shape SHALL be a valid single solid whose volume / bbox / sub-shape counts / topology match the source native solid within tolerance (with OCCT `STEPControl_Writer` under `cc_set_engine(0)` as the oracle)
-
-#### Scenario: A native file that fails the round-trip self-check is discarded and re-exported by OCCT (parity)
-- GIVEN a native export whose written file, when re-read by OCCT `STEPControl_Reader`, yields an invalid shape OR a volume / bbox / topology outside tolerance
-- WHEN the mandatory self-check is applied
-- THEN the engine SHALL DISCARD the native file and re-export via OCCT `STEPControl_Writer` (labelled) AND SHALL NOT leave a native file that reads back as a different or invalid solid
-
-#### Scenario: A foreign or unrepresentable solid falls through to OCCT (host + parity)
-- GIVEN `cc_step_export` of a foreign / OCCT-built solid, OR of a native solid with an `Ellipse` edge / an un-down-converted `Bezier` surface / a non-manifold shell, with the native engine active
-- WHEN `cc_step_export` is invoked
-- THEN the native writer SHALL return an empty buffer (DECLINE) AND (for a foreign body) the file SHALL be written by OCCT `STEPControl_Writer` identical to `cc_set_engine(0)`, proving fall-through with no native interception (a native unrepresentable body reports an honest `0`, never a faked file)
-
-### Requirement: STEP import and IGES export/import stay OCCT (out of scope, honest)
-
-Native IGES import and export SHALL be DESCOPED (STEP-only interchange): no native IGES
-reader or writer SHALL ever be built. `cc_iges_export` and `cc_iges_import` SHALL remain
-unconditional fall-throughs to the OCCT engine (`IGESControl_*`) under both engine
-settings — the `cc_*` ABI SHALL be preserved (additive-only) — and at `#8 drop-occt` the
-`cc_iges_*` entries SHALL be removed/stubbed (return `0`/`nil`), NOT reimplemented
-natively. Native STEP import HAS landed as a first slice (the AP203 manifold-solid-brep
-subset — see the native-STEP-import requirements), so STEP SHALL be the SOLE native
-interchange format; IGES SHALL NOT be a `drop-occt` blocker, and the remaining
-`drop-occt` exchange work SHALL be a general STEP/AP242 reader on top of the landed AP203
-slice.
-
-#### Scenario: STEP import is native-first-slice, else OCCT (parity)
-- GIVEN a STEP file on a booted iOS simulator
-- WHEN `cc_step_import(path)` is called with the native engine active (`cc_set_engine(1)`) and with the OCCT default (`cc_set_engine(0)`)
-- THEN a writer-emitted AP203 manifold-solid-brep subset file SHALL be read by the native reader (self-verified watertight) matching the OCCT `STEPControl_Reader` result within tolerance, and any out-of-scope file SHALL decline to OCCT — never a fabricated shape
-
-#### Scenario: IGES export and import are identical under both engines (parity), pending descope
-- GIVEN a solid and an IGES file on a booted iOS simulator
-- WHEN `cc_iges_export(body, path)` and `cc_iges_import(path)` are called with the native engine active and with the OCCT default
-- THEN the results SHALL be identical under both engines (IGES stays OCCT `IGESControl_*`; the native engine intercepts neither), and at `drop-occt` the `cc_iges_*` entries SHALL be removed/stubbed rather than reimplemented natively
-
-### Requirement: STEP export parity and existing suites through the facade (simulator gate)
-
-The change SHALL be verified on a booted iOS simulator (OCCT linked) through the `cc_*`
-facade: the native-write / OCCT-read round-trip (above) SHALL be the correctness gate for
-native-representable solids, and the OCCT `STEPControl_Writer` export under
-`cc_set_engine(0)` SHALL be the oracle. The fall-through cases (a foreign / OCCT-built
-solid, an unrepresentable native solid) SHALL be asserted to produce a valid OCCT-written
-file identical to `cc_set_engine(0)` (fall-through proof), and `cc_step_import` /
-`cc_iges_export` / `cc_iges_import` SHALL be asserted identical under both engines. The
-parity test SHALL restore the OCCT default in teardown and SHALL carry its own `main()`
-(on the `run-sim-suite.sh` SKIP list) so the 221-assertion suite count is unchanged. Every
-existing suite (`scripts/run-sim-suite.sh` 221/221, host CTest, GPU / Phase-3) SHALL stay
-green at the OCCT default.
-
-#### Scenario: Native STEP export matches the OCCT oracle round-trip (parity)
-- GIVEN native-built solids (box / cylinder / a down-convertible B-spline solid) on a booted iOS simulator
-- WHEN each is exported with the native engine active and its file re-read by OCCT `STEPControl_Reader`, and the same solid is exported with OCCT `STEPControl_Writer` under `cc_set_engine(0)`
-- THEN the native-written file's round-tripped shape SHALL match the source solid within tolerance AND agree with the OCCT-oracle export (volume / bbox / topology), proving the native STEP file is faithful
-
-#### Scenario: Existing suites stay green at the OCCT default
-- GIVEN this change applied on an OCCT build with the engine left at its default
-- WHEN `scripts/run-sim-suite.sh`, host CTest, and the GPU / Phase-3 suites are run
-- THEN all SHALL stay green (`run-sim-suite.sh` 221/221) with no behavioural change from before this change
+## MODIFIED Requirements
 
 ### Requirement: Native STEP AP203 import of a writer-emitted manifold-solid-brep
 
@@ -292,88 +198,7 @@ remain UNCHANGED. This SHALL NOT change the `cc_*` ABI and SHALL NOT change the 
 - WHEN `cc_step_import(path)` is called
 - THEN `step_import_native` SHALL return NULL (DECLINE) AND the file SHALL be imported by OCCT `STEPControl_Reader` identical to `cc_set_engine(0)`, proving fall-through with no native interception and no fabricated geometry
 
-### Requirement: IGES import/export and the STEP writer stay unchanged (out of scope, honest)
-
-IGES import and export SHALL be DESCOPED (STEP-only decision): no native `cc_iges_export`
-/ `cc_iges_import` path SHALL be built; `NativeEngine::iges_export` /
-`NativeEngine::iges_import` SHALL remain unconditional OCCT fall-throughs, removed/stubbed
-at `drop-occt`. This change SHALL NOT modify the native STEP writer (`step_writer.cpp`) or
-the tessellator — native STEP import inverts what the writer already produces. Native STEP
-import of the writer-emitted AP203 manifold-solid-brep subset SHALL be recognised as the
-landed first import slice; a general STEP/AP242 reader + a general-curved kernel are what
-still block `#8 drop-occt` — IGES SHALL NOT be on that list.
-
-#### Scenario: IGES import/export are identical under both engines (parity), pending descope
-- GIVEN a solid and an IGES file on a booted iOS simulator
-- WHEN `cc_iges_export(body, path)` and `cc_iges_import(path)` are called with the native engine active (`cc_set_engine(1)`) and with the OCCT default (`cc_set_engine(0)`)
-- THEN the results SHALL be identical under both engines (IGES stays OCCT `IGESControl_*`; the native engine intercepts neither) until `drop-occt` removes/stubs them
-
-#### Scenario: The STEP writer and tessellator are byte-for-byte unchanged
-- GIVEN this change applied
-- WHEN `step_export_native` serializes a native solid and the tessellator meshes it
-- THEN their output SHALL be identical to before this change (this descope is documentation-only; it reads/changes no code and does not alter the writer or the tessellator)
-
-### Requirement: Native STEP import verification and existing suites through the facade
-
-The change SHALL be verified by (a) a **host round-trip** (OCCT-free): a native solid →
-`step_export_native` → `step_import_native` → tessellate reconstructs the SAME solid
-(volume / bbox / topology EXACT), plus Part-21 tokenizer unit cases and DECLINE cases
-returning NULL; and (b) a **simulator sim-vs-OCCT** gate (OCCT linked) through the `cc_*`
-facade: importing a native-written file with the native reader and with OCCT
-`STEPControl_Reader` agree within tolerance, a foreign OCCT-written STEP imports natively and
-agrees with the OCCT re-import, and out-of-scope files fall through to OCCT identical to
-`cc_set_engine(0)`. The parity test SHALL restore the OCCT default in teardown and SHALL
-carry its own `main()` (on the `run-sim-suite.sh` SKIP list) so the suite assertion count is
-unchanged. Every existing suite (`scripts/run-sim-suite.sh`, host CTest, GPU / Phase-3) and
-every prior native capability (the STEP export slice, shape healing, SSI S1–S4, S5
-native-pass=6, native blends + #6/#7, marching, boolean, construct, tessellation) SHALL stay
-green at the OCCT default with no regression.
-
-#### Scenario: Host round-trip reconstructs native solids exactly (host)
-- GIVEN native-built solids (a box, a cylinder / capped cylinder, a holed / typed-profile solid) on the host with no OCCT
-- WHEN each is exported by `step_export_native` and re-imported by `step_import_native`
-- THEN each imported solid SHALL be valid + watertight with volume / bbox / face+edge+vertex counts / topology matching the original EXACTLY (the reader inverts the writer)
-
-#### Scenario: Existing suites and prior native capabilities stay green (no regression)
-- GIVEN this change applied on an OCCT build with the engine left at its default
-- WHEN `scripts/run-sim-suite.sh`, host CTest, and the GPU / Phase-3 suites are run
-- THEN all SHALL stay green with no behavioural change, and the STEP export slice, shape healing, SSI S1–S4, S5 native-pass=6, native blends + #6/#7, marching, boolean, construct, and tessellation SHALL NOT regress
-
-### Requirement: Native STEP import widening covers foreign ELLIPSE edges and multi-solid compounds, verified vs OCCT
-
-The widening SHALL be verified by (a) **host** unit / round-trip cases (OCCT-free): an
-`ELLIPSE` edge maps to `EdgeCurve::Kind::Ellipse` (major/minor from the two semi-axes) and a
-degenerate ellipse DECLINEs; a `TOROIDAL_SURFACE` face DECLINEs; a two-root buffer imports as
-a `Compound` of two `Solid`s while a single-root buffer still returns a `Solid` and a nested
--assembly buffer DECLINEs; and (if a non-fabricated native op builds a watertight bspline-face
-solid) a B-spline-face export→import round-trip is EXACT (degrees / row-major poles / RLE
-knots / volume within analytic tolerance), else documented as skipped with no fixture
-fabricated; and (b) a **simulator sim-vs-OCCT** gate (OCCT linked) through the `cc_*` facade:
-a FOREIGN OCCT-authored solid with an `ELLIPSE` edge imports natively and agrees with the OCCT
-re-import within tolerance; a FOREIGN OCCT-authored 2-solid compound imports natively as a
-compound whose per-solid mass properties / bbox / count match the OCCT re-import; and a
-`TOROIDAL_SURFACE` foreign file DECLINEs natively and imports via OCCT identical to
-`cc_set_engine(0)`. The parity test SHALL restore the OCCT default in teardown and SHALL carry
-its own `main()` (on the `run-sim-suite.sh` SKIP list) so the suite assertion count is
-unchanged. Every existing suite (`scripts/run-sim-suite.sh`, host CTest, GPU / Phase-3) and
-every prior native capability (the STEP export slice, the first STEP import slice, shape
-healing, SSI S1–S4, S5 native-pass, native blends + #6/#7, marching, boolean, construct,
-tessellation) SHALL stay green at the OCCT default with no regression.
-
-#### Scenario: A foreign OCCT-authored ellipse-edge solid imports natively and matches OCCT (T1, sim)
-- GIVEN a solid carrying an `ELLIPSE` edge authored by OCCT `STEPControl_Writer` (the native writer emits no ellipse), on a booted iOS simulator with the native engine active (`cc_set_engine(1)`)
-- WHEN `cc_step_import(path)` imports it natively AND OCCT `STEPControl_Reader` imports the same file
-- THEN the native import SHALL return a valid, watertight solid whose volume / bounding box match the OCCT re-import within tolerance, proving the native reader reads a foreign-authored ELLIPSE the writer never produced
-
-#### Scenario: The B-spline-face round-trip is closed only if a non-fabricated fixture exists (T3, host)
-- GIVEN the reader's `B_SPLINE_SURFACE_WITH_KNOTS` / `B_SPLINE_CURVE_WITH_KNOTS` mapping and the deferred round-trip task 7.4
-- WHEN an existing native construct op is checked for a watertight bspline-face solid
-- THEN IF one is genuinely constructible the round-trip SHALL be added and asserted EXACT (degrees / poles / knots / volume within analytic tolerance), ELSE the round-trip SHALL be recorded as an honest skip and NO bspline-face fixture SHALL be fabricated and the STEP writer SHALL NOT be modified to synthesize one
-
-#### Scenario: Existing suites and prior native capabilities stay green (no regression)
-- GIVEN this change applied on an OCCT build with the engine left at its default
-- WHEN `scripts/run-sim-suite.sh`, host CTest, and the GPU / Phase-3 suites are run
-- THEN all SHALL stay green with no behavioural change, and the STEP export slice, the first STEP import slice, shape healing, SSI S1–S4, S5 native-pass, native blends + #6/#7, marching, boolean, construct, and tessellation SHALL NOT regress
+## ADDED Requirements
 
 ### Requirement: Native STEP import placed-assembly widening verified vs OCCT
 
@@ -417,4 +242,3 @@ construct, tessellation) SHALL stay green at the OCCT default with no regression
 - GIVEN this change applied on an OCCT build with the engine left at its default
 - WHEN `scripts/run-sim-suite.sh`, host CTest, and the GPU / Phase-3 suites are run
 - THEN all SHALL stay green with no behavioural change, and the STEP export slice, the flat multi-solid + ELLIPSE + bspline-face import slices, shape healing, SSI S1–S5, native blends + #6/#7, marching, boolean, construct, and tessellation SHALL NOT regress
-

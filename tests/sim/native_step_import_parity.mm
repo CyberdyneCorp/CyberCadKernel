@@ -51,6 +51,11 @@
 #include <STEPControl_Writer.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <TopoDS_Shape.hxx>
+#include <TopoDS_Compound.hxx>
+#include <TopLoc_Location.hxx>
+#include <BRep_Builder.hxx>
+#include <gp_Ax1.hxx>
+#include <gp_Vec.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <BRepGProp.hxx>
@@ -374,6 +379,80 @@ void runSplineFaceRoundTrip() {
     record(pr.parsed && pr.allWatertight && pr.solids == 1 && volOk, "native", "splineface roundtrip", d);
 }
 
+// ── (H) TRANSFORMED ASSEMBLY — two boxes placed via the transform tree ───────────
+// Author a genuine 2-component assembly: a Compound of two boxes where the SECOND box
+// carries a rigid TopLoc_Location (rotate 0.5 rad about Z + translate) that is NOT
+// baked into its geometry — so STEPControl_Writer emits the placement through the
+// transform tree (CONTEXT_DEPENDENT_SHAPE_REPRESENTATION → REP_REL_WITH_TRANSFORMATION
+// → ITEM_DEFINED_TRANSFORMATION AXIS2 pair), NOT as world-baked coordinates. The
+// NATIVE reader must parse that tree and import a PLACED Compound; we compare the
+// native import vs the OCCT re-import on solid COUNT, TOTAL volume, and per-solid
+// world bbox (compare() already covers mass+bbox+topology through cc_step_import).
+void runTransformedAssembly() {
+    const std::string path = "/tmp/cck_nimport_assembly.step";
+    TopoDS_Shape a = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 10, 10, 10).Shape();  // root, 1000
+    TopoDS_Shape bLocal = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 6, 6, 6).Shape(); // local 6-cube
+    // A rigid placement carried as a Location (NOT baked): rotate 0.5 rad about Z at
+    // the origin, then translate to (30,5,0). The child brep geometry stays local; the
+    // IDT AXIS2 pair carries the real transform.
+    gp_Trsf rot; rot.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 0.5);
+    gp_Trsf trans; trans.SetTranslation(gp_Vec(30, 5, 0));
+    gp_Trsf place = trans * rot;
+    TopoDS_Shape b = bLocal.Located(TopLoc_Location(place));
+
+    // Assemble a Compound (two components) so the writer emits the assembly tree.
+    TopoDS_Compound comp;
+    BRep_Builder bb; bb.MakeCompound(comp);
+    bb.Add(comp, a);
+    bb.Add(comp, b);
+
+    STEPControl_Writer w;
+    if (w.Transfer(comp, STEPControl_AsIs) != IFSelect_RetDone ||
+        w.Write(path.c_str()) != IFSelect_RetDone) {
+        record(false, "assembly", "author", "OCCT assembly write failed"); return;
+    }
+
+    // Native reader probe: must parse a placed Compound of two watertight solids whose
+    // TOTAL volume matches the OCCT oracle (1000 + 216 = 1216).
+    const NativeProbe pr = probeNative(path);
+    const double ov = occtStepVolume(path);
+    char d[320];
+    std::snprintf(d, sizeof d, "native parsed=%d compound=%d solids=%d nativeVol=%.6g occtVol=%.6g",
+                  pr.parsed, pr.compound, pr.solids, pr.vol, ov);
+    const bool volOk = ov > 0 && std::fabs(pr.vol - ov) / ov < 5e-3;
+    record(pr.parsed && pr.compound && pr.solids == 2 && pr.allWatertight && volOk,
+           "assembly", "placed native", d);
+
+    // Through the facade: native import (placed compound) vs OCCT re-import.
+    const Props nat = importUnder(1, path);
+    const Props oracle = importUnder(0, path);
+    compare("assembly", "two_box", nat, oracle, 5e-3, 5e-3);
+}
+
+// ── (I) FOREIGN AP214 header accepted — schema-independent import ─────────────────
+// STEPControl_Writer emits an AP214 (AUTOMOTIVE_DESIGN) FILE_SCHEMA in this OCCT
+// build. A single OCCT-authored box therefore proves the NATIVE reader accepts an
+// AP214 header (it enters at DATA; and never gates on FILE_SCHEMA). Confirmed
+// schema-independent, not newly gated.
+void runAp214Header() {
+    const std::string path = "/tmp/cck_nimport_ap214_box.step";
+    TopoDS_Shape box = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 10, 10, 10).Shape();
+    if (!occtWriteStep(box, path)) { record(false, "assembly", "ap214 author", "OCCT write failed"); return; }
+    // Verify the authored header really is AP214 (AUTOMOTIVE_DESIGN), so this test
+    // genuinely exercises a non-AP203 schema.
+    bool isAp214 = false;
+    if (FILE* f = std::fopen(path.c_str(), "rb")) {
+        std::string txt; char buf[4096]; size_t n;
+        while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) txt.append(buf, n);
+        std::fclose(f);
+        isAp214 = txt.find("AUTOMOTIVE_DESIGN") != std::string::npos;
+    }
+    const NativeProbe pr = probeNative(path);
+    char d[256];
+    std::snprintf(d, sizeof d, "header=AP214(%d) native parsed=%d solids=%d", isAp214, pr.parsed, pr.solids);
+    record(isAp214 && pr.parsed && pr.solids == 1 && pr.allWatertight, "assembly", "ap214 header", d);
+}
+
 }  // namespace
 
 int main() {
@@ -395,6 +474,11 @@ int main() {
     runEllipseCut();         // T1a: ELLIPSE edge (foreign slant-cut cylinder) — honest probe
     runMultiSolid();         // T2 : flat 2-solid file → native Compound of solids
     runSplineFaceRoundTrip();// T3 : native B_SPLINE_SURFACE-face solid round-trip (exact)
+
+    // ── ASSEMBLIES (this slice) — a TRANSFORMED assembly imports as a placed
+    //    Compound vs OCCT; an AP214 foreign header is accepted (schema-independent).
+    runTransformedAssembly();// two boxes placed via the transform tree → placed compound
+    runAp214Header();        // foreign AP214 (AUTOMOTIVE_DESIGN) header accepted
 
     cc_set_engine(0);  // restore the default engine before we leave
     std::printf("[NIMPORT] DONE  passed=%d failed=%d\n", g_passed, g_failed);

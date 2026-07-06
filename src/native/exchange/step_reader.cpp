@@ -343,10 +343,15 @@ class Mapper {
   // not reconstruct).
   topo::Shape build() {
     if (!validateUnitContext()) return {};
-    // A TRANSFORMED assembly (NEXT_ASSEMBLY_USAGE_OCCURRENCE / MAPPED_ITEM /
-    // REPRESENTATION_RELATIONSHIP*) carries per-instance placements the writer's
-    // entity set does not model → decline to OCCT rather than drop the transforms.
-    if (hasNestedAssembly()) return {};
+    // A TRANSFORMED assembly (a REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION /
+    // ITEM_DEFINED_TRANSFORMATION tree) places each MANIFOLD_SOLID_BREP through a
+    // rigid transform. Parse that tree, compose a native Location per root, and
+    // return a PLACED Compound. Anything not composable (Form-B MAPPED_ITEM, a
+    // non-rigid/scaled transform, an out-of-slice component, or a broken structure)
+    // sets fail_ → NULL → OCCT. The flat multi-solid + single-solid paths below are
+    // byte-identical: only a present transform tree takes this branch (which
+    // previously returned NULL, so no accepting path can regress).
+    if (hasNestedAssembly()) return assembly();
 
     const std::vector<int> brepIds = findManifoldBreps();
     if (brepIds.empty() || fail_) return {};
@@ -439,6 +444,171 @@ class Mapper {
         return true;
     }
     return false;
+  }
+
+  // ── Assembly transform tree (Form A: IDT / REP_REL_WITH_TRANSFORMATION) ───────
+  //
+  // OCCT's STEPControl_Writer emits, per placed component, a
+  // CONTEXT_DEPENDENT_SHAPE_REPRESENTATION → (REPRESENTATION_RELATIONSHIP +
+  // REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION + SHAPE_REPRESENTATION_RELATIONSHIP)
+  // combined instance whose transform is an ITEM_DEFINED_TRANSFORMATION carrying a
+  // FROM/TO AXIS2_PLACEMENT_3D pair. The rigid placement is
+  //   T = frameToWorld(to) ∘ frameToWorld(from)⁻¹.
+  // We seed every MANIFOLD_SOLID_BREP at identity, apply each component's T to the
+  // brep reached through its CHILD shape-representation's item list, then return a
+  // placed Compound (single root → the placed solid). Any structure we cannot
+  // compose exactly (Form-B MAPPED_ITEM, a non-rigid/scaled/mirrored transform, an
+  // out-of-slice component, an under- or over-constrained brep) sets fail_ → NULL →
+  // OCCT. We never invent a placement the file did not describe.
+
+  // frameToWorld(Ax3): the affine map taking local coords in the placement frame to
+  // world — linear columns are the frame's X/Y/Z axes, translation is its origin.
+  static math::Transform frameToWorld(const math::Ax3& f) {
+    const math::Vec3 x = f.x.vec(), y = f.y.vec(), z = f.z.vec();
+    const math::Mat3 m{x.x, y.x, z.x, x.y, y.y, z.y, x.z, y.z, z.z};
+    return math::Transform{m, f.origin.asVec()};
+  }
+
+  // A transform is RIGID iff its linear part is orthonormal (MᵀM ≈ I) with
+  // det ≈ +1 (proper rotation, no scale/shear/mirror). We only place breps by rigid
+  // transforms — a scaled/mirrored placement is declined (never silently applied).
+  static bool isRigid(const math::Transform& t) {
+    const math::Mat3& m = t.linear();
+    const math::Mat3 g = m.transposed() * m;  // Gram matrix
+    for (std::size_t i = 0; i < 3; ++i)
+      for (std::size_t j = 0; j < 3; ++j) {
+        const double target = (i == j) ? 1.0 : 0.0;
+        if (std::fabs(g(i, j) - target) > 1e-9) return false;
+      }
+    return std::fabs(m.determinant() - 1.0) > 1e-9 ? false : true;
+  }
+
+  // The list of item #ids of a *_SHAPE_REPRESENTATION (or SHAPE_REPRESENTATION):
+  // its arg[1] is the list of represented_items (points/placements/breps).
+  std::vector<long> representationItems(long srId) {
+    std::vector<long> items;
+    const Record* r = rec(srId);
+    if (!r || r->combined || r->args.size() < 2 || !r->args[1].isList()) return items;
+    for (const Arg& a : r->args[1].list)
+      if (a.isRef()) items.push_back(a.ref);
+    return items;
+  }
+
+  // The single MANIFOLD_SOLID_BREP #id reachable from a shape-representation's item
+  // list, or 0 if none / more than one (an ambiguous component declines).
+  long brepOfRepresentation(long srId) {
+    long found = 0;
+    for (const long it : representationItems(srId)) {
+      if (recOfKind(it, "MANIFOLD_SOLID_BREP")) {
+        if (found != 0) return 0;  // more than one brep in one component → ambiguous
+        found = it;
+      }
+    }
+    return found;
+  }
+
+  // Read an ITEM_DEFINED_TRANSFORMATION('','',#fromAx2,#toAx2) → the rigid transform
+  // T = frameToWorld(to) ∘ frameToWorld(from)⁻¹, or nullopt if it is not composable
+  // (missing/other-typed args, an unreadable placement, or a non-rigid result).
+  std::optional<math::Transform> itemDefinedTransform(long idtId) {
+    const Record* r = recOfKind(idtId, "ITEM_DEFINED_TRANSFORMATION");
+    if (!r || r->args.size() != 4 || !r->args[2].isRef() || !r->args[3].isRef())
+      return std::nullopt;
+    const auto from = axis2placement(r->args[2].ref);
+    const auto to = axis2placement(r->args[3].ref);
+    if (!from || !to) return std::nullopt;
+    const auto fromInv = frameToWorld(*from).inverse();
+    if (!fromInv) return std::nullopt;
+    const math::Transform t = frameToWorld(*to).composedWith(*fromInv);
+    if (!isRigid(t)) return std::nullopt;
+    return t;
+  }
+
+  // Locate the REPRESENTATION_RELATIONSHIP and the IDT id inside the combined
+  // instance a CONTEXT_DEPENDENT_SHAPE_REPRESENTATION points to (arg[0]). The
+  // instance carries a REPRESENTATION_RELATIONSHIP sub-record (rep_1=child(arg[2]),
+  // rep_2=parent(arg[3])) and a REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION
+  // sub-record (transform_operator=IDT(arg[0])). Returns {childSrId, idtId} or
+  // {0,0} if the shape is not the expected combined form.
+  std::pair<long, long> relationshipAndTransform(long relId) {
+    const Record* r = rec(relId);
+    if (!r || !r->combined) return {0, 0};
+    long childSr = 0, idt = 0;
+    for (const SubRecord& sub : r->subs) {
+      if (sub.keyword == "REPRESENTATION_RELATIONSHIP") {
+        if (sub.args.size() >= 3 && sub.args[2].isRef()) childSr = sub.args[2].ref;
+      } else if (sub.keyword == "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION") {
+        if (!sub.args.empty() && sub.args[0].isRef()) idt = sub.args[0].ref;
+      }
+    }
+    return {childSr, idt};
+  }
+
+  // Build a placed Compound from the assembly transform tree. Declines (fail_) on
+  // any Form-B / non-rigid / out-of-slice / under-constrained structure.
+  topo::Shape assembly() {
+    const std::vector<int> brepIds = findManifoldBreps();
+    if (brepIds.empty()) { decline(); return {}; }
+
+    // Form B (MAPPED_ITEM / REPRESENTATION_MAP) is out of this slice — decline the
+    // whole file rather than place breps at the wrong (identity) location.
+    for (const auto& [id, r] : recs_)
+      if (!r.combined && (r.keyword == "MAPPED_ITEM" || r.keyword == "REPRESENTATION_MAP")) {
+        decline();
+        return {};
+      }
+
+    // Seed every root at identity; each CDSR places exactly one brep exactly once.
+    std::unordered_map<int, math::Transform> placement;
+    std::unordered_map<int, bool> placed;
+    for (const int id : brepIds) {
+      placement.emplace(id, math::Transform::identity());
+      placed.emplace(id, false);
+    }
+
+    int rootCount = static_cast<int>(brepIds.size());
+    int placedCount = 0;
+    for (const auto& [id, r] : recs_) {
+      if (r.combined || r.keyword != "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION") continue;
+      if (r.args.empty() || !r.args[0].isRef()) { decline(); return {}; }
+      const auto [childSr, idtId] = relationshipAndTransform(r.args[0].ref);
+      if (childSr == 0 || idtId == 0) { decline(); return {}; }
+      const long brep = brepOfRepresentation(childSr);
+      if (brep == 0) { decline(); return {}; }
+      auto pit = placement.find(static_cast<int>(brep));
+      if (pit == placement.end() || placed[static_cast<int>(brep)]) {
+        // A brep referenced by no seed, or placed twice → structure we do not model.
+        decline();
+        return {};
+      }
+      const auto t = itemDefinedTransform(idtId);
+      if (!t) { decline(); return {}; }
+      pit->second = *t;
+      placed[static_cast<int>(brep)] = true;
+      ++placedCount;
+    }
+
+    // Honest completeness gate: the assembly must place all-but-one root through the
+    // tree (the ROOT component carries no CDSR and stays identity). Anything else —
+    // no placements found, or a brep left unplaced with no clear root — declines
+    // rather than importing part of the assembly at a fabricated identity location.
+    const int unplaced = rootCount - placedCount;
+    if (placedCount == 0 || unplaced > 1) { decline(); return {}; }
+
+    // Map each root and apply its composed rigid Location.
+    std::vector<topo::Shape> solids;
+    solids.reserve(brepIds.size());
+    for (const int id : brepIds) {
+      const topo::Shape solid = mapManifoldBrep(id);
+      if (fail_ || solid.isNull()) return {};
+      // The unplaced ROOT keeps an identity Location (byte-identical to the flat
+      // path); a placed component rides its composed rigid Location.
+      const topo::Shape placedSolid =
+          placed.at(id) ? solid.located(topo::Location{placement.at(id)}) : solid;
+      solids.push_back(placedSolid);
+    }
+    if (solids.size() == 1) return solids.front();
+    return topo::ShapeBuilder::makeCompound(std::move(solids));
   }
 
   // ── Leaf geometry (Pass A), memoized by #id ─────────────────────────────────

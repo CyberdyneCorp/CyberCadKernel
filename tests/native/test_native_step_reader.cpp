@@ -105,6 +105,52 @@ topo::Shape roundTrip(const topo::Shape& solid, const std::string& name) {
   return ex::readStepString(step);
 }
 
+// World AABB of a solid via its meshed vertices (the tessellator bakes any
+// Location into world coordinates, so a placed solid's box reflects its placement).
+struct Box { double lo[3]; double hi[3]; };
+Box worldBox(const topo::Shape& s, double deflection = 0.005) {
+  ntess::MeshParams p;
+  p.deflection = deflection;
+  const ntess::Mesh m = ntess::SolidMesher{p}.mesh(s);
+  Box b{{1e300, 1e300, 1e300}, {-1e300, -1e300, -1e300}};
+  for (const auto& v : m.vertices) {
+    const double c[3] = {v.x, v.y, v.z};
+    for (int k = 0; k < 3; ++k) { b.lo[k] = std::min(b.lo[k], c[k]); b.hi[k] = std::max(b.hi[k], c[k]); }
+  }
+  return b;
+}
+
+// The DATA-section body of a native STEP string (records between "DATA;\n" and
+// "ENDSEC;"), with every #N renumbered by `offset` so two bodies can coexist in one
+// file with disjoint ids. (Same splice the flat multi-solid test uses.)
+std::string renumberedDataBody(const std::string& s, long offset) {
+  const std::size_t d = s.find("DATA;");
+  const std::size_t e = s.find("ENDSEC;", d);
+  const std::size_t start = s.find('\n', d) + 1;
+  const std::string body = s.substr(start, e - start);
+  std::string out;
+  for (std::size_t i = 0; i < body.size(); ++i) {
+    out += body[i];
+    if (body[i] == '#') {
+      std::size_t j = i + 1; std::string num;
+      while (j < body.size() && std::isdigit(static_cast<unsigned char>(body[j]))) num += body[j++];
+      if (!num.empty()) { out += std::to_string(std::stol(num) + offset); i = j - 1; }
+    }
+  }
+  return out;
+}
+
+// The #id of the (single) MANIFOLD_SOLID_BREP declared in a DATA body — used to
+// wire an assembly transform onto a specific spliced root.
+long firstBrepId(const std::string& body) {
+  const std::size_t k = body.find("MANIFOLD_SOLID_BREP");
+  if (k == std::string::npos) return 0;
+  const std::size_t h = body.rfind('#', k);
+  std::size_t j = h + 1; std::string num;
+  while (j < body.size() && std::isdigit(static_cast<unsigned char>(body[j]))) num += body[j++];
+  return num.empty() ? 0 : std::stol(num);
+}
+
 }  // namespace
 
 // ── Tokenizer: the writer's real / enum / list forms parse and re-map ──────────
@@ -309,15 +355,183 @@ CC_TEST(multi_solid_flat_file_imports_as_compound) {
   CC_CHECK(std::fabs(volSum - (1000.0 + 64.0)) < 1e-6);  // exact (planar)
 }
 
-// ── DECLINE: a TRANSFORMED assembly (transform tree) → NULL ────────────────────
-// A flat multi-solid file imports (above); a file that ALSO carries an assembly
-// transform entity must still decline (we cannot place the sub-solids without
-// modelling the transform tree). Inject a NEXT_ASSEMBLY_USAGE_OCCURRENCE record.
-CC_TEST(decline_transformed_assembly_returns_null) {
+// ── ASSEMBLY (Form A) — a two-box transform tree → a PLACED Compound ───────────
+// Splice two native boxes into one file (disjoint #ids), then wire a real assembly
+// transform onto box B: an ITEM_DEFINED_TRANSFORMATION with a FROM(identity)/TO
+// AXIS2_PLACEMENT_3D pair (pure translation by (30,5,0)) reached through a
+// CONTEXT_DEPENDENT_SHAPE_REPRESENTATION → (REPRESENTATION_RELATIONSHIP +
+// REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION) whose CHILD shape-representation
+// lists box B's MANIFOLD_SOLID_BREP. Box A (the root, no CDSR) stays at the origin.
+// The reader must import BOTH as a placed Compound: A at [0,10]³, B translated.
+CC_TEST(assembly_two_box_placed_compound) {
+  const double pa[] = {0, 0, 10, 0, 10, 10, 0, 10};  // 10-cube at origin (vol 1000)
+  const double pb[] = {0, 0, 6, 0, 6, 6, 0, 6};       // 6-cube (vol 216)
+  const std::string sa = ex::writeStepString(cst::build_prism(pa, 4, 10.0), "A");
+  const std::string sb = ex::writeStepString(cst::build_prism(pb, 4, 6.0), "B");
+
+  const std::string bodyA = renumberedDataBody(sa, 0);
+  const std::string bodyB = renumberedDataBody(sb, 100000);
+  const long brepB = firstBrepId(bodyB);  // box B's spliced MANIFOLD_SOLID_BREP id
+  CC_CHECK(brepB != 0);
+
+  // Assembly transform records in a high id range (no collision). from=identity
+  // frame at origin, to=frame translated by (30,5,0) → T places box B there.
+  std::string asm_;
+  asm_ += "#900001 = CARTESIAN_POINT('',(0.,0.,0.));\n";
+  asm_ += "#900002 = DIRECTION('',(0.,0.,1.));\n";
+  asm_ += "#900003 = DIRECTION('',(1.,0.,0.));\n";
+  asm_ += "#900004 = AXIS2_PLACEMENT_3D('',#900001,#900002,#900003);\n";  // FROM
+  asm_ += "#900005 = CARTESIAN_POINT('',(30.,5.,0.));\n";
+  asm_ += "#900006 = AXIS2_PLACEMENT_3D('',#900005,#900002,#900003);\n";  // TO
+  asm_ += "#900007 = ITEM_DEFINED_TRANSFORMATION('','',#900004,#900006);\n";
+  // A CHILD shape-representation whose item list contains box B's brep.
+  asm_ += "#900008 = SHAPE_REPRESENTATION('',(#" + std::to_string(brepB) + "),#900020);\n";
+  asm_ += "#900009 = SHAPE_REPRESENTATION('',(),#900020);\n";  // PARENT (assembly)
+  asm_ += "#900010 = ( REPRESENTATION_RELATIONSHIP('','',#900008,#900009) "
+          "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900007) "
+          "SHAPE_REPRESENTATION_RELATIONSHIP() );\n";
+  asm_ += "#900011 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900010,#900012);\n";
+  asm_ += "#900012 = PRODUCT_DEFINITION_SHAPE('','',#900013);\n";
+  asm_ += "#900013 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#900014,#900015,$);\n";
+  asm_ += "#900020 = GEOMETRIC_REPRESENTATION_CONTEXT(3);\n";  // context stub (unused)
+
+  std::string merged = sa;
+  const std::size_t insert = merged.find('\n', merged.find("DATA;")) + 1;
+  merged.insert(insert, bodyB + asm_);
+
+  const topo::Shape shape = ex::readStepString(merged);
+  CC_CHECK(!shape.isNull());
+  if (shape.isNull()) return;
+  CC_CHECK(shape.type() == topo::ShapeType::Compound);
+
+  int solids = 0;
+  double volSum = 0.0;
+  bool allWatertight = true;
+  Box boxA{}, boxB_{};
+  for (topo::Explorer e(shape, topo::ShapeType::Solid); e.more(); e.next()) {
+    const topo::Shape s = e.current();
+    if (!watertight(s)) allWatertight = false;
+    volSum += volumeOf(s);
+    const Box wb = worldBox(s);
+    // Discriminate the two members by their size (A is 10-cube, B is 6-cube).
+    if (wb.hi[0] - wb.lo[0] > 8.0) boxA = wb; else boxB_ = wb;
+    ++solids;
+  }
+  CC_CHECK(solids == 2);
+  CC_CHECK(allWatertight);
+  CC_CHECK(std::fabs(volSum - (1000.0 + 216.0)) < 1e-6);  // exact (planar)
+
+  // Box A at origin; box B translated to (30,5,0)..(36,11,6).
+  CC_CHECK(std::fabs(boxA.lo[0] - 0.0) < 1e-6 && std::fabs(boxA.hi[0] - 10.0) < 1e-6);
+  CC_CHECK(std::fabs(boxB_.lo[0] - 30.0) < 1e-6 && std::fabs(boxB_.hi[0] - 36.0) < 1e-6);
+  CC_CHECK(std::fabs(boxB_.lo[1] - 5.0) < 1e-6 && std::fabs(boxB_.hi[1] - 11.0) < 1e-6);
+  CC_CHECK(std::fabs(boxB_.lo[2] - 0.0) < 1e-6 && std::fabs(boxB_.hi[2] - 6.0) < 1e-6);
+}
+
+// ── ASSEMBLY — a ROTATED placement composes exactly (rigid, det≈+1) ────────────
+// Same wiring, but the TO frame is rotated 90° about +Z (frame X = +Y, so
+// Y = Z×X = −X) and translated to (5,5,0). A unit box [0,1]³ placed by this frame
+// lands at x_world = 5 − y_local ∈ [4,5], y_world = 5 + x_local ∈ [5,6], z ∈ [0,1].
+CC_TEST(assembly_rotated_placement_composes) {
+  const double p[] = {0, 0, 1, 0, 1, 1, 0, 1};
+  const std::string sa = ex::writeStepString(cst::build_prism(p, 4, 1.0), "A");
+  const std::string sb = ex::writeStepString(cst::build_prism(p, 4, 1.0), "B");
+  const std::string bodyB = renumberedDataBody(sb, 100000);
+  const long brepB = firstBrepId(bodyB);
+
+  std::string asm_;
+  asm_ += "#900001 = CARTESIAN_POINT('',(0.,0.,0.));\n";
+  asm_ += "#900002 = DIRECTION('',(0.,0.,1.));\n";
+  asm_ += "#900003 = DIRECTION('',(1.,0.,0.));\n";
+  asm_ += "#900004 = AXIS2_PLACEMENT_3D('',#900001,#900002,#900003);\n";  // FROM identity
+  asm_ += "#900005 = CARTESIAN_POINT('',(5.,5.,0.));\n";
+  asm_ += "#900014 = DIRECTION('',(0.,1.,0.));\n";  // TO X axis = +Y (90° about Z)
+  asm_ += "#900006 = AXIS2_PLACEMENT_3D('',#900005,#900002,#900014);\n";  // TO rotated
+  asm_ += "#900007 = ITEM_DEFINED_TRANSFORMATION('','',#900004,#900006);\n";
+  asm_ += "#900008 = SHAPE_REPRESENTATION('',(#" + std::to_string(brepB) + "),#900020);\n";
+  asm_ += "#900009 = SHAPE_REPRESENTATION('',(),#900020);\n";
+  asm_ += "#900010 = ( REPRESENTATION_RELATIONSHIP('','',#900008,#900009) "
+          "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900007) "
+          "SHAPE_REPRESENTATION_RELATIONSHIP() );\n";
+  asm_ += "#900011 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900010,#900012);\n";
+  asm_ += "#900012 = PRODUCT_DEFINITION_SHAPE('','',#900013);\n";
+  asm_ += "#900013 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#900016,#900017,$);\n";
+
+  std::string merged = sa;
+  const std::size_t insert = merged.find('\n', merged.find("DATA;")) + 1;
+  merged.insert(insert, bodyB + asm_);
+
+  const topo::Shape shape = ex::readStepString(merged);
+  CC_CHECK(!shape.isNull());
+  if (shape.isNull()) return;
+
+  bool found = false;
+  for (topo::Explorer e(shape, topo::ShapeType::Solid); e.more(); e.next()) {
+    const Box wb = worldBox(e.current());
+    // The ROTATED box lands at x∈[4,5], y∈[5,6]; the root stays at [0,1]³.
+    if (wb.hi[1] > 4.0) {
+      found = true;
+      CC_CHECK(std::fabs(wb.lo[0] - 4.0) < 1e-6 && std::fabs(wb.hi[0] - 5.0) < 1e-6);
+      CC_CHECK(std::fabs(wb.lo[1] - 5.0) < 1e-6 && std::fabs(wb.hi[1] - 6.0) < 1e-6);
+      CC_CHECK(std::fabs(wb.lo[2] - 0.0) < 1e-6 && std::fabs(wb.hi[2] - 1.0) < 1e-6);
+    }
+  }
+  CC_CHECK(found);
+}
+
+// ── DECLINE: a non-composable assembly structure (Form B) → NULL ───────────────
+// A MAPPED_ITEM / REPRESENTATION_MAP placement (Form B) is out of this slice: the
+// reader must decline the WHOLE file rather than place the sub-solid at a wrong
+// (identity) location. This is the honest decline pin (was a lone NAUO before the
+// Form-A parse landed; a lone NAUO now has no placement to apply and would still
+// decline, but Form B is the meaningful uncomposable structure to pin).
+CC_TEST(decline_form_b_mapped_item_returns_null) {
+  std::string step = ex::writeStepString(box10(), "box");
+  const std::size_t insert = step.find('\n', step.find("DATA;")) + 1;
+  step.insert(insert,
+              "#98001 = REPRESENTATION_MAP(#98002,#98003);\n"
+              "#98004 = MAPPED_ITEM('',#98001,#98005);\n");
+  CC_CHECK(ex::readStepString(step).isNull());
+}
+
+// ── DECLINE: an assembly with NO composable transform → NULL ───────────────────
+// A lone NEXT_ASSEMBLY_USAGE_OCCURRENCE (a transform tree with no
+// CONTEXT_DEPENDENT_SHAPE_REPRESENTATION / IDT) has no placement to apply:
+// placedCount==0 → honest NULL, never a silent flat import at a fabricated
+// identity location. (A genuinely scaled placement cannot be authored through an
+// AXIS2_PLACEMENT_3D pair — the axes are normalized — so the isRigid det≈+1 /
+// orthonormal guard in itemDefinedTransform is a defensive gate on any future
+// non-AXIS transform source.)
+CC_TEST(decline_assembly_without_transform_returns_null) {
   std::string step = ex::writeStepString(box10(), "box");
   const std::size_t insert = step.find('\n', step.find("DATA;")) + 1;
   step.insert(insert, "#98001 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('','','',#98002,#98003,$);\n");
   CC_CHECK(ex::readStepString(step).isNull());
+}
+
+// ── AP214 / AP242 FILE_SCHEMA headers are accepted (schema-independent) ─────────
+// The reader enters at DATA; and never gates on FILE_SCHEMA, so a native solid whose
+// header is rewritten to AP214 (AUTOMOTIVE_DESIGN) or AP242 imports identically. This
+// pins that acceptance is genuinely schema-independent (confirmed, not newly added).
+CC_TEST(accepts_ap214_and_ap242_file_schema) {
+  const std::string base = ex::writeStepString(box10(), "box");
+  const double vRef = volumeOf(ex::readStepString(base));
+  CC_CHECK(vRef > 0.0);
+  auto rewriteSchema = [&](const char* schema) {
+    const std::size_t s = base.find("FILE_SCHEMA");
+    const std::size_t e = base.find(';', s);
+    std::string out = base;
+    out.replace(s, e - s, std::string("FILE_SCHEMA(('") + schema + "'))");
+    return out;
+  };
+  const std::string ap214 = rewriteSchema("AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }");
+  const std::string ap242 =
+      rewriteSchema("AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF { 1 0 10303 442 1 1 4 }");
+  const topo::Shape s214 = ex::readStepString(ap214);
+  const topo::Shape s242 = ex::readStepString(ap242);
+  CC_CHECK(!s214.isNull() && !s242.isNull());
+  CC_CHECK(std::fabs(volumeOf(s214) - vRef) < 1e-9);
+  CC_CHECK(std::fabs(volumeOf(s242) - vRef) < 1e-9);
 }
 
 CC_RUN_ALL()

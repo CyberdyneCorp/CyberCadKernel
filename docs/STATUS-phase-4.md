@@ -1616,9 +1616,51 @@ tessellator, and the `cc_*` ABI are PRISTINE; `src/native/**` stays OCCT-free.
   → NULL → OCCT (`torus native parsed=0`, `fallback torus vol rel=0.00e+00`). Documented honest
   decline, not a native import.
 
-**Residual → OCCT after the widen (honest):** `TOROIDAL_SURFACE`, ellipse-on-quadric solids,
+**Residual → OCCT after the widen (before the assemblies slice below):** `TOROIDAL_SURFACE`, ellipse-on-quadric solids,
 nested/transformed assemblies, AP242 / PMI, `SURFACE_OF_REVOLUTION`, `TRIMMED_CURVE`,
 rational/weighted B-splines, `BEZIER`, non-mm units, all IGES. #8 `drop-occt` stays blocked (a
+general STEP/AP242 reader + IGES + a general-curved kernel still block it).
+
+### Native STEP IMPORT WIDENED (`add-native-step-assemblies`) — rigid placed assemblies + AP214/AP242 headers
+
+The `hasNestedAssembly()` blanket decline above is replaced by a genuine assembly builder (change
+`add-native-step-assemblies`, archived `2026-07-06`). Host CTest **29/29** NUMSCI OFF (**36/36**
+NUMSCI ON), sim **`[NIMPORT]` 33/33** (the prior 28 preserved + 5 new). Exactly 3 files changed
+(`step_reader.cpp`, `test_native_step_reader.cpp`, `native_step_import_parity.mm`);
+`step_writer.cpp`, the tessellator, `src/engine/**`, and the `cc_*` ABI are PRISTINE; `src/native/**`
+stays OCCT-free.
+
+- **RIGID PLACED ASSEMBLY → LANDED (genuine native placed Compound, verified vs OCCT).** `build()`
+  now routes a present transform tree to a new `assembly()` builder instead of returning NULL. It
+  parses the OCCT-emitted structure — `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION` →
+  `REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION` → `ITEM_DEFINED_TRANSFORMATION` (an
+  `AXIS2_PLACEMENT_3D` from/to pair) — composes each component's placement
+  `T = frameToWorld(to) ∘ frameToWorld(from)⁻¹`, gates it via `isRigid` (orthonormal `M·Mᵀ≈I` AND
+  det≈+1, tol 1e-9 — non-rigid/scaled/mirrored DECLINE), resolves each component representation's
+  root `MANIFOLD_SOLID_BREP`(s) STRUCTURALLY by refs (`brepsOfRep`), maps them via the UNCHANGED
+  `mapManifoldBrep` in local coords, and pushes each `solid.located(Location{T})` into the Compound
+  (native topology carries the placement on edges/faces; no geometry baked). Requires every root
+  brep placed EXACTLY once (`placed.size()==findManifoldBreps().size()`) else NULL — never partial,
+  never identity-defaulted; the flat multi-solid and single-solid paths are byte-for-byte unchanged.
+  Sim vs OCCT `STEPControl_Reader` on an OCCT-authored 2-box assembly (box B carries a non-baked
+  `TopLoc_Location`: rotate 0.5 rad about Z + translate(30,5,0), so the writer emits the
+  CDSR/REP_REL/ITEM_DEFINED chain, not world-baked coords): 2 solids, `nativeVol=1216 occtVol=1216`
+  (mass rel 3.74e-16), bbox maxCornerΔ=0.00e+00 (tol 5e-3), faces 12/12. Host
+  `assembly_two_box_placed_compound` + `assembly_rotated_placement_composes`.
+- **AP214 / AP242 HEADERS → PINNED (schema-independent, confirmed live).** The reader enters at
+  `DATA;` and never gates on `FILE_SCHEMA`, so AP203/AP214/AP242 headers all import — confirmed on a
+  real OCCT-`STEPControl_Writer`-authored AP214 (`AUTOMOTIVE_DESIGN`) file (`header=AP214(1) native
+  parsed=1 solids=1`). Host `accepts_ap214_and_ap242_file_schema`.
+- **DECLINES → OCCT (verified, never fabricated).** Form-B `MAPPED_ITEM`/`REPRESENTATION_MAP`
+  (`decline_form_b_mapped_item_returns_null`); any non-rigid transform (the det≈+1 gate); a transform
+  tree with no composable placement (`placedCount==0`, lone NAUO — `decline_assembly_without_transform_returns_null`);
+  a child rep resolving to 0 or >1 brep, a brep placed twice, or >1 unplaced root; out-of-slice
+  component geometry (torus → `parsed=0` → OCCT).
+
+**Residual → OCCT after the assemblies slice (honest, narrowed):** PMI/GD&T, non-rigid/scaled/mirrored
+transforms, deep-nested (multi-level) assemblies, Form-B `MAPPED_ITEM`, `TOROIDAL_SURFACE`,
+ellipse-on-quadric solids, `SURFACE_OF_REVOLUTION`, `TRIMMED_CURVE`, rational/weighted B-splines,
+`BEZIER`, complex/trimmed profiles, non-mm units, all IGES. #8 `drop-occt` stays blocked (a
 general STEP/AP242 reader + IGES + a general-curved kernel still block it).
 
 ### Files (#7)

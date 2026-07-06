@@ -39,7 +39,16 @@
 //
 #include "cybercadkernel/cc_kernel.h"
 
+// The native reader directly (OCCT-free), so the harness can prove the NATIVE path
+// ACTUALLY parsed a file (non-null native reconstruction) rather than silently
+// falling back to OCCT — the honesty gate for T1/T2 against foreign files.
+#include "native/construct/native_construct.h"
+#include "native/exchange/native_exchange.h"
+#include "native/tessellate/native_tessellate.h"
+#include "native/topology/native_topology.h"
+
 #include <STEPControl_Reader.hxx>
+#include <STEPControl_Writer.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopExp_Explorer.hxx>
@@ -49,6 +58,16 @@
 #include <BRepBndLib.hxx>
 #include <Bnd_Box.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Ax2.hxx>
+#include <gp_Dir.hxx>
+#include <gp_Pln.hxx>
+#include <gp_Trsf.hxx>
+#include <BRepPrimAPI_MakeTorus.hxx>
+#include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
 
 #include <algorithm>
 #include <cmath>
@@ -56,6 +75,10 @@
 #include <cstdlib>
 #include <string>
 #include <sys/stat.h>
+
+namespace ntopo = cybercad::native::topology;
+namespace ntess = cybercad::native::tessellate;
+namespace nex   = cybercad::native::exchange;
 
 namespace {
 
@@ -202,6 +225,155 @@ void runForeign(const std::string& name, Builder build, double volTol, double li
     compare("foreign", name, nat, oracle, volTol, linTol);
 }
 
+// ── native-path honesty probe ───────────────────────────────────────────────────
+// Call the NATIVE reader directly (OCCT-free) and report whether it produced a
+// non-null native reconstruction. This distinguishes a genuine NATIVE parse from the
+// engine's silent OCCT fallback (both would otherwise look identical through
+// cc_step_import). Also returns per-solid watertight volume so a foreign import can be
+// checked against OCCT independently.
+struct NativeProbe {
+    bool parsed = false;   // native reader returned a non-null shape
+    bool compound = false; // reconstruction is a multi-solid Compound
+    int solids = 0;
+    double vol = 0.0;      // summed watertight volume over member solids
+    bool allWatertight = true;
+};
+double nativeVol(const ntopo::Shape& s, double defl = 0.005) {
+    ntess::MeshParams p; p.deflection = defl;
+    const ntess::Mesh m = ntess::SolidMesher{p}.mesh(s);
+    if (!ntess::isWatertight(m)) return -1.0;
+    return std::fabs(ntess::enclosedVolume(m));
+}
+NativeProbe probeNative(const std::string& path) {
+    NativeProbe pr;
+    const ntopo::Shape s = nex::step_import_native(path);
+    if (s.isNull()) return pr;
+    pr.parsed = true;
+    pr.compound = s.type() == ntopo::ShapeType::Compound;
+    for (ntopo::Explorer e(s, ntopo::ShapeType::Solid); e.more(); e.next()) {
+        ++pr.solids;
+        const double v = nativeVol(e.current());
+        if (v < 0.0) pr.allWatertight = false; else pr.vol += v;
+    }
+    return pr;
+}
+
+// Write a TopoDS_Shape to a STEP AP203 file via the OCCT writer (foreign author).
+bool occtWriteStep(const TopoDS_Shape& shape, const std::string& path) {
+    STEPControl_Writer w;
+    if (w.Transfer(shape, STEPControl_AsIs) != IFSelect_RetDone) return false;
+    return w.Write(path.c_str()) == IFSelect_RetDone;
+}
+
+// OCCT-measured watertight volume of a STEP file (oracle) — via STEPControl_Reader.
+double occtStepVolume(const std::string& path) {
+    STEPControl_Reader r;
+    if (r.ReadFile(path.c_str()) != IFSelect_RetDone) return -1.0;
+    r.TransferRoots();
+    const TopoDS_Shape s = r.OneShape();
+    if (s.IsNull()) return -1.0;
+    GProp_GProps g; BRepGProp::VolumeProperties(s, g);
+    return std::fabs(g.Mass());
+}
+
+// ── (D) TOROIDAL_SURFACE — honest DECLINE, OCCT fallback still imports ───────────
+// A torus solid (BRepPrimAPI_MakeTorus) carries TOROIDAL_SURFACE, which the native
+// reader has NO native FaceSurface kind to map onto (no Torus kind; adding one needs
+// the tessellator). So the NATIVE reader must DECLINE (return null), and cc_step_import
+// must still import it via the OCCT fallback matching the OCCT-only re-import.
+void runTorusDecline() {
+    const std::string path = "/tmp/cck_nimport_torus_foreign.step";
+    TopoDS_Shape torus = BRepPrimAPI_MakeTorus(10.0, 3.0).Shape();
+    if (!occtWriteStep(torus, path)) { record(false, "foreign", "torus author", "OCCT write failed"); return; }
+    const NativeProbe pr = probeNative(path);
+    char d[256];
+    std::snprintf(d, sizeof d, "native parsed=%d (expected 0 — no native Torus kind)", pr.parsed);
+    record(!pr.parsed, "foreign", "torus decline", d);  // MUST decline
+    const Props nat = importUnder(1, path);
+    const Props oracle = importUnder(0, path);
+    compare("fallback", "torus", nat, oracle, 5e-3, 5e-3);
+}
+
+// ── (E) ELLIPSE edge — foreign slant-cut cylinder ───────────────────────────────
+// A cylinder cut by a tilted plane produces an ELLIPSE edge (the cut rim) on a PLANE
+// face + the cylinder wall. Author it under OCCT, then probe the NATIVE reader. The
+// reader now MAPS the ELLIPSE curve; whether the whole solid self-verifies also
+// depends on the ellipse-on-cylinder pcurve. We report honestly: native parsed?
+// watertight? volume vs OCCT. cc_step_import must match OCCT either way.
+void runEllipseCut() {
+    const std::string path = "/tmp/cck_nimport_ellipcut_foreign.step";
+    TopoDS_Shape cyl = BRepPrimAPI_MakeCylinder(5.0, 20.0).Shape();
+    TopoDS_Shape box = BRepPrimAPI_MakeBox(gp_Pnt(-10, -10, 12), 20, 20, 20).Shape();
+    gp_Trsf tilt; tilt.SetRotation(gp_Ax1(gp_Pnt(0, 0, 12), gp_Dir(1, 0, 0)), 0.5);
+    box = BRepBuilderAPI_Transform(box, tilt, true).Shape();
+    TopoDS_Shape cut = BRepAlgoAPI_Cut(cyl, box).Shape();
+    if (!occtWriteStep(cut, path)) { record(false, "foreign", "ellipse author", "OCCT write failed"); return; }
+    const NativeProbe pr = probeNative(path);
+    const double ov = occtStepVolume(path);
+    char d[320];
+    std::snprintf(d, sizeof d, "native parsed=%d watertight=%d solids=%d nativeVol=%.6g occtVol=%.6g",
+                  pr.parsed, pr.parsed && pr.allWatertight, pr.solids, pr.vol, ov);
+    record(true, "foreign", "ellipse probe", d);  // honest report (decline is OK → OCCT)
+    const Props nat = importUnder(1, path);
+    const Props oracle = importUnder(0, path);
+    compare("foreign", "ellipse_cut", nat, oracle, 5e-3, 5e-3);
+}
+
+// ── (F) MULTI-SOLID — a FLAT 2-solid foreign file → native Compound ──────────────
+// Two disjoint boxes transferred in ONE STEPControl_Writer session → two
+// MANIFOLD_SOLID_BREP roots with NO assembly transform tree. The NATIVE reader must
+// import BOTH as a Compound of two watertight solids, and the summed volume must match
+// the OCCT re-import of the same file.
+void runMultiSolid() {
+    const std::string path = "/tmp/cck_nimport_2solid_flat.step";
+    TopoDS_Shape a = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 10, 10, 10).Shape();   // 1000
+    TopoDS_Shape b = BRepPrimAPI_MakeBox(gp_Pnt(20, 0, 0), 4, 4, 4).Shape();     // 64
+    STEPControl_Writer w;
+    const bool ok = w.Transfer(a, STEPControl_ManifoldSolidBrep) == IFSelect_RetDone &&
+                    w.Transfer(b, STEPControl_ManifoldSolidBrep) == IFSelect_RetDone &&
+                    w.Write(path.c_str()) == IFSelect_RetDone;
+    if (!ok) { record(false, "foreign", "2solid author", "OCCT write failed"); return; }
+    const NativeProbe pr = probeNative(path);
+    const double ov = occtStepVolume(path);
+    char d[320];
+    std::snprintf(d, sizeof d, "native parsed=%d compound=%d solids=%d nativeVol=%.6g occtVol=%.6g",
+                  pr.parsed, pr.compound, pr.solids, pr.vol, ov);
+    const bool volOk = ov > 0 && std::fabs(pr.vol - ov) / ov < 5e-3;
+    record(pr.parsed && pr.compound && pr.solids == 2 && pr.allWatertight && volOk,
+           "foreign", "multisolid native", d);
+    const Props nat = importUnder(1, path);
+    const Props oracle = importUnder(0, path);
+    compare("foreign", "multisolid", nat, oracle, 5e-3, 5e-3);
+}
+
+// ── (G) B-SPLINE-FACE round-trip (T3) — native author + native import ────────────
+// Build a native spline-profile extrude prism (a genuine B_SPLINE_SURFACE side face +
+// B_SPLINE_CURVE cap rims), export it under the NATIVE writer, and import it back under
+// NATIVE. The NATIVE reader must reconstruct it watertight with the SAME volume — the
+// deferred import task 7.4. Exercised through the native library directly (OCCT-free).
+void runSplineFaceRoundTrip() {
+    const std::string path = "/tmp/cck_nimport_splineface_nat.step";
+    const double splineXY[] = {10, 6, 7, 8, 3, 8, 0, 6};
+    std::vector<cybercad::native::construct::ProfileSegment> segs(4);
+    segs[0].kind = 0; segs[0].x0 = 0;  segs[0].y0 = 0; segs[0].x1 = 10; segs[0].y1 = 0;
+    segs[1].kind = 0; segs[1].x0 = 10; segs[1].y0 = 0; segs[1].x1 = 10; segs[1].y1 = 6;
+    segs[2].kind = 3; segs[2].ptOffset = 0; segs[2].ptCount = 4;
+    segs[3].kind = 0; segs[3].x0 = 0;  segs[3].y0 = 6; segs[3].x1 = 0;  segs[3].y1 = 0;
+    const ntopo::Shape solid =
+        cybercad::native::construct::build_prism_profile_spline(segs, splineXY, 8, {}, {}, 4.0);
+    if (solid.isNull() || !nex::step_can_export_native(solid)) {
+        record(false, "native", "splineface build", "native spline build/export unsupported"); return;
+    }
+    const double vOrig = nativeVol(solid);
+    if (!nex::step_export_native(solid, path)) { record(false, "native", "splineface export", "write failed"); return; }
+    const NativeProbe pr = probeNative(path);
+    char d[320];
+    std::snprintf(d, sizeof d, "native parsed=%d watertight=%d solids=%d vol nat=%.6g orig=%.6g",
+                  pr.parsed, pr.parsed && pr.allWatertight, pr.solids, pr.vol, vOrig);
+    const bool volOk = vOrig > 0 && std::fabs(pr.vol - vOrig) / vOrig < 1e-6;
+    record(pr.parsed && pr.allWatertight && pr.solids == 1 && volOk, "native", "splineface roundtrip", d);
+}
+
 }  // namespace
 
 int main() {
@@ -216,6 +388,13 @@ int main() {
     // (B) FOREIGN OCCT-written STEP imported natively — box + cylinder.
     runForeign("box", [] { return buildBox(10, 10, 10); }, 5e-3, 5e-3);
     runForeign("cylinder", [] { return buildCylinder(5, 20); }, 5e-3, 5e-3);
+
+    // ── WIDENED SLICE (T1/T2/T3) — foreign-authored fixtures vs OCCT re-import +
+    //    a native B-spline-face round-trip, each probing the NATIVE reader directly.
+    runTorusDecline();       // T1b: TOROIDAL_SURFACE stays an honest DECLINE → OCCT
+    runEllipseCut();         // T1a: ELLIPSE edge (foreign slant-cut cylinder) — honest probe
+    runMultiSolid();         // T2 : flat 2-solid file → native Compound of solids
+    runSplineFaceRoundTrip();// T3 : native B_SPLINE_SURFACE-face solid round-trip (exact)
 
     cc_set_engine(0);  // restore the default engine before we leave
     std::printf("[NIMPORT] DONE  passed=%d failed=%d\n", g_passed, g_failed);

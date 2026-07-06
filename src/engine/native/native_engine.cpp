@@ -214,6 +214,24 @@ bool robustlyWatertight(const ntopo::Shape& s) {
     return true;
 }
 
+// Robust watertight self-verify for a possibly-MULTI-solid import (the native STEP
+// reader returns a single Solid for one MANIFOLD_SOLID_BREP or a Compound of Solids
+// for several). A single Solid delegates to robustlyWatertight; a Compound requires
+// EVERY member solid to independently pass (any leaky member → the whole import
+// declines to OCCT, never shipping a partially-open multi-body). An empty compound is
+// rejected. Meshing the Compound as one shape would let a leak in member A be masked,
+// so we verify each solid on its own.
+bool robustlyWatertightImport(const ntopo::Shape& s) {
+    if (s.isNull()) return false;
+    if (s.type() != ntopo::ShapeType::Compound) return robustlyWatertight(s);
+    int members = 0;
+    for (ntopo::Explorer ex(s, ntopo::ShapeType::Solid); ex.more(); ex.next()) {
+        ++members;
+        if (!robustlyWatertight(ex.current())) return false;
+    }
+    return members > 0;
+}
+
 // Watertight-valid enclosed volume of a native solid at a fine deflection, or a
 // negative sentinel if the mesh is not watertight (so the boolean self-verify can
 // reject a leaky result). Planar polyhedra mesh exactly, so this is the exact
@@ -1181,7 +1199,9 @@ Result<void> NativeEngine::step_export(EngineShape body, const char* path) {
 ShapeResult NativeEngine::step_import(const char* path) {
     if (path) {
         ntopo::Shape solid = cybercad::native::exchange::step_import_native(path);
-        if (!solid.isNull() && robustlyWatertight(solid))
+        // A single Solid or a multi-solid Compound (T2): every member must self-verify
+        // robustly watertight, else the whole import declines to the OCCT reader.
+        if (!solid.isNull() && robustlyWatertightImport(solid))
             return track(wrapNative(std::move(solid)));
     }
     return fallback().step_import(path);

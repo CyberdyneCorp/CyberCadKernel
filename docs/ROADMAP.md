@@ -69,12 +69,18 @@ robustness tail keeps OCCT linked.** Canonical detail:
   box∩cylinder curved slice.
 - ✅ Blends — planar chamfer, constant-radius planar-dihedral fillet, offset-face, shell.
 - ✅ **STEP export** (native AP203).
-- ✅ **STEP import — first native slice** (OCCT-free Part-21 reader for the elementary/B-spline
+- ✅ **STEP import — native slice, now WIDENED** (OCCT-free Part-21 reader for the elementary/B-spline
   AP203 subset the native writer emits + foreign OCCT-written box/cylinder; healed via the healing
-  slice, self-verified watertight else → OCCT). Host round-trip 9/9 exact + sim OCCT parity 15/15;
-  foreign OCCT-written box/cylinder import natively matching OCCT re-import (rel 0). **Residual → OCCT**
-  (honest): assemblies, AP242, complex/typed profiles beyond the writer set, bspline-face solids;
-  **all IGES import/export stays OCCT / dropped per the earlier decision.**
+  slice, self-verified watertight else → OCCT). Host round-trip 9/9 exact + sim OCCT parity, now 28/28.
+  Widened along three honestly-gated tracks: **multi-solid** files (>1 `MANIFOLD_SOLID_BREP`, no
+  transform tree) import as a native `Compound` of watertight solids (rel 2.14e-16 vs OCCT re-import);
+  a native **B-spline-FACE** solid round-trips native-export→import EXACT (the deferred bspline-face
+  round-trip, closed on the existing `build_prism_profile_spline` op — not a fabricated fixture); and
+  the reader now recognises + maps the **ELLIPSE** curve entity to the native ellipse edge kind.
+  **Residual → OCCT** (honest): `TOROIDAL_SURFACE` (no native torus surface kind), ellipse-bearing
+  solids whose ellipse lies on a quadric (the ellipse-on-quadric pcurve fails the watertight
+  self-verify → whole solid falls back), nested/transformed assemblies, AP242, complex/trimmed
+  profiles, rational/weighted B-splines; **all IGES import/export stays OCCT / dropped per the earlier decision.**
 - ✅ **Numeric foundations (#2)** — adopted **NumPP + SciPP** (MIT C++20 NumPy/SciPy
   ports) as the OCCT-free numeric substrate + native closest-point (Extrema).
 - ✅ **SSI S1** — analytic surface-surface intersection (elementary pairs, closed-form

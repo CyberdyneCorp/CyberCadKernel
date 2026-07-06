@@ -24,6 +24,7 @@
 
 #include "harness.h"
 
+#include <cctype>
 #include <cmath>
 #include <string>
 
@@ -55,6 +56,23 @@ topo::Shape holedPlate() {
   const double outer[] = {0, 0, 20, 0, 20, 12, 0, 12};
   const std::vector<cst::CircleHole> holes = {{10.0, 6.0, 3.0}};
   return cst::build_prism_with_holes(outer, 4, holes, {}, 4.0);
+}
+
+// A spline-profile extrude prism: a 10×6 rectangle whose TOP edge is a kind-3
+// B-spline (control pts bulging up to y≈9), extruded depth 4. The spline side is ONE
+// true B_SPLINE_SURFACE face (residuals.h build_prism_profile_spline_walls) and the
+// two caps are trimmed PLANE faces whose boundary includes the spline rim (a
+// B_SPLINE_CURVE edge). This is the T3 fixture (deferred import task 7.4): a native
+// watertight B-spline-FACE solid the writer serialises, exercising the reader's
+// B-spline-surface projectUV + the B-spline-edge-on-plane pcurve reconstruction.
+topo::Shape splineWallPrism() {
+  const double splineXY[] = {10, 6, 7, 8, 3, 8, 0, 6};
+  cst::ProfileSegment bottom, right, top, left;
+  bottom.kind = 0; bottom.x0 = 0;  bottom.y0 = 0; bottom.x1 = 10; bottom.y1 = 0;
+  right.kind  = 0; right.x0  = 10; right.y0  = 0; right.x1  = 10; right.y1  = 6;
+  top.kind = 3; top.ptOffset = 0; top.ptCount = 4;  // spline top edge
+  left.kind   = 0; left.x0   = 0;  left.y0   = 6; left.x1   = 0;  left.y1   = 0;
+  return cst::build_prism_profile_spline({bottom, right, top, left}, splineXY, 8, {}, {}, 4.0);
 }
 
 // Robust watertight-volume of a solid via the native tessellator (planar solids
@@ -205,6 +223,101 @@ CC_TEST(decline_malformed_input_returns_null) {
 CC_TEST(decline_empty_input_returns_null) {
   CC_CHECK(ex::readStepString("").isNull());
   CC_CHECK(ex::readStepString("ISO-10303-21;\nHEADER;\nENDSEC;\n").isNull());
+}
+
+// ── T3 — B-SPLINE-FACE solid round-trip: EXACT volume + watertight ─────────────
+// The deferred import task 7.4. The spline-wall prism carries a genuine
+// B_SPLINE_SURFACE side face + B_SPLINE_CURVE cap-rim edges. It must round-trip
+// native-export → native-import to the SAME watertight solid (exact volume): the
+// reader reconstructs the B-spline surface's (u,v) (projectBSplineUV) and the
+// B-spline rim's planar pcurve so the cap↔wall seam closes.
+CC_TEST(spline_wall_face_round_trip_exact_volume_and_watertight) {
+  const topo::Shape orig = splineWallPrism();
+  CC_CHECK(!orig.isNull());
+  if (orig.isNull()) return;
+  // The fixture must genuinely carry a B-spline SURFACE face (not the polyline
+  // fallback) for this to be the T3 test; the writer only emits B_SPLINE_SURFACE for
+  // a true B-spline face.
+  const std::string step = ex::writeStepString(orig, "spline");
+  CC_CHECK(!step.empty());
+  CC_CHECK(step.find("B_SPLINE_SURFACE") != std::string::npos);
+
+  const topo::Shape back = ex::readStepString(step);
+  CC_CHECK(!back.isNull());
+  if (back.isNull()) return;
+  CC_CHECK(watertight(back));
+
+  const double v0 = volumeOf(orig);
+  const double v1 = volumeOf(back);
+  CC_CHECK(v0 > 0.0 && v1 > 0.0);
+  CC_CHECK(std::fabs(v1 - v0) / v0 < 1e-9);  // both ends mesh the SAME solid
+  CC_CHECK(countType(back, topo::ShapeType::Face) == countType(orig, topo::ShapeType::Face));
+}
+
+// ── T2 — multi-solid file → a Compound of watertight Solids ────────────────────
+// Concatenate two independent native box files' DATA sections into ONE file with two
+// MANIFOLD_SOLID_BREP roots (renumbered so #ids don't collide), no assembly transform
+// entities. The reader must import BOTH as a Compound of two solids (not decline), each
+// watertight with the right volume.
+CC_TEST(multi_solid_flat_file_imports_as_compound) {
+  // Two boxes of different sizes so the per-solid volumes are distinguishable.
+  const double pa[] = {0, 0, 10, 0, 10, 10, 0, 10};
+  const double pb[] = {0, 0, 4, 0, 4, 4, 0, 4};
+  const topo::Shape a = cst::build_prism(pa, 4, 10.0);   // vol 1000
+  const topo::Shape b = cst::build_prism(pb, 4, 4.0);    // vol 64
+  const std::string sa = ex::writeStepString(a, "A");
+  const std::string sb = ex::writeStepString(b, "B");
+
+  // Splice: take file A whole, and inject B's DATA-section records (renumbered by a
+  // large offset so the two solids' #ids are disjoint) just after A's "DATA;".
+  auto dataBody = [](const std::string& s) {
+    const std::size_t d = s.find("DATA;");
+    const std::size_t e = s.find("ENDSEC;", d);
+    const std::size_t start = s.find('\n', d) + 1;
+    return s.substr(start, e - start);
+  };
+  std::string bBody = dataBody(sb);
+  // Renumber every #N in B's body to #(N+100000) so it cannot collide with A.
+  std::string renum;
+  for (std::size_t i = 0; i < bBody.size(); ++i) {
+    renum += bBody[i];
+    if (bBody[i] == '#') {
+      std::size_t j = i + 1; std::string num;
+      while (j < bBody.size() && std::isdigit(static_cast<unsigned char>(bBody[j]))) num += bBody[j++];
+      if (!num.empty()) { renum += std::to_string(std::stol(num) + 100000); i = j - 1; }
+    }
+  }
+  std::string merged = sa;
+  const std::size_t insert = merged.find('\n', merged.find("DATA;")) + 1;
+  merged.insert(insert, renum);
+
+  const topo::Shape shape = ex::readStepString(merged);
+  CC_CHECK(!shape.isNull());
+  if (shape.isNull()) return;
+  CC_CHECK(shape.type() == topo::ShapeType::Compound);
+
+  int solids = 0;
+  double volSum = 0.0;
+  bool allWatertight = true;
+  for (topo::Explorer e(shape, topo::ShapeType::Solid); e.more(); e.next()) {
+    ++solids;
+    if (!watertight(e.current())) allWatertight = false;
+    volSum += volumeOf(e.current());
+  }
+  CC_CHECK(solids == 2);
+  CC_CHECK(allWatertight);
+  CC_CHECK(std::fabs(volSum - (1000.0 + 64.0)) < 1e-6);  // exact (planar)
+}
+
+// ── DECLINE: a TRANSFORMED assembly (transform tree) → NULL ────────────────────
+// A flat multi-solid file imports (above); a file that ALSO carries an assembly
+// transform entity must still decline (we cannot place the sub-solids without
+// modelling the transform tree). Inject a NEXT_ASSEMBLY_USAGE_OCCURRENCE record.
+CC_TEST(decline_transformed_assembly_returns_null) {
+  std::string step = ex::writeStepString(box10(), "box");
+  const std::size_t insert = step.find('\n', step.find("DATA;")) + 1;
+  step.insert(insert, "#98001 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('','','',#98002,#98003,$);\n");
+  CC_CHECK(ex::readStepString(step).isNull());
 }
 
 CC_RUN_ALL()

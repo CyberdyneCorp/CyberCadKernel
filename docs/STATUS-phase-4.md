@@ -1580,6 +1580,47 @@ falls through to OCCT `STEPControl_Reader`. STEP EXPORT out-of-scope kinds (Elli
 curve, rational spline, Bezier surface) → `canSerialize` DECLINEs, clean error. #8 `drop-occt`
 stays blocked (arbitrary import + IGES remain OCCT).
 
+### Native STEP IMPORT WIDENED (`widen-native-step-import`) — multi-solid + B-spline-face + ellipse-curve
+
+The working import slice above was widened along three independent, honestly-gated breadth
+tracks (change `widen-native-step-import`, archived `2026-07-06`). Host CTest **29/29** and
+sim **`[NIMPORT]` 28/28** (the prior 15 assertions preserved + 13 new). `step_writer.cpp`, the
+tessellator, and the `cc_*` ABI are PRISTINE; `src/native/**` stays OCCT-free.
+
+- **T2 — MULTI-SOLID → LANDED (genuine native Compound).** `findManifoldBreps()` collects ALL
+  root `MANIFOLD_SOLID_BREP` ids (ascending #id order); `build()` maps each via the existing
+  `mapManifoldBrep` and returns a `ShapeBuilder::makeCompound` when there are ≥2 (one root still
+  returns a bare Solid — byte-identical prior behaviour). A `hasNestedAssembly()` guard DECLINEs
+  any transform tree (`NEXT_ASSEMBLY_USAGE_OCCURRENCE`, `MAPPED_ITEM`,
+  `REPRESENTATION_RELATIONSHIP*`, `ITEM_DEFINED_TRANSFORMATION`,
+  `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION`) → OCCT. Engine `robustlyWatertightMulti` requires
+  EVERY member solid watertight/vol>0. Sim: foreign OCCT-written 2-solid file → native Compound,
+  `nativeVol=1064 occtVol=1064 rel=2.14e-16`, per-solid watertight, faces/bbox match. Host
+  `multi_solid_flat_file_imports_as_compound` (2 solids, exact vol) + `decline_transformed_assembly_returns_null`.
+- **T3 — B-SPLINE-FACE round-trip → LANDED (exact, non-fabricated fixture).** The deferred task
+  7.4 is now closed: the EXISTING native `build_prism_profile_spline` op emits a watertight
+  `B_SPLINE_SURFACE`-face solid that round-trips native-export→native-import EXACT (`vol nat=304.38
+  orig=304.38`, watertight, face-count match, `B_SPLINE_SURFACE` present). NO writer change and NO
+  fabricated fixture. Host `spline_wall_face_round_trip_exact_volume_and_watertight`.
+- **T1a — ELLIPSE curve → PARTIAL (curve kind recognised; solid still DECLINES → OCCT).** The
+  reader now maps `ELLIPSE('',#pos,a,b)` to the genuine `EdgeCurve::Kind::Ellipse` (major=a along
+  frame X, minor=b along Y; degenerate → decline) — verified by a host edge-mapping test. But
+  there is NO watertight NATIVE ellipse-bearing-solid import: a foreign OCCT-authored ellipse-cut
+  solid parses (`parsed=1`) yet the ellipse-on-quadric pcurve is out of this slice, fails the
+  watertight self-verify (`watertight=0 nativeVol=0`), so the whole solid FALLS BACK to OCCT
+  (`ellipse_cut vol nat=942.478 oracle=942.478` is the OCCT fallback matching the oracle). Claimed
+  ONLY as "the reader recognises + maps the ELLIPSE curve entity", NOT as native ellipse-solid import.
+- **T1b — TOROIDAL_SURFACE → NOT LANDED (documented DECLINE → OCCT).** No native
+  `FaceSurface::Kind::Torus` (kinds are Plane/Cylinder/Cone/Sphere/BSpline/Bezier) and the
+  tessellator must not be modified, so `surface()` returns `std::nullopt` for `TOROIDAL_SURFACE`
+  → NULL → OCCT (`torus native parsed=0`, `fallback torus vol rel=0.00e+00`). Documented honest
+  decline, not a native import.
+
+**Residual → OCCT after the widen (honest):** `TOROIDAL_SURFACE`, ellipse-on-quadric solids,
+nested/transformed assemblies, AP242 / PMI, `SURFACE_OF_REVOLUTION`, `TRIMMED_CURVE`,
+rational/weighted B-splines, `BEZIER`, non-mm units, all IGES. #8 `drop-occt` stays blocked (a
+general STEP/AP242 reader + IGES + a general-curved kernel still block it).
+
 ### Files (#7)
 
 - `src/native/exchange/step_writer.h` / `step_writer.cpp` — OCCT-free ISO-10303-21 text

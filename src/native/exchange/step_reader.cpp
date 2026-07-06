@@ -18,10 +18,14 @@
 #include "native/topology/accessors.h"
 #include "native/topology/native_topology.h"
 
+#include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -333,16 +337,32 @@ class Mapper {
  public:
   explicit Mapper(std::unordered_map<int, Record>& records) : recs_(records) {}
 
-  // Build the single native Solid, or a NULL Shape on any decline.
+  // Build the native shape: a single Solid for one MANIFOLD_SOLID_BREP, or a
+  // Compound of Solids for several (a flat multi-solid body). A NULL Shape on any
+  // decline (out of scope, transformed assembly, malformed, or a member that does
+  // not reconstruct).
   topo::Shape build() {
     if (!validateUnitContext()) return {};
+    // A TRANSFORMED assembly (NEXT_ASSEMBLY_USAGE_OCCURRENCE / MAPPED_ITEM /
+    // REPRESENTATION_RELATIONSHIP*) carries per-instance placements the writer's
+    // entity set does not model → decline to OCCT rather than drop the transforms.
+    if (hasNestedAssembly()) return {};
 
-    const int brepId = findSingleManifoldBrep();
-    if (brepId == 0 || fail_) return {};
+    const std::vector<int> brepIds = findManifoldBreps();
+    if (brepIds.empty() || fail_) return {};
 
-    const topo::Shape solid = mapManifoldBrep(brepId);
-    if (fail_ || solid.isNull()) return {};
-    return solid;
+    // Map each root independently. The memoization caches are keyed by #id and #ids are
+    // globally unique within one Part-21 file, so two roots reference DISJOINT entity
+    // ids — the shared caches never cross-link two solids, and re-use is safe.
+    std::vector<topo::Shape> solids;
+    solids.reserve(brepIds.size());
+    for (const int id : brepIds) {
+      const topo::Shape solid = mapManifoldBrep(id);
+      if (fail_ || solid.isNull()) return {};
+      solids.push_back(solid);
+    }
+    if (solids.size() == 1) return solids.front();  // AP203 first-slice path: unchanged
+    return topo::ShapeBuilder::makeCompound(std::move(solids));
   }
 
  private:
@@ -388,16 +408,37 @@ class Mapper {
     return sawMilliMetre;
   }
 
-  // Exactly one MANIFOLD_SOLID_BREP (single root, single shell). More than one
-  // (assembly / void shells) declines.
-  int findSingleManifoldBrep() {
-    int found = 0;
+  // All MANIFOLD_SOLID_BREP roots, in ascending #id order (deterministic — the record
+  // table is unordered). One root → a single Solid; several → a multi-solid Compound
+  // (see build()). Order is stable so a fixture's per-solid comparison is repeatable.
+  std::vector<int> findManifoldBreps() {
+    std::vector<int> ids;
     for (const auto& [id, r] : recs_) {
       if (r.combined || r.keyword != "MANIFOLD_SOLID_BREP") continue;
-      if (found != 0) { decline(); return 0; }  // >1 root → assembly
-      found = id;
+      ids.push_back(id);
     }
-    return found;
+    std::sort(ids.begin(), ids.end());
+    return ids;
+  }
+
+  // A TRANSFORMED / nested assembly: the file places one or more solids through an
+  // instance transform tree (NEXT_ASSEMBLY_USAGE_OCCURRENCE, MAPPED_ITEM, or a
+  // REPRESENTATION_RELATIONSHIP*[_WITH_TRANSFORMATION]). The writer's entity set does
+  // not model those placements, so we decline the whole file to OCCT rather than
+  // import the sub-solids at the WRONG (identity) location. A FLAT multi-solid file
+  // (several MANIFOLD_SOLID_BREP at world coordinates, no transform tree) has none of
+  // these and is imported as a Compound.
+  bool hasNestedAssembly() const {
+    for (const auto& [id, r] : recs_) {
+      const std::string& kw = r.keyword;
+      if (kw == "NEXT_ASSEMBLY_USAGE_OCCURRENCE" || kw == "MAPPED_ITEM" ||
+          kw == "REPRESENTATION_RELATIONSHIP" ||
+          kw == "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION" ||
+          kw == "SHAPE_REPRESENTATION_RELATIONSHIP" ||
+          kw == "ITEM_DEFINED_TRANSFORMATION" || kw == "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION")
+        return true;
+    }
+    return false;
   }
 
   // ── Leaf geometry (Pass A), memoized by #id ─────────────────────────────────
@@ -460,37 +501,74 @@ class Mapper {
     return flat;
   }
 
-  // ── EdgeCurve (LINE / CIRCLE / B_SPLINE_CURVE_WITH_KNOTS) by #id ─────────────
+  // ── EdgeCurve (LINE / CIRCLE / ELLIPSE / B_SPLINE_CURVE_WITH_KNOTS) by #id ────
   std::optional<topo::EdgeCurve> curve(long id) {
     const Record* r = rec(id);
     if (!r || r->combined) { return std::nullopt; }
-    topo::EdgeCurve c;
-    if (r->keyword == "LINE") {
-      // LINE('',#point,#vector): frame origin = point, X = vector direction.
-      if (r->args.size() != 3 || !r->args[1].isRef() || !r->args[2].isRef()) return std::nullopt;
-      const auto o = point(r->args[1].ref);
-      const auto d = vectorDir(r->args[2].ref);
-      if (!o || !d) return std::nullopt;
-      c.kind = topo::EdgeCurve::Kind::Line;
-      c.frame.origin = *o;
-      c.frame.x = *d;
-      c.frame.z = math::Dir3{0, 0, 1};
-      return c;
+    // SURFACE_CURVE / SEAM_CURVE / INTERSECTION_CURVE wrap a 3D `curve_3d` (arg[1])
+    // together with a list of PCURVEs. A FOREIGN AP203 file (OCCT STEPControl_Writer)
+    // wraps every EDGE_CURVE's 3D geometry this way; the native writer emits the 3D
+    // curve directly. We recurse on the 3D curve and IGNORE the STEP pcurves — the
+    // reader synthesises its own analytic pcurves per face surface (pcurveFor). Without
+    // this unwrap the reader could not read any OCCT-authored STEP (it would decline on
+    // the wrapper keyword). Additive: native-written files never carry these.
+    if (r->keyword == "SURFACE_CURVE" || r->keyword == "SEAM_CURVE" ||
+        r->keyword == "INTERSECTION_CURVE") {
+      if (r->args.size() < 2 || !r->args[1].isRef()) return std::nullopt;
+      return curve(r->args[1].ref);
     }
-    if (r->keyword == "CIRCLE") {
-      // CIRCLE('',#axis2placement,radius).
-      if (r->args.size() != 3 || !r->args[1].isRef() || !r->args[2].isNumber()) return std::nullopt;
-      const auto f = axis2placement(r->args[1].ref);
-      if (!f) return std::nullopt;
-      c.kind = topo::EdgeCurve::Kind::Circle;
-      c.frame = *f;
-      c.radius = r->args[2].asReal();
-      return c;
-    }
+    if (r->keyword == "LINE") return lineCurve(*r);
+    if (r->keyword == "CIRCLE") return circleCurve(*r);
+    if (r->keyword == "ELLIPSE") return ellipseCurve(*r);
     if (r->keyword == "B_SPLINE_CURVE_WITH_KNOTS") return bsplineCurve(*r);
-    // Any other curve keyword (ELLIPSE, TRIMMED_CURVE, RATIONAL_B_SPLINE_*, …) is
-    // out of scope.
+    // Any other curve keyword (TRIMMED_CURVE, RATIONAL_B_SPLINE_*, …) is out of scope.
     return std::nullopt;
+  }
+
+  // LINE('',#point,#vector): frame origin = point, X = vector direction.
+  std::optional<topo::EdgeCurve> lineCurve(const Record& r) {
+    if (r.args.size() != 3 || !r.args[1].isRef() || !r.args[2].isRef()) return std::nullopt;
+    const auto o = point(r.args[1].ref);
+    const auto d = vectorDir(r.args[2].ref);
+    if (!o || !d) return std::nullopt;
+    topo::EdgeCurve c;
+    c.kind = topo::EdgeCurve::Kind::Line;
+    c.frame.origin = *o;
+    c.frame.x = *d;
+    c.frame.z = math::Dir3{0, 0, 1};
+    return c;
+  }
+
+  // CIRCLE('',#axis2placement,radius).
+  std::optional<topo::EdgeCurve> circleCurve(const Record& r) {
+    if (r.args.size() != 3 || !r.args[1].isRef() || !r.args[2].isNumber()) return std::nullopt;
+    const auto f = axis2placement(r.args[1].ref);
+    if (!f) return std::nullopt;
+    topo::EdgeCurve c;
+    c.kind = topo::EdgeCurve::Kind::Circle;
+    c.frame = *f;
+    c.radius = r.args[2].asReal();
+    return c;
+  }
+
+  // ELLIPSE('',#axis2placement,semiAxis1,semiAxis2): semiAxis1 is the major (X)
+  // radius, semiAxis2 the minor (Y) radius, in the placement frame — the exact inputs
+  // the native Ellipse EdgeCurve carries (shape.h: radius=major, minorRadius=minor)
+  // and the tessellator evaluates (edge_mesher.h case K::Ellipse). Degenerate
+  // (non-positive) axes decline → OCCT.
+  std::optional<topo::EdgeCurve> ellipseCurve(const Record& r) {
+    if (r.args.size() != 4 || !r.args[1].isRef() || !r.args[2].isNumber() || !r.args[3].isNumber())
+      return std::nullopt;
+    const auto f = axis2placement(r.args[1].ref);
+    if (!f) return std::nullopt;
+    const double a = r.args[2].asReal(), b = r.args[3].asReal();
+    if (!(a > 0.0) || !(b > 0.0)) return std::nullopt;
+    topo::EdgeCurve c;
+    c.kind = topo::EdgeCurve::Kind::Ellipse;
+    c.frame = *f;
+    c.radius = a;
+    c.minorRadius = b;
+    return c;
   }
 
   // B_SPLINE_CURVE_WITH_KNOTS('',deg,(poles),form,closed,self_int,(mults),(knots),form)
@@ -651,6 +729,15 @@ class Mapper {
         while (a1 <= a0 + 1e-12) a1 += kTwoPi;
         return {a0, a1};
       }
+      case K::Ellipse: {
+        // The ellipse's PARAMETRIC angle t: point = O + a·cos t·X + b·sin t·Y, so
+        // t = atan2(dot(d,Y)/b, dot(d,X)/a). Same CCW-forward convention as a circle.
+        const double t0 = ellipseAngle(c, p0);
+        double t1 = ellipseAngle(c, p1);
+        if (math::distance(p0, p1) <= 1e-9) return {t0, t0 + kTwoPi};
+        while (t1 <= t0 + 1e-12) t1 += kTwoPi;
+        return {t0, t1};
+      }
       case K::BSpline:
       default:
         // The B-spline curve is parametrized over its knot span; the writer trims
@@ -665,6 +752,15 @@ class Mapper {
     const math::Vec3 d = p - c.frame.origin;
     const double x = math::dot(d, c.frame.x.vec());
     const double y = math::dot(d, c.frame.y.vec());
+    return std::atan2(y, x);
+  }
+
+  // Parametric angle of a point on an ellipse: point = O + a·cos t·X + b·sin t·Y ⇒
+  // t = atan2(dot(p-O,Y)/b, dot(p-O,X)/a). (a=radius major, b=minorRadius.)
+  static double ellipseAngle(const topo::EdgeCurve& c, const math::Point3& p) {
+    const math::Vec3 d = p - c.frame.origin;
+    const double x = c.radius > 1e-12 ? math::dot(d, c.frame.x.vec()) / c.radius : 0.0;
+    const double y = c.minorRadius > 1e-12 ? math::dot(d, c.frame.y.vec()) / c.minorRadius : 0.0;
     return std::atan2(y, x);
   }
 
@@ -932,6 +1028,34 @@ class Mapper {
         pc.dir2d = math::Vec3{c.radius, 0.0, 0.0};  // dir2d.x carries the UV radius
         return pc;
       }
+      // An ELLIPSE on a plane is a UV ellipse about the (u,v) of its centre; the
+      // circle-frame X/Y map to the plane's u/v (the writer/reader place both frames
+      // co-planar), so dir2d carries (majorUV, minorUV). Mirrors the Circle-on-plane
+      // arm and the tessellator's Ellipse pcurve evaluator (trim.h case K::Ellipse).
+      if (c.kind == topo::EdgeCurve::Kind::Ellipse) {
+        const auto ctrUV = projectUV(srf, c.frame.origin);
+        pc.kind = topo::EdgeCurve::Kind::Ellipse;
+        pc.origin2d = math::Point3{ctrUV.first, ctrUV.second, 0.0};
+        pc.dir2d = math::Vec3{c.radius, c.minorRadius, 0.0};  // (major,minor) UV radii
+        return pc;
+      }
+      // A B-SPLINE edge on a plane (e.g. a spline-profile extrude CAP boundary) keeps
+      // its own degree/knots; its 2D poles are the 3D poles projected to the plane's
+      // (u,v). So S_plane(pcurve(t)) = C_edge(t) exactly (the spline's (x,y) IS its
+      // planar image) — the seam-weld contract that closes the cap↔wall boundary. This
+      // is the exact inverse of the construct spline-wall cap edge (residuals.h capEdge).
+      if (c.kind == topo::EdgeCurve::Kind::BSpline && !c.poles.empty()) {
+        pc.kind = topo::EdgeCurve::Kind::BSpline;
+        pc.degree = c.degree;
+        pc.knots = c.knots;
+        pc.poles2d.reserve(c.poles.size());
+        for (const math::Point3& p : c.poles) {
+          const auto uv = projectUV(srf, p);
+          pc.poles2d.push_back(math::Point3{uv.first, uv.second, 0.0});
+        }
+        pc.origin2d = pc.poles2d.front();
+        return pc;
+      }
       pc.kind = topo::EdgeCurve::Kind::Line;
       pc.origin2d = math::Point3{uv0.first, uv0.second, 0.0};
       const double len = std::max(last - first, 1e-12);
@@ -986,6 +1110,9 @@ class Mapper {
       case K::Circle:
         return c.frame.origin + c.frame.x.vec() * (c.radius * std::cos(t)) +
                c.frame.y.vec() * (c.radius * std::sin(t));
+      case K::Ellipse:
+        return c.frame.origin + c.frame.x.vec() * (c.radius * std::cos(t)) +
+               c.frame.y.vec() * (c.minorRadius * std::sin(t));
       case K::BSpline:
       default:
         if (c.poles.empty()) return c.frame.origin;
@@ -995,8 +1122,75 @@ class Mapper {
     }
   }
 
+  // Invert a B-spline surface: find (u,v) with S(u,v) ≈ p. A grid seed over the
+  // clamped knot domain picks the nearest sample, then a damped Newton on the
+  // first-order orthogonality condition (∂/∂u‖S−p‖²=0, ∂/∂v‖S−p‖²=0) polishes it to
+  // fp64 using the analytic surface derivatives (math::surfaceDerivs — no NUMSCI, no
+  // OCCT). This is the projection the seam-weld pcurve reconstruction needs for a
+  // native B_SPLINE_SURFACE wall (e.g. a spline-profile extrude side face): the rim
+  // and seam edges are straight in (u,v), so projecting their endpoints and joining
+  // them by the generic linear pcurve arm reproduces the construct helper's pcurve
+  // exactly (u=edge param on a rim, v=arc fraction on a seam). Non-goal for the plain
+  // box/quadric round-trip, which never carries a B-spline face.
+  static std::pair<double, double> projectBSplineUV(const topo::FaceSurface& s,
+                                                    const math::Point3& p) {
+    if (s.nPolesU <= 0 || s.nPolesV <= 0 || s.poles.empty()) return {0.0, 0.0};
+    const math::SurfaceGrid grid{{s.poles.data(), s.poles.size()}, s.nPolesU, s.nPolesV};
+    const std::span<const double> ku{s.knotsU.data(), s.knotsU.size()};
+    const std::span<const double> kv{s.knotsV.data(), s.knotsV.size()};
+    const double u0 = s.knotsU[static_cast<std::size_t>(s.degreeU)];
+    const double u1 = s.knotsU[s.knotsU.size() - 1 - static_cast<std::size_t>(s.degreeU)];
+    const double v0 = s.knotsV[static_cast<std::size_t>(s.degreeV)];
+    const double v1 = s.knotsV[s.knotsV.size() - 1 - static_cast<std::size_t>(s.degreeV)];
+    auto eval = [&](double u, double v) {
+      return math::surfacePoint(s.degreeU, s.degreeV, grid, ku, kv, u, v);
+    };
+    auto sq = [&](const math::Point3& a) {
+      const math::Vec3 d = a - p;
+      return math::dot(d, d);
+    };
+    // (1) coarse grid seed.
+    constexpr int kN = 12;
+    double bu = u0, bv = v0, best = std::numeric_limits<double>::max();
+    for (int i = 0; i <= kN; ++i)
+      for (int j = 0; j <= kN; ++j) {
+        const double u = u0 + (u1 - u0) * (double(i) / kN);
+        const double v = v0 + (v1 - v0) * (double(j) / kN);
+        const double d2 = sq(eval(u, v));
+        if (d2 < best) { best = d2; bu = u; bv = v; }
+      }
+    // (2) damped Newton on the orthogonality condition via analytic derivatives.
+    std::array<math::Vec3, 9> der{};  // 3×3 derivative table (maxDeriv=2)
+    for (int it = 0; it < 12; ++it) {
+      math::surfaceDerivs(s.degreeU, s.degreeV, grid, ku, kv, bu, bv, 2, {der.data(), der.size()});
+      const math::Point3 sp{der[0].x, der[0].y, der[0].z};
+      const math::Vec3 su = der[1 * 3 + 0], sv = der[0 * 3 + 1];
+      const math::Vec3 suu = der[2 * 3 + 0], svv = der[0 * 3 + 2], suv = der[1 * 3 + 1];
+      const math::Vec3 r = sp - p;
+      const double gu = math::dot(r, su), gv = math::dot(r, sv);
+      const double J00 = math::dot(su, su) + math::dot(r, suu);
+      const double J01 = math::dot(su, sv) + math::dot(r, suv);
+      const double J11 = math::dot(sv, sv) + math::dot(r, svv);
+      const double det = J00 * J11 - J01 * J01;
+      if (std::fabs(det) < 1e-30) break;
+      double du = (J11 * gu - J01 * gv) / det;
+      double dv = (J00 * gv - J01 * gu) / det;
+      double curr = sq(sp);
+      bool improved = false;
+      for (int bt = 0; bt < 20; ++bt) {
+        const double nu = std::clamp(bu - du, u0, u1);
+        const double nv = std::clamp(bv - dv, v0, v1);
+        if (sq(eval(nu, nv)) <= curr) { bu = nu; bv = nv; improved = true; break; }
+        du *= 0.5; dv *= 0.5;
+      }
+      if (!improved) break;
+    }
+    return {bu, bv};
+  }
+
   // Project a world point onto a surface's (u,v), inverting the elementary
-  // parametrization (elementary.h). Analytic-exact for plane/cylinder/cone/sphere.
+  // parametrization (elementary.h). Analytic-exact for plane/cylinder/cone/sphere;
+  // Newton-projected for a B-spline surface (projectBSplineUV).
   static std::pair<double, double> projectUV(const topo::FaceSurface& s, const math::Point3& p) {
     using K = topo::FaceSurface::Kind;
     const math::Vec3 d = p - s.frame.origin;
@@ -1017,8 +1211,9 @@ class Mapper {
         return {std::atan2(ly, lx), std::atan2(lz, rc)};
       }
       case K::BSpline:
+        return projectBSplineUV(s, p);
       default:
-        return {0.0, 0.0};  // B-spline faces are the box/quadric round-trip's non-goal
+        return {0.0, 0.0};
     }
   }
 

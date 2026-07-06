@@ -68,7 +68,13 @@ robustness tail keeps OCCT linked.** Canonical detail:
 - ✅ Booleans — planar-polyhedron fuse/cut/common (BSP-CSG, exact) + axis-aligned
   box∩cylinder curved slice.
 - ✅ Blends — planar chamfer, constant-radius planar-dihedral fillet, offset-face, shell.
-- ✅ **STEP export** (native AP203; import stays OCCT).
+- ✅ **STEP export** (native AP203).
+- ✅ **STEP import — first native slice** (OCCT-free Part-21 reader for the elementary/B-spline
+  AP203 subset the native writer emits + foreign OCCT-written box/cylinder; healed via the healing
+  slice, self-verified watertight else → OCCT). Host round-trip 9/9 exact + sim OCCT parity 15/15;
+  foreign OCCT-written box/cylinder import natively matching OCCT re-import (rel 0). **Residual → OCCT**
+  (honest): assemblies, AP242, complex/typed profiles beyond the writer set, bspline-face solids;
+  **all IGES import/export stays OCCT / dropped per the earlier decision.**
 - ✅ **Numeric foundations (#2)** — adopted **NumPP + SciPP** (MIT C++20 NumPy/SciPy
   ports) as the OCCT-free numeric substrate + native closest-point (Extrema).
 - ✅ **SSI S1** — analytic surface-surface intersection (elementary pairs, closed-form
@@ -194,7 +200,9 @@ robustness tail keeps OCCT linked.** Canonical detail:
 - ☐ Non-planar/guided/rail sweep robustness; general loft; fine-pitch threads.
 - ☐ **Shape healing residual** (beyond-tolerance gap bridging, missing-pcurve reconstruction,
   self-intersecting-wire repair, arbitrary broken industrial B-rep — the coincident-within-tolerance /
-  degenerate / orientation first slice is now native, above); **STEP/IGES import** (gated on healing).
+  degenerate / orientation first slice is now native, above); **full STEP import** beyond the AP203
+  elementary/B-spline subset (assemblies, AP242, complex profiles → OCCT — the first native slice landed,
+  above), and **all IGES import/export** (stays OCCT / dropped per the earlier decision).
 - ☐ **`drop-occt`** — BLOCKED until the above are native (research-grade, multi-year).
 
 **Effort:** ≈ 0.9–1.3 py delivered (planar/analytic breadth); ≈ **9–18 py remaining**

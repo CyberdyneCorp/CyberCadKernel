@@ -20,6 +20,7 @@
 #ifndef CYBERCAD_NATIVE_EXCHANGE_H
 #define CYBERCAD_NATIVE_EXCHANGE_H
 
+#include "native/exchange/step_reader.h"
 #include "native/exchange/step_writer.h"
 #include "native/exchange/stl_reader.h"
 #include "native/exchange/stl_writer.h"
@@ -44,6 +45,14 @@ inline bool step_export_native(const topo::Shape& solid, const std::string& path
                                const std::string& productName = "CyberCadKernel_part") {
   return writeStepFile(solid, path, productName);
 }
+
+/// Read a STEP AP203 file at `path` and reconstruct a native B-rep Solid — the
+/// deterministic inverse of step_export_native, scoped to the writer's entity set
+/// (plane/cylinder/cone/sphere/bspline faces, line/circle/bspline edges, single
+/// MANIFOLD_SOLID_BREP, mm units). Returns a NULL Shape when the file is out of
+/// scope / malformed / cannot be reconstructed to a valid solid; the engine then
+/// falls back to the OCCT STEPControl_Reader. Never fabricates geometry.
+inline topo::Shape step_import_native(const std::string& path) { return readStepFile(path); }
 
 }  // namespace cybercad::native::exchange
 

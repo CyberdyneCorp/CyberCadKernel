@@ -1519,9 +1519,66 @@ omits (28 → 30) — this MATCHES OCCT's own writer and is accepted as a bounde
 holed-plate relV 4.70e-15 / relA 6.48e-15 / bboxΔ 0.00e+00 — the native writer produces a
 solid geometrically identical to OCCT's writer for the same body.
 
-STILL OCCT (never faked): STEP import, IGES export/import, and an out-of-scope geometry
-kind (Ellipse/Bezier curve, rational spline, Bezier surface) → `canSerialize` DECLINEs,
-returns a clean error.
+### Native STEP IMPORT (`add-native-step-import`) — FIRST import slice, OCCT-FREE, DONE at both gates
+
+The deterministic INVERSE of the writer above: `cc_step_import` under the native engine now
+parses the ISO-10303-21 AP203 DATA section and reconstructs a native B-rep for the writer's
+exact entity alphabet (CARTESIAN_POINT/DIRECTION/VECTOR/AXIS2_PLACEMENT_3D, LINE/CIRCLE/
+B_SPLINE_CURVE_WITH_KNOTS, PLANE/CYLINDRICAL/CONICAL/SPHERICAL/B_SPLINE_SURFACE_WITH_KNOTS,
+VERTEX_POINT/EDGE_CURVE/ORIENTED_EDGE/EDGE_LOOP/FACE_OUTER_BOUND/FACE_BOUND/ADVANCED_FACE/
+CLOSED_SHELL/MANIFOLD_SOLID_BREP + the mm unit/context wrapper). Two OCCT-FREE pieces:
+
+- **Part-21 tokenizer + entity table** (`src/native/exchange/step_reader.cpp`): a recursive-
+  descent scanner over `#N=ENTITY(args);` producing `map<#id, Record>` with an `Arg` variant
+  (ref/int/real/str/enum/list/`$`/`*`). Handles typed reals (`1.`, `1.E2`, `-3.5E-07`),
+  `''`-doubled strings, enums, nested lists, and the combined `( SUB(...) SUB(...) )` unit form.
+- **Two-pass mapper** mirroring the writer: leaf geometry (memoized by `#id`) → topology,
+  reusing the writer's shared `EDGE_CURVE`/`VERTEX_POINT` dedup by `#id` so adjacent faces
+  reference the SAME edge node (watertight by construction). It reconstructs the analytic
+  PCURVEs the tessellator needs (STEP carries none), reorders/reorients each `EDGE_LOOP` by
+  vertex connectivity (the writer emits all `ORIENTED_EDGE` `.T.`, so the sense flag is not a
+  reliable directed walk), drops the periodic-wall SEAM (an `EDGE_CURVE` used fwd+rev in one
+  loop), and unwraps angular pcurve `u` onto one 2π branch per face.
+
+**Honest scope / DECLINE → NULL → OCCT (never fabricates):** any unsupported entity/surface
+keyword, rational/weighted B-spline, `TOROIDAL_SURFACE`/`ELLIPSE`/etc., assembly / >1
+`MANIFOLD_SOLID_BREP`, non-mm unit context, malformed record, or a reconstruction that does
+not self-verify. `heal::healShell` is deliberately NOT run inline (it rebuilds every face as a
+best-fit PLANE → would planarize a curved solid); instead the engine self-verifies the
+reconstruction robustly watertight with volume>0 and, on ANY failure, falls back to OCCT
+`STEPControl_Reader`. `src/native/**` stays OCCT-free; the fallback is engine-side only.
+
+**Gate 1 (host, no OCCT) GREEN.** `test_native_step_reader` (#25, 9 cases): box/cylinder/
+holed-plate round-trip (`export_native → import_native → tessellate`) reconstructs valid
+WATERTIGHT solids with volume EXACT for the box (1000, relΔ 0) and matching the source to fp
+for the curved solids (both ends mesh the identical reconstruction), topology preserved
+(faces/vertices/edges == source); plus DECLINE → NULL for `TOROIDAL_SURFACE`, a two-root
+assembly, a non-mm unit, a malformed record, and empty input. Host CTest **29/29** green
+(default) and **36/36** green under `-DCYBERCAD_HAS_NUMSCI=ON` — no regressions across the
+export slice, healing, SSI S1–S4/S5, blends, marching, boolean, construct, tessellation.
+
+**Gate 2 (sim vs OCCT + foreign STEP) GREEN.** `run-sim-native-step-import.sh` +
+`tests/sim/native_step_import_parity.mm` via the `cc_*` facade — `[NIMPORT] 15 passed / 0
+failed`:
+
+| Case | vol native / OCCT · relV | area rel | bboxΔ | faces | edges (native uniq vs OCCT) |
+|---|---|---|---|---|---|
+| native-written box | 1000 / 1000 · **2.27e-16** | 1.89e-16 | 0.00e+00 | 6 = 6 | 12 = 12 |
+| native-written cylinder | 1568.8 / 1570.8 · **1.27e-03** | 5.08e-04 | 0.00e+00 | 9 = 9 | 15 = 15 |
+| native-written holed-plate | 847.149 / 846.903 · **2.90e-04** | 1.09e-04 | 0.00e+00 | 7 = 7 | 14 vs 15 (seam) |
+| **FOREIGN** OCCT-written box | 1000 / 1000 · **0.00e+00** | 0.00e+00 | 0.00e+00 | 6 = 6 | 12 = 12 |
+| **FOREIGN** OCCT-written cylinder | 1570.8 / 1570.8 · **0.00e+00** | 0.00e+00 | 0.00e+00 | 3 = 3 | 3 = 3 |
+
+The native reader reconstructs the same solid OCCT's `STEPControl_Reader` reads from the
+native-written files (planar EXACT, curved within the deflection bound), AND reads a FOREIGN
+OCCT-`STEPControl_Writer`-produced STEP of a box/cylinder natively — proving it parses
+foreign-generated AP203, not just its own writer's output.
+
+STILL OCCT (honest, never faked): ARBITRARY / AP242 / PMI STEP import, IGES export/import,
+and any body outside the writer's subset — `cc_step_import` DECLINEs to NULL and the engine
+falls through to OCCT `STEPControl_Reader`. STEP EXPORT out-of-scope kinds (Ellipse/Bezier
+curve, rational spline, Bezier surface) → `canSerialize` DECLINEs, clean error. #8 `drop-occt`
+stays blocked (arbitrary import + IGES remain OCCT).
 
 ### Files (#7)
 

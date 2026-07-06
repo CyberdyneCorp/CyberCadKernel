@@ -986,4 +986,37 @@ CC_TEST(native_step_export_writes_valid_ap203_file) {
     cc_shape_release(box);
 }
 
+// Facade round-trip through the SHIPPING path: under the native engine, cc_step_export
+// writes a native STEP, then cc_step_import reads it BACK through the native reader (the
+// first import slice). The reconstructed body is a valid native solid whose mass matches
+// the original EXACTLY (planar box). Host build has no OCCT, so this only passes if the
+// NATIVE reader path ran (a decline would fall to the OCCT stub → 0).
+CC_TEST(native_step_import_reads_native_file) {
+    EngineGuard g;
+    cc_set_engine(1);
+    const double sq[] = {0, 0, 10, 0, 10, 10, 0, 10};
+    const CCShapeId box = cc_solid_extrude(sq, 4, 10.0);
+    CC_CHECK(box != 0);
+    const CCMassProps src = cc_mass_properties(box);
+    CC_CHECK(src.valid != 0);
+
+    const char* path = "/tmp/cybercad_native_step_import_test.step";
+    std::remove(path);
+    CC_CHECK_EQ(cc_step_export(box, path), 1);
+
+    const CCShapeId back = cc_step_import(path);
+    CC_CHECK(back != 0);  // native reader reconstructed a valid watertight solid
+    if (back != 0) {
+        const CCMassProps rr = cc_mass_properties(back);
+        CC_CHECK(rr.valid != 0);
+        CC_CHECK(std::fabs(rr.volume - src.volume) < 1e-6);  // EXACT (planar box)
+        CC_CHECK(std::fabs(rr.area - src.area) < 1e-6);
+        CC_CHECK(std::fabs(rr.cx - src.cx) < 1e-6 && std::fabs(rr.cy - src.cy) < 1e-6 &&
+                 std::fabs(rr.cz - src.cz) < 1e-6);
+        cc_shape_release(back);
+    }
+    std::remove(path);
+    cc_shape_release(box);
+}
+
 CC_RUN_ALL()

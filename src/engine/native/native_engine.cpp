@@ -1170,7 +1170,22 @@ Result<void> NativeEngine::step_export(EngineShape body, const char* path) {
     }
     return fallback().step_export(body, path);
 }
-ShapeResult NativeEngine::step_import(const char* path) { return fallback().step_import(path); }
+// NATIVE STEP IMPORT (first slice). The reader is OCCT-free: parse the ISO-10303-21
+// AP203 file and reconstruct a native B-rep Solid the writer's entity set describes
+// (plane/cylinder/cone/sphere/bspline faces, line/circle/bspline edges, one
+// MANIFOLD_SOLID_BREP, mm units). We keep the result native ONLY when it self-
+// verifies robustly watertight with positive volume; a NULL parse (out of scope /
+// malformed / unhealable) or a failed self-verify falls through to the OCCT
+// STEPControl_Reader (labelled, honest — src/native stays OCCT-free, the fallback
+// is engine-side only). Never fabricates a solid the file did not describe.
+ShapeResult NativeEngine::step_import(const char* path) {
+    if (path) {
+        ntopo::Shape solid = cybercad::native::exchange::step_import_native(path);
+        if (!solid.isNull() && robustlyWatertight(solid))
+            return track(wrapNative(std::move(solid)));
+    }
+    return fallback().step_import(path);
+}
 Result<void> NativeEngine::iges_export(EngineShape body, const char* path) {
     CC_NATIVE_BODY_UNSUPPORTED("iges_export", body);
     return fallback().iges_export(body, path);

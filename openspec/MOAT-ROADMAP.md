@@ -311,8 +311,24 @@ fuzzing vs OCCT).
   matching OCCT, dV ~1e-3..1e-4), the fixed relTol=2e-2 NEVER widened. New
   `tests/sim/native_boolean_fuzz.mm` + `scripts/run-sim-native-boolean-fuzz.sh`; `src/native`
   untouched (pure test infra). The FIRST measured completeness signal beyond the hand-picked
-  native-pass=18 fixtures. REMAINING (asymptotic, gates M8): extend the generator across blends,
-  import, and healing; loop-until-dry critics; the standing zero-silent-wrong-results bar.
+  native-pass=18 fixtures.
+- **Breadth — THREE native domains now under the fuzzing bar.** (2nd) STEP round-trip
+  `tests/sim/native_step_import_fuzz.mm` (0 DISAGREED; *surfaced* an OCCT reader inaccuracy on
+  shallow frustums, native vindicated by closed-form). (3rd, this slice) **construction
+  loft/sweep** `tests/sim/native_construct_fuzz.mm` + `scripts/run-sim-native-construct-fuzz.sh`:
+  a DETERMINISTIC seeded generator (splitmix64→xoshiro256**, seeded ONLY by FUZZ_SEED) drives
+  random VALID inputs from four native-claimed families — equal- AND mismatched-count planar
+  N-section ruled loft (frustum / prismatoid-stack) and straight constant-frame sweep (prism) —
+  through BOTH the OCCT-FREE `build_loft_sections`/`build_sweep` (measured by the native
+  tessellator) AND the OCCT oracle (`BRepOffsetAPI_ThruSections`/`MakePipe`, measured by
+  `BRepGProp`), plus sparse non-planar loft/sweep inputs to exercise the native NULL→OCCT
+  DECLINE branch. Two seeds (0x5744EE9911 N=96 → 78/18/0; 0xDEADBEEFCAFE N=128 → 110/18/0):
+  **0 DISAGREED**, every AGREE OCCT-exact (dV/dA ~1e-15), fixed relTol=2e-2 NEVER widened; an
+  analytic prismatoid/prism-volume arbiter is present as a ready strengthening (untriggered —
+  ORACLE-INACCURATE=0). Determinism re-verified (same seed twice → byte-identical batch).
+  `src/native` untouched; on run-sim-suite.sh SKIP list (own main()).
+- REMAINING (asymptotic, gates M8): extend the generator across blends and healing;
+  loop-until-dry critics; the standing zero-silent-wrong-results bar.
 
 ### M7 — Tier-4 construction robustness · ~1–3 py · independent
 **M7a first slice LANDED (verified native-vs-OCCT at both gates):** the N-section (≥3)
@@ -390,7 +406,7 @@ slices used). Both are captured below.
 | **M0** freeform mesher/trimmer | `tessellate/` | — | ✅ **Wave-1 slice LANDED** — mesher ready; unblocks M2/M4 |
 | **M1** SSI S4 general robustness | `ssi/marching` | — | ✅ **Wave-1 slice LANDED** — breadth continues (asymptotic) |
 | **M5** shape-healing robustness | `heal/` | — | ✅ **Wave-1 slice LANDED** — tail continues (asymptotic) |
-| **M6** completeness / fuzzing harness | test infra + `ssi/` | — | ✅ **Wave-1 + breadth LANDED** — curved-boolean fuzzer + STEP round-trip fuzzer (0 DISAGREED); bar continues (gates M8) |
+| **M6** completeness / fuzzing harness | test infra + `ssi/` | — | ✅ **Wave-1 + breadth×3 LANDED** — curved-boolean + STEP round-trip + construction loft/sweep fuzzers (0 DISAGREED, 3 native domains); blends/healing remain (gates M8) |
 | **M7a** guided sweep · hard loft | `construct/` | — | ✅ **Wave-1 slice LANDED** — N-section loft ABI (`cc_solid_loft_sections`); guided sweep (measured trap) + non-planar-cap loft remain OCCT |
 | **M4** general STEP/AP242 import | `exchange/` | M0 | ✅ **Wave-2 LANDED** — non-rational + `RATIONAL_B_SPLINE_SURFACE` admission native (parity 83/83); rational-*curve* trims, PMI, deep assemblies remain OCCT |
 | **M2b (B2)** freeform face-split | `boolean/` · `ssi/` | M0 ✅ + M1 ✅ | ✅ **Wave-2 slice LANDED** — `boolean/face_split.h` `splitFace` (tiles vs OCCT 12/12); non-convex/multi-crossing tail declines |

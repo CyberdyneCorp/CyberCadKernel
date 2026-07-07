@@ -89,6 +89,19 @@ resolution. The curve *pipeline* exists; this is the *robustness* on adversarial
 — OCCT's decades-deep `IntPatch`/`IntWalk` tuning, re-earned incrementally.
 - *Oracle:* `GeomAPI_IntSS` / `IntPatch` curve match (onSurf, arc length, branch/loop counts).
 - *Partly asymptotic* — ships as progressively hardened slices; whatever is not robust defers.
+- **Status — first slice LANDED (freeform S4-d open-arm branch point).** The first FREEFORM
+  branch point traced to completion, beyond the analytic Steinmetz case: a bicubic B-spline saddle
+  tangent to a plane through its saddle point self-crosses at one branch point whose four arms
+  radiate OPEN to the finite patch boundary (unlike Steinmetz's CLOSED branch-to-branch arcs).
+  `reclassifyBranchArcs` recognised only the closed topology (both arc ends on a branch node);
+  it is generalised with an OPEN-ARM rule (one end on a branch node, the other on the boundary).
+  Verified native-vs-OCCT (`run-sim-native-ssi-marching` 12/12): `saddle s4d-g` traced=4 arms,
+  onCurve 8.9e-08 / onSurf 5.1e-10, matching OCCT `GeomAPI_IntSS`'s 4 locus branches; a
+  definite-contact B-spline bump honestly ends with no arms; all 11 prior controls frozen.
+  STRICTLY ADDITIVE (`ssi/marching` only, +244/-11). The change proposal's own remedy —
+  Richardson bias-cancellation of `relativeSecondForm` — was empirically REFUTED in diagnosis
+  (central difference is already O(δ²)) and NOT shipped (no dead code). REMAINING (asymptotic
+  tail): general near-tangent breadth, coincident/overlapping freeform, self-intersection.
 
 ### M2 — General freeform booleans · ~2–4 py · needs M0 + M1
 Lift `recogniseCurvedSolid` to accept **freeform (B-spline/NURBS) operands** (it rejects them
@@ -122,6 +135,17 @@ bridging, arbitrary broken industrial B-rep**. Gates trustworthy foreign import 
 - *Oracle:* `ShapeFix_*` / `BRepBuilderAPI_Sewing` on broken fixtures + real foreign files.
 - **Asymptotic** — a first robust slice is bounded; the completeness against arbitrary broken
   input is the decades-deep `ShapeFix` moat, re-earned only incrementally.
+- **Status — first slice LANDED (opt-in beyond-tolerance gap bridging).** Beyond the landed
+  sew/unify/orientation healer, a near-miss seam gap slightly ABOVE the weld tolerance — which the
+  healer DECLINES — now bridges to a watertight solid. `gap_bridge.h` (new, header-only, OCCT-free)
+  snaps the primary weld's unpaired boundary corners onto their cross-face partner within the
+  BOUNDED band `(tolerance, min(budget, ¼·shortestIncidentEdge)]` (a hard local-feature cap so it
+  never collapses a real feature), then re-sews. Opt-in (`gapBridgeBudget=0` default OFF, existing
+  healer BYTE-IDENTICAL); NEVER widens the weld tolerance. Verified native-vs-OCCT
+  (`run-sim-native-heal` 6/6): a bridged seam heals V=1.000 (4 corners) matching OCCT `Sewing`
+  (V=1.00167); an out-of-budget gap declines honestly (`GapBeyondBudget`); the 4 landed controls
+  frozen. REMAINING (asymptotic tail): pcurve reconstruction, self-intersecting-wire repair,
+  arbitrary broken industrial B-rep.
 
 ### M6 — Robustness completeness bar (S4-f + coverage) · ongoing · gates drop-occt
 The measured-recall / completeness discipline (SSI S4-f landed a first slice): below any fixed
@@ -132,6 +156,16 @@ fuzzing vs OCCT).
 - *Oracle:* differential fuzzing — random valid inputs through both native and OCCT, assert
   agreement or an honest native decline; zero silent wrong results.
 - **Asymptotic** — never "done"; this is the gate that keeps `drop-occt` a decision, not a date.
+- **Status — first slice LANDED (curved-boolean differential fuzzer).** A DETERMINISTIC seeded
+  generator drives random VALID operands from six recognised families (sphere∩sphere, cone∩sphere,
+  cone∩cyl, Steinmetz, box∩cyl, drill) × {fuse,cut,common} through BOTH native and OCCT and
+  classifies each trial AGREE / honest-native-DECLINE / DISAGREE. Two seeds, 512 trials:
+  432 AGREED / 80 HONESTLY-DECLINED / **0 DISAGREED** — native genuinely exercised (real volumes
+  matching OCCT, dV ~1e-3..1e-4), the fixed relTol=2e-2 NEVER widened. New
+  `tests/sim/native_boolean_fuzz.mm` + `scripts/run-sim-native-boolean-fuzz.sh`; `src/native`
+  untouched (pure test infra). The FIRST measured completeness signal beyond the hand-picked
+  native-pass=18 fixtures. REMAINING (asymptotic, gates M8): extend the generator across blends,
+  import, and healing; loop-until-dry critics; the standing zero-silent-wrong-results bar.
 
 ### M7 — Tier-4 construction robustness · ~1–3 py · independent
 The construction breadth still deferred: **guided/rail sweep** (orientation oracle),
@@ -169,58 +203,74 @@ parallelizable: (a) its **upstream dependency** is met, and (b) it touches a **d
 `src/native` module** (so tracks integrate cleanly — the same isolation the parallel bounded
 slices used). Both are captured below.
 
-| Stage | Module (disjoint unit) | Needs | Wave — can start when |
+> **Wave-1 first slices LANDED (all verified native-vs-OCCT).** The four launched Wave-1 tracks
+> each banked a first verified slice: **M0** (keystone) trimmed free-form interior mesher,
+> **M1** freeform S4-d open-arm branch point (marching 12/12), **M5** opt-in gap bridging
+> (heal 6/6), **M6** curved-boolean differential fuzzer (512 trials, 0 DISAGREED). **M7a**
+> (construct sweep/loft) was Wave-1-eligible but not yet started. **This opens Wave 2**: with
+> M0's mesher ready and M0+M1 both past a first slice, **M2 (freeform booleans) and M4 (general
+> import) can now start in parallel** — alongside the still-running asymptotic tracks (M1 breadth,
+> M5, M6) and the untouched M7a.
+
+| Stage | Module (disjoint unit) | Needs | Status / when it can run |
 |---|---|---|---|
-| **M0** freeform mesher/trimmer | `tessellate/` | — | **Wave 1 — NOW** (keystone) |
-| **M1** SSI S4 general robustness | `ssi/marching` | — | **Wave 1 — NOW** |
-| **M5** shape-healing robustness | `heal/` | — | **Wave 1 — NOW** |
-| **M6** completeness / fuzzing harness | test infra + `ssi/` | — | **Wave 1 — NOW** (harness; the *bar* gates M8) |
-| **M7a** guided sweep · hard loft | `construct/` | — | **Wave 1 — NOW** |
-| **M4** general STEP/AP242 import | `exchange/` | M0 | **Wave 2** — after M0 |
-| **M2** general freeform booleans | `boolean/` | M0 **+** M1 | **Wave 2** — after M0 + M1 |
+| **M0** freeform mesher/trimmer | `tessellate/` | — | ✅ **Wave-1 slice LANDED** — mesher ready; unblocks M2/M4 |
+| **M1** SSI S4 general robustness | `ssi/marching` | — | ✅ **Wave-1 slice LANDED** — breadth continues (asymptotic) |
+| **M5** shape-healing robustness | `heal/` | — | ✅ **Wave-1 slice LANDED** — tail continues (asymptotic) |
+| **M6** completeness / fuzzing harness | test infra + `ssi/` | — | ✅ **Wave-1 slice LANDED** — bar continues (gates M8) |
+| **M7a** guided sweep · hard loft | `construct/` | — | **Wave-1 eligible — NOT yet started** (independent, can start anytime) |
+| **M4** general STEP/AP242 import | `exchange/` | M0 | ▶ **Wave 2 — OPEN NOW** (M0 mesher ready) |
+| **M2** general freeform booleans | `boolean/` | M0 **+** M1 | ▶ **Wave 2 — OPEN NOW** (M0 + M1 first slices landed) |
 | **M3** freeform blends + wrap-emboss | `blend/` · `feature/` | M2 | **Wave 3** — after M2 |
 | **M7b** fine-pitch self-intersecting thread | `construct/` | M2 | **Wave 3** — after M2 |
 | **M8** `drop-occt` — unlink | `engine/occt` (delete) | ALL + M6 bar | **Terminal** |
 
 ```
-WAVE 1 (5 fully-independent tracks, disjoint modules, start immediately)
-  M0 tessellate  │  M1 ssi/marching  │  M5 heal  │  M6 fuzz-harness  │  M7a construct(sweep/loft)
-        │  └──────────────┐                                                 │
-        ├──► WAVE 2        │                                                 │ (M7a lands independently)
-        │    M4 exchange (needs M0)                                         │
-        └──► M2 boolean (needs M0 + M1) ◄─────────────────────────┘
+WAVE 1 — first slices ✅ LANDED (M0·M1·M5·M6), M7a eligible but not yet started
+  M0 tessellate ✅  │  M1 ssi/marching ✅  │  M5 heal ✅  │  M6 fuzz-harness ✅  │  M7a construct (open)
+        │  └──────────────┐                        (asymptotic tracks continue)        │
+        ├──► WAVE 2 ▶ OPEN NOW                                                          │ (M7a independent)
+        │    M4 exchange (needs M0 ✅)                                                  │
+        └──► M2 boolean (needs M0 ✅ + M1 ✅) ◄────────────────────────────────┘
                   │
                   └──► WAVE 3:  M3 blend/feature   +   M7b construct(fine-pitch)   (both need M2)
 
   ALL of M0–M7 native at the bar  +  M6 completeness bar holds  ──►  M8 drop-occt
 ```
 
-**Reading it:** up to **5 arcs run in parallel from day one** (M0, M1, M5, M6-harness, M7a) —
-they share no module and no dependency. The freeform payoff chain is the critical path:
-**M0 + M1 → M2 → M3** (booleans gate blends). M4 (import) branches off M0 in parallel with M2.
+**Reading it (current front):** Wave 1's four launched tracks each banked a first verified slice,
+so the concurrency front has advanced. **Runnable in parallel RIGHT NOW:** ▶ **M2** (freeform
+booleans — `boolean/`) and ▶ **M4** (general import — `exchange/`), both unblocked by the M0
+mesher; plus **M7a** (construct sweep/loft — independent, still unstarted); plus the continuing
+asymptotic tracks **M1** breadth, **M5**, and **M6** — six disjoint modules, no shared code. The
+freeform payoff chain remains the critical path: **M0 + M1 → M2 → M3** (booleans gate blends).
 M5 (healing) and M6 (fuzzing) run the whole time and *gate the finish* (M4 quality, M8) rather
-than the middle. M8 is terminal — it starts only when every track is native at the bar and the
-M6 bar holds.
+than the middle. M8 is terminal — only when every track is native at the bar and the M6 bar holds.
 
-**Critical path (longest serial chain):** `M0 → M1↘ M2 → M3` (≈ 6–13 py end-to-end), so the
-minimum wall-clock to drop-OCCT is set by the freeform-boolean chain + the asymptotic M5/M6
-tails — not by the total py, because M4/M5/M6/M7 overlap it. Staffing the 5 Wave-1 tracks
-concurrently is what compresses the calendar.
+**Critical path (longest serial chain):** `M0 → M1↘ M2 → M3` (≈ 6–13 py end-to-end) — its first
+link (M0 ↘ M1) is now past a first slice, so the live critical work is **M2 → M3**. Minimum
+wall-clock to drop-OCCT is set by that chain + the asymptotic M5/M6 tails, not by total py,
+because M4/M5/M6/M7 overlap it. Staffing M2 + M4 + M7a concurrently now is what compresses the
+calendar next.
 
 ## Effort rollup (honest)
 
 | | Person-years |
 |---|---|
 | **Delivered + verified vs OCCT (this project)** | ≈ **3.5–4.5 py** — planar/analytic breadth, SSI S1–S5 + S4-a…e, five curved-boolean families 3/3, curved fillet/chamfer (const/variable/asym), STEP export + broad import (all quadric+torus+general revolution, trimmed, assemblies, AP242-skip), shape-healing + STEP-import first slices, mismatched loft, deboss/polygon wrap-emboss |
-| **Remaining to drop OCCT (M0–M8)** | ≈ **5–11 py**, dominated by M0 (keystone) → M2/M3 (freeform booleans/blends), with M5 + M6 the asymptotic tails |
+| **Moat first slices landed (this campaign)** | M0 keystone trimmed-free-form interior mesher · M1 freeform S4-d open-arm branch · M5 opt-in gap bridging · M6 curved-boolean differential fuzzer (512 trials, 0 DISAGREED) — each verified native-vs-OCCT, additive, `src/native` OCCT-free |
+| **Remaining to drop OCCT (M2–M8 + tails)** | ≈ **5–11 py**, now dominated by M2/M3 (freeform booleans/blends — Wave 2 open) + M4 import, with M5 + M6 the asymptotic tails; the M0 keystone mesher is past its first slice (STEP admission = M4) |
 | ~~IGES~~ | descoped (STEP-only) — saved ~1.5–3 py |
 
 ## Honest framing
 
-- **M0 is the highest-leverage single target** — it is the recurring blocker under freeform
-  booleans, blends, wrap-emboss, and foreign STEP import. Doing it first unblocks the most.
-- **M2/M3 are the payoff** but only reachable after M0 + M1; they are bounded per surface
-  family and asymptotic only in full arbitrary generality.
+- **M0 was the highest-leverage single target** — the recurring blocker under freeform booleans,
+  blends, wrap-emboss, and foreign STEP import. Its mesher first slice is now **landed**, so the
+  most-downstream work (M2/M4) is unblocked; the remaining M0 piece is the STEP-reader admission,
+  which is M4's job (gated by the sim `BRepMesh` oracle).
+- **M2/M3 are the payoff** and are now **reachable** (M0 + M1 first slices landed); they are
+  bounded per surface family and asymptotic only in full arbitrary generality. **M2 is the next
+  critical-path target.**
 - **M5 and M6 are why `drop-occt` (#8) is a long-horizon direction, not a date.** They are
   asymptotic by nature (arbitrary broken input, sub-resolution completeness); a first robust
   slice is bankable, the guarantee is re-earned continuously. OCCT stays the labelled oracle

@@ -371,19 +371,58 @@ calendar next.
 | | Person-years |
 |---|---|
 | **Delivered + verified vs OCCT (this project)** | ≈ **3.5–4.5 py** — planar/analytic breadth, SSI S1–S5 + S4-a…e, five curved-boolean families 3/3, curved fillet/chamfer (const/variable/asym), STEP export + broad import (all quadric+torus+general revolution, trimmed, assemblies, AP242-skip), shape-healing + STEP-import first slices, mismatched loft, deboss/polygon wrap-emboss |
-| **Moat first slices landed (this campaign)** | M0 keystone trimmed-free-form interior mesher · M1 freeform S4-d open-arm branch · M5 opt-in gap bridging · M6 curved-boolean differential fuzzer (512 trials, 0 DISAGREED) — each verified native-vs-OCCT, additive, `src/native` OCCT-free |
-| **Remaining to drop OCCT (M2–M8 + tails)** | ≈ **5–11 py**, now dominated by M2/M3 (freeform booleans/blends — Wave 2 open) + M4 import, with M5 + M6 the asymptotic tails; the M0 keystone mesher is past its first slice (STEP admission = M4) |
+| **Moat slices landed (this campaign)** | **M0** keystone mesher **+ M4 / M4-rational** foreign B-spline STEP admission (keystone complete end-to-end) · **M1** freeform S4-d open-arm branch · **M2 substrate: B2** freeform face-split **+ B3** freeform point-in-solid membership · **M5** gap bridging **+ M5-tail** planar-hole cap · **M6** curved-boolean fuzzer **+ M6-breadth** STEP round-trip fuzzer (0 DISAGREED) · **M7a** N-section loft — each verified native-vs-OCCT, additive, `src/native` OCCT-free. Honest declines that sharpened the map: M2 first-attempt (→ substrate B1/B2/B3), guided-orient sweep (measured self-verify trap) |
+| **Remaining to drop OCCT (M2 breadth + M3 + tails + M8)** | ≈ **3–8 py** — dominated by **M2/M3 breadth** (freeform booleans/blends, bounded *per family*, the parallelizable bulk) once B1 closes the substrate, plus the **M5 + M6** asymptotic gates; M4-tail (PMI/assemblies) + M7 residuals are small. See the projection below |
 | ~~IGES~~ | descoped (STEP-only) — saved ~1.5–3 py |
+
+## The remaining path to `drop-occt` (M8) — projection once the M2 substrate closes
+
+*Projection as of the M2-substrate round (B1 in flight; B2 + B3 landed). Once B1 lands, the
+freeform-boolean **assembly** is reachable and the hard **research** is largely behind — what
+remains to actually unlink OCCT is **breadth** (parallelizable) plus **two asymptotic gates** that
+must HOLD, not new keystones.*
+
+What the campaign has closed: the **keystone** (M0 mesher), its **import surface** (M4 non-rational
++ M4-rational B-spline admission — foreign trimmed B-spline patches now import native end-to-end),
+and the **M2 substrate** (B1 recognise · B2 split · B3 classify, over M1 trace + M0 weld). The
+freeform-boolean chain's *enablers* are done; the *payoff breadth* is what's ahead.
+
+| Remaining stage | What's left to be native at the bar | Bounded / Asymptotic | Needs | Parallel? |
+|---|---|---|---|---|
+| **M2 breadth** | freeform booleans across families: NURBS↔NURBS, all 3 ops, **multi-face / holed / multi-branch-seam** splits (first slice reachable once B1 lands; breadth ahead) | bounded *per family*, asymptotic in full generality | substrate (B1+B2+B3) | assembly serial; **families parallelize** |
+| **M3** blends + wrap-emboss | curved-curved fillets/chamfers + wrap-emboss on **freeform bases** | bounded per family | **M2** | after M2; families parallel |
+| **M4 tail** | rational-*curve* trims · AP242 **PMI semantics** · deep-nested / `MAPPED_ITEM` assemblies | bounded (parser breadth) | M0 ✅ | ✅ **now** (`exchange/`) |
+| **M5 tail** | self-intersecting-wire repair · pcurve reconstruction · **arbitrary broken industrial B-rep** | **ASYMPTOTIC** (`ShapeFix` moat) | — | ✅ **now** (`heal/`) |
+| **M6 bar** | fuzz the remaining domains (blends, healing) + **HOLD** zero-silent-wrong across the whole surface | **ASYMPTOTIC** — the *gate*, never "done" | tracks it guards | ✅ **now** (test infra) |
+| **M7 tail** | guided-sweep **orientation law** (the measured self-verify trap needs a correct law) · curved-rail morph · fine-pitch thread | bounded-ish | some need M2 | partly now (`construct/`) |
+| **M8** `drop-occt` | delete `src/engine/occt` · drop the OCCT link · stub `cc_iges_*` | terminal | **ALL native at the bar + M6 holds** | terminal, single |
+
+```
+[B1] → M2 assembly → M2 breadth ──► M3 blends/wrap        (freeform payoff — bounded per family)
+                          M4-tail ┐
+                          M5-tail ├── overlap the whole time  (the asymptotic gates)
+                          M6 bar  ┘
+   ALL native at the bar  +  M6 completeness bar HOLDS  ──►  M8 drop-occt
+```
+
+**Why M8 is a decision, not a date.** Even once every capability is native, OCCT is not unlinked on
+the day the last feature lands. **M5 (healing robustness) and M6 (the completeness fuzzing bar) are
+the gate.** OCCT stays the labelled oracle + fallback until the M6 differential fuzzers demonstrate
+*zero silent wrong results across the entire native surface* — the moment the fallback is provably
+unnecessary for the supported domain. M6-breadth already proved the bar's worth by catching OCCT
+itself mis-importing shallow frustums (native vindicated by closed-form). The research walls are
+mostly behind; what remains is **breadth you can parallelize** and **two gates that must hold**.
 
 ## Honest framing
 
 - **M0 was the highest-leverage single target** — the recurring blocker under freeform booleans,
-  blends, wrap-emboss, and foreign STEP import. Its mesher first slice is now **landed**, so the
-  most-downstream work (M2/M4) is unblocked; the remaining M0 piece is the STEP-reader admission,
-  which is M4's job (gated by the sim `BRepMesh` oracle).
-- **M2/M3 are the payoff** and are now **reachable** (M0 + M1 first slices landed); they are
-  bounded per surface family and asymptotic only in full arbitrary generality. **M2 is the next
-  critical-path target.**
+  blends, wrap-emboss, and foreign STEP import. It is now **complete end-to-end**: the mesher plus
+  the STEP-reader admission (landed as M4 / M4-rational, verified vs OCCT `BRepMesh`). Foreign
+  trimmed B-spline patches import native.
+- **M2/M3 are the payoff.** The M2 *substrate* is (all but) done — **B2** (split) and **B3**
+  (classify) landed, **B1** (recognise) in flight — so the freeform-boolean **assembly** is the
+  next critical-path target, then breadth per family. They are bounded per surface family and
+  asymptotic only in full arbitrary generality.
 - **M5 and M6 are why `drop-occt` (#8) is a long-horizon direction, not a date.** They are
   asymptotic by nature (arbitrary broken input, sub-resolution completeness); a first robust
   slice is bankable, the guarantee is re-earned continuously. OCCT stays the labelled oracle

@@ -310,6 +310,97 @@ CC_TEST(through_drill_fuse_cut_watertight_match_inclusion_exclusion) {
   CC_CHECK(nb::ssi_boolean_solid(thin, fat, nb::Op::Cut).isNull());
 }
 
+// ── (2b′) UNEQUAL-radius ORTHOGONAL cylinders — the "asymmetric branched" target does
+// NOT exist; the pair is a TRANSVERSAL through-drill that ships native (S5-b) ─────────
+// The nominal generalisation of the Steinmetz branched assembler was a fatter cylinder
+// (Rf=2, Z) "mutually pierced" by a thinner one (Rt=1.5, X) whose intersection SELF-CROSSES
+// at branch points but breaks the equal-radius symmetry (asymmetric lune patches). This
+// test PINS the measured fact that that geometry is impossible: a branch node needs the two
+// wall gradients ∇A=(x,y,0)∥∇B=(0,y,z) parallel on BOTH walls ⟹ x=z=0, y=±Rf=±Rt ⟹ Rf==Rt.
+// For Rf≠Rt the locus is transversal EVERYWHERE, so even with MarchOptions.enableBranchPoints
+// the marcher reports branchPoints==0 / zero BranchArc arms (NOT the Steinmetz structure) —
+// there is no asymmetric lune to assemble, and buildSteinmetz*/the branched assembler never
+// fire. Instead the pair is a clean two-loop through-drill (nearTangentGaps==0) that the S5-b
+// transversal path already builds watertight for all three ops, matching inclusion–exclusion
+// to the engine's curved-parity bar. This is the honest resolution of the unequal-orthogonal
+// slice: the ops that would have been "branched" land native via the EXISTING transversal
+// path, and the branched assembler correctly declines to engage (there is nothing to build).
+CC_TEST(unequal_orthogonal_is_transversal_not_branched_native_pass) {
+  const double Rf = 2.0, Rt = 1.5;
+  const ntopo::Shape fat = makeCyl(/*Z*/ 2, Rf, -3, 3);
+  const ntopo::Shape thin = makeCyl(/*X*/ 0, Rt, -3, 3);
+
+  const auto csFat = sd::recogniseCurvedSolid(fat);
+  const auto csThin = sd::recogniseCurvedSolid(thin);
+  CC_CHECK(csFat && csThin);
+  if (csFat && csThin) {
+    CC_CHECK(csFat->kind == sd::CurvedKind::Cylinder);
+    CC_CHECK(csThin->kind == sd::CurvedKind::Cylinder);
+
+    // DEFAULT trace: a clean transversal through-drill — two loops, NO branch points and NO
+    // near-tangent seam (unlike the equal-radius Steinmetz pair, which reports nearTangentGaps>0).
+    const ssi::TraceSet tr = ssi::trace_intersection(csFat->adapter(), csThin->adapter());
+    CC_CHECK(tr.nearTangentGaps == 0);
+    CC_CHECK(tr.branchPoints == 0);
+    CC_CHECK(tr.curveCount() == 2);
+
+    // The KEY assertion of this file's unequal-orthogonal slice: RE-tracing with branch points
+    // ENABLED still yields NO branch structure (branchPoints==0, zero BranchArc arms). The
+    // "asymmetric branched lune" case the generalised assembler would consume does not exist
+    // for Rf≠Rt — so the Steinmetz/branched path honestly never engages here.
+    ssi::MarchOptions mo;
+    mo.enableBranchPoints = true;
+    const ssi::TraceSet bt = ssi::trace_intersection(csFat->adapter(), csThin->adapter(), {}, mo);
+    CC_CHECK(bt.branchPoints == 0);
+    int arms = 0;
+    for (const ssi::WLine& w : bt.lines)
+      if (w.status == ssi::TraceStatus::BranchArc) ++arms;
+    CC_CHECK(arms == 0);
+  }
+
+  // All three ops land NATIVE and watertight via the EXISTING transversal S5-b path.
+  const double vFat = cylinderVolume(Rf, -3, 3);   // π·4·6
+  const double vThin = cylinderVolume(Rt, -3, 3);  // π·2.25·6
+
+  const ntopo::Shape common = nb::ssi_boolean_solid(fat, thin, nb::Op::Common);
+  CC_CHECK(!common.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  CC_CHECK(vCommon > 0.0);                          // watertight → engine accepts native result
+  CC_CHECK(vCommon <= std::min(vFat, vThin) + 1e-9);  // common ≤ min(A,B)
+
+  const ntopo::Shape fuse = nb::ssi_boolean_solid(fat, thin, nb::Op::Fuse);
+  CC_CHECK(!fuse.isNull());
+  const double vFuse = watertightMeshVolume(fuse);
+  CC_CHECK(vFuse > 0.0);
+
+  const ntopo::Shape cut = nb::ssi_boolean_solid(fat, thin, nb::Op::Cut);
+  CC_CHECK(!cut.isNull());
+  const double vCut = watertightMeshVolume(cut);
+  CC_CHECK(vCut > 0.0);
+
+  // Inclusion–exclusion against the native COMMON (no simple closed form for the unequal
+  // cyl∩cyl volume), to the engine's curved-parity bar (1% relative — a tessellation-deflection
+  // bound, NOT a relaxed tolerance; measured deficits ≈ 0.04% FUSE, 0.06% CUT).
+  const double vFuseTrue = vFat + vThin - vCommon;
+  const double vCutTrue = vFat - vCommon;
+  CC_CHECK(std::fabs(vFuse - vFuseTrue) <= 1e-2 * vFuseTrue);
+  CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
+  CC_CHECK(vFuse >= std::max(vFat, vThin) - 1e-9);  // fuse ≥ max(A,B)
+  CC_CHECK(vCut <= vFat + 1e-9);                     // cut ≤ A (fat minuend)
+
+  // CUT is order-sensitive: thin − fat (the tube as minuend) is a DIFFERENT topology and is
+  // honestly declined → OCCT (we never emit the wrong shape).
+  CC_CHECK(nb::ssi_boolean_solid(thin, fat, nb::Op::Cut).isNull());
+
+  // HONEST DECLINE at the other end of the ratio: a NEAR-equal pair (Rf=2, Rt=1.9) traces as a
+  // SINGLE transversal loop (curveCount==1) the transversal builder does not resolve — all
+  // three ops return NULL → OCCT. Never fabricated; the honest per-op decline.
+  const ntopo::Shape nearThin = makeCyl(/*X*/ 0, 1.9, -3, 3);
+  CC_CHECK(nb::ssi_boolean_solid(fat, nearThin, nb::Op::Common).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(fat, nearThin, nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(fat, nearThin, nb::Op::Cut).isNull());
+}
+
 // ── (2c) TRANSVERSAL sphere∩sphere COMMON: a REAL native watertight lens (S5-c) ──
 // Two overlapping spheres trace as ONE closed seam circle (nearTangentGaps == 0). The
 // S5-c assembler builds the LENS bounded by the two inside-the-other spherical caps, each

@@ -573,9 +573,33 @@ CC_TEST(cone_cyl_coaxial_common_watertight_matches_analytic) {
   const double vCylFull = cylinderVolume(1.5, 1.0, 5.0);   // whole cylinder, y∈[1,5]
   CC_CHECK(vTrue <= std::min(vCone, vCylFull) + 1e-9);
 
-  // Honest scope: this slice ships COMMON only — cone FUSE / CUT decline → OCCT (NULL).
-  CC_CHECK(nb::ssi_boolean_solid(cone, cyl, nb::Op::Fuse).isNull());
-  CC_CHECK(nb::ssi_boolean_solid(cone, cyl, nb::Op::Cut).isNull());
+  // ── FUSE = A ∪ B: outer wall regions of both operands + caps, welded at the seam. A
+  // GROW whose closed-form volume is V(A)+V(B)−V(A∩B). Watertight native pass (S5-e).
+  const double vFuseTrue = vCone + vCylFull - vTrue;  // 41.62610
+  CC_CHECK(std::fabs(vFuseTrue - 41.626100) < 1e-4);
+  const ntopo::Shape fuse = nb::ssi_boolean_solid(cone, cyl, nb::Op::Fuse);
+  CC_CHECK(!fuse.isNull());
+  const double vFuse = watertightMeshVolume(fuse);
+  CC_CHECK(vFuse > 0.0);                                    // watertight → engine accepts
+  CC_CHECK(std::fabs(vFuse - vFuseTrue) <= 1e-2 * vFuseTrue);  // ≤ 1% curved-parity bar
+  CC_CHECK(vFuse >= std::max(vCone, vCylFull) - 1e-9);      // FUSE grows past either operand
+  CC_CHECK(!nb::boolean_solid(cone, cyl, nb::Op::Fuse).isNull());
+
+  // ── CUT = A − B (cone minuend): A outer wall + A caps + the cylinder's inside-A band
+  // REVERSED. A SHRINK, V(A)−V(A∩B); DISCONNECTED for this fixture (a detached cone tip +
+  // the conical washer) — one shell of two closed components. Order-sensitive.
+  const double vCutTrue = vCone - vTrue;  // 13.35177
+  CC_CHECK(std::fabs(vCutTrue - 13.351766) < 1e-4);
+  const ntopo::Shape cut = nb::ssi_boolean_solid(cone, cyl, nb::Op::Cut);
+  CC_CHECK(!cut.isNull());
+  const double vCut = watertightMeshVolume(cut);
+  CC_CHECK(vCut > 0.0);                                  // both components watertight → summed
+  CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);  // ≤ 1% curved-parity bar
+  CC_CHECK(vCut <= vCone + 1e-9);                        // CUT shrinks below the minuend
+
+  // CUT is order-sensitive: cylinder − cone is a DIFFERENT solid; the coaxial cone∩cyl CUT
+  // builder only handles the cone minuend, so cyl − cone declines here → OCCT.
+  CC_CHECK(nb::ssi_boolean_solid(cyl, cone, nb::Op::Cut).isNull());
 }
 
 int main() { return cctest::run_all(); }

@@ -194,8 +194,8 @@ robustness tail keeps OCCT linked.** Canonical detail:
   through-drill cylinder∩cylinder COMMON (S5-a) + FUSE + CUT (S5-b), the sphere∩sphere op-set
   now COMPLETE 3/3 native — COMMON + FUSE + CUT (S5-c, equal + unequal radii), and the
   **branched-trace Steinmetz bicylinder op-set now COMPLETE 3/3 native — COMMON + FUSE + CUT
-  (S5-d)**, and the **CONE surface family opened — coaxial cone∩cylinder COMMON (S5-e) native** —
-  all watertight, ΔV ≤ 9e-04 (sim `native-pass=13`). **S5-c FUSE/CUT** reuse one
+  (S5-d)**, and the **CONE surface family — coaxial cone∩cylinder op-set now COMPLETE 3/3 native —
+  COMMON + FUSE + CUT (S5-e)** — all watertight, ΔV ≤ 9e-04 (sim `native-pass=15`). **S5-c FUSE/CUT** reuse one
   generalised `appendSphereCap(outer,reversed)`:
   FUSE (A∪B) = the two OUTER (far-pole) caps welded on the shared seam (`V=V(A)+V(B)−lens`);
   CUT (A−B, order-sensitive) = the OUTER cap of A + the INNER cap of B emitted REVERSED (inward
@@ -210,14 +210,21 @@ robustness tail keeps OCCT linked.** Canonical detail:
   inclusion-exclusion volumes (host) **and** OCCT (sim): COMMON volN = 5.3287 (analytic `16 R³/3`,
   ΔV = 8.75e-04, −0.088%); FUSE volN = 32.385 vs OCCT 32.366 (ΔV = 5.82e-04); CUT volN = 13.526
   vs OCCT 13.516 (ΔV = 7.22e-04) — all inside the 1% bar, no tolerance weakened. **S5-e** opens
-  the CONE family with the coaxial cone(frustum)∩cylinder COMMON (`buildConeCylCommon`): the seam
-  is a SINGLE S1-analytic circle (where `r_c(s)=R0+s·tanα` equals `Rc`, apex-free, `nearTangentGaps=0`),
-  resampled to ONE pooled ring; a frustum band welds to a cylinder-segment band along it, closed by
-  two disc caps. Verified vs a DUAL oracle — the closed form `V = V_frustum(rBot→Rc)+V_frustum(Rc→rTop)`
-  (engine `ssiCurvedBooleanVerified` S5-e arm, same 1% tol as the Steinmetz `16 R³/3` oracle) AND OCCT:
-  volN = 19.107 vs analytic 19.111355 (host rel err ≈ 2.3e-04) vs OCCT 19.111 (ΔV = 2.03e-04,
-  ΔA = 9.89e-05). Cone **FUSE/CUT**, transversal/apex cone pairs, and coaxial cone∩sphere COMMON
-  (optional, not built this slice) decline → OCCT. General (non-Steinmetz) branched pairs, other
+  the CONE family with the coaxial cone(frustum)∩cylinder op-set (COMMON + FUSE + CUT), all sharing
+  the SAME S1-analytic circle seam (where `r_c(s)=R0+s·tanα` equals `Rc`, apex-free, `nearTangentGaps=0`)
+  resampled to ONE pooled ring. `buildConeCylCommon` welds the two inside-the-other bands + the
+  overlap caps; `buildConeCylFuse` (A∪B) keeps the OUTER wall regions of both operands + the union
+  caps + annular step caps (`V=V(A)+V(B)−V(A∩B)`); `buildConeCylCut` (A−B, cone minuend, order-
+  sensitive) keeps A's outer wall + A's caps + the cylinder's inside-A band emitted REVERSED
+  (inward normal bounding the carved cavity — a disconnected solid: detached cone tip + conical
+  washer) (`V=V(A)−V(A∩B)`). Verified vs a DUAL oracle — the analytic inclusion-exclusion closed
+  form (engine `ssiCurvedBooleanVerified` / `booleanResultVerified`, same 1% tol as the Steinmetz
+  `16 R³/3` oracle) AND OCCT `BRepAlgoAPI_{Common,Fuse,Cut}`: COMMON volN = 19.107 vs analytic
+  19.111355 vs OCCT 19.111 (ΔV = 2.03e-04, ΔA = 9.89e-05); FUSE volN = 41.618 vs analytic 41.62610
+  vs OCCT 41.626 (ΔV = 2.04e-04, ΔA = 1.13e-04, a GROW); CUT volN = 13.349 vs analytic 13.35177 vs
+  OCCT 13.352 (ΔV = 2.03e-04, ΔA = 1.02e-04, a SHRINK). Transversal/apex cone pairs, cone∩cone, and
+  coaxial cone∩sphere COMMON (not built) decline → OCCT (a mis-selected band / mis-oriented reversed
+  fragment fails the self-verify and falls back — never faked). General (non-Steinmetz) branched pairs, other
   curved-curved families, and non-Steinmetz near-tangent pairs still decline to OCCT — honest,
   measured fallbacks.
 - ✅ **Curved blend #6 (constant-radius rolling-ball fillet on a CIRCULAR crease — CONVEX *and*

@@ -781,12 +781,48 @@ std::string revolveSurfaces(std::string step, const std::string& surfaceKeyword,
   return step;
 }
 
+// Like revolveSurfaces but rewrites ONLY the n-th `<surfaceKeyword>('',...)` record —
+// used for the ⟂-line→PLANE case, where a cylinder has SIX identical PLANE cap patches
+// at TWO heights: rewriting them all would move the top cap onto the bottom (self-verify
+// would fail). Rewriting a SINGLE bottom-cap patch turns it into a revolution-plane that
+// must reconstruct byte-identically to its native-PLANE neighbours (same y=0 plane) so
+// the disk stays watertight — the additive, geometry-preserving proof of the reduction.
+std::string revolveNthSurface(std::string step, const std::string& surfaceKeyword,
+                              const std::string& profileRecords, const std::string& profileRef,
+                              int nth) {
+  const std::size_t ins = step.find('\n', step.find("DATA;")) + 1;
+  step.insert(ins, profileRecords +
+                       "#800005 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+                       "#800006 = DIRECTION('',(0.,1.,0.));\n"
+                       "#800007 = AXIS1_PLACEMENT('',#800005,#800006);\n");
+  const std::string what = surfaceKeyword + "(";
+  std::size_t k = step.find(what);
+  for (int i = 0; i < nth && k != std::string::npos; ++i) k = step.find(what, k + 1);
+  if (k == std::string::npos) return step;
+  const std::size_t close = step.find(')', k);
+  step.replace(k, close - k, "SURFACE_OF_REVOLUTION('',#" + profileRef + ",#800007");
+  return step;
+}
+
 // A native cone (base radius 5 at y=0, apex at (0,20,0)): revolve a right triangle about
 // +Y — the writer emits CONICAL_SURFACE walls, exercising the reader's oblique (cone)
 // revolvedLine reduction when re-authored as a SURFACE_OF_REVOLUTION.
 topo::Shape cone20() {
   const double p[] = {0, 0, 5, 0, 0, 20};
   return cst::build_revolution(p, 3, cst::RevolveAxis{0.0, 0.0, 0.0, 1.0}, 6.28318530717958647692);
+}
+
+// A native sphere (radius 6, centred at the origin ON the +Y axis): revolve a full
+// meridian great-semicircle (south pole (0,-6) → north pole (0,6)) about +Y. The writer
+// emits SPHERICAL_SURFACE lune faces; re-authoring them as SURFACE_OF_REVOLUTION of the
+// on-axis meridian CIRCLE exercises the reader's revolvedCircle→Sphere reduction.
+topo::Shape sphere6() {
+  std::vector<cst::ProfileSegment> segs(1);
+  segs[0].kind = 1; segs[0].cx = 0; segs[0].cy = 0; segs[0].r = 6.0;
+  segs[0].x0 = 0.0; segs[0].y0 = -6.0; segs[0].x1 = 0.0; segs[0].y1 = 6.0;
+  segs[0].a0 = -1.57079632679489662; segs[0].a1 = 1.57079632679489662;
+  return cst::build_revolution_profile(segs, cst::RevolveAxis{0.0, 0.0, 0.0, 1.0},
+                                       6.28318530717958647692);
 }
 
 }  // namespace
@@ -870,13 +906,14 @@ CC_TEST(surface_of_revolution_line_parallel_maps_to_cylinder) {
   CC_CHECK(std::fabs(volumeOf(s) - expected) / expected < 5e-3);
 }
 
-// ── T2 (DECLINE) — an OBLIQUE line (→ cone) is honestly declined ───────────────────────
-// A generatrix that meets the axis at an angle revolves to an EXACT cone — a native
-// FaceSurface::Kind::Cone geometrically — but the reader's apex-carrying cone
-// reconstruction is not yet watertight (a separate reader gap: a plain native cone does
-// not round-trip watertight either), so mapping it could not pass the engine's watertight
-// self-verify. The honest result is a DECLINE → NULL → OCCT, never a non-watertight solid.
-CC_TEST(surface_of_revolution_oblique_line_declines) {
+// ── T2 (SURFACE_OF_REVOLUTION → cone) — an OBLIQUE line reduces to a native Cone ───────
+// A generatrix that MEETS the axis at an angle revolves to an EXACT cone. Rewriting the
+// cone's CONICAL_SURFACE walls as SURFACE_OF_REVOLUTION(line, axis1) must import to the
+// same watertight solid with the analytic cone volume π·r²·h/3. The reader reconstructs
+// the cone with origin on the axis / Z=+axis / signed semiAngle (byte-identical to the
+// direct CONICAL_SURFACE convention), and the meridian-at-apex pcurve fix keeps the
+// apex-touching wall faces welded — proving the oblique reduction (it declined before).
+CC_TEST(surface_of_revolution_oblique_line_maps_to_cone) {
   const std::string base = ex::writeStepString(cone20(), "cone");
   const std::string rev = revolveSurfaces(
       base, "CONICAL_SURFACE",
@@ -886,7 +923,74 @@ CC_TEST(surface_of_revolution_oblique_line_declines) {
       "#800004 = LINE('',#800001,#800003);\n",
       "800004");
   CC_CHECK(rev.find("SURFACE_OF_REVOLUTION") != std::string::npos);
-  CC_CHECK(ex::readStepString(rev).isNull());  // honest decline → OCCT
+  CC_CHECK(rev.find("CONICAL_SURFACE") == std::string::npos);
+  const topo::Shape s = ex::readStepString(rev);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+  CC_CHECK(watertight(s));
+  const double expected = 3.14159265358979323846 * 25.0 * 20.0 / 3.0;  // π·5²·20/3
+  CC_CHECK(std::fabs(volumeOf(s) - expected) / expected < 5e-3);
+}
+
+// ── T2 (SURFACE_OF_REVOLUTION → plane) — a ⟂ line reduces to a native Plane ────────────
+// A generatrix PERPENDICULAR to the axis revolves to a flat annulus/disk PLANE. A cylinder
+// has SIX identical PLANE cap patches at two heights; rewriting a SINGLE bottom-cap patch
+// (y=0) as SURFACE_OF_REVOLUTION(⟂line, axis1) must reconstruct the SAME y=0 plane as its
+// native-PLANE neighbours so the disk stays watertight with the unchanged cylinder volume.
+CC_TEST(surface_of_revolution_perpendicular_line_maps_to_plane) {
+  const std::string base = ex::writeStepString(cylinder(), "cyl");
+  const std::string rev = revolveNthSurface(
+      base, "PLANE",
+      "#800001 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+      "#800002 = DIRECTION('',(1.,0.,0.));\n"      // ⟂ the +Y axis → a y=0 plane
+      "#800003 = VECTOR('',#800002,1.);\n"
+      "#800004 = LINE('',#800001,#800003);\n",
+      "800004", /*nth=*/0);
+  CC_CHECK(rev.find("SURFACE_OF_REVOLUTION") != std::string::npos);
+  const topo::Shape s = ex::readStepString(rev);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+  CC_CHECK(watertight(s));
+  const double expected = 3.14159265358979323846 * 25.0 * 20.0;  // π·5²·20 (unchanged)
+  CC_CHECK(std::fabs(volumeOf(s) - expected) / expected < 5e-3);
+}
+
+// ── T2 (SURFACE_OF_REVOLUTION → sphere) — an on-axis meridian circle reduces to a Sphere ─
+// A CIRCLE centred ON the axis, in a plane CONTAINING the axis, revolves to a SPHERE of the
+// same radius. Rewriting a native sphere's SPHERICAL_SURFACE lunes as SURFACE_OF_REVOLUTION
+// of the meridian circle must import to the SAME solid the direct SPHERICAL_SURFACE keyword
+// produces — same non-null solid, same Sphere face count. (The native writer's full-sphere
+// lune B-rep is a degenerate pole-seam representation that does not tessellate watertight
+// on EITHER path — a WRITER limitation out of this slice's scope; end-to-end watertight
+// spheres are validated against OCCT-authored fixtures in the sim parity gate. Here we prove
+// the revolvedCircle→Sphere REDUCTION: parity with the analytic-keyword import.)
+CC_TEST(surface_of_revolution_on_axis_circle_maps_to_sphere) {
+  const std::string base = ex::writeStepString(sphere6(), "sph");
+  const topo::Shape direct = ex::readStepString(base);
+  CC_CHECK(!direct.isNull());
+  const std::string rev = revolveSurfaces(
+      base, "SPHERICAL_SURFACE",
+      "#800020 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+      "#800021 = DIRECTION('',(0.,0.,1.));\n"       // circle-plane normal ⟂ the +Y axis
+      "#800022 = DIRECTION('',(1.,0.,0.));\n"
+      "#800023 = AXIS2_PLACEMENT_3D('',#800020,#800021,#800022);\n"
+      "#800004 = CIRCLE('',#800023,6.);\n",          // centre ON axis, plane CONTAINS axis
+      "800004");
+  CC_CHECK(rev.find("SURFACE_OF_REVOLUTION") != std::string::npos);
+  CC_CHECK(rev.find("SPHERICAL_SURFACE") == std::string::npos);
+  const topo::Shape s = ex::readStepString(rev);
+  CC_CHECK(!s.isNull());                            // reduced (declined before this slice)
+  if (s.isNull()) return;
+  auto sphereFaces = [](const topo::Shape& sh) {
+    int n = 0;
+    for (topo::Explorer ex(sh, topo::ShapeType::Face); ex.more(); ex.next()) {
+      const auto sr = topo::surfaceOf(ex.current());
+      if (sr && sr->surface && sr->surface->kind == topo::FaceSurface::Kind::Sphere) ++n;
+    }
+    return n;
+  };
+  CC_CHECK(sphereFaces(s) == sphereFaces(direct));  // parity with the direct SPHERICAL import
+  CC_CHECK(sphereFaces(s) > 0);
 }
 
 // ── T2 (DECLINE) — a non-line generatrix revolves to a torus/general surface → NULL ────
@@ -906,6 +1010,59 @@ CC_TEST(surface_of_revolution_circle_generatrix_declines) {
       "800004");
   CC_CHECK(rev.find("SURFACE_OF_REVOLUTION") != std::string::npos);
   CC_CHECK(ex::readStepString(rev).isNull());  // honest decline → OCCT
+}
+
+// ── T2 (DECLINE) — a SKEW oblique line (→ hyperboloid) is honestly declined ────────────
+// An oblique generatrix whose support line does NOT meet the axis (a nonzero common
+// perpendicular) revolves to a hyperboloid of one sheet — no native FaceSurface kind.
+// lineMeetsAxis returns none → the reader DECLINES → NULL → OCCT. The generatrix here is
+// oblique (not ∥, not ⟂) AND offset out of the axis plane (z-component) so it is skew.
+CC_TEST(surface_of_revolution_skew_oblique_line_declines) {
+  const std::string base = ex::writeStepString(cone20(), "cone");
+  const std::string rev = revolveSurfaces(
+      base, "CONICAL_SURFACE",
+      "#800001 = CARTESIAN_POINT('',(5.,0.,3.));\n"   // offset off the axis plane (z=3)
+      "#800002 = DIRECTION('',(-5.,20.,0.));\n"       // oblique but skew to the +Y axis
+      "#800003 = VECTOR('',#800002,1.);\n"
+      "#800004 = LINE('',#800001,#800003);\n",
+      "800004");
+  CC_CHECK(rev.find("SURFACE_OF_REVOLUTION") != std::string::npos);
+  CC_CHECK(ex::readStepString(rev).isNull());  // hyperboloid → honest decline → OCCT
+}
+
+// ── T2 (DECLINE) — an ELLIPSE generatrix (→ general revolution) is honestly declined ────
+// An ELLIPSE generatrix revolves to a spheroid/general revolved surface with no native
+// FaceSurface kind (and no authored revolved-ellipse), so the reader DECLINES → NULL → OCCT.
+CC_TEST(surface_of_revolution_ellipse_generatrix_declines) {
+  const std::string base = ex::writeStepString(cylinder(), "cyl");
+  const std::string rev = revolveSurfaces(
+      base, "CYLINDRICAL_SURFACE",
+      "#800010 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+      "#800011 = DIRECTION('',(0.,1.,0.));\n"
+      "#800012 = DIRECTION('',(1.,0.,0.));\n"
+      "#800013 = AXIS2_PLACEMENT_3D('',#800010,#800011,#800012);\n"
+      "#800004 = ELLIPSE('',#800013,5.,3.);\n",   // ellipse generatrix → general revolution
+      "800004");
+  CC_CHECK(rev.find("SURFACE_OF_REVOLUTION") != std::string::npos);
+  CC_CHECK(ex::readStepString(rev).isNull());  // no native kind → honest decline → OCCT
+}
+
+// ── T2 (DECLINE) — an on-axis circle whose PLANE is ⟂ the axis is honestly declined ────
+// A CIRCLE centred on the axis but lying in a plane PERPENDICULAR to the axis (its normal
+// is PARALLEL to the axis) does not revolve to a sphere — revolving it is degenerate. The
+// revolvedCircle plane-contains-axis guard rejects it → NULL → OCCT (never a forced sphere).
+CC_TEST(surface_of_revolution_on_axis_circle_perp_plane_declines) {
+  const std::string base = ex::writeStepString(cylinder(), "cyl");
+  const std::string rev = revolveSurfaces(
+      base, "CYLINDRICAL_SURFACE",
+      "#800010 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+      "#800011 = DIRECTION('',(0.,1.,0.));\n"        // circle-plane normal ∥ the +Y axis
+      "#800012 = DIRECTION('',(1.,0.,0.));\n"
+      "#800013 = AXIS2_PLACEMENT_3D('',#800010,#800011,#800012);\n"
+      "#800004 = CIRCLE('',#800013,3.);\n",
+      "800004");
+  CC_CHECK(rev.find("SURFACE_OF_REVOLUTION") != std::string::npos);
+  CC_CHECK(ex::readStepString(rev).isNull());  // plane ⟂ axis → degenerate → decline
 }
 
 CC_RUN_ALL()

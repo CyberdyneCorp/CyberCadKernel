@@ -940,54 +940,127 @@ class Mapper {
   }
 
   // SURFACE_OF_REVOLUTION('',#profileCurve,#axis1placement): a profile (generatrix)
-  // curve revolved about an axis. Only a STRAIGHT (LINE) generatrix reduces to a native
-  // analytic FaceSurface faithfully (cylinder / cone / plane — see revolvedLine); any
-  // other profile revolves to a torus (off-axis arc), a sphere (on-axis arc — OCCT
-  // authors that as SPHERICAL_SURFACE directly), or a general revolved surface with no
-  // faithful native FaceSurface kind → honest DECLINE → OCCT, exactly like the landed
-  // TOROIDAL_SURFACE decline. Never a forced/approximate mapping.
+  // curve revolved about an axis. The generatrix is classified and reduced to the
+  // matching native analytic FaceSurface — but ONLY when the reduction is faithful:
+  //   * LINE  ∥ axis            → CYLINDER (radius = dist(line, axis)).
+  //   * LINE  ⟂ axis            → PLANE    (a flat annulus/disk; normal = axis).
+  //   * LINE  oblique, meeting the axis → CONE (apex = the intersection, half-angle
+  //                              = ∠(line, axis)). A skew oblique line → hyperboloid.
+  //   * CIRCLE centred ON the axis, plane CONTAINING the axis → SPHERE (radius = R).
+  // Everything else revolves to a surface with NO faithful native kind → honest
+  // DECLINE → OCCT (unchanged precedent, exactly like the landed TOROIDAL_SURFACE
+  // decline): an off-axis circle/arc (torus), a circle whose plane is ⟂ the axis
+  // (degenerate), an ellipse / B-spline generatrix (general revolved surface), a skew
+  // oblique line (hyperboloid), a line ON the axis (degenerate). Each builder also runs
+  // a faithful-reduction guard (lineOnSurface / circleOnSurface) that re-evaluates the
+  // candidate quadric through the generatrix's defining points and DECLINES if they do
+  // not lie on it within a scale-relative tolerance — never a forced/approximate map.
   std::optional<topo::FaceSurface> surfaceOfRevolution(const Record& r) {
     if (r.args.size() != 3 || !r.args[1].isRef() || !r.args[2].isRef()) return std::nullopt;
     const auto profile = curve(r.args[1].ref);
     const auto ax = axis1placement(r.args[2].ref);
     if (!profile || !ax) return std::nullopt;
-    if (profile->kind != topo::EdgeCurve::Kind::Line) return std::nullopt;  // DECLINE
-    return revolvedLine(*profile, ax->first, ax->second);
+    using K = topo::EdgeCurve::Kind;
+    if (profile->kind == K::Line) return revolvedLine(*profile, ax->first, ax->second);
+    if (profile->kind == K::Circle) return revolvedCircle(*profile, ax->first, ax->second);
+    return std::nullopt;  // Ellipse / BSpline / Bezier → general revolution → DECLINE
+  }
+
+  // Closest approach between the generatrix support line (P, unit D) and the axis
+  // (L, unit A). If the two support lines are SKEW (common perpendicular > tol) the
+  // revolved oblique line is a hyperboloid of one sheet → nullopt (DECLINE). Otherwise
+  // returns their on-axis intersection point — the cone apex.
+  static std::optional<math::Point3> lineMeetsAxis(const math::Point3& P, const math::Dir3& D,
+                                                   const math::Point3& L, const math::Dir3& A) {
+    const math::Vec3 d = D.vec(), a = A.vec();
+    const math::Vec3 w0 = P - L;
+    const double c = math::dot(d, a);
+    const double denom = 1.0 - c * c;               // sin²∠ > 0 for an oblique line
+    if (denom < 1e-12) return std::nullopt;         // parallel — caller handles it
+    const double dw = math::dot(d, w0), aw = math::dot(a, w0);
+    const math::Point3 pc = P + d * ((c * aw - dw) / denom);  // closest pt on generatrix
+    const math::Point3 qc = L + a * ((aw - c * dw) / denom);  // closest pt on axis = apex
+    const double scale = std::max(1.0, math::norm(w0));
+    if (math::distance(pc, qc) > 1e-7 * scale) return std::nullopt;  // SKEW → hyperboloid
+    return qc;
   }
 
   // Revolve a straight generatrix (line through P, unit direction D) about the axis
-  // (through L, unit direction A) onto an EXACT native surface, or nullopt to DECLINE.
-  //
-  // Only the PARALLEL case (D ∥ A) is mapped — it revolves to a CYLINDER of radius =
-  // dist(line, axis), a native FaceSurface::Kind::Cylinder that reconstructs WATERTIGHT
-  // (proven end-to-end). The other faithful geometric reductions are deliberately
-  // DECLINED, not because they lack a native kind, but because the reader's current
-  // apex-carrying reconstruction of them is NOT watertight, so a mapping could not pass
-  // the engine's watertight self-verify — an honest DECLINE → OCCT is the correct result:
-  //   * D meets A at an angle → a CONE (apex singular; the native cone round-trip is not
-  //     yet watertight — a separate reader gap, out of this slice).
-  //   * D ⟂ A                  → a PLANE annulus (only meaningful attached to such a cone
-  //     face, which itself declines).
-  //   * skew / on-axis / general (non-line) profile → hyperboloid / torus / general
-  //     revolved surface with no faithful native kind (the TOROIDAL_SURFACE decline).
+  // (through L, unit direction A) onto an EXACT native Cylinder / Plane / Cone, or
+  // nullopt to DECLINE. The cone frame mirrors the direct CONICAL_SURFACE convention
+  // (origin on the axis, Z = +axis, radius = the reference radius at that origin's
+  // plane, semiAngle SIGNED so radius = R + v·sinα grows toward the base and reaches 0
+  // at the apex) so the reconstruction is byte-identical to the analytic-keyword path.
   std::optional<topo::FaceSurface> revolvedLine(const topo::EdgeCurve& line,
                                                 const math::Point3& L, const math::Dir3& A) {
     const math::Dir3 D = line.frame.x;
     if (!D.valid()) return std::nullopt;
-    const double dpa = math::dot(A.vec(), D.vec());   // cos∠(axis, line)
-    if (std::fabs(std::fabs(dpa) - 1.0) > 1e-7) return std::nullopt;  // not ∥ → DECLINE
 
     const math::Point3 P = line.frame.origin;
     const math::Vec3 Av = A.vec();
-    const math::Point3 foot = L + Av * math::dot(P - L, Av);  // foot of P on the axis
-    const math::Vec3 radial = P - foot;                       // perpendicular axis→P
-    const double r = math::norm(radial);
-    if (r < 1e-9) return std::nullopt;                // line ON the axis is degenerate
+    const double c = math::dot(Av, D.vec());          // cos∠(axis, line)
+    const double ac = std::fabs(c);
+    auto footOf = [&](const math::Point3& q) { return L + Av * math::dot(q - L, Av); };
 
     topo::FaceSurface s;
-    s.kind = topo::FaceSurface::Kind::Cylinder;
-    s.frame = math::Ax3::fromAxisAndRef(foot, A, math::Dir3{radial});
-    s.radius = r;
+    if (ac < 1e-7) {                                  // ⟂ → PLANE (annulus/disk)
+      // A ⟂ generatrix crosses the axis (P may be ON it), so the swept radius at P can
+      // be 0 — but the plane is fully fixed by foot + normal A, with the line dir D
+      // (⟂ A, radial) as the X ref. The plane passes through foot at the generatrix's
+      // axial height.
+      s.kind = topo::FaceSurface::Kind::Plane;
+      s.frame = math::Ax3::fromAxisAndRef(footOf(P), A, D);
+    } else if (std::fabs(ac - 1.0) < 1e-7) {          // ∥ → CYLINDER
+      const math::Point3 foot = footOf(P);
+      const math::Vec3 radial = P - foot;
+      const double r = math::norm(radial);
+      if (r < 1e-9) return std::nullopt;              // line ON the axis → degenerate
+      s.kind = topo::FaceSurface::Kind::Cylinder;
+      s.frame = math::Ax3::fromAxisAndRef(foot, A, math::Dir3{radial});
+      s.radius = r;
+    } else {                                          // oblique → CONE (if it meets A)
+      const auto apex = lineMeetsAxis(P, D, L, A);
+      if (!apex) return std::nullopt;                 // skew → hyperboloid → DECLINE
+      // Reference the cone at an OFF-axis generator point (P, or one step along D if P
+      // happens to sit at the apex): origin = its foot on the axis, radius = its ⊥-dist
+      // there, so the origin is a REGULAR point (never the apex-singular v).
+      math::Point3 ref = P;
+      math::Point3 foot = footOf(ref);
+      if (math::norm(ref - foot) < 1e-9) { ref = P + D.vec(); foot = footOf(ref); }
+      const double r = math::norm(ref - foot);
+      if (r < 1e-9) return std::nullopt;
+      const double hRef = math::dot(ref - L, Av);
+      const double hApex = math::dot(*apex - L, Av);
+      s.kind = topo::FaceSurface::Kind::Cone;
+      s.frame = math::Ax3::fromAxisAndRef(foot, A, math::Dir3{ref - foot});
+      s.radius = r;                                   // reference radius at foot's plane
+      // Signed so radius = R + v·sinα GROWS moving +axis away from the apex (Z=+axis).
+      s.semiAngle = std::acos(ac) * (hRef >= hApex ? 1.0 : -1.0);
+    }
+    if (!lineOnSurface(line, s)) return std::nullopt;  // faithful-reduction guard
+    return s;
+  }
+
+  // Revolve a CIRCLE/arc generatrix about the axis (L, A). A native SPHERE results only
+  // when the circle's CENTRE lies ON the axis AND its plane CONTAINS the axis (the
+  // circle is a meridian great-circle). Any off-axis centre → a torus (no native
+  // Kind::Torus); any other plane orientation → a torus/degenerate. Both DECLINE → OCCT.
+  std::optional<topo::FaceSurface> revolvedCircle(const topo::EdgeCurve& circle,
+                                                  const math::Point3& L, const math::Dir3& A) {
+    const double R = circle.radius;
+    if (!(R > 1e-12)) return std::nullopt;
+    const math::Vec3 Av = A.vec();
+    const math::Point3 C = circle.frame.origin;
+    const math::Point3 footC = L + Av * math::dot(C - L, Av);
+    if (math::distance(C, footC) > 1e-7 * std::max(1.0, R)) return std::nullopt;  // off-axis → torus
+    if (std::fabs(math::dot(circle.frame.z.vec(), Av)) > 1e-7) return std::nullopt;  // plane ∦ axis
+
+    topo::FaceSurface s;
+    s.kind = topo::FaceSurface::Kind::Sphere;
+    // Z = axis; X ref = the circle-plane normal, which is ⟂ A (checked above).
+    s.frame = math::Ax3::fromAxisAndRef(C, A, circle.frame.z);
+    s.radius = R;
+    if (!circleOnSurface(circle, s)) return std::nullopt;  // faithful-reduction guard
     return s;
   }
 
@@ -1491,7 +1564,17 @@ class Mapper {
                          srf.kind == topo::FaceSurface::Kind::Sphere;
     const double len = std::max(last - first, 1e-12);
     if (angular) {
-      const double u0 = unwrapTo(uv0.first, uRef);
+      // A straight meridian runs at CONSTANT u. If an endpoint lies ON the axis
+      // (a cone apex / sphere pole), its projected angle is indeterminate
+      // (atan2(0,0)=0) and must NOT be used as the constant u — otherwise an
+      // apex-touching cone-wall meridian collapses onto the u=0 branch instead of
+      // its true station, tearing the reconstructed cone (a non-watertight import).
+      // Take the constant u from the endpoint FARTHER from the axis (the one with a
+      // well-defined angle); fall back to uv0 when both are on-axis (degenerate).
+      const double r0 = radialFromAxis(srf, e0);
+      const double r1 = radialFromAxis(srf, e1);
+      const double uPick = (r1 > r0) ? uv1.first : uv0.first;
+      const double u0 = unwrapTo(uPick, uRef);
       pc.kind = topo::EdgeCurve::Kind::Line;
       pc.origin2d = math::Point3{u0, uv0.second, 0.0};
       // v changes with t; u is constant (line runs along the axial/v direction).
@@ -1591,6 +1674,56 @@ class Mapper {
       if (!improved) break;
     }
     return {bu, bv};
+  }
+
+  // Perpendicular distance from a point to the surface's axis (frame Z through
+  // origin). Zero ⇒ the point is ON the axis, where the angular u is indeterminate
+  // (a cone apex / sphere pole). Used by pcurveFor to pick a well-defined meridian u.
+  static double radialFromAxis(const topo::FaceSurface& s, const math::Point3& p) {
+    const math::Vec3 d = p - s.frame.origin;
+    const double lx = math::dot(d, s.frame.x.vec());
+    const double ly = math::dot(d, s.frame.y.vec());
+    return std::sqrt(lx * lx + ly * ly);
+  }
+
+  // Forward-evaluate an analytic surface at (u,v) — the exact inverse of projectUV,
+  // via the elementary parametrizations (elementary.h). Used only by the faithful-
+  // reduction guard (a non-analytic kind never reaches here).
+  static math::Point3 surfaceValue(const topo::FaceSurface& s, double u, double v) {
+    using K = topo::FaceSurface::Kind;
+    switch (s.kind) {
+      case K::Plane:    return math::Plane{s.frame}.value(u, v);
+      case K::Cylinder: return math::Cylinder{s.frame, s.radius}.value(u, v);
+      case K::Cone:     return math::Cone{s.frame, s.radius, s.semiAngle}.value(u, v);
+      case K::Sphere:   return math::Sphere{s.frame, s.radius}.value(u, v);
+      default:          return s.frame.origin;
+    }
+  }
+
+  // FAITHFUL-REDUCTION GUARD. A point lies on the candidate surface iff projecting it
+  // and re-evaluating returns the same point within a scale-relative tolerance. The
+  // reader only emits a revolved reduction after the generatrix's defining points pass
+  // this — it is the "never fabricate geometry" gate (a mis-classified generatrix whose
+  // points do not lie on the quadric DECLINES → OCCT rather than forcing a wrong map).
+  static bool pointOnSurface(const topo::FaceSurface& s, const math::Point3& p, double scale) {
+    const auto uv = projectUV(s, p);
+    return math::distance(p, surfaceValue(s, uv.first, uv.second)) <= 1e-6 * std::max(1.0, scale);
+  }
+  // Two distinct points fix a straight generatrix (P and one unit-scale step along D).
+  static bool lineOnSurface(const topo::EdgeCurve& line, const topo::FaceSurface& s) {
+    const double scale = std::max(s.radius, 1.0);
+    return pointOnSurface(s, line.frame.origin, scale) &&
+           pointOnSurface(s, line.frame.origin + line.frame.x.vec() * scale, scale);
+  }
+  // Four quadrant points fix a circle generatrix against the candidate sphere.
+  static bool circleOnSurface(const topo::EdgeCurve& c, const topo::FaceSurface& s) {
+    const double scale = std::max(c.radius, s.radius);
+    for (const double t : {0.0, 1.57079632679489662, 3.14159265358979324, 4.71238898038468986}) {
+      const math::Point3 p = c.frame.origin + c.frame.x.vec() * (c.radius * std::cos(t)) +
+                             c.frame.y.vec() * (c.radius * std::sin(t));
+      if (!pointOnSurface(s, p, scale)) return false;
+    }
+    return true;
   }
 
   // Project a world point onto a surface's (u,v), inverting the elementary

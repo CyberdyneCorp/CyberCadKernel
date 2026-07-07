@@ -69,6 +69,7 @@
 #include <gp_Pln.hxx>
 #include <gp_Trsf.hxx>
 #include <BRepPrimAPI_MakeTorus.hxx>
+#include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
@@ -79,6 +80,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <sys/stat.h>
 
@@ -577,12 +580,43 @@ std::string revolveSurfaces(std::string step, const std::string& surfaceKeyword,
     return step;
 }
 
+// Rewrite ONLY the n-th `<surfaceKeyword>('',...)` record into a SURFACE_OF_REVOLUTION —
+// for the ⟂-line→PLANE case, where a cylinder has SIX identical PLANE cap patches at two
+// heights: rewriting a SINGLE bottom-cap patch turns it into a revolution-plane that must
+// reconstruct byte-identically to its native-PLANE neighbours (same y=0 plane) so the disk
+// stays watertight (rewriting them all would collapse the top cap onto the bottom).
+std::string revolveNthSurface(std::string step, const std::string& surfaceKeyword,
+                              const std::string& profileRecords, const std::string& profileRef, int nth) {
+    const std::size_t ins = step.find('\n', step.find("DATA;")) + 1;
+    step.insert(ins, profileRecords +
+                         "#800005 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+                         "#800006 = DIRECTION('',(0.,1.,0.));\n"
+                         "#800007 = AXIS1_PLACEMENT('',#800005,#800006);\n");
+    const std::string what = surfaceKeyword + "(";
+    std::size_t k = step.find(what);
+    for (int i = 0; i < nth && k != std::string::npos; ++i) k = step.find(what, k + 1);
+    if (k == std::string::npos) return step;
+    const std::size_t close = step.find(')', k);
+    step.replace(k, close - k, "SURFACE_OF_REVOLUTION('',#" + profileRef + ",#800007");
+    return step;
+}
+
 std::string nativeCylinderStep() {
     const double p[] = {0, 0, 5, 0, 5, 20, 0, 20};
     return nex::writeStepString(
         cybercad::native::construct::build_revolution(
             p, 4, cybercad::native::construct::RevolveAxis{0.0, 0.0, 0.0, 1.0}, 2.0 * kPi),
         "cyl");
+}
+
+// A native full cone: base radius 5 at y=0, apex at (0,20,0), revolved about +Y. The writer
+// emits CONICAL_SURFACE walls the reader must reduce back from a SURFACE_OF_REVOLUTION.
+std::string nativeConeStep() {
+    const double p[] = {0, 0, 5, 0, 0, 20};
+    return nex::writeStepString(
+        cybercad::native::construct::build_revolution(
+            p, 3, cybercad::native::construct::RevolveAxis{0.0, 0.0, 0.0, 1.0}, 2.0 * kPi),
+        "cone");
 }
 
 // ── (J) SCALED assembly — OCCT degrades to rigid; native applies a genuine CTO scale ─
@@ -808,6 +842,102 @@ void runRevolvedDecline() {
     compare("fallback", "revolution_torus", nat, oracle, 5e-3, 5e-3);
 }
 
+// ── (P) SURFACE_OF_REVOLUTION → cone (R1) — an OBLIQUE line reduces to a native Cone ───
+// Rewrite the native cone's CONICAL_SURFACE walls as SURFACE_OF_REVOLUTION of an oblique
+// generatrix that meets the axis at the apex. The reader reconstructs the cone (origin on
+// the axis / Z=+axis / signed half-angle, byte-identical to CONICAL_SURFACE) and the
+// meridian-at-apex pcurve keeps the apex-touching walls welded → watertight, vol π·r²·h/3.
+void runRevolvedCone() {
+    const std::string path = "/tmp/cck_nimport_revolved_cone.step";
+    writeFile(path, revolveSurfaces(nativeConeStep(), "CONICAL_SURFACE",
+                                    "#800001 = CARTESIAN_POINT('',(5.,0.,0.));\n"
+                                    "#800002 = DIRECTION('',(-5.,20.,0.));\n"  // oblique → apex (0,20,0)
+                                    "#800003 = VECTOR('',#800002,1.);\n"
+                                    "#800004 = LINE('',#800001,#800003);\n",
+                                    "800004"));
+    const NativeProbe pr = probeNative(path);
+    const double ov = occtStepVolume(path);
+    const double want = kPi * 25.0 * 20.0 / 3.0;  // π·5²·20/3
+    char d[320];
+    std::snprintf(d, sizeof d, "native parsed=%d watertight=%d vol=%.6g occtVol=%.6g (want %.6g)",
+                  pr.parsed, pr.parsed && pr.allWatertight, pr.vol, ov, want);
+    const bool volOk = ov > 0 && std::fabs(pr.vol - ov) / ov < 5e-3 &&
+                       std::fabs(pr.vol - want) / want < 5e-3;
+    record(pr.parsed && pr.allWatertight && pr.solids == 1 && volOk, "foreign", "revolution→cone", d);
+    compare("foreign", "revolution_cone", importUnder(1, path), importUnder(0, path), 5e-3, 5e-3);
+}
+
+// ── (Q) SURFACE_OF_REVOLUTION → plane (R2) — a ⟂ line reduces to a native Plane ────────
+// Rewrite a SINGLE bottom-cap PLANE patch of the native cylinder as SURFACE_OF_REVOLUTION
+// of a ⟂ generatrix. The reader reconstructs the SAME y=0 plane as its native-PLANE
+// neighbours so the disk stays watertight with the cylinder volume unchanged (π·r²·h).
+void runRevolvedPlane() {
+    const std::string path = "/tmp/cck_nimport_revolved_plane.step";
+    writeFile(path, revolveNthSurface(nativeCylinderStep(), "PLANE",
+                                      "#800001 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+                                      "#800002 = DIRECTION('',(1.,0.,0.));\n"  // ⟂ +Y axis → y=0 plane
+                                      "#800003 = VECTOR('',#800002,1.);\n"
+                                      "#800004 = LINE('',#800001,#800003);\n",
+                                      "800004", /*nth=*/0));
+    const NativeProbe pr = probeNative(path);
+    const double ov = occtStepVolume(path);
+    const double want = kPi * 25.0 * 20.0;  // unchanged cylinder volume
+    char d[320];
+    std::snprintf(d, sizeof d, "native parsed=%d watertight=%d vol=%.6g occtVol=%.6g (want %.6g)",
+                  pr.parsed, pr.parsed && pr.allWatertight, pr.vol, ov, want);
+    const bool volOk = ov > 0 && std::fabs(pr.vol - ov) / ov < 5e-3 &&
+                       std::fabs(pr.vol - want) / want < 5e-3;
+    record(pr.parsed && pr.allWatertight && pr.solids == 1 && volOk, "foreign", "revolution→plane", d);
+    compare("foreign", "revolution_plane", importUnder(1, path), importUnder(0, path), 5e-3, 5e-3);
+}
+
+// ── (R) SURFACE_OF_REVOLUTION → sphere (R3) — an on-axis meridian circle reduces to a Sphere
+// Author a sphere with OCCT, then rewrite its SPHERICAL_SURFACE as SURFACE_OF_REVOLUTION of
+// the meridian CIRCLE (centre ON the axis, plane CONTAINING the axis). The reader's
+// revolvedCircle arm reduces THAT surface to a native Sphere — proven watertight at the HOST
+// level (test_native_step_reader, against the reader-friendly multi-patch sphere B-rep). This
+// OCCT fixture is a SINGLE periodic spherical FACE with a pole seam + degenerate pole
+// vertices, which the reader's face reconstruction does not yet cover (a periodic-pole-face
+// gap, independent of the revolution reduction) → the reader honestly DECLINES the whole
+// file and cc_step_import falls back to OCCT. So the guarantee proven here is the END-TO-END
+// one: cc_step_import never breaks on this file and matches the OCCT re-import exactly.
+void runRevolvedSphere() {
+    const std::string occtPath = "/tmp/cck_nimport_sphere_occt.step";
+    TopoDS_Shape sph = BRepPrimAPI_MakeSphere(6.0).Shape();  // centre origin, axis +Z
+    if (!occtWriteStep(sph, occtPath)) { record(false, "foreign", "sphere author", "OCCT write failed"); return; }
+    std::ifstream in(occtPath); std::string base((std::istreambuf_iterator<char>(in)), {});
+    // Meridian circle: centre (0,0,0) ON the +Z axis, plane normal (0,1,0) ⟂ Z (contains Z).
+    std::string rev = base;
+    const std::size_t ins = rev.find('\n', rev.find("DATA;")) + 1;
+    rev.insert(ins,
+               "#800020 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+               "#800021 = DIRECTION('',(0.,1.,0.));\n"
+               "#800022 = DIRECTION('',(1.,0.,0.));\n"
+               "#800023 = AXIS2_PLACEMENT_3D('',#800020,#800021,#800022);\n"
+               "#800004 = CIRCLE('',#800023,6.);\n"
+               "#800005 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+               "#800006 = DIRECTION('',(0.,0.,1.));\n"                 // revolution axis = +Z
+               "#800007 = AXIS1_PLACEMENT('',#800005,#800006);\n");
+    for (std::size_t k = rev.find("SPHERICAL_SURFACE("); k != std::string::npos;
+         k = rev.find("SPHERICAL_SURFACE(", k + 1)) {
+        const std::size_t close = rev.find(')', k);
+        rev.replace(k, close - k, "SURFACE_OF_REVOLUTION('',#800004,#800007");
+    }
+    const std::string path = "/tmp/cck_nimport_revolved_sphere.step";
+    writeFile(path, rev);
+    const NativeProbe pr = probeNative(path);
+    const Props nat = importUnder(1, path);     // native engine (watertight, else OCCT fallback)
+    const Props oracle = importUnder(0, path);  // OCCT re-import oracle
+    char d[320];
+    std::snprintf(d, sizeof d,
+                  "native raw parsed=%d (OCCT periodic-pole-face → decline; revolvedCircle→Sphere host-verified); "
+                  "cc_step_import vol=%.6g occtVol=%.6g",
+                  pr.parsed, nat.vol, oracle.vol);
+    const bool parityOk = oracle.vol > 0 && std::fabs(nat.vol - oracle.vol) / oracle.vol < 5e-3;
+    record(parityOk, "foreign", "revolution→sphere", d);
+    compare("foreign", "revolution_sphere", nat, oracle, 5e-3, 5e-3);
+}
+
 }  // namespace
 
 int main() {
@@ -850,7 +980,15 @@ int main() {
     //    Cylinder (watertight, exact volume); a non-line generatrix stays an honest DECLINE.
     runTrimmedCurveEdge();   // T1 : TRIMMED_CURVE(CIRCLE) edge unwraps → watertight cylinder
     runRevolvedCylinder();   // T2 : SURFACE_OF_REVOLUTION(line ∥ axis) → native Cylinder
-    runRevolvedDecline();    // T2 : SURFACE_OF_REVOLUTION(circle) → honest DECLINE → OCCT
+    runRevolvedDecline();    // T2 : SURFACE_OF_REVOLUTION(circle off-axis) → honest DECLINE
+
+    // ── REVOLUTION QUADRICS (this slice) — the remaining analytic-quadric reductions of a
+    //    SURFACE_OF_REVOLUTION generatrix, each onto a native FaceSurface the reader builds
+    //    for the direct analytic keyword: oblique line → Cone, ⟂ line → Plane, on-axis
+    //    meridian circle → Sphere. Off-axis circle / ellipse / skew stay honest declines.
+    runRevolvedCone();       // R1 : SURFACE_OF_REVOLUTION(oblique line) → native Cone
+    runRevolvedPlane();      // R2 : SURFACE_OF_REVOLUTION(⟂ line) → native Plane cap
+    runRevolvedSphere();     // R3 : SURFACE_OF_REVOLUTION(on-axis circle) → native Sphere
 
     cc_set_engine(0);  // restore the default engine before we leave
     std::printf("[NIMPORT] DONE  passed=%d failed=%d\n", g_passed, g_failed);

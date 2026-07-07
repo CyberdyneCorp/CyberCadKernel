@@ -1815,15 +1815,11 @@ CTest **29/29** NUMSCI OFF / **36/36** NUMSCI ON, `test_native_step_reader` **26
   EXACT native `Cylinder` (radius = ⊥-distance from line to axis, frame on the axis). Host:
   `surface_of_revolution_line_parallel_maps_to_cylinder`. Sim: `revolution→cylinder` imports
   NATIVELY watertight `rel=1.27e-3` == OCCT re-import.
-- **DEFERRED — honest DECLINE → OCCT (NOT implemented; no faithful native kind AND/OR not
-  watertight).** The code has **no** `reduceToQuadric` and **no** `revolveToRationalBSpline`: a
-  SURFACE_OF_REVOLUTION of an **oblique** line (a cone — the reader's apex-carrying cone does not
-  round-trip watertight, a pre-existing gap), a **perpendicular** line (a planar annulus), or **any
-  non-line** profile (a circle/arc → sphere/torus, an ellipse/B-spline → general revolved surface)
-  returns `nullopt` → OCCT, kept consistent with the landed `TOROIDAL_SURFACE` decline. Host:
-  `surface_of_revolution_oblique_line_declines`, `surface_of_revolution_circle_generatrix_declines`.
-  Sim: `revolution decline native parsed=0`, OCCT fallback `revolution_torus vol 523.599 rel 0` ==
-  `cc_set_engine(0)`.
+- **DEFERRED at the time (SUPERSEDED by `add-native-step-revolution-quadrics`, below).** At the
+  general-surfaces slice the oblique-line (cone), perpendicular-line (plane), and on-axis-circle
+  (sphere) revolutions still declined → OCCT; the next slice landed the cone and plane reductions
+  natively (and host-verified the sphere reduction). The historical note is kept for the record; see
+  the revolution-quadrics section immediately below for the current behavior.
 
 **Residual → OCCT after the general-surfaces slice (honest, narrowed):** the DEFERRED revolution
 cases above (cone / sphere / torus / general revolved surface), PMI/GD&T **semantics**,
@@ -1833,6 +1829,61 @@ foreign arbitrary-rational/weighted B-splines, `BEZIER`, general swept/bounded/o
 non-mm units, all IGES. Exactly 3 files changed (`step_reader.cpp`, `test_native_step_reader.cpp`,
 `native_step_import_parity.mm`); `step_writer.cpp`, tessellator, `src/engine/**`, and the `cc_*` ABI
 PRISTINE; `src/native/**` OCCT-free. #8 `drop-occt` stays blocked.
+
+### Native STEP IMPORT WIDENED (`add-native-step-revolution-quadrics`) — SURFACE_OF_REVOLUTION analytic-quadric reductions
+
+The `SURFACE_OF_REVOLUTION` arm — previously mapping ONLY a straight `LINE` **∥** the axis → a
+native `Cylinder` — is extended to classify the generatrix and emit the matching native
+`FaceSurface` kind; anything with no faithful native kind stays an honest DECLINE → OCCT (change
+`add-native-step-revolution-quadrics`, archived `2026-07-07`, validate --strict green; host CTest
+**29/29** NUMSCI OFF / **36/36** NUMSCI ON, `test_native_step_reader` **31 cases** incl. **8**
+revolution cases; sim **`[NIMPORT]` 65/65**). Reader-only change — exactly 4 files
+(`step_reader.cpp`, `test_native_step_reader.cpp`, `native_step_import_parity.mm`, +
+`openspec/changes/add-native-step-revolution-quadrics/`); `step_writer.cpp`, the tessellator,
+`src/engine/**`, and the `cc_*` ABI PRISTINE; `src/native/**` OCCT-free (grep-gated).
+
+- **LANDED — oblique `LINE` → native `Cone`.** `revolvedLine` dispatches by the line-axis angle
+  `c=|Â·D̂|`: `c≈1` → the landed `Cylinder`; else `lineMeetsAxis` computes the common perpendicular
+  and, if the lines genuinely intersect (skew → DECLINE, a hyperboloid), the apex `Q` on the axis.
+  Emits `FaceSurface{Cone}` with origin on the axis, `Z=+axis`, signed `semiAngle=acos(c)` — matching
+  the direct `CONICAL_SURFACE`-keyword convention byte-for-byte. This required a genuine reader
+  **bug fix** first: `pcurveFor`'s constant-`u` meridian took the constant angle from the endpoint
+  AT the apex (where `projectUV`'s `atan2(0,0)=0` collapsed every apex-touching wall onto `u=0`,
+  tearing the cone into 97 open edges); `radialFromAxis` now takes the constant `u` from the endpoint
+  FARTHER from the axis, so the DIRECT `CONICAL_SURFACE` round-trips watertight too. Host:
+  `surface_of_revolution_oblique_line_maps_to_cone`. Sim: native import watertight,
+  `vol nat=522.934 occtVol=523.599 rel=1.27e-3`, bboxΔ=2.96e-15, faces 6/6 == OCCT re-import.
+- **LANDED — perpendicular `LINE` → native `Plane`.** `c≈0` → `FaceSurface{Plane}` (flat annulus
+  cap), guarded by verifying both line endpoints share one axial coordinate `(·−L)·Â`. Host:
+  `surface_of_revolution_perpendicular_line_maps_to_plane`. Sim: native import watertight,
+  `vol nat=1568.8 occtVol=1570.77 rel=1.25e-3`, faces 9/9 == OCCT re-import.
+- **HOST-VERIFIED reduction, end-to-end OCCT fallback — on-axis `CIRCLE`/arc → native `Sphere`.**
+  `revolvedCircle` fires `FaceSurface{Sphere}` (radius = circle radius) iff the circle centre lies ON
+  the axis AND the circle plane contains the axis direction. The reduction is asserted at host level
+  (`surface_of_revolution_on_axis_circle_maps_to_sphere`, equal to the direct `SPHERICAL_SURFACE`
+  import). But watertight end-to-end spheres are NOT yet achievable through the native pipeline for two
+  OUT-OF-SCOPE reasons: (a) the native WRITER serialises a full sphere as three pole-seam lune faces
+  that tessellate non-watertight (a writer limitation, forbidden to modify), and (b) an OCCT-authored
+  sphere is a SINGLE periodic spherical face with a pole seam + degenerate pole vertices the reader's
+  face reconstruction does not yet cover. So the sim sphere fixture proves the guarantee honestly:
+  the reader DECLINES the OCCT periodic-pole-face sphere and `cc_step_import` falls back to OCCT,
+  matching the oracle exactly — `vol 904.779 == OCCT rel 0`. Flagged, not faked.
+- **DECLINE → OCCT (honest, no faithful native kind).** An **off-axis** circle/arc (torus, no
+  `Kind::Torus`; fallback `vol 523.599 rel 0` == `cc_set_engine(0)`), an **ellipse / B-spline**
+  generatrix (general revolved surface; fallback rel 0), a **skew** oblique line (hyperboloid), and an
+  on-axis circle whose plane is ⟂ the axis (degenerate). Each R1/R2/R3 builder re-evaluates the
+  candidate quadric through the generatrix's defining points and DECLINES on a scale-relative mismatch
+  (`lineOnSurface` / `circleOnSurface` — the "never fabricate geometry" gate); no tolerance weakened.
+  Host: `surface_of_revolution_circle_generatrix_declines`, `..._skew_oblique_line_declines`,
+  `..._ellipse_generatrix_declines`, `..._on_axis_circle_perp_plane_declines`.
+
+**Residual → OCCT after the revolution-quadrics slice (honest, narrowed further):** an off-axis-circle
+torus + ellipse/B-spline general revolved surface + skew-line hyperboloid (+ the OCCT
+single-periodic-pole-face sphere B-rep, whose native reduction is proven but whose face the reader
+does not yet reconstruct), PMI/GD&T **semantics**, **non-uniform-scale / shear** transforms,
+deep-nested assemblies, Form-B `MAPPED_ITEM`, `TOROIDAL_SURFACE`, ellipse-on-quadric solids, a
+`TRIMMED_CURVE` over an out-of-slice basis, foreign arbitrary-rational/weighted B-splines, `BEZIER`,
+general swept/bounded/offset surfaces, non-mm units, all IGES. #8 `drop-occt` stays blocked.
 
 ### Files (#7)
 

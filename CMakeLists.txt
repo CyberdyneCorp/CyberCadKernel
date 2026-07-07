@@ -310,6 +310,13 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_ssi_marching)
         set(test_native_ssi_marching_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_marching.cpp")
+        # MOAT M2b / B2 freeform face-split — host GATE (a), the OCCT-free analytic
+        # tiling proof. Its fixture seam is the real S3 trace (trace_intersection),
+        # whose definition is under CYBERCAD_HAS_NUMSCI, so this host suite builds only
+        # in that config (like the S3 marching suite). Header-only splitter; no lib change.
+        list(APPEND CYBERCAD_TESTS test_native_face_split)
+        set(test_native_face_split_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_face_split.cpp")
         # SSI Stage S4-e chart singularities (sphere pole / cone apex crossing) — the
         # point-based crossing corrector rides the same least_squares substrate, so its
         # host suite builds only under CYBERCAD_HAS_NUMSCI (like the S3 marching suite).

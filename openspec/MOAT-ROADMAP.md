@@ -157,9 +157,11 @@ whole SSI arc was built for.
     `CurvedSolid` wall (cylinder/sphere/cone radial/spherical/conic half-space + planar caps);
     it has no point-in-freeform-solid classifier, so in/out labelling of split fragments is
     unavailable for a freeform operand.
-  - **B4/B5 — no freeform weld/assembly.** With B1–B3 open there is no consumer wiring the split
-    fragments back through the M0 trimmed-free-form mesher into a watertight welded solid, nor a
-    self-verify tuned for freeform output.
+  - **B4/B5 — no freeform weld/assembly.** ✅ **RESOLVED (B4 landed):** `boolean/half_space_cut.h`
+    splits each analytic face the cut plane crosses, synthesises the cross-section cap from the B2
+    seam spliced to the analytic-face crossing chords, welds the survivors through the M0 mesher,
+    and runs the mandatory watertight self-verify — composing the first freeform↔analytic CUT. The
+    **B2 smooth-trim (closed/circular wall) generalisation remains the deferred next enabler.**
   Both mandatory gates remain **green with zero regression**: host-analytic native suites pass
   (incl. `freeform_bspline_face_operand_declines_before_trace`, which directly exercises B1), and
   the sim native-vs-OCCT run is `24 passed / 0 failed / 6 fell-back (native-pass=18)` — the 6
@@ -417,7 +419,7 @@ slices used). Both are captured below.
 | **M2b (B2)** freeform face-split | `boolean/` · `ssi/` | M0 ✅ + M1 ✅ | ✅ **Wave-2 slice LANDED** — `boolean/face_split.h` `splitFace` (tiles vs OCCT 12/12); non-convex/multi-crossing tail declines |
 | **M2c (B3)** freeform point-in-solid | `boolean/` | M0 ✅ | ✅ **Wave-2 slice LANDED** — `boolean/freeform_membership.h` `classifyPointInMesh` (crispDISAGREE=0 vs `BRepClass3d`); near-tangent band → On/Unknown |
 | **M2a (B1)** freeform operand descriptor | `boolean/` | `shape.h` | ✅ **Wave-2 slice LANDED** — `boolean/freeform_operand.h` `recogniseFreeformSolid` (host gate 14/14; admit + round-trip + 8-way decline battery); **completes the M2 substrate**. End-to-end assembly honest-declined (B2 needs smooth-trim split + a B4 analytic-face-split/cap-synth verb) |
-| **M2** general freeform booleans (assembly) | `boolean/` | **B1 ✅ + B2 ✅ + B3 ✅** | ⚠ **substrate COMPLETE (B1/B2/B3 all landed); end-to-end assembly HONEST-DECLINED** — the minimal recognise[B1] → trace[M1] → split[B2] → classify[B3] → weld[M0] does NOT robustly close: the reachable freeform wall carries a smooth CLOSED trim (B2 `splitFace` → `NoOuterLoop`), and a half-space also crosses the operand's ANALYTIC caps/sides + needs a new cross-section cap. Needs a **B4** verb (B2 convex→smooth-trim split + analytic-face split + cap synthesis). No stub shipped; OCCT stays the fall-through |
+| **M2** general freeform booleans (assembly) | `boolean/` | **B1 ✅ + B2 ✅ + B3 ✅ + B4 ✅** | ◐ **FIRST freeform boolean LANDED at HOST-ANALYTIC gate (a) ONLY — SIM gate (b) parity OPEN** — `boolean/half_space_cut.h` (B4 analytic-face-split + cross-section-cap-synthesis weld verb) composes recognise[B1] → trace[M1] → split[B2] → B4 → classify[B3] → weld[M0] → mandatory watertight self-verify into the first end-to-end freeform↔analytic half-space **CUT** (bowl-lidded convex-quad prism). GATE (a) HOST ANALYTIC GREEN (OCCT-free): watertight + enclosed volume = closed-form `∫∫_{Q∩{x≤0}}(H0+a(x²+y²))dA` to 0.7% (deflection band), oracle unit-checked vs `H0/2+a/6`; host suite `40/40`. Blocker (i) SIDESTEPPED by the bowl-lidded-prism operand (its one freeform face has the convex straight-edged loop B2 splits); the **B2 smooth-trim (closed/circular wall) generalisation is DEFERRED** as the next enabler. Every stage NULL-on-decline; OCCT stays the fall-through. **GATE (b) NOT MET → openspec change STAYS OPEN.** NEXT BLOCKER: the SIM native-vs-OCCT `BRepAlgoAPI_Cut` parity gate for `freeformHalfSpaceCut`/`halfSpaceCut` is not run — no `.mm` harness references the verb yet (§5.1–5.4 unchecked); infra is ready (simulators booted, OCCT SIMULATORARM64 installed), so the sole blocker is the missing OCCT `.mm` parity harness. Then: B3 inward-nudge confirmation (§4.2); COMMON/FUSE; multi-plane/box cutters; freeform↔freeform |
 | **M3** freeform blends + wrap-emboss | `blend/` · `feature/` | M2 | **Wave 3** — after M2 |
 | **M7b** fine-pitch self-intersecting thread | `construct/` | M2 | **Wave 3** — after M2 |
 | **M8** `drop-occt` — unlink | `engine/occt` (delete) | ALL + M6 bar | **Terminal** |

@@ -341,6 +341,14 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_ssi_curved_boolean)
         set(test_native_ssi_curved_boolean_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_curved_boolean.cpp")
+        # MOAT M2-assembly / B4 first freeform↔analytic half-space CUT — host GATE (a),
+        # the OCCT-free composition proof: B1 recognise → M1 trace → B2 split → B4
+        # analytic-face-split + section-cap weld → self-verify, matching the closed-form
+        # CUT volume. Its operand's freeform seam is the real S3 trace (trace_intersection),
+        # so this host suite builds only under CYBERCAD_HAS_NUMSCI. Header-only B4; no lib change.
+        list(APPEND CYBERCAD_TESTS test_native_first_freeform_boolean)
+        set(test_native_first_freeform_boolean_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_first_freeform_boolean.cpp")
     endif()
 
     # The tet-mesher test drives the real TetGen backend, so it is added ONLY when

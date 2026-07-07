@@ -1030,6 +1030,135 @@ topo::Shape buildLensCommon(const CurvedSolid& A, const CurvedSolid& B,
   return topo::ShapeBuilder::makeSolid({shell});
 }
 
+// ── S5-e — coaxial CONE(frustum)∩CYLINDER COMMON ───────────────────────────────
+// A REVOLVED band strip between two same-azimuth rim rings (`lo`,`hi`), planar-facet,
+// outward radial normal. Both rings carry the SAME azimuth samples (index i ↔ i), so
+// each ruling (lo[i]→hi[i]) lies exactly on the swept wall (a cone ruling or a cylinder
+// generatrix — both straight in the axial direction), and the only approximation is the
+// N-gon chord around the circle (shared by every ring → welds watertight through `pool`).
+void appendRevolvedBand(const std::vector<math::Point3>& lo, const std::vector<math::Point3>& hi,
+                        const math::Point3& axisOrigin, const math::Vec3& axisDir,
+                        VertexPool& pool, std::vector<topo::Shape>& faces) {
+  const int n = static_cast<int>(lo.size());
+  if (n < 3 || static_cast<int>(hi.size()) != n) return;
+  auto radial = [&](const math::Point3& p) {
+    const math::Vec3 w{p.x - axisOrigin.x, p.y - axisOrigin.y, p.z - axisOrigin.z};
+    return w - axisDir * math::dot(w, axisDir);
+  };
+  for (int i = 0; i < n; ++i) {
+    const int j = (i + 1) % n;
+    const math::Point3 ctr{(lo[i].x + lo[j].x + hi[j].x + hi[i].x) / 4,
+                           (lo[i].y + lo[j].y + hi[j].y + hi[i].y) / 4,
+                           (lo[i].z + lo[j].z + hi[j].z + hi[i].z) / 4};
+    const math::Vec3 ref = radial(ctr);
+    pushPlanarTri(lo[i], lo[j], hi[j], ref, pool, faces);
+    pushPlanarTri(lo[i], hi[j], hi[i], ref, pool, faces);
+  }
+}
+
+// buildConeCylCommon(A,B) = the COMMON of a COAXIAL cone frustum and a cylinder. The
+// overlap is the solid of revolution of r ≤ min(r_cone(s), Rc) over the shared axial
+// span [sLo,sHi] (s = axial projection onto the cone axis, measured from the cone
+// origin). r_cone(s) crosses the constant Rc EXACTLY ONCE — the single analytic SSI
+// circle at s* (radius Rc) — so the shell is: bottom disc @ sLo, the inner-wall band
+// below s*, the shared SEAM ring @ s*, the inner-wall band above s*, top disc @ sHi.
+// Both bands and the caps share the seam/rim rings through one VertexPool → watertight.
+// Taken ONLY for one Cone + one Cylinder operand, coaxial, with the traced seam matching
+// the analytic circle (height s* + radius Rc) and a single STRICTLY-INTERIOR crossing;
+// anything else (apex in/near the span, seam on a cap, no crossing, non-coaxial) → {} →
+// OCCT. Never faked: the analytic seam is cross-checked against the S3 trace before use.
+topo::Shape buildConeCylCommon(const CurvedSolid& A, const CurvedSolid& B,
+                               const std::vector<Seam>& seams) {
+  if (seams.size() != 1) return {};
+  const Seam& seam = seams[0];
+  if (!seam.closed || seam.pts.size() < 8) return {};
+
+  // Exactly one Cone + one Cylinder operand.
+  const CurvedSolid* conePtr = nullptr;
+  const CurvedSolid* cylPtr = nullptr;
+  for (const CurvedSolid* s : {&A, &B}) {
+    if (s->kind == CurvedKind::Cone) conePtr = s;
+    else if (s->kind == CurvedKind::Cylinder) cylPtr = s;
+  }
+  if (!conePtr || !cylPtr) return {};
+  const CurvedSolid& cone = *conePtr;
+  const CurvedSolid& cyl = *cylPtr;
+  if (!ssidetail::sameAxis(cone.frame, cyl.frame, 1e-6)) return {};  // must be coaxial
+
+  const math::Vec3 zc = cone.frame.z.vec();
+  const double tanA = std::tan(cone.semiAngle);
+  if (std::fabs(tanA) < 1e-9) return {};  // degenerate (near-cylindrical) cone
+  const double Rc = cyl.radius;
+  const math::Point3 O = cone.frame.origin;
+  auto sOf = [&](const math::Point3& p) {
+    return math::dot(math::Vec3{p.x - O.x, p.y - O.y, p.z - O.z}, zc);
+  };
+
+  // Cylinder axial extent expressed in the cone's s-coordinate (axes may be antiparallel).
+  const double base = math::dot(cyl.frame.origin - O, zc);
+  const double sign = math::dot(cyl.frame.z.vec(), zc) >= 0.0 ? 1.0 : -1.0;
+  double cylSLo = base + sign * cyl.vLo, cylSHi = base + sign * cyl.vHi;
+  if (cylSLo > cylSHi) std::swap(cylSLo, cylSHi);
+  const double sLo = std::max(cone.vLo, cylSLo);
+  const double sHi = std::min(cone.vHi, cylSHi);
+  if (!(sHi - sLo > 1e-6)) return {};  // no axial overlap
+
+  // Single interior crossing r_cone(s*) = Rc.
+  const double sStar = (Rc - cone.radius) / tanA;
+  if (!(sStar - sLo > 1e-6) || !(sHi - sStar > 1e-6)) return {};  // apex/edge crossing → decline
+
+  // Cross-check the analytic seam against the traced seam (height + radius).
+  math::Point3 c{0, 0, 0};
+  for (const auto& p : seam.pts) { c.x += p.x; c.y += p.y; c.z += p.z; }
+  const double ns = static_cast<double>(seam.pts.size());
+  c.x /= ns; c.y /= ns; c.z /= ns;
+  if (std::fabs(sOf(c) - sStar) > 1e-4) return {};  // seam not at the analytic height
+  double rho = 0.0;
+  for (const auto& p : seam.pts) {
+    const math::Vec3 w{p.x - c.x, p.y - c.y, p.z - c.z};
+    rho += math::norm(w - zc * math::dot(w, zc));
+  }
+  rho /= ns;
+  if (std::fabs(rho - Rc) > 1e-3) return {};  // seam radius ≠ Rc
+
+  // Inner-wall radii at the span ends (min of the two walls; linear on each sub-span).
+  auto rCone = [&](double s) { return cone.radius + s * tanA; };
+  const double rBot = std::min(rCone(sLo), Rc);
+  const double rTop = std::min(rCone(sHi), Rc);
+  if (!(rBot > 1e-9) || !(rTop > 1e-9)) return {};  // apex-touching rim → decline
+
+  // Azimuthal resolution: seam-circle chord sagitta ≤ kCapSagitta (same bound as the caps).
+  const double chord = std::sqrt(std::max(8.0 * kCapSagitta * Rc, 1e-12));
+  const int N = std::clamp(static_cast<int>(std::ceil(kSsiTwoPi * Rc / chord)), 24, 180);
+
+  // Shared azimuth frame = cone x/y; a ring of N samples at (radius r, axial s).
+  const math::Vec3 X = cone.frame.x.vec(), Y = cone.frame.y.vec();
+  auto ring = [&](double r, double s) {
+    std::vector<math::Point3> out(N);
+    for (int i = 0; i < N; ++i) {
+      const double u = kSsiTwoPi * i / N;
+      const double cx = r * std::cos(u), cy = r * std::sin(u);
+      out[i] = math::Point3{O.x + X.x * cx + Y.x * cy + zc.x * s,
+                            O.y + X.y * cx + Y.y * cy + zc.y * s,
+                            O.z + X.z * cx + Y.z * cy + zc.z * s};
+    }
+    return out;
+  };
+  const std::vector<math::Point3> ringBot = ring(rBot, sLo);
+  const std::vector<math::Point3> ringSeam = ring(Rc, sStar);
+  const std::vector<math::Point3> ringTop = ring(rTop, sHi);
+
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  appendRevolvedBand(ringBot, ringSeam, O, zc, pool, faces);   // inner wall below s*
+  appendRevolvedBand(ringSeam, ringTop, O, zc, pool, faces);   // inner wall above s*
+  appendDiskCap(cone, sLo, ringBot, math::Vec3{-zc.x, -zc.y, -zc.z}, pool, faces);
+  appendDiskCap(cone, sHi, ringTop, math::Vec3{zc.x, zc.y, zc.z}, pool, faces);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
 // Shared prologue for the three single-seam sphere∩sphere lens assemblers: validate the
 // trace/kinds, compute the two candidate apices (inner near-apex of each sphere and each
 // far pole), the decimated shared seam, and the per-cap ring-count functor. Factored out so
@@ -1761,7 +1890,10 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // (S5-c) → buildLensCommon. buildCommon is untouched (returns {} for one seam).
       const topo::Shape drill = buildCommon(*csA, *csB, seams);
       if (!drill.isNull()) return drill;
-      return buildLensCommon(*csA, *csB, seams);
+      const topo::Shape lens = buildLensCommon(*csA, *csB, seams);
+      if (!lens.isNull()) return lens;
+      // S5-e: coaxial cone(frustum)∩cylinder COMMON (single analytic circle seam).
+      return buildConeCylCommon(*csA, *csB, seams);
     }
     case Op::Fuse: {
       // Through-drill (two rim seams) → buildFuse; single-seam sphere∩sphere lens (S5-c

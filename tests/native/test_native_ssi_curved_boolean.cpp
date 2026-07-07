@@ -111,6 +111,25 @@ ntopo::Shape makeSphereY(double cy, double R) {
   return cst::build_revolution_profile(segs, yAxis, 2.0 * sd::kSsiPi);
 }
 
+// A native cone/frustum solid: a slanted line-segment profile (radius r0 at axial y0 →
+// radius r1 at y1) plus the top edge, axis edge and bottom edge, revolved a full turn
+// about world +Y → a TRUE Cone wall + disc caps (the shape recogniseCurvedSolid maps to
+// CurvedKind::Cone). Mirrors the sim parity harness's makeCone exactly.
+ntopo::Shape makeCone(double r0, double y0, double r1, double y1) {
+  std::vector<cst::ProfileSegment> segs(4);
+  segs[0].kind = 0; segs[0].x0 = r0; segs[0].y0 = y0; segs[0].x1 = r1; segs[0].y1 = y1;  // side
+  segs[1].kind = 0; segs[1].x0 = r1; segs[1].y0 = y1; segs[1].x1 = 0.0; segs[1].y1 = y1; // top
+  segs[2].kind = 0; segs[2].x0 = 0.0; segs[2].y0 = y1; segs[2].x1 = 0.0; segs[2].y1 = y0;// axis
+  segs[3].kind = 0; segs[3].x0 = 0.0; segs[3].y0 = y0; segs[3].x1 = r0; segs[3].y1 = y0; // bottom
+  const cst::RevolveAxis yAxis{0.0, 0.0, 0.0, 1.0};  // through origin, dir +Y
+  return cst::build_revolution_profile(segs, yAxis, 2.0 * sd::kSsiPi);
+}
+
+// Exact volume of a conical frustum: (π Δh / 3)(ra² + ra·rb + rb²).
+double frustumVolume(double ra, double rb, double dh) {
+  return sd::kSsiPi * dh / 3.0 * (ra * ra + ra * rb + rb * rb);
+}
+
 // Analytic COMMON (lens) volume of two overlapping spheres, centre distance d.
 // Equal radii r: two spherical caps of height h = r − d/2, cap = π h²(3r−h)/3, lens = 2·cap.
 double lensVolumeEqual(double r, double d) {
@@ -496,6 +515,67 @@ CC_TEST(branched_disjoint_returns_null) {
   CC_CHECK(nb::ssi_boolean_solid(a, b, nb::Op::Common).isNull());
   CC_CHECK(nb::ssi_boolean_solid(a, b, nb::Op::Fuse).isNull());
   CC_CHECK(nb::ssi_boolean_solid(a, b, nb::Op::Cut).isNull());
+}
+
+// ── (4) COAXIAL cone(frustum)∩cylinder COMMON: a REAL native watertight pass (S5-e) ──
+// The first cone-involving native boolean. A cone frustum r(y)=0.5+0.5y over y∈[0,4] and a
+// coaxial cylinder Rc=1.5 over y∈[1,5] (both about world +Y) overlap over the axial span
+// [1,4]; r_cone crosses Rc EXACTLY ONCE at the single analytic SSI circle y*=2 (radius 1.5),
+// so the trace is ONE closed seam (nearTangentGaps==0). The S5-e assembler welds the cone
+// band (y∈[1,2]) + the cylinder band (y∈[2,4]) + two disc caps along the shared decimated
+// seam → a watertight shell. Its enclosed volume matches the CLOSED FORM (sum of two frusta,
+// V = frustum(1.0→1.5 over [1,2]) + frustum(1.5→1.5 over [2,4]) = 19.11136) to within the
+// engine's curved-parity bar (1% relative — a tessellation-deflection bound, NOT a relaxed
+// tolerance; measured deficit ≈ 0.02%). This is the analytic oracle the engine self-verify
+// (native_engine.cpp ssiCurvedBooleanVerified S5-e arm) checks — no OCCT, no fabricated value.
+// Operand order is symmetric for COMMON (cone,cyl and cyl,cone both build). FUSE / CUT and any
+// non-coaxial / apex-crossing pair decline → OCCT (honest NULL).
+CC_TEST(cone_cyl_coaxial_common_watertight_matches_analytic) {
+  const ntopo::Shape cone = makeCone(0.5, 0.0, 2.5, 4.0);  // r(y)=0.5+0.5y, y∈[0,4]
+  const ntopo::Shape cyl = makeCyl(/*Y*/ 1, 1.5, 1.0, 5.0);  // Rc=1.5, y∈[1,5], coaxial
+  CC_CHECK(!cone.isNull() && !cyl.isNull());
+
+  // The cone is recognised as a Cone; the coaxial pair traces ONE clean closed seam circle.
+  const auto csCone = sd::recogniseCurvedSolid(cone);
+  const auto csCyl = sd::recogniseCurvedSolid(cyl);
+  CC_CHECK(csCone && csCyl);
+  if (csCone && csCyl) {
+    CC_CHECK(csCone->kind == sd::CurvedKind::Cone);
+    const ssi::TraceSet tr = ssi::trace_intersection(csCone->adapter(), csCyl->adapter());
+    CC_CHECK(tr.nearTangentGaps == 0);  // fully transversal single analytic circle
+    CC_CHECK(tr.curveCount() == 1);     // ONE closed seam circle at y*=2
+  }
+
+  // Closed-form ground truth: two stacked frusta meeting at the seam circle (r=1.5, y=2).
+  //   below y*: cone wall  r 1.0 → 1.5 over Δh=1   (rBot = min(rCone(1),Rc) = 1.0)
+  //   above y*: cylinder   r 1.5 → 1.5 over Δh=2   (rTop = min(rCone(4),Rc) = 1.5)
+  const double vTrue = frustumVolume(1.0, 1.5, 1.0) + frustumVolume(1.5, 1.5, 2.0);
+  CC_CHECK(std::fabs(vTrue - 19.111355) < 1e-5);  // pin the analytic value
+
+  // The S5-e path produces a non-null watertight candidate whose volume matches vTrue …
+  const ntopo::Shape common = nb::ssi_boolean_solid(cone, cyl, nb::Op::Common);
+  CC_CHECK(!common.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  CC_CHECK(vCommon > 0.0);                               // watertight → engine accepts
+  CC_CHECK(std::fabs(vCommon - vTrue) <= 1e-2 * vTrue);  // ≤ 1% curved-parity bar
+  // … the dispatcher path returns it non-null too.
+  CC_CHECK(!nb::boolean_solid(cone, cyl, nb::Op::Common).isNull());
+
+  // COMMON is symmetric — reversing the operand order builds the same watertight solid.
+  const ntopo::Shape swapped = nb::ssi_boolean_solid(cyl, cone, nb::Op::Common);
+  CC_CHECK(!swapped.isNull());
+  const double vSwapped = watertightMeshVolume(swapped);
+  CC_CHECK(vSwapped > 0.0);
+  CC_CHECK(std::fabs(vSwapped - vTrue) <= 1e-2 * vTrue);
+
+  // Monotone invariant: common ≤ min(vol(cone), vol(cyl)).
+  const double vCone = frustumVolume(0.5, 2.5, 4.0);       // whole frustum, y∈[0,4]
+  const double vCylFull = cylinderVolume(1.5, 1.0, 5.0);   // whole cylinder, y∈[1,5]
+  CC_CHECK(vTrue <= std::min(vCone, vCylFull) + 1e-9);
+
+  // Honest scope: this slice ships COMMON only — cone FUSE / CUT decline → OCCT (NULL).
+  CC_CHECK(nb::ssi_boolean_solid(cone, cyl, nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(cone, cyl, nb::Op::Cut).isNull());
 }
 
 int main() { return cctest::run_all(); }

@@ -332,24 +332,66 @@ CurvedCheck curvedBooleanVerified(const ntopo::Shape& result, const ntopo::Shape
 CurvedCheck ssiCurvedBooleanVerified(const ntopo::Shape& result, const ntopo::Shape& a,
                                      const ntopo::Shape& b, int op) {
 #if defined(CYBERCAD_HAS_NUMSCI)
-    if (op != 2) return {};  // only COMMON has the analytic Steinmetz oracle in S5-a
+    if (op != 2) return {};  // only COMMON has an analytic closed-form oracle in S5
     namespace nb = cybercad::native::boolean;
+    namespace nm = cybercad::native::math;
+    namespace cv = cybercad::native::boolean::curved;  // kPi
     const auto csA = nb::ssidetail::recogniseCurvedSolid(a);
     const auto csB = nb::ssidetail::recogniseCurvedSolid(b);
     if (!csA || !csB) return {};
     using CK = nb::ssidetail::CurvedKind;
-    if (csA->kind != CK::Cylinder || csB->kind != CK::Cylinder) return {};
-    // Equal radii and perpendicular, colinear-origin axes → the Steinmetz configuration.
-    if (std::fabs(csA->radius - csB->radius) > 1e-6) return {};
-    const double axisDot = std::fabs(cybercad::native::math::dot(csA->frame.z.vec(),
-                                                                 csB->frame.z.vec()));
-    if (axisDot > 1e-4) return {};  // not perpendicular → no closed form here
-    const double r = csA->radius;
-    const double expected = 16.0 * r * r * r / 3.0;  // Steinmetz bicylinder common volume
-    const double vr = watertightVolume(result);
-    if (vr < 0.0) return {true, false};  // not watertight
-    const double tol = std::max(1e-2 * expected, 1e-6);  // deflection-bounded curved mesh
-    return {true, std::fabs(vr - expected) <= tol};
+
+    // ── Steinmetz arm: two EQUAL-R PERPENDICULAR cylinders (common = 16 r³/3). ──
+    if (csA->kind == CK::Cylinder && csB->kind == CK::Cylinder) {
+        if (std::fabs(csA->radius - csB->radius) > 1e-6) return {};
+        const double axisDot = std::fabs(nm::dot(csA->frame.z.vec(), csB->frame.z.vec()));
+        if (axisDot > 1e-4) return {};  // not perpendicular → no closed form here
+        const double r = csA->radius;
+        const double expected = 16.0 * r * r * r / 3.0;  // Steinmetz bicylinder common volume
+        const double vr = watertightVolume(result);
+        if (vr < 0.0) return {true, false};  // not watertight
+        const double tol = std::max(1e-2 * expected, 1e-6);  // deflection-bounded curved mesh
+        return {true, std::fabs(vr - expected) <= tol};
+    }
+
+    // ── S5-e arm: COAXIAL cone(frustum)∩cylinder COMMON (single analytic circle). ──
+    // Overlap = solid of revolution of r ≤ min(r_cone(s), Rc) over the shared axial span
+    // [sLo,sHi]; r_cone crosses Rc once at s*, giving two frustum bands whose volume is
+    // closed-form: V = V_frustum(rBot→Rc over [sLo,s*]) + V_frustum(Rc→rTop over [s*,sHi]),
+    // V_frustum(ra,rb,Δh) = (π Δh/3)(ra²+ra·rb+rb²). Mirrors the buildConeCylCommon geometry.
+    const auto* cone = csA->kind == CK::Cone ? &*csA : (csB->kind == CK::Cone ? &*csB : nullptr);
+    const auto* cyl = csA->kind == CK::Cylinder ? &*csA : (csB->kind == CK::Cylinder ? &*csB : nullptr);
+    if (cone && cyl) {
+        const nm::Vec3 zc = cone->frame.z.vec();
+        if (nm::norm(nm::cross(zc, cyl->frame.z.vec())) > 1e-6) return {};  // axes not parallel
+        const nm::Vec3 d = cyl->frame.origin - cone->frame.origin;
+        if (nm::norm(d - zc * nm::dot(d, zc)) > 1e-6) return {};  // origins not colinear → not coaxial
+        const double tanA = std::tan(cone->semiAngle);
+        if (std::fabs(tanA) < 1e-9) return {};
+        const double Rc = cyl->radius;
+        const double base = nm::dot(cyl->frame.origin - cone->frame.origin, zc);
+        const double sgn = nm::dot(cyl->frame.z.vec(), zc) >= 0.0 ? 1.0 : -1.0;
+        double cylSLo = base + sgn * cyl->vLo, cylSHi = base + sgn * cyl->vHi;
+        if (cylSLo > cylSHi) std::swap(cylSLo, cylSHi);
+        const double sLo = std::max(cone->vLo, cylSLo);
+        const double sHi = std::min(cone->vHi, cylSHi);
+        if (!(sHi - sLo > 1e-6)) return {};
+        const double sStar = (Rc - cone->radius) / tanA;
+        if (!(sStar - sLo > 1e-6) || !(sHi - sStar > 1e-6)) return {};
+        auto rCone = [&](double s) { return cone->radius + s * tanA; };
+        auto frustum = [&](double ra, double rb, double dh) {
+            return cv::kPi * dh / 3.0 * (ra * ra + ra * rb + rb * rb);
+        };
+        const double rBot = std::min(rCone(sLo), Rc);
+        const double rTop = std::min(rCone(sHi), Rc);
+        const double expected =
+            frustum(rBot, Rc, sStar - sLo) + frustum(Rc, rTop, sHi - sStar);
+        const double vr = watertightVolume(result);
+        if (vr < 0.0) return {true, false};  // not watertight
+        const double tol = std::max(1e-2 * expected, 1e-6);  // deflection-bounded curved mesh
+        return {true, std::fabs(vr - expected) <= tol};
+    }
+    return {};
 #else
     (void)result; (void)a; (void)b; (void)op;
     return {};  // no substrate → no SSI path → generic check applies

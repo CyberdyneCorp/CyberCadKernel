@@ -159,14 +159,15 @@ robustness tail keeps OCCT linked.** Canonical detail:
   pole/apex that will not verify on both surfaces DEFERS → OCCT — no crossing fabricated. Only
   the sphere-pole + cone-apex chart singularities are crossed; general/freeform parametric
   degeneracies and higher-order/curve cusps remain the tail.
-- ◐ **SSI S5-a/b/c/d (curved-boolean slices)** — the SSI-curve-driven
+- ◐ **SSI S5-a/b/c/d/e (curved-boolean slices)** — the SSI-curve-driven
   split→classify→weld pipeline (`src/native/boolean/ssi_boolean.{h,cpp}`, consumes the
-  S3 `TraceSet` — and, for S5-d, the S4-d branched re-trace) produces **ten native
+  S3 `TraceSet` — and, for S5-d, the S4-d branched re-trace) produces **eleven native
   curved-boolean sub-cases verified vs OCCT `BRepAlgoAPI_{Fuse,Cut,Common}`**: the
   through-drill cylinder∩cylinder COMMON (S5-a) + FUSE + CUT (S5-b), the sphere∩sphere op-set
   now COMPLETE 3/3 native — COMMON + FUSE + CUT (S5-c, equal + unequal radii), and the
   **branched-trace Steinmetz bicylinder op-set now COMPLETE 3/3 native — COMMON + FUSE + CUT
-  (S5-d)** — all watertight, ΔV ≤ 9e-04 (sim `native-pass=12`). **S5-c FUSE/CUT** reuse one
+  (S5-d)**, and the **CONE surface family opened — coaxial cone∩cylinder COMMON (S5-e) native** —
+  all watertight, ΔV ≤ 9e-04 (sim `native-pass=13`). **S5-c FUSE/CUT** reuse one
   generalised `appendSphereCap(outer,reversed)`:
   FUSE (A∪B) = the two OUTER (far-pole) caps welded on the shared seam (`V=V(A)+V(B)−lens`);
   CUT (A−B, order-sensitive) = the OUTER cap of A + the INNER cap of B emitted REVERSED (inward
@@ -180,9 +181,17 @@ robustness tail keeps OCCT linked.** Canonical detail:
   wall + A's caps + B's lunes REVERSED (`V=V(A)−V(common)`). Verified vs **BOTH** the exact analytic
   inclusion-exclusion volumes (host) **and** OCCT (sim): COMMON volN = 5.3287 (analytic `16 R³/3`,
   ΔV = 8.75e-04, −0.088%); FUSE volN = 32.385 vs OCCT 32.366 (ΔV = 5.82e-04); CUT volN = 13.526
-  vs OCCT 13.516 (ΔV = 7.22e-04) — all inside the 1% bar, no tolerance weakened. General
-  (non-Steinmetz) branched pairs, other curved-curved families, and non-Steinmetz near-tangent
-  pairs still decline to OCCT — honest, measured fallbacks.
+  vs OCCT 13.516 (ΔV = 7.22e-04) — all inside the 1% bar, no tolerance weakened. **S5-e** opens
+  the CONE family with the coaxial cone(frustum)∩cylinder COMMON (`buildConeCylCommon`): the seam
+  is a SINGLE S1-analytic circle (where `r_c(s)=R0+s·tanα` equals `Rc`, apex-free, `nearTangentGaps=0`),
+  resampled to ONE pooled ring; a frustum band welds to a cylinder-segment band along it, closed by
+  two disc caps. Verified vs a DUAL oracle — the closed form `V = V_frustum(rBot→Rc)+V_frustum(Rc→rTop)`
+  (engine `ssiCurvedBooleanVerified` S5-e arm, same 1% tol as the Steinmetz `16 R³/3` oracle) AND OCCT:
+  volN = 19.107 vs analytic 19.111355 (host rel err ≈ 2.3e-04) vs OCCT 19.111 (ΔV = 2.03e-04,
+  ΔA = 9.89e-05). Cone **FUSE/CUT**, transversal/apex cone pairs, and coaxial cone∩sphere COMMON
+  (optional, not built this slice) decline → OCCT. General (non-Steinmetz) branched pairs, other
+  curved-curved families, and non-Steinmetz near-tangent pairs still decline to OCCT — honest,
+  measured fallbacks.
 - ✅ **Curved blend #6 (constant-radius rolling-ball fillet on a CIRCULAR crease — CONVEX *and*
   CONCAVE)** — the rim where a CYLINDER lateral face meets a coaxial PLANE. A ball of radius `r`
   rolled into that circular crease traces a **TORUS canal** (minor `r`); the native builder

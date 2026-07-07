@@ -457,7 +457,7 @@ S4-f DETECTS + REPORTS + traces-through, it does not repair topology.
 
 Archived change `openspec/changes/archive/2026-07-05-add-native-ssi-s4f-completeness`.
 
-### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d landed (branched-trace Steinmetz op-set now COMPLETE 3/3 native; ~months for full coverage)
+### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e landed (CONE surface family opened — coaxial cone∩cylinder COMMON now native; ~months for full coverage)
 Use SSI curves to **split** the curved faces of two solids, **classify**
 fragments inside/outside (reuse the BSP-CSG classifier + a curved point-in-solid
 test), **assemble** the surviving shell watertight (curved-seam weld from the
@@ -467,15 +467,17 @@ mesher). Extends `src/native/boolean/` from planar/axis-aligned to general curve
   OCCT fallback for the rest.
 - **Unlocks:** curved blends (#6) and curved wrap-emboss (#7) then compose on top.
 
-**S5-a/b/c + S5-d done at the bar (changes `add-native-ssi-curved-boolean` archived +
+**S5-a/b/c + S5-d + S5-e done at the bar (changes `add-native-ssi-curved-boolean` archived +
 `add-native-ssi-curved-boolean-wider` + `add-native-ssi-branched-boolean` archived
-`2026-07-05`):** the SSI-curve-driven split→classify→select→weld pipeline lives in
+`2026-07-05`; `add-native-cone-boolean` archived `2026-07-07`):** the SSI-curve-driven
+split→classify→select→weld pipeline lives in
 `src/native/boolean/ssi_boolean.{h,cpp}` (OCCT-free, `CYBERCAD_HAS_NUMSCI`-gated, consumes the
 S3 `TraceSet` — and, for S5-d, the S4-d branched re-trace with `MarchOptions.enableBranchPoints
-= true`). It now produces **ten native curved-boolean sub-cases verified vs OCCT
-`BRepAlgoAPI_{Fuse,Cut,Common}`** (sim parity `native-pass=12` — the sphere∩sphere AND the
-Steinmetz bicylinder op-sets are now COMPLETE 3/3 native, and the harness runs each of the
-sphere FUSE/CUT as an equal-R AND an unequal-R fixture; 6 honest fallbacks):
+= true`). It now produces **eleven native curved-boolean sub-cases verified vs OCCT
+`BRepAlgoAPI_{Fuse,Cut,Common}`** (sim parity `native-pass=13` — the sphere∩sphere AND the
+Steinmetz bicylinder op-sets are COMPLETE 3/3 native, and the CONE surface family is now open with
+the coaxial cone∩cylinder COMMON native; the harness runs each of the sphere FUSE/CUT as an
+equal-R AND an unequal-R fixture; 8 honest fallbacks):
 - **S5-a — through-drill cylinder∩cylinder COMMON** (unequal radii, transversal two-loop
   trace) — watertight, ΔV = 8.1e-04, ΔA = 2.8e-04.
 - **S5-b — through-drill cylinder∩cylinder FUSE + CUT** (assembler-only extension: fat wall
@@ -512,14 +514,34 @@ sphere FUSE/CUT as an equal-R AND an unequal-R fixture; 6 honest fallbacks):
   - COMMON: volN = 5.3287, ΔV = 8.75e-04 (analytic `16 R³/3 = 5.33333`), ΔA = 4.68e-04.
   - FUSE:   volN = 32.385 vs OCCT 32.366, ΔV = 5.82e-04, ΔA = 4.07e-03.
   - CUT:    volN = 13.526 vs OCCT 13.516, ΔV = 7.22e-04, ΔA = 3.17e-03.
+- **S5-e — coaxial cone(frustum)∩cylinder COMMON** (the CONE surface family opened; change
+  `add-native-cone-boolean`). The seam is a SINGLE closed S1-analytic circle (where the frustum's
+  cross-section radius `r_c(s) = R0 + s·tanα` equals the cylinder radius `Rc`), `nearTangentGaps == 0`,
+  no branch points, not passing through the apex. `buildConeCylCommon` gates (exactly one `Cone` + one
+  coaxial `Cylinder`, apex-free frustum extent, the seam `s*` strictly interior to the axial overlap),
+  resamples the circle into ONE pooled ring, and welds the min-radius-profile solid of revolution —
+  a frustum band (below `s*`, inside the cylinder) welded to a cylinder-segment band (above `s*`,
+  inside the cone) along the seam ring, closed by two disc caps (`appendRevolvedBand` + `appendDiskCap`
+  + `VertexPool`). Verified vs a **DUAL oracle** — the closed form
+  `V = V_frustum(rBot→Rc over [sLo,s*]) + V_frustum(Rc→rTop over [s*,sHi])`,
+  `V_frustum(ra,rb,Δh) = (π Δh/3)(ra²+ra·rb+rb²)` (engine `ssiCurvedBooleanVerified` S5-e arm, same
+  1% deflection-bounded tol as the Steinmetz `16 R³/3` oracle) **AND** OCCT `BRepAlgoAPI_Common` (sim):
+  volN = 19.107 vs analytic 19.111355 (host rel err ≈ 2.3e-04) vs OCCT 19.111, ΔV = 2.03e-04,
+  ΔA = 9.89e-05, watertight/closed/valid — inside the 1% curved-parity bar, no tolerance weakened.
+  Cone **FUSE / CUT** are NOT wired → NULL → OCCT (honest decline). Coaxial cone∩sphere COMMON was
+  scoped optional and did **not** land this slice → still OCCT.
 
 Honest scope still declining → OCCT (measured NULL fallbacks, never faked):
-- **oblique / multi-tube cyl∩cyl**, and other curved-curved families (cyl∩cone, cyl∩sphere,
-  cone∩cone, sphere∩box, freeform), plus any branched pair that is NOT equal-R orthogonal
-  Steinmetz (unequal-R / non-orthogonal / ≠ 2 branch points / ≠ 4 arms) → decline. A disjoint
-  Steinmetz pair (no seam) also declines for all three ops. (sphere∩sphere AND Steinmetz
-  FUSE/CUT/COMMON are now NATIVE — see S5-c/S5-d above.)
-Remaining S5 work: general (non-Steinmetz) branched pairs, and more curved-curved families.
+- **oblique / multi-tube cyl∩cyl**, and other curved-curved families (cyl∩sphere, cone∩cone,
+  sphere∩box, freeform), the TRANSVERSAL (non-coaxial) cone∩cylinder / cone∩sphere quartic space
+  curve, apex-crossing / apex-in-extent frustums, the two-circle coaxial cone∩sphere crossing,
+  coaxial cone∩sphere COMMON (not yet built), and cone **FUSE/CUT** (any pair) → decline; plus any
+  branched pair that is NOT equal-R orthogonal Steinmetz (unequal-R / non-orthogonal / ≠ 2 branch
+  points / ≠ 4 arms). A disjoint Steinmetz pair (no seam) also declines for all three ops.
+  (sphere∩sphere AND Steinmetz FUSE/CUT/COMMON and the coaxial cone∩cylinder COMMON are now
+  NATIVE — see S5-c/S5-d/S5-e above.)
+Remaining S5 work: general (non-Steinmetz) branched pairs, cone FUSE/CUT + transversal/apex cone
+pairs, coaxial cone∩sphere COMMON, and more curved-curved families.
 
 ## Sequencing & effort
 
@@ -531,7 +553,7 @@ substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ─
                              │                                    │                          ├─ S4-c near-tangent march-through (FIRST SLICE DONE)
                              │                                    │                          └─ S4-d…f marching-core tail (PENDING)
                              └──────────────► S5 curved booleans ◄─┘  ──► #6 blends ──► #7 wrap-emboss
-                                              (S5-a/b/c/d: drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON/FUSE/CUT (3/3) + Steinmetz COMMON native ✓)
+                                              (S5-a/b/c/d/e: drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON/FUSE/CUT (3/3) + Steinmetz COMMON/FUSE/CUT (3/3) + coaxial cone∩cyl COMMON native ✓)
 ```
 
 | Stage | Effort (robust) | Nature |
@@ -543,7 +565,7 @@ substrate (#2 DONE) ──► S1 analytic (DONE) ──► S2 seeding (DONE) ─
 | S4-b tangent-classify | ✅ DONE at the bar | typed `TangentContact` (point/curve/near-tangent/undecided) — 8 pairs vs OCCT, 0 deferred |
 | S4-c near-tangent march-through | ◐ FIRST SLICE DONE at the bar | fixed-plane-cut corrector marches a single-branch graze the S3 truncated (sphere∩offset-cyl: `nearTangentGaps → 0`, full loop on OCCT locus); branch saddle still defers |
 | S4-d…f marching-core tail | multi-year, ongoing | the moat tail — branch points, singularities, self-intersect, deeper near-coincident bands; best-effort + fallback |
-| S5 curved booleans | ◐ slices S5-a/b/c/d DONE at the bar (~months for full) | through-drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON/FUSE/CUT (op-set COMPLETE 3/3) + branched Steinmetz COMMON/FUSE/CUT (op-set COMPLETE 3/3, `16R³/3`+incl-excl vs OCCT) native (wt, ΔV ≤ 9e-4, native-pass=12); general non-Steinmetz branched + more families remain |
+| S5 curved booleans | ◐ slices S5-a/b/c/d/e DONE at the bar (~months for full) | through-drill cyl∩cyl COMMON/FUSE/CUT + sphere∩sphere COMMON/FUSE/CUT (op-set COMPLETE 3/3) + branched Steinmetz COMMON/FUSE/CUT (op-set COMPLETE 3/3, `16R³/3`+incl-excl vs OCCT) + coaxial cone∩cyl COMMON (CONE family opened, dual oracle: `V_frustum` closed form + OCCT) native (wt, ΔV ≤ 9e-4, native-pass=13); cone FUSE/CUT + transversal/apex cone pairs + general non-Steinmetz branched + more families remain |
 
 SSI + curved booleans total ≈ **1.5–3 py** (substrate-accelerated) for *usable*
 coverage; full OCCT-grade robustness (S4) is the long tail. Recommended cadence:

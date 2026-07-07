@@ -480,6 +480,25 @@ int main() {
     runPair(pc);
   }
 
+  // ── (5) coaxial cone(frustum) ∩ cylinder COMMON (S5-e) — a NATIVE COMMON pass ─────
+  // A frustum r(y)=0.5+0.5y over y∈[0,4] and a coaxial cylinder Rc=1.5 over y∈[1,5], both
+  // about world +Y. r_cone crosses Rc exactly once (y*=2) inside the axial overlap [1,4],
+  // so the trace is ONE closed analytic circle (nearTangentGaps==0). The S5-e assembler
+  // welds the cone band (y∈[1,2]) + cylinder band (y∈[2,4]) + two disc caps along the shared
+  // seam → a watertight native COMMON matching BRepAlgoAPI_Common (closed form V = frustum
+  // 1.0→1.5 over [1,2] + π·1.5²·2 = 19.11136). FUSE / CUT decline honestly → OCCT.
+  {
+    PairCase pc;
+    pc.pairName = "cone=cyl(coax-common)";
+    pc.nativeA = makeCone(0.5, 0.0, 2.5, 4.0);
+    pc.nativeB = makeCyl(1, 0, 0, 1.5, 1.0, 5.0);   // Y axis, Rc=1.5
+    pc.occtA = occtCone(0.5, 0.0, 2.5, 4.0);
+    pc.occtB = occtCyl(1, 0, 0, 1.5, 1.0, 5.0);
+    pc.relTol = 2e-2;
+    probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
+    runPair(pc);
+  }
+
   std::printf("== %d passed, %d failed, %d fell-back (native-pass=%d) ==\n",
               g_passed, g_failed, g_fellBack, g_nativePass);
   std::fflush(stdout);

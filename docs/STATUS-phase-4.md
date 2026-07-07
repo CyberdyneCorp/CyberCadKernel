@@ -47,7 +47,7 @@ Date: 2026-07-03 · Branch: `main`.
   is fixed at the mesher level, so well-formed threads mesh `boundaryEdges==0` at every
   deflection and run NATIVE. Still OCCT-fallthrough (not faked): kind-3 SPLINE profile
   edges, off-axis-arc (torus) / spline surface-of-revolution, twisted/guided/rail sweep,
-  3+-section / guided / rail loft, and a fine-pitch / self-intersecting thread. Wrap-emboss
+  guided / rail loft + non-planar / punctual section, and a fine-pitch / self-intersecting thread (the N-section AND MISMATCHED-count planar loft are now native — see the breadth batch below). Wrap-emboss
   (Tier E) is NO LONGER fully OCCT: its native path now covers a rectangular pad (control),
   a rectangular DEBOSS pocket (T1), and a NON-RECTANGULAR polygon emboss/deboss (T2) on a
   cylinder lateral face — verified vs OCCT — see the native-wrap-emboss result table below
@@ -608,7 +608,8 @@ changes unless a caller explicitly opts in.
 | `cc_solid_extrude_profile` kind-3 SPLINE outer edge | OCCT-fallthrough (#4b) | native builder returns NULL; fall-through verified (vol rel 0.00e+00) |
 | `cc_solid_revolve_profile` off-axis arc (TORUS) / any spline-revolve | OCCT-fallthrough (#4b) | no native `Torus` surface / spline surface-of-revolution yet; fall-through verified (torus vol rel 0.00e+00) |
 | `cc_solid_loft`, `cc_solid_loft_wires` (TWO sections, EQUAL vertex count, PLANAR) | **NATIVE** (#4b Tier B) | ruled skin: one BILINEAR (degree-1 Bézier) side face per corresponding edge pair + two planar caps → watertight solid; mirrors ruled `BRepOffsetAPI_ThruSections` |
-| `cc_solid_loft` / `_wires` MISMATCHED vertex counts / a NON-PLANAR section / a point-collapse section / 3+/guided/rail | OCCT-fallthrough (#4b Tier B→C) | native builder returns NULL; forwards to OCCT ThruSections (delegated, not faked) |
+| `cc_solid_loft` / `_wires` MISMATCHED vertex counts (an M-gon lofted to an N-gon) | **NATIVE** (#4b breadth T1) | `detail::equalizeSectionCounts` resamples both loops at the sorted UNION of their arc-length params (geometry-preserving collinear insertion) → equal-K loops → the existing ruled skin; self-verified `robustlyWatertight && volume>0`, else → OCCT. Equal-count path byte-identical. Verified vs OCCT ThruSections: 4→8 frustum vol rel 1.6e-14, watertight |
+| `cc_solid_loft` / `_wires` a NON-PLANAR section / a point-collapse section / guided / rail; a genuinely-asymmetric mismatched loft whose resampled cap fails the watertight self-verify (e.g. 4→3) | OCCT-fallthrough (#4b Tier B→C / breadth T1 residual) | native builder returns NULL or the engine self-verify discards; forwards to OCCT ThruSections (delegated, not faked — 4→3 vol rel 0.00e+00) |
 | `cc_solid_sweep` (STRAIGHT spine, or SMOOTH CURVED but PLANAR spine) | **NATIVE** (#4b Tier C) | constant-frame ruled tube (matches OCCT MakePipe's planar corrected-Frenet law): straight → EXACT directional prism; smooth-planar → bilinear ruled bands + planar caps, watertight |
 | `cc_twisted_sweep` (twist ≈ 0 AND scale ≈ 1) | **NATIVE** (#4b Tier C) | reduces to `build_sweep` (no real twist) |
 | `cc_solid_sweep` NON-PLANAR spine / TIGHT-CURVATURE / self-intersecting; `cc_twisted_sweep` REAL twist/scale; `cc_guided_sweep`, `cc_loft_along_rail` | OCCT-fallthrough (#4b Tier C) | native builder returns NULL (guarded / genuine non-constant law / pipe-shell guide-rail); delegated to OCCT, not faked |
@@ -697,10 +698,11 @@ tessellator surface machinery — the existing Bézier path meshes it). Mirrors 
 `BRepOffsetAPI_ThruSections` (the oracle used by the facade's OCCT `solid_loft`).
 
 STILL OCCT-fallthrough (native builder returns NULL → `NativeEngine` forwards the
-SAME arguments to OCCT, never faked): MISMATCHED section counts (n_A ≠ n_B — vertex
-pairing ambiguous), a NON-PLANAR section wire (a planar cap can't close it), a
-section that DEGENERATES to a point/line, and 3+ section / guided / rail lofts
-(Tier C).
+SAME arguments to OCCT, never faked): a NON-PLANAR section wire (a planar cap can't
+close it), a section that DEGENERATES to a point/line, and guided / rail lofts
+(Tier C). (MISMATCHED section counts and 3+-section chains are NO LONGER
+fallthrough — both are now native; see the *N-section* Tier-2#4 note above and the
+*mismatched-count* breadth batch below.)
 
 **Gate 1 (host, no OCCT) green:** `test_native_loft` (9 cases — square→equal-square
 prism vol 48 exact; square frustum vol 56; rotated-square TWISTED skin watertight;
@@ -728,11 +730,57 @@ Tolerances: planar prisms / a same-plane-count frustum are EXACT (vol/area/centr
 rel ≤ 2.5e-16, identical face tiling n=1×o). The rotated-square TWIST (a genuinely
 non-coplanar ruled skin whose OCCT `ThruSections` triangulates the warped quad
 differently) matches within a deflection bound (vol rel 5.33e-3, well under its 5e-2
-tol) and is watertight. The deferred MISMATCHED-count case (n_A ≠ n_B, vertex pairing
-ambiguous — Tier C) delegates transparently to OCCT with native active
-(vol rel 0.00e+00) — a fall-through proof, no native interception. Runs on the
+tol) and is watertight. Runs on the
 simulator (OCCT linked); on `run-sim-suite.sh`'s SKIP list (own `main()`), so the
-221-assertion OCCT-only suite count is unperturbed.
+221-assertion OCCT-only suite count is unperturbed. (The mismatched-count row shown
+above as OCCT-fallthrough was the pre-breadth-batch state; that case is now largely
+native — see the next subsection.)
+
+### `#4b` construction-breadth batch — T1 MISMATCHED-count ruled loft (native); T2/T3 honest declines
+
+Change `add-native-construction-breadth` (archived
+`openspec/changes/archive/2026-07-07-add-native-construction-breadth`) widened the
+native ruled loft to MISMATCHED vertex counts and made two honest per-track decisions.
+
+**T1 — mismatched-count ruled loft → LANDED NATIVE, EXACT.** The old
+`size mismatch → NULL` guard in `build_ruled_loft_sections` (loft.h) is replaced by
+`detail::equalizeSectionCounts`: both loops are resampled at the sorted UNION of their
+normalized arc-length parameters (dedup within `kProfileTol`), so every original vertex
+survives and every inserted point is COLLINEAR (geometry preserved). This turns an
+M-gon and an N-gon into two equal-K loops (K ≤ M+N) that feed the existing ruled-band +
+cap builder unchanged. The EQUAL-count path is byte-identical (short-circuited when
+counts already match). `NativeEngine::solid_loft` / `solid_loft_wires` now self-verify
+`robustlyWatertight(solid) && watertightVolume(solid) > 0` and forward the SAME
+arguments to OCCT on any miss. Gate 1 (host, no OCCT): `test_native_loft` **21 cases,
+0 failed** (the 4 new exact T1 fixtures — box 48, box 1000, frustum 653.33, N-section
+4→8→4 spool 784, all < 1e-6 rel — plus a triangle→square correspondence-runs case).
+Gate 2 (sim vs OCCT `BRepOffsetAPI_ThruSections`): `run-sim-native-loft.sh` **21
+passed, 0 failed** — mismatched **4→8** frustum vol o=56 n=56 **rel 1.61e-14**, area rel
+7.18e-15, faces 10=10, watertight (meshVolRel 1.24e-14). The genuinely asymmetric
+**4→3** case fails the watertight self-verify and delegates to OCCT (vol o=40.1311
+n=40.1311 **rel 0.00e+00**, native active=1) — the guard demonstrably works, no faked
+tolerance.
+
+**T2 — orientation-constraining guided sweep → HONEST DECLINE.** `sweep.h` is
+BYTE-IDENTICAL (`git diff` empty). The shipped `cc_guided_sweep` oracle is the
+SCALE-splay `ThruSections` (already native as the plain sweep); an orientation-guide
+frame law has no oracle behind that fixed entry without an ABI/semantics break and
+would fail parity vs the scale oracle. Orientation-guided sweep stays OCCT-fallthrough;
+no builder added, no dead code, gap reported.
+
+**T3 — fine-pitch self-intersecting thread → HONEST DECLINE.** `thread.h` is
+BYTE-IDENTICAL (`git diff` empty); the `kMaxLeadRatio` guard stays. Crossing radial-V
+flanks are two intersecting helicoids; a single ruled tiling is non-manifold /
+volume-wrong, and trimming them needs Tier-4 SSI that the watertight-only self-verify
+cannot gate. The self-intersecting thread remains OCCT-fallthrough; no builder added,
+no dead code, gap reported.
+
+Files changed: `src/engine/native/native_engine.cpp`,
+`src/native/construct/loft.h`, `tests/native/test_native_loft.cpp`,
+`tests/sim/native_loft_parity.mm`. Controls (`sweep.h`, `thread.h`) unchanged; the
+matched-frustum / hex-prism / triangle-prism / rotated-twist loft controls all still
+pass. No regressions: host CTest 29/29 (NUMSCI OFF) + 36/36 (NUMSCI ON),
+`run-sim-suite.sh` 221/221.
 
 ### `#4b` Tier C — native sweep (`cc_solid_sweep`, `cc_twisted_sweep`)
 

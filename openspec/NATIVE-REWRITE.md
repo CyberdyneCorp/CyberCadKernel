@@ -419,6 +419,46 @@ longest; a native exchange is lower priority than the modelling core.
     harness on the SKIP list). See [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md); living
     change `openspec/changes/add-native-geometry-completion` â archived to
     `openspec/specs/native-construction`.
+  - **✅ `#4b` construction-breadth batch (T1/T2/T3) — MISMATCHED-count ruled loft
+    LANDED NATIVE (exact); guided sweep (T2) and fine-pitch self-intersecting thread (T3)
+    are HONEST DECLINES (still OCCT, no dead code).** Change
+    `add-native-construction-breadth`, engine-wired behind the same `cc_set_engine(1)`
+    toggle, behind the UNCHANGED `cc_solid_loft` / `cc_solid_loft_wires` ABI. **T1 NATIVE:**
+    the old `size mismatch → NULL` guard in `build_ruled_loft_sections`
+    (`src/native/construct/loft.h`) is replaced by `detail::equalizeSectionCounts` — both
+    section loops are resampled at the sorted UNION of their normalized arc-length
+    parameters (dedup within `kProfileTol`), so an M-gon and an N-gon become two equal-K
+    loops (K ≤ M+N) that feed the existing ruled-band + cap builder unchanged; every
+    original vertex survives and every inserted point is COLLINEAR (geometry preserved).
+    The EQUAL-count path is byte-identical (short-circuited). `NativeEngine::solid_loft` /
+    `solid_loft_wires` now self-verify `robustlyWatertight && watertightVolume > 0` and
+    forward the SAME arguments to OCCT on any miss. Gate 1 (host, no OCCT): `test_native_loft`
+    **21 cases / 0 failed** (4 new exact T1 fixtures — box 48, box 1000, frustum 653.33,
+    N-section 4→8→4 spool 784, all < 1e-6 rel — plus a triangle→square correspondence-runs
+    case). Gate 2 (sim vs OCCT `BRepOffsetAPI_ThruSections`): `run-sim-native-loft.sh`
+    **21 passed / 0 failed** — mismatched **4→8** frustum vol o=56 n=56 **rel 1.61e-14**,
+    area rel 7.18e-15, faces 10=10, watertight (meshVolRel 1.24e-14). The genuinely
+    asymmetric **4→3** case FAILS the watertight self-verify and delegates to OCCT (vol
+    o=40.1311 n=40.1311 **rel 0.00e+00**, native active=1) — the guard demonstrably works,
+    no faked tolerance. **T2 (orientation-guided sweep) — HONEST DECLINE:** `sweep.h`
+    BYTE-IDENTICAL (`git diff` empty); the shipped `cc_guided_sweep` oracle is the
+    SCALE-splay ThruSections (already native), and an orientation-guide frame law has no
+    oracle behind that fixed entry without an ABI/semantics break — stays OCCT-fallthrough,
+    no builder, no dead code. **T3 (fine-pitch self-intersecting thread) — HONEST DECLINE:**
+    `thread.h` BYTE-IDENTICAL (`git diff` empty); the `kMaxLeadRatio` guard stays. Crossing
+    radial-V flanks are two intersecting helicoids — a single ruled tiling is non-manifold /
+    volume-wrong and trimming needs Tier-4 SSI the watertight-only self-verify can't gate;
+    stays OCCT-fallthrough, no dead code. Files changed:
+    `src/engine/native/native_engine.cpp`, `src/native/construct/loft.h`,
+    `tests/native/test_native_loft.cpp`, `tests/sim/native_loft_parity.mm`; controls
+    (`sweep.h`, `thread.h`) unchanged. No regressions (host CTest 29/29 NUMSCI-OFF + 36/36
+    NUMSCI-ON, `run-sim-suite.sh` 221/221). Living change
+    `openspec/changes/add-native-construction-breadth` — archived to
+    `openspec/changes/archive/2026-07-07-add-native-construction-breadth` →
+    `openspec/specs/native-construction`. **The mismatched-count planar polygon loft is now
+    native; the residual loft fall-throughs are the non-planar / punctual section, guided /
+    rail loft, and a genuinely-asymmetric resampled cap that fails self-verify — plus the
+    T2 guided sweep and T3 fine-pitch thread, all still OCCT (SSI / Tier-4).**
 - â **Numeric foundations (remaining-work #2 â the substrate) â NumPP/SciPP ADOPTED +
   native closest-point DONE at the verification bar.** NumPP + SciPP (the org's C++20, MIT
   NumPy/SciPy ports) are the kernel's OCCT-free numeric substrate â referenced **by

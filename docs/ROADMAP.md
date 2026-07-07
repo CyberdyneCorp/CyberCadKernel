@@ -63,8 +63,9 @@ robustness tail keeps OCCT linked.** Canonical detail:
 **Native + verified vs OCCT:**
 - ✅ Math/geometry, B-rep topology, watertight tessellation.
 - ✅ Construction — extrude, revolve, holed + typed-profile (incl. spline) extrude,
-  typed-profile + torus revolve, 2- & N-section loft, straight/planar/non-planar
-  (RMF) sweep, tapered-shank, watertight helical/tapered threads.
+  typed-profile + torus revolve, 2- & N-section loft (incl. MISMATCHED vertex counts
+  via arc-length correspondence), straight/planar/non-planar (RMF) sweep,
+  tapered-shank, watertight helical/tapered threads.
 - ✅ Booleans — planar-polyhedron fuse/cut/common (BSP-CSG, exact) + axis-aligned
   box∩cylinder curved slice.
 - ✅ Blends — planar chamfer, constant-radius planar-dihedral fillet, offset-face, shell,
@@ -395,7 +396,8 @@ robustness tail keeps OCCT linked.** Canonical detail:
   two-distance `d1≠d2` oblique-frustum chamfer #6c (`cc_chamfer_edges_asym`), and the
   wrap-emboss #7 native tracks — rectangular pad-on-cylinder emboss + DEBOSS + NON-RECTANGULAR polygon
   emboss/deboss — are now native; freeform-base emboss honestly declines to OCCT. See above.)_
-- ☐ Non-planar/guided/rail sweep robustness; general loft; fine-pitch threads.
+- ☐ Non-planar/guided/rail sweep robustness; guided/rail loft + non-planar/punctual
+  section (mismatched-count loft is now native, above); fine-pitch (self-intersecting) threads.
 - ☐ **Shape healing residual** (beyond-tolerance gap bridging, missing-pcurve reconstruction,
   self-intersecting-wire repair, arbitrary broken industrial B-rep — the coincident-within-tolerance /
   degenerate / orientation first slice is now native, above); **full STEP import** beyond the native

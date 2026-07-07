@@ -23,11 +23,18 @@
 //   4. ROTATED SQUARE   — cc_solid_loft: 2×2 bottom → the same square rotated 45° at
 //      z=4 (an antiprism-like TWISTED ruled skin). The side faces are truly bilinear;
 //      compared deflection-bounded (curved), still watertight, faces 6.
+//   5. MISMATCHED 4→8   — cc_solid_loft (T1): 4×4 bottom (4 pts) @z=0 → 2×2 top sampled
+//      at 8 points @z=6. Counts differ (4 vs 8); the native builder makes them
+//      compatible by resampling both loops at the union of their arc-length params
+//      (geometry-preserving collinear insertion). The result is the SAME square frustum
+//      as case 1 → EXACT parity (vol 56, planar) vs the OCCT ThruSections oracle.
 //
-// ── DEFERRED sub-case (native returns NULL → forwards to OCCT, tagged [fallback]) ──
-//   D. MISMATCHED COUNTS — cc_solid_loft: 4-gon bottom → 3-gon top. Native cannot pair
-//      the vertices (Tier C), returns NULL, and the NativeEngine forwards to the OCCT
-//      ThruSections oracle — the native result must equal the OCCT oracle (delegated).
+// ── DEFERRED sub-case (native returns NULL / fails self-verify → OCCT, [fallback]) ──
+//   D. MISMATCHED 4→3   — cc_solid_loft: 4-gon bottom → 3-gon top. The T1 correspondence
+//      builds a candidate, but the resampled cap carries an ASYMMETRIC collinear vertex
+//      the native mesher cannot close watertight, so the engine self-verify DISCARDS it
+//      and forwards to the OCCT ThruSections oracle — the native result must equal the
+//      OCCT oracle (delegated, not faked).
 //
 // Output: [NLOFT] PASS/FAIL lines with per-op deltas + a native/fallback tag, then a
 // summary. On run-sim-suite.sh's SKIP list (own main()).
@@ -286,7 +293,18 @@ CCShapeId buildRotatedSquareTwist() {
     return cc_solid_loft(bot, 4, top, 4, 4.0);
 }
 
-// DEFERRED: MISMATCHED section counts (4-gon → 3-gon). Native returns NULL → OCCT.
+// 5) MISMATCHED 4→8 (T1): 4×4 bottom (4 pts) → 2×2 top sampled at 8 points @z=6. The
+// arc-length correspondence resamples both loops to a common count, inserting collinear
+// points, so the loft is the SAME square frustum as case 1. Planar → EXACT (vol 56).
+CCShapeId buildMismatchedFrustum4to8() {
+    const double bot[] = {-2, -2, 2, -2, 2, 2, -2, 2};                          // 4×4, 4 pts
+    const double top[] = {-1, -1, 0, -1, 1, -1, 1, 0, 1, 1, 0, 1, -1, 1, -1, 0};  // 2×2, 8 pts
+    return cc_solid_loft(bot, 4, top, 8, 6.0);
+}
+
+// DEFERRED: MISMATCHED 4→3. The T1 correspondence builds a candidate, but its resampled
+// cap carries an asymmetric collinear vertex the mesher cannot close watertight, so the
+// engine self-verify discards it and forwards to OCCT.
 CCShapeId buildMismatchedCountsDeferred() {
     const double bot[] = {0, 0, 4, 0, 4, 4, 0, 4};  // 4-gon
     const double top[] = {1, 1, 3, 1, 2, 3};        // 3-gon (centred over the bottom)
@@ -309,13 +327,16 @@ int main() {
         {"loft_wires triangle-prism", &buildTriangleWiresPrism, /*planar*/ true, /*defl*/ 0.05},
         // 4) Rotated-square twist: truly bilinear side faces → deflection-bounded.
         {"loft rotated-square-twist", &buildRotatedSquareTwist, /*planar*/ false, /*defl*/ 0.01},
+        // 5) T1 mismatched 4→8 frustum: geometry-preserving correspondence → EXACT.
+        {"loft mismatched-4to8", &buildMismatchedFrustum4to8, /*planar*/ true, /*defl*/ 0.02},
     };
 
     for (const OpCase& s : cases) runNativeOp(s);
 
-    // Intentionally-deferred sub-case: native returns NULL → forwards to OCCT.
-    runFallbackOp("loft mismatched-counts", &buildMismatchedCountsDeferred,
-                  "n_A != n_B (vertex pairing ambiguous — Tier C)");
+    // Intentionally-deferred sub-case: the T1 correspondence builds a candidate but its
+    // resampled cap can't close watertight → engine self-verify forwards to OCCT.
+    runFallbackOp("loft mismatched-4to3", &buildMismatchedCountsDeferred,
+                  "resampled cap not robustly watertight → self-verify declines to OCCT");
 
     cc_set_engine(0);
 

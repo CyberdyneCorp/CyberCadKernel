@@ -819,17 +819,24 @@ Result<std::vector<int>> NativeEngine::subshape_ids(EngineShape body, int kind) 
 Result<MeshData> NativeEngine::extrude_mesh(const double* p, int n, double d) {
     return fallback().extrude_mesh(p, n, d);
 }
-// ── Tier-B (#4b) NATIVE 2-section ruled loft (fall through for the deferred
-// cases: mismatched section counts, a non-planar section, a degenerate/point
-// section, or 3+/guided/rail lofts — a NULL Shape → forward the SAME args). ──────
+// ── Tier-B (#4b) NATIVE ruled loft, incl. the T1 MISMATCHED-count breadth. NATIVE
+// for equal-count sections AND for mismatched counts (the loop is resampled at the
+// union of arc-length params — geometry-preserving; see construct/loft.h). Falls
+// through for the deferred cases (a non-planar section, a degenerate/point section,
+// guided/rail lofts). Because the mismatched path now builds a NON-trivial tiling,
+// the result is SELF-VERIFIED robustly watertight with a positive enclosed volume
+// before being kept native; any candidate that fails → forward the SAME args to
+// OCCT (honest coexistence, never a faked or leaky solid). ────────────────────────
 ShapeResult NativeEngine::solid_loft(const double* b, int bc, const double* t, int tc, double d) {
     ntopo::Shape solid = ncst::build_loft(b, bc, t, tc, d);
-    if (solid.isNull()) return fallback().solid_loft(b, bc, t, tc, d);
+    if (solid.isNull() || !robustlyWatertight(solid) || !(watertightVolume(solid) > 0.0))
+        return fallback().solid_loft(b, bc, t, tc, d);
     return track(wrapNative(std::move(solid)));
 }
 ShapeResult NativeEngine::solid_loft_wires(const double* a, int ac, const double* b, int bc) {
     ntopo::Shape solid = ncst::build_loft_wires(a, ac, b, bc);
-    if (solid.isNull()) return fallback().solid_loft_wires(a, ac, b, bc);
+    if (solid.isNull() || !robustlyWatertight(solid) || !(watertightVolume(solid) > 0.0))
+        return fallback().solid_loft_wires(a, ac, b, bc);
     return track(wrapNative(std::move(solid)));
 }
 // ── Tier-C (#4b) NATIVE sweep. NATIVE for a STRAIGHT spine → an EXACT directional

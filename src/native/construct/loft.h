@@ -3,9 +3,9 @@
 // loft.h — native RULED loft (Phase 4 #4b, Tier B + the 3+-section extension of
 // `native-construction`).
 //
-// Clean-room, OCCT-FREE builder that skins 2..N closed section wires — each with
-// the SAME EQUAL vertex/edge count — into a watertight ruled SOLID, mirroring
-// OCCT's BRepOffsetAPI_ThruSections in its ruled=Standard_True mode used by the
+// Clean-room, OCCT-FREE builder that skins 2..N closed section wires into a
+// watertight ruled SOLID, mirroring OCCT's BRepOffsetAPI_ThruSections in its
+// ruled=Standard_True mode used by the
 // cc_* facade (see src/engine/occt/occt_construct.cpp solid_loft / solid_loft_wires
 // and the cc_solid_loft chain): each polygon section is a straight-edge loop,
 // corresponding vertices are paired 1:1 across the whole section chain, and each
@@ -43,13 +43,24 @@
 //
 // ── SUPPORTED vs DEFERRED (honest — the builder returns a NULL Shape so the engine
 //    falls through to OCCT; it NEVER fakes a wrong shape) ──────────────────────
-//   SUPPORTED natively (Tier B + the 3+-section extension):
-//     * 2..N sections, ALL with the SAME vertex count n ≥ 3, ALL PLANAR, none
-//       degenerate to a point → (N−1) ruled bands + two planar end caps →
-//       watertight solid. The internal sections are shared vertex rings.
+//   SUPPORTED natively (Tier B + the 3+-section extension + the T1 mismatched-count
+//   breadth):
+//     * 2..N sections, ALL PLANAR, none degenerate to a point → (N−1) ruled bands +
+//       two planar end caps → watertight solid. The internal sections are shared
+//       vertex rings.
+//     * MISMATCHED vertex counts (sections differ in n): the sections are made
+//       count-compatible by RESAMPLING every loop at the sorted UNION of all loops'
+//       normalized cumulative arc-length params (detail::equalizeSectionCounts).
+//       A union param interior to an edge inserts a COLLINEAR point ON that straight
+//       edge (linear interpolation), which leaves each polygon unchanged (same
+//       boundary, same area) — so the M-gon→N-gon loft has the SAME geometry (and
+//       volume) as the true compatible-wire loft. This mirrors OCCT's
+//       BRepFill_CompatibleWires (what BRepOffsetAPI_ThruSections uses internally for
+//       mismatched wires). Equal counts are the byte-identical special case (the
+//       union equals each loop's own params → the resample is a no-op and the
+//       equal-count path below runs untouched). The engine self-verify (watertight +
+//       positive volume) DISCARDS any candidate whose stacked skin fails to close.
 //   DEFERRED to OCCT (NULL → NativeEngine forwards the same arguments):
-//     * MISMATCHED vertex counts (any two sections differ in n) — pairing is
-//       ambiguous; OCCT's ThruSections re-parametrizes/resamples, which is Tier C.
 //     * a NON-PLANAR section wire (the ruled skin can still be built, but a planar
 //       cap cannot close a non-planar END section; a non-planar cap is Tier C).
 //       (An internal section is not capped, but is still required planar here so
@@ -316,6 +327,85 @@ inline void appendRuledBand(std::vector<topo::Shape>& faces,
   }
 }
 
+// ── T1: MISMATCHED-count correspondence (geometry-preserving arc-length resample) ──
+// Separation between two distinct correspondence params (normalized arc length in
+// [0,1)). Union params closer than this are merged, so the resampled loops never
+// gain a near-zero-length edge (for a working-scale perimeter the merge floor keeps
+// every inserted edge well above kProfileTol).
+inline constexpr double kParamTol = 1e-7;
+
+// The normalized cumulative arc-length param of each vertex of a closed loop (k
+// params in [0,1); param[0] = 0). Returns empty for a zero-perimeter (degenerate)
+// loop so the caller can decline to OCCT.
+inline std::vector<double> loopParams(const std::vector<math::Point3>& p) {
+  const std::size_t k = p.size();
+  std::vector<double> cum(k + 1, 0.0);
+  for (std::size_t i = 0; i < k; ++i)
+    cum[i + 1] = cum[i] + math::distance(p[i], p[(i + 1) % k]);
+  const double total = cum[k];
+  if (total < kProfileTol) return {};
+  std::vector<double> t(k, 0.0);
+  for (std::size_t i = 0; i < k; ++i) t[i] = cum[i] / total;
+  return t;
+}
+
+// Resample a closed polygon `p` at the given sorted normalized arc-length `params`
+// (each in [0,1)). For every target param, locate the edge it lies on and linearly
+// interpolate — a param at an existing vertex reproduces that vertex EXACTLY (u=0),
+// an interior param inserts a COLLINEAR point ON the straight edge. The polygon is
+// therefore unchanged in shape; only its vertex sampling is refined. Returns
+// `params.size()` points (empty on a degenerate/zero-perimeter loop).
+inline std::vector<math::Point3> resampleAtParams(const std::vector<math::Point3>& p,
+                                                  const std::vector<double>& params) {
+  const std::size_t k = p.size();
+  std::vector<double> vtx(k + 1, 0.0);
+  for (std::size_t i = 0; i < k; ++i)
+    vtx[i + 1] = vtx[i] + math::distance(p[i], p[(i + 1) % k]);
+  const double total = vtx[k];
+  if (total < kProfileTol) return {};
+  for (std::size_t i = 0; i <= k; ++i) vtx[i] /= total;  // vtx[k] == 1.0
+
+  std::vector<math::Point3> out;
+  out.reserve(params.size());
+  for (const double t : params) {
+    std::size_t i = 0;
+    while (i + 1 < k && vtx[i + 1] <= t + kParamTol) ++i;  // edge [vtx[i], vtx[i+1])
+    const double seg = vtx[i + 1] - vtx[i];
+    const double u = seg > kParamTol ? std::clamp((t - vtx[i]) / seg, 0.0, 1.0) : 0.0;
+    const math::Point3& a = p[i];
+    const math::Point3& b = p[(i + 1) % k];
+    out.push_back(math::Point3{a.asVec() + (b.asVec() - a.asVec()) * u});
+  }
+  return out;
+}
+
+// Make every section share a vertex count by resampling all loops at the sorted
+// UNION of their normalized arc-length params (see resampleAtParams — collinear,
+// geometry-preserving). A no-op when the counts already match (the union equals each
+// loop's own params), so the equal-count assembler stays byte-identical. Returns
+// false (→ OCCT) if any loop is degenerate or the merged union has < 3 params. The
+// section normals/planarity are unchanged (in-plane insertion), so they are kept.
+inline bool equalizeSectionCounts(std::vector<Section>& secs) {
+  std::vector<double> uni;
+  for (const Section& s : secs) {
+    const std::vector<double> pp = loopParams(s.pts);
+    if (pp.empty()) return false;
+    uni.insert(uni.end(), pp.begin(), pp.end());
+  }
+  std::sort(uni.begin(), uni.end());
+  std::vector<double> merged;
+  merged.reserve(uni.size());
+  for (const double t : uni)
+    if (merged.empty() || t - merged.back() > kParamTol) merged.push_back(t);
+  if (merged.size() < 3) return false;
+  for (Section& s : secs) {
+    std::vector<math::Point3> rs = resampleAtParams(s.pts, merged);
+    if (rs.size() != merged.size()) return false;
+    s.pts = std::move(rs);
+  }
+  return true;
+}
+
 }  // namespace detail
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -354,9 +444,18 @@ inline topo::Shape build_ruled_loft_sections(const std::vector<std::vector<math:
     if (s.degenerate || !s.planar) return {};  // point/line/skew → OCCT (Tier C/4)
     secs.push_back(std::move(s));
   }
+  // T1: if the sections don't all share a vertex count, make them count-compatible by
+  // resampling every loop at the union of their arc-length params (geometry-preserving;
+  // see detail::equalizeSectionCounts). This is a no-op when the counts already match,
+  // so the equal-count path below is untouched. A degenerate union → OCCT fallthrough.
+  {
+    const std::size_t n0 = secs.front().pts.size();
+    bool allEqual = true;
+    for (const auto& s : secs)
+      if (s.pts.size() != n0) { allEqual = false; break; }
+    if (!allEqual && !detail::equalizeSectionCounts(secs)) return {};
+  }
   const std::size_t n = secs.front().pts.size();
-  for (const auto& s : secs)
-    if (s.pts.size() != n) return {};  // mismatched counts → OCCT (Tier C)
 
   const std::size_t sc = secs.size();
 

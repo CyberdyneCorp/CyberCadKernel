@@ -182,14 +182,67 @@ CC_TEST(loft_wires_offset_rotated_quads) {
   CC_CHECK(std::fabs(lo[2] - 0.0) < 1e-6 && std::fabs(hi[2] - 6.0) < 1e-6);
 }
 
-// ── DEFERRED: mismatched section counts (4-pt → 6-pt) → NULL (OCCT fallthrough) --
-// Corresponding-vertex pairing is ambiguous when the counts differ (OCCT's
-// ThruSections re-parametrizes/resamples — Tier C), so the native builder returns
-// a NULL Shape and does NOT produce a wrong solid.
-CC_TEST(loft_mismatched_counts_deferred) {
-  const double bot[] = {0, 0, 4, 0, 4, 4, 0, 4};                 // 4-gon
-  const double top[] = {0, 0, 2, 0, 4, 0, 4, 4, 2, 4, 0, 4};     // 6-gon
-  CC_CHECK(cst::build_loft(bot, 4, top, 6, 3.0).isNull());
+// ── T1 NATIVE: mismatched section counts (4-pt → 6-pt), SAME square → box ────────--
+// Bottom is a 4×4 square (4 corners). Top is the SAME 4×4 square sampled at 6 points
+// (two extra COLLINEAR edge midpoints at (2,0) and (2,4)). The arc-length
+// correspondence resamples both loops at the union of their params, inserting the
+// matching collinear points on the bottom — so both rings are geometrically the same
+// 4×4 square and the loft is a 4×4×3 box, volume 48, EXACT. Faces = 6 sides + 2 caps.
+CC_TEST(loft_mismatched_counts_native_box) {
+  const double bot[] = {0, 0, 4, 0, 4, 4, 0, 4};                 // 4-gon (4×4 square)
+  const double top[] = {0, 0, 2, 0, 4, 0, 4, 4, 2, 4, 0, 4};     // 6-gon: same square + midpts
+  const topo::Shape solid = cst::build_loft(bot, 4, top, 6, 3.0);
+  CC_CHECK(!solid.isNull());
+  if (solid.isNull()) return;
+
+  CC_CHECK_EQ(countSub(solid, topo::ShapeType::Face), 8);  // 6 sides + 2 caps
+  tess::MeshParams p;
+  p.deflection = 0.02;
+  const tess::Mesh mesh = tess::SolidMesher{p}.mesh(solid);
+  CC_CHECK(tess::isWatertight(mesh));
+  CC_CHECK(std::fabs(std::fabs(tess::enclosedVolume(mesh)) - 48.0) < 1e-6);
+}
+
+// ── T1 NATIVE: mismatched 4→8, geometry-preserving 10×10 box (exact 1000) ────────--
+// Bottom 10×10 square (4 corners) → the SAME 10×10 square as 8 points (corners + edge
+// midpoints), depth 10. Both rings are the same square after correspondence, so the
+// loft is a 10×10×10 box, volume 1000, EXACT. Faces = 8 sides + 2 caps.
+CC_TEST(loft_mismatched_box_4to8_exact) {
+  const double bot[] = {-5, -5, 5, -5, 5, 5, -5, 5};  // 4-gon (10×10)
+  const double top[] = {-5, -5, 0, -5, 5, -5, 5, 0,   // 8-gon (same 10×10 + midpoints)
+                        5, 5, 0, 5, -5, 5, -5, 0};
+  const topo::Shape solid = cst::build_loft(bot, 4, top, 8, 10.0);
+  CC_CHECK(!solid.isNull());
+  if (solid.isNull()) return;
+
+  CC_CHECK_EQ(countSub(solid, topo::ShapeType::Face), 10);  // 8 sides + 2 caps
+  tess::MeshParams p;
+  p.deflection = 0.02;
+  const tess::Mesh mesh = tess::SolidMesher{p}.mesh(solid);
+  CC_CHECK(tess::isWatertight(mesh));
+  CC_CHECK(std::fabs(std::fabs(tess::enclosedVolume(mesh)) - 1000.0) < 1e-6);
+}
+
+// ── T1 NATIVE: mismatched 4→8 square FRUSTUM (exact prismatoid 653.33) ───────────--
+// Bottom 10×10 (4 corners) → 6×6 (8 points: corners + midpoints), depth 10, both
+// centred. Corner→corner and midpoint→midpoint pairing keeps every side face a planar
+// trapezoid, so the solid IS the true square frustum. Its exact prismatoid volume is
+// h/6·(A_bot + 4·A_mid + A_top) = 10/6·(100 + 4·64 + 36) = 653.33. Faces = 8 + 2.
+CC_TEST(loft_mismatched_frustum_4to8_exact) {
+  const double bot[] = {-5, -5, 5, -5, 5, 5, -5, 5};  // 10×10, 4 pts
+  const double top[] = {-3, -3, 0, -3, 3, -3, 3, 0,   // 6×6, 8 pts (corners + midpoints)
+                        3, 3, 0, 3, -3, 3, -3, 0};
+  const topo::Shape solid = cst::build_loft(bot, 4, top, 8, 10.0);
+  CC_CHECK(!solid.isNull());
+  if (solid.isNull()) return;
+
+  CC_CHECK_EQ(countSub(solid, topo::ShapeType::Face), 10);  // 8 sides + 2 caps
+  tess::MeshParams p;
+  p.deflection = 0.01;
+  const tess::Mesh mesh = tess::SolidMesher{p}.mesh(solid);
+  CC_CHECK(tess::isWatertight(mesh));
+  const double expected = 10.0 / 6.0 * (100.0 + 4.0 * 64.0 + 36.0);  // 653.33
+  CC_CHECK(std::fabs(std::fabs(tess::enclosedVolume(mesh)) - expected) / expected < 1e-6);
 }
 
 // ── DEFERRED: a NON-PLANAR section wire → NULL (OCCT fallthrough) ────────────---
@@ -377,14 +430,45 @@ CC_TEST(loft3_octagon_spool_narrow_wide_narrow_watertight) {
   CC_CHECK(vol < vWidePrism);    // the narrow ends remove volume vs the wide prism
 }
 
-// ── DEFERRED (N-section): mismatched counts among the sections → NULL ────────────
-// Section 1 is a pentagon while 0 and 2 are squares — the chain correspondence is
-// ambiguous, so the native builder defers to OCCT.
-CC_TEST(loft_sections_mismatched_counts_deferred) {
-  const std::vector<double> sq0 = {0, 0, 0, 4, 0, 0, 4, 4, 0, 0, 4, 0};
-  const std::vector<double> pent = {0, 0, 3, 4, 0, 3, 4, 4, 3, 2, 5, 3, 0, 4, 3};  // 5-gon
-  const std::vector<double> sq2 = {0, 0, 6, 4, 0, 6, 4, 4, 6, 0, 4, 6};
-  CC_CHECK(loftSections({sq0, pent, sq2}).isNull());
+// ── T1 NATIVE (N-section): MISMATCHED counts 4→8→4 spool (two frustums, exact) ────
+// A 6×6 square (4 pts) at z=0, a 10×10 square sampled at 8 points at z=6, back to a
+// 6×6 square (4 pts) at z=12. The counts differ (4, 8, 4); the union-of-arc-length
+// correspondence resamples the 4-pt ends to 8 SYMMETRIC points (corner + edge
+// midpoints) so every ring is an 8-point square and each band is a true square
+// frustum. Two prismatoids over h=6: each = 6/6·(36 + 4·64 + 100) = 392, total 784,
+// EXACT. Watertight (the symmetric resampled caps mesh cleanly).
+CC_TEST(loft_sections_mismatched_counts_native) {
+  const std::vector<double> s0 = {-3, -3, 0, 3, -3, 0, 3, 3, 0, -3, 3, 0};  // 6×6, 4 pts
+  const std::vector<double> s1 = {-5, -5, 6, 0, -5, 6, 5, -5, 6, 5, 0, 6,   // 10×10, 8 pts
+                                  5, 5, 6, 0, 5, 6, -5, 5, 6, -5, 0, 6};
+  const std::vector<double> s2 = {-3, -3, 12, 3, -3, 12, 3, 3, 12, -3, 3, 12};  // 6×6, 4 pts
+  const topo::Shape solid = loftSections({s0, s1, s2});
+  CC_CHECK(!solid.isNull());
+  if (solid.isNull()) return;
+
+  tess::MeshParams p;
+  p.deflection = 0.01;
+  const tess::Mesh mesh = tess::SolidMesher{p}.mesh(solid);
+  CC_CHECK(tess::isWatertight(mesh));
+  const double frustum = 6.0 / 6.0 * (36.0 + 4.0 * 64.0 + 100.0);  // 392 per band
+  const double expected = 2.0 * frustum;                          // 784
+  CC_CHECK(std::fabs(std::fabs(tess::enclosedVolume(mesh)) - expected) / expected < 1e-6);
+}
+
+// ── T1 HONEST DECLINE: a genuinely different-count section pair whose resampled caps
+// carry ASYMMETRIC collinear vertices the mesher cannot close watertight is DISCARDED
+// by the engine self-verify → OCCT. The native builder still returns non-null (the
+// correspondence runs), but here we assert the geometry-preserving cases build AND a
+// harder genuine mismatch (triangle→square) is left for the engine's watertight gate.
+// (The builder-level result may be non-null but non-watertight; the ENGINE, not this
+// pure-geometry unit, is what forwards it to OCCT — see native_engine solid_loft.)
+CC_TEST(loft_triangle_to_square_correspondence_runs) {
+  const double tri[] = {0, 0, 6, 0, 3, 5};              // 3-gon
+  const double sq[] = {0, 0, 6, 0, 6, 6, 0, 6};         // 4-gon
+  const topo::Shape solid = cst::build_loft(tri, 3, sq, 4, 4.0);
+  // The correspondence equalizes counts and builds a candidate solid (non-null); its
+  // watertightness is decided by the engine self-verify, not asserted here.
+  CC_CHECK(!solid.isNull());
 }
 
 // ── DEFERRED (N-section): a non-planar internal section → NULL ───────────────────

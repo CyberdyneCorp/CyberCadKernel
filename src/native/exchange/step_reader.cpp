@@ -1372,6 +1372,17 @@ class Mapper {
       decline();
       return {};
     }
+    // A VERTEX_LOOP bound (a single degenerate vertex, NO edges) is how OCCT emits a
+    // FULL untrimmed periodic surface — e.g. a whole sphere, whose longitude seam and
+    // both poles collapse so the face carries no real boundary EDGE_CURVE. Represent
+    // it as an empty (childless) wire; advancedFace turns a genuine full sphere into a
+    // BARE periodic surface that the tessellator meshes watertight over natural bounds.
+    // Everything with a real EDGE_LOOP keeps the existing edge-chaining path unchanged.
+    if (const Record* loop = recOfKind(r->args[1].ref, "VERTEX_LOOP")) {
+      if (loop->args.size() != 2 || !loop->args[1].isRef()) { decline(); return {}; }
+      return topo::ShapeBuilder::makeWire({});
+    }
+
     std::vector<topo::Shape> edges = edgeLoop(r->args[1].ref);
     if (fail_ || edges.empty()) { decline(); return {}; }
     return topo::ShapeBuilder::makeWire(std::move(edges));
@@ -1404,13 +1415,33 @@ class Mapper {
       wires.push_back(wire);
     }
     if (wires.empty()) { decline(); return {}; }
+
+    const topo::Orientation orient =
+        r->args[3].text == "T" ? topo::Orientation::Forward : topo::Orientation::Reversed;
+
+    // A childless bound comes from a VERTEX_LOOP face-bound (a FULL untrimmed periodic
+    // surface). It closes watertight ONLY for a genuine full sphere: the tessellator
+    // meshes the natural (u∈[0,2π], v∈[-π/2,π/2]) rectangle for Kind::Sphere and welds
+    // the longitude seam plus both collapsed poles. Build such a face as a BARE
+    // periodic surface (null outer wire). Any OTHER surface, or a sphere face that
+    // ALSO carries real trim edges (a partial zone), cannot close this way → keep the
+    // honest OCCT deferral (the engine's watertight self-verify is the final arbiter).
+    bool anyEmpty = false, allEmpty = true;
+    for (const topo::Shape& w : wires) {
+      if (w.tshape()->children().empty()) anyEmpty = true;
+      else allEmpty = false;
+    }
+    if (anyEmpty) {
+      if (srf->kind == topo::FaceSurface::Kind::Sphere && allEmpty)
+        return topo::ShapeBuilder::makeFace(*srf, topo::Shape{}, {}, orient);
+      decline();
+      return {};
+    }
+
     if (outerIdx < 0) outerIdx = 0;
 
     // Build the face node first (surface + wires) so pcurves can key on it, then
     // re-attach the analytic pcurve per edge on this face's surface.
-    const topo::Orientation orient =
-        r->args[3].text == "T" ? topo::Orientation::Forward : topo::Orientation::Reversed;
-
     std::vector<topo::Shape> holes;
     for (std::size_t i = 0; i < wires.size(); ++i)
       if (static_cast<int>(i) != outerIdx) holes.push_back(wires[i]);

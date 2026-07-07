@@ -16,7 +16,13 @@
 //     ORIENTED_EDGE → oriented edge, EDGE_LOOP → wire, ADVANCED_FACE → face,
 //     CLOSED_SHELL → shell, MANIFOLD_SOLID_BREP → solid), reusing the
 //     writer-shared EDGE_CURVE/VERTEX_POINT dedup by #id and reconstructing the
-//     analytic PCURVEs the tessellator needs (STEP carries no pcurve).
+//     analytic PCURVEs the tessellator needs (STEP carries no pcurve). A FULL
+//     periodic surface OCCT emits with a VERTEX_LOOP bound (a single degenerate
+//     pole vertex, NO edges — e.g. a whole SPHERICAL_SURFACE or on-axis-circle
+//     SURFACE_OF_REVOLUTION sphere) maps to a native Kind::Sphere face with a NULL
+//     outer wire, meshed watertight over its natural (u∈[0,2π], v∈[−π/2,π/2])
+//     bounds (seam + both poles welded); a VERTEX_LOOP on any non-sphere surface,
+//     or a sphere with surviving real trim edges, keeps the honest OCCT deferral.
 //
 // The reconstructed solid is a face-graph that shares vertex+edge NODES by #id
 // exactly as the writer shared them, so it re-tessellates WATERTIGHT by the same

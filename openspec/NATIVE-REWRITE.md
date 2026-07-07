@@ -24,9 +24,15 @@ AND a SURFACE_OF_REVOLUTION reducing to the matching native analytic quadric per
 generatrix — a straight LINE ∥ axis → an exact native CYLINDER, an OBLIQUE line meeting
 the axis → a native CONE (apex on axis, half-angle from the line-axis angle), a line ⟂ axis
 → a native PLANE annulus cap (all three import NATIVELY, watertight, at OCCT parity within
-faceting tol), plus an on-axis CIRCLE/arc → SPHERE reduction proven at host level (though
-an OCCT-authored single periodic-pole-face sphere still declines end-to-end → OCCT — a
-separate periodic-pole-face reader gap) — schema-independent, AP203/AP214/AP242
+faceting tol), plus an on-axis CIRCLE/arc → SPHERE reduction — including a FULL sphere: OCCT
+writes a whole sphere as ONE SPHERICAL_SURFACE (or the on-axis-circle SURFACE_OF_REVOLUTION
+form) ADVANCED_FACE bounded by a VERTEX_LOOP (a single degenerate pole vertex, NO seam/pole
+EDGE_CURVEs — a bare periodic surface); the reader now maps that VERTEX_LOOP bound to a
+native Sphere face with a NULL outer wire, which the tessellator meshes over its natural
+(u∈[0,2π], v∈[−π/2,π/2]) bounds — welding the longitude seam + both poles → a WATERTIGHT
+Sphere solid at OCCT parity (sim: native parsed=1, ΔV≈2.7e-3, `[NIMPORT]` 69/69). A
+VERTEX_LOOP bound on any NON-sphere surface, or a partial spherical zone carrying real trim
+edges that cannot close, keeps the honest OCCT deferral — schema-independent, AP203/AP214/AP242
 headers all accepted; non-uniform/shear transforms, deep-nested assemblies, PMI SEMANTICS,
 a SURFACE_OF_REVOLUTION with no faithful native kind — an OFF-AXIS circle/arc (torus),
 an ELLIPSE / B-spline generatrix (general revolved surface), a SKEW oblique line

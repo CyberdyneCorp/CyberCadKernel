@@ -891,22 +891,67 @@ void runRevolvedPlane() {
     compare("foreign", "revolution_plane", importUnder(1, path), importUnder(0, path), 5e-3, 5e-3);
 }
 
-// ── (R) SURFACE_OF_REVOLUTION → sphere (R3) — an on-axis meridian circle reduces to a Sphere
-// Author a sphere with OCCT, then rewrite its SPHERICAL_SURFACE as SURFACE_OF_REVOLUTION of
-// the meridian CIRCLE (centre ON the axis, plane CONTAINING the axis). The reader's
-// revolvedCircle arm reduces THAT surface to a native Sphere — proven watertight at the HOST
-// level (test_native_step_reader, against the reader-friendly multi-patch sphere B-rep). This
-// OCCT fixture is a SINGLE periodic spherical FACE with a pole seam + degenerate pole
-// vertices, which the reader's face reconstruction does not yet cover (a periodic-pole-face
-// gap, independent of the revolution reduction) → the reader honestly DECLINES the whole
-// file and cc_step_import falls back to OCCT. So the guarantee proven here is the END-TO-END
-// one: cc_step_import never breaks on this file and matches the OCCT re-import exactly.
+// ── (R) full SPHERE (R3) — an OCCT single periodic pole-face sphere imports NATIVELY ──────
+// OCCT writes a whole sphere as ONE SPHERICAL_SURFACE ADVANCED_FACE bounded by a VERTEX_LOOP
+// (a single degenerate pole vertex, NO seam/pole EDGE_CURVEs — a bare periodic surface). The
+// reader now maps that bare periodic surface to a native Sphere face with a null outer wire;
+// the tessellator meshes its natural (u∈[0,2π], v∈[-π/2,π/2]) rectangle, welding the seam +
+// both poles → a WATERTIGHT Sphere solid. Both forms are proven natively here:
+//   (1) the DIRECT OCCT sphere file (SPHERICAL_SURFACE keyword), and
+//   (2) the SURFACE_OF_REVOLUTION rewrite (on-axis meridian circle → revolvedCircle→Sphere).
+// Each must import NATIVELY (raw parsed=1, watertight, 1 solid) and match the OCCT re-import.
+// A full sphere imports as a native BARE periodic surface: its watertight mesh welds the
+// longitude seam + both poles INTERNALLY, so — unlike OCCT's B-rep — it carries NO
+// boundary edges (0 vs OCCT's seam + 2 poles). That is a REPRESENTATION difference, not
+// an error, so the generic `compare()` edge-count and mesh-bbox-corner sub-checks do not
+// apply. The physically meaningful parity is volume / area / centroid + face count; the
+// meshed bbox corner sits within the curved-tessellation chord bound of OCCT's analytic
+// extent (native mesh vertices lie ON the sphere → its box is marginally inside).
+void compareSphere(const std::string& name, const Props& a, const Props& b) {
+    if (!a.ok || !b.ok) {
+        char d[128]; std::snprintf(d, sizeof d, "native ok=%d oracle ok=%d", a.ok, b.ok);
+        record(false, "native", name + " import", d); return;
+    }
+    const double volRel = std::fabs(a.vol - b.vol) / b.vol;
+    const double areaRel = std::fabs(a.area - b.area) / b.area;
+    const double cMax = std::max({std::fabs(a.cx - b.cx), std::fabs(a.cy - b.cy), std::fabs(a.cz - b.cz)});
+    char d[512];
+    std::snprintf(d, sizeof d, "vol nat=%.6g oracle=%.6g rel=%.2e | area rel=%.2e | cΔ=%.2e",
+                  a.vol, b.vol, volRel, areaRel, cMax);
+    record(volRel < 5e-3 && areaRel < 5e-3 && cMax < 5e-3, "native", name + " mass", d);
+
+    const double bd = bbDelta(a.bb, b.bb);
+    std::snprintf(d, sizeof d, "maxCornerΔ=%.2e (curved-tessellation bound=2e-2)", bd);
+    record(bd < 2e-2, "native", name + " bbox", d);
+
+    std::snprintf(d, sizeof d,
+                  "faces nat=%d oracle=%d | edges nat=%d oracle=%d (bare periodic surface → no boundary edges)",
+                  a.faces, b.faces, a.edges, b.edges);
+    record(a.faces == b.faces && a.edges == 0, "native", name + " topology", d);
+}
+
 void runRevolvedSphere() {
     const std::string occtPath = "/tmp/cck_nimport_sphere_occt.step";
     TopoDS_Shape sph = BRepPrimAPI_MakeSphere(6.0).Shape();  // centre origin, axis +Z
-    if (!occtWriteStep(sph, occtPath)) { record(false, "foreign", "sphere author", "OCCT write failed"); return; }
+    if (!occtWriteStep(sph, occtPath)) { record(false, "native", "sphere author", "OCCT write failed"); return; }
+
+    // (1) DIRECT SPHERICAL_SURFACE keyword form — the raw OCCT emission.
+    {
+        const NativeProbe pr = probeNative(occtPath);
+        const Props nat = importUnder(1, occtPath);
+        const Props oracle = importUnder(0, occtPath);
+        char d[320];
+        std::snprintf(d, sizeof d,
+                      "native raw parsed=%d watertight=%d solids=%d nativeVol=%.6g occtVol=%.6g",
+                      pr.parsed, pr.parsed && pr.allWatertight, pr.solids, nat.vol, oracle.vol);
+        const bool volOk = oracle.vol > 0 && std::fabs(nat.vol - oracle.vol) / oracle.vol < 5e-3;
+        record(pr.parsed && pr.allWatertight && pr.solids == 1 && volOk, "native", "sphere keyword", d);
+        compareSphere("sphere_keyword", nat, oracle);
+    }
+
+    // (2) SURFACE_OF_REVOLUTION rewrite: meridian circle centre (0,0,0) ON the +Z axis, plane
+    //     normal (0,1,0) ⟂ Z (contains Z). Same VERTEX_LOOP bound → same bare-surface path.
     std::ifstream in(occtPath); std::string base((std::istreambuf_iterator<char>(in)), {});
-    // Meridian circle: centre (0,0,0) ON the +Z axis, plane normal (0,1,0) ⟂ Z (contains Z).
     std::string rev = base;
     const std::size_t ins = rev.find('\n', rev.find("DATA;")) + 1;
     rev.insert(ins,
@@ -930,12 +975,11 @@ void runRevolvedSphere() {
     const Props oracle = importUnder(0, path);  // OCCT re-import oracle
     char d[320];
     std::snprintf(d, sizeof d,
-                  "native raw parsed=%d (OCCT periodic-pole-face → decline; revolvedCircle→Sphere host-verified); "
-                  "cc_step_import vol=%.6g occtVol=%.6g",
-                  pr.parsed, nat.vol, oracle.vol);
-    const bool parityOk = oracle.vol > 0 && std::fabs(nat.vol - oracle.vol) / oracle.vol < 5e-3;
-    record(parityOk, "foreign", "revolution→sphere", d);
-    compare("foreign", "revolution_sphere", nat, oracle, 5e-3, 5e-3);
+                  "native raw parsed=%d watertight=%d solids=%d nativeVol=%.6g occtVol=%.6g",
+                  pr.parsed, pr.parsed && pr.allWatertight, pr.solids, nat.vol, oracle.vol);
+    const bool volOk = oracle.vol > 0 && std::fabs(nat.vol - oracle.vol) / oracle.vol < 5e-3;
+    record(pr.parsed && pr.allWatertight && pr.solids == 1 && volOk, "native", "revolution→sphere", d);
+    compareSphere("revolution_sphere", nat, oracle);
 }
 
 }  // namespace

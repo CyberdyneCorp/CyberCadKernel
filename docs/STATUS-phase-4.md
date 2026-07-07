@@ -1880,10 +1880,61 @@ revolution cases; sim **`[NIMPORT]` 65/65**). Reader-only change — exactly 4 f
 **Residual → OCCT after the revolution-quadrics slice (honest, narrowed further):** an off-axis-circle
 torus + ellipse/B-spline general revolved surface + skew-line hyperboloid (+ the OCCT
 single-periodic-pole-face sphere B-rep, whose native reduction is proven but whose face the reader
-does not yet reconstruct), PMI/GD&T **semantics**, **non-uniform-scale / shear** transforms,
-deep-nested assemblies, Form-B `MAPPED_ITEM`, `TOROIDAL_SURFACE`, ellipse-on-quadric solids, a
-`TRIMMED_CURVE` over an out-of-slice basis, foreign arbitrary-rational/weighted B-splines, `BEZIER`,
-general swept/bounded/offset surfaces, non-mm units, all IGES. #8 `drop-occt` stays blocked.
+does not yet reconstruct — **NOW UNBLOCKED, see the next slice**), PMI/GD&T **semantics**,
+**non-uniform-scale / shear** transforms, deep-nested assemblies, Form-B `MAPPED_ITEM`,
+`TOROIDAL_SURFACE`, ellipse-on-quadric solids, a `TRIMMED_CURVE` over an out-of-slice basis, foreign
+arbitrary-rational/weighted B-splines, `BEZIER`, general swept/bounded/offset surfaces, non-mm units,
+all IGES. #8 `drop-occt` stays blocked.
+
+### Native STEP IMPORT WIDENED (`unblock-native-step-sphere`) — a FULL periodic sphere face imports NATIVELY watertight
+
+The one residual sphere gap above is closed: OCCT writes a whole sphere as ONE `ADVANCED_FACE`
+bounded by a single **`VERTEX_LOOP`** (a lone degenerate pole `VERTEX_POINT`, ZERO edges — a bare
+periodic surface; verified by instrumenting a real `BRepPrimAPI_MakeSphere` → `STEPControl_Writer`
+emission: `EDGE_LOOP=0`, `VERTEX_LOOP=1`, no seam/pole `EDGE_CURVE`). The reader previously
+declined at `edgeLoop` (a `VERTEX_LOOP` is not an `EDGE_LOOP`) → OCCT. **Reader-only fix:**
+`faceBound` now maps a `VERTEX_LOOP` bound to an EMPTY (childless) wire, and `advancedFace`, when the
+surface is a genuine full `Kind::Sphere` (every bound reduced to empty), builds the face with a NULL
+outer wire (`makeFace(*srf, Shape{}, {}, orient)`) — a bare periodic surface. The tessellator's
+existing natural-bounds structured grid (`FaceMesher` routes `!hasOuter()` faces to
+`structuredGrid(hasBoundary=false)`, `SurfaceEvaluator::bounds()` = the full `u∈[0,2π], v∈[−π/2,π/2]`
+rectangle for `Sphere`) meshes it WATERTIGHT — the pole rows fan to the collapsed pole point, the
+`u=0/2π` columns weld at the seam. **No tessellator, writer, engine, or `cc_*` ABI change**;
+`src/native/**` OCCT-free (grep-gated). This corrects the change's original premise (the planned
+`degeneratePoleEdge()` zero-length-`EDGE_CURVE` detector + `senseMask==3` sphere-seam handling target
+a representation OCCT 7.8 does not emit and were NOT built).
+
+- **NATIVE now — full `SPHERICAL_SURFACE` keyword sphere.** Host
+  `spherical_surface_vertex_loop_full_sphere_imports_watertight`: a hand-authored OCCT-style
+  `VERTEX_LOOP` sphere imports as ONE watertight `Sphere` solid, `vol` converges to `4/3·π·R³`
+  (`defl 0.005` → 902.31, rel 0.27%; `defl 0.001` → 904.285, rel 0.055%; analytic 904.779), bbox
+  inside `[−R,R]³` reaching ±R. Sim: `native raw parsed=1 watertight=1 solids=1 nativeVol=902.31
+  occtVol=904.779` (ΔV 2.73e-3, ΔA 1.37e-3, cΔ 3.3e-15) == OCCT re-import.
+- **NATIVE now — on-axis-circle `SURFACE_OF_REVOLUTION` sphere.** The `revolvedCircle`→`Sphere`
+  reduction with the same `VERTEX_LOOP` bound takes the identical bare-surface route. Host
+  `revolution_on_axis_circle_vertex_loop_imports_watertight`; sim `revolution→sphere` native
+  parsed=1 watertight=1, same ΔV. (This is the sim `runRevolvedSphere` fixture, flipped from an OCCT
+  fallback to a NATIVE import.)
+- **HONEST-OUT unchanged.** A `VERTEX_LOOP` bound on any NON-sphere surface, a partial spherical zone
+  carrying a surviving real trim edge, or any assembled sphere that fails the engine
+  `robustlyWatertightImport` self-verify keeps the OCCT deferral (host
+  `vertex_loop_bound_on_non_sphere_declines`: a `CYLINDRICAL_SURFACE` + `VERTEX_LOOP` → NULL). The
+  bare-surface sphere legitimately carries 0 boundary edges (seam+poles welded in the mesh) vs OCCT's
+  3 — a representation difference, not an error; the sim sphere parity asserts volume/area/centroid +
+  face-count, and a curved-tessellation-bounded bbox, NOT edge-count parity (no tolerance weakened).
+
+Both gates green: host CTest **29/29** NUMSCI OFF / **36/36** NUMSCI ON, `test_native_step_reader`
+**34 cases** (3 new); sim **`[NIMPORT]` 69/69** (the prior 65 preserved + 4 new sphere sub-checks).
+Reader-only change — exactly 3 source/test files (`step_reader.cpp` + `.h` doc, `test_native_step_reader.cpp`,
+`native_step_import_parity.mm`); `step_writer.cpp`, the tessellator, `src/engine/**`, and the `cc_*`
+ABI PRISTINE. No regression across the prior import slices, curved-boolean, blends, marching, phase3.
+
+**Residual → OCCT after this slice (honest):** an off-axis-circle torus + ellipse/B-spline general
+revolved surface + skew-line hyperboloid, a PARTIAL / pole-capped spherical zone that cannot close
+watertight, PMI/GD&T **semantics**, **non-uniform-scale / shear** transforms, deep-nested assemblies,
+Form-B `MAPPED_ITEM`, `TOROIDAL_SURFACE`, ellipse-on-quadric solids, a `TRIMMED_CURVE` over an
+out-of-slice basis, foreign arbitrary-rational/weighted B-splines, `BEZIER`, general
+swept/bounded/offset surfaces, non-mm units, all IGES. #8 `drop-occt` stays blocked.
 
 ### Files (#7)
 

@@ -109,10 +109,17 @@ robustness tail keeps OCCT linked.** Canonical detail:
   the line-axis angle; native import watertight, vol 522.934 vs OCCT 523.599 rel 1.27e-3, bboxΔ=3e-15),
   a line **⟂ axis** → a native `Plane` annulus cap (native import watertight, vol 1568.8 vs OCCT
   1570.77 rel 1.25e-3) — all three watertight == OCCT re-import within faceting tol; an **on-axis
-  circle/arc** → a native `Sphere` reduction is HOST-VERIFIED (`revolvedCircle`→`Sphere`, radius =
-  circle radius, asserted equal to the direct `SPHERICAL_SURFACE` import) but declines end-to-end →
-  OCCT because the OCCT sphere fixture is authored as a single periodic-pole face the reader does not
-  yet reconstruct (a separate periodic-pole-face gap; fallback vol 904.779 == OCCT rel 0). Each
+  circle/arc** → a native `Sphere` reduction now imports NATIVELY WATERTIGHT end-to-end
+  (`unblock-native-step-sphere`): OCCT writes a whole sphere as ONE `ADVANCED_FACE` bounded by a
+  single `VERTEX_LOOP` (a lone degenerate pole vertex, ZERO seam/pole `EDGE_CURVE`s — a bare periodic
+  surface). The reader maps that `VERTEX_LOOP` bound to a native `Sphere` face with a NULL outer wire,
+  which the tessellator meshes over its natural (`u∈[0,2π], v∈[−π/2,π/2]`) bounds — welding the
+  longitude seam + both poles into a WATERTIGHT `Sphere` solid at OCCT parity. Both the direct
+  `SPHERICAL_SURFACE` keyword sphere AND the on-axis-circle `SURFACE_OF_REVOLUTION` sphere flip from
+  OCCT fallback to native (sim `native raw parsed=1 watertight=1`, nativeVol 902.31 vs occtVol 904.779
+  rel 2.73e-3, area rel 1.37e-3; `[NIMPORT]` 65→69). A `VERTEX_LOOP` bound on any NON-sphere surface,
+  or a partial spherical zone carrying a surviving real trim edge that cannot close, keeps the honest
+  OCCT deferral. Each
   reduction is gated by a faithful-reduction check (the generatrix must lie on the candidate quadric
   within a scale-relative tol) AND the watertight self-verify — no tolerance weakened, no surface
   fabricated. A `SURFACE_OF_REVOLUTION` with no faithful native kind — an **off-axis** circle/arc
@@ -123,9 +130,9 @@ robustness tail keeps OCCT linked.** Canonical detail:
   (multi-level) assemblies, `TOROIDAL_SURFACE` (no native torus surface kind), ellipse-bearing
   solids whose ellipse lies on a quadric (fails the watertight self-verify → whole solid falls back),
   a `SURFACE_OF_REVOLUTION` with no faithful native kind (an off-axis-circle torus, an
-  ellipse / B-spline generatrix general revolved surface, a skew-line hyperboloid; plus the OCCT
-  single-periodic-pole-face sphere B-rep, whose native reduction is proven but whose face the reader
-  does not yet reconstruct), complex/trimmed surfaces, rational/weighted B-splines, non-mm units;
+  ellipse / B-spline generatrix general revolved surface, a skew-line hyperboloid; the full-sphere
+  periodic-pole face is now NATIVE, above), complex/trimmed surfaces, rational/weighted B-splines,
+  non-mm units;
   **all IGES import/export stays OCCT / dropped per the earlier decision.**
 - ✅ **Numeric foundations (#2)** — adopted **NumPP + SciPP** (MIT C++20 NumPy/SciPy
   ports) as the OCCT-free numeric substrate + native closest-point (Extrema).
@@ -314,8 +321,8 @@ robustness tail keeps OCCT linked.** Canonical detail:
 - ☐ **Shape healing residual** (beyond-tolerance gap bridging, missing-pcurve reconstruction,
   self-intersecting-wire repair, arbitrary broken industrial B-rep — the coincident-within-tolerance /
   degenerate / orientation first slice is now native, above); **full STEP import** beyond the native
-  subset (PMI SEMANTICS, non-uniform/shear transforms, deep-nested assemblies, a SURFACE_OF_REVOLUTION with no faithful native kind (off-axis-circle torus, ellipse/B-spline general revolved surface, skew-line hyperboloid) + the OCCT single-periodic-pole-face sphere B-rep, complex/trimmed surfaces, torus → OCCT —
-  the native slices landed incl. rigid/uniform-scale/mirror placed assemblies + AP242 geometry with PMI skipped + TRIMMED_CURVE edges + a SURFACE_OF_REVOLUTION reducing to a native cylinder (line ∥ axis) / cone (oblique line) / plane (perpendicular line) [+ host-verified on-axis-circle → sphere reduction], above),
+  subset (PMI SEMANTICS, non-uniform/shear transforms, deep-nested assemblies, a SURFACE_OF_REVOLUTION with no faithful native kind (off-axis-circle torus, ellipse/B-spline general revolved surface, skew-line hyperboloid), complex/trimmed surfaces, torus → OCCT —
+  the native slices landed incl. rigid/uniform-scale/mirror placed assemblies + AP242 geometry with PMI skipped + TRIMMED_CURVE edges + a SURFACE_OF_REVOLUTION reducing to a native cylinder (line ∥ axis) / cone (oblique line) / plane (perpendicular line) + a FULL SPHERE (SPHERICAL_SURFACE and on-axis-circle SURFACE_OF_REVOLUTION, VERTEX_LOOP periodic-pole face → native watertight Sphere), above),
   and **all IGES import/export** (stays OCCT / dropped per the earlier decision).
 - ☐ **`drop-occt`** — BLOCKED until the above are native (research-grade, multi-year).
 

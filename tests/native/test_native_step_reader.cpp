@@ -959,11 +959,11 @@ CC_TEST(surface_of_revolution_perpendicular_line_maps_to_plane) {
 // A CIRCLE centred ON the axis, in a plane CONTAINING the axis, revolves to a SPHERE of the
 // same radius. Rewriting a native sphere's SPHERICAL_SURFACE lunes as SURFACE_OF_REVOLUTION
 // of the meridian circle must import to the SAME solid the direct SPHERICAL_SURFACE keyword
-// produces — same non-null solid, same Sphere face count. (The native writer's full-sphere
-// lune B-rep is a degenerate pole-seam representation that does not tessellate watertight
-// on EITHER path — a WRITER limitation out of this slice's scope; end-to-end watertight
-// spheres are validated against OCCT-authored fixtures in the sim parity gate. Here we prove
-// the revolvedCircle→Sphere REDUCTION: parity with the analytic-keyword import.)
+// produces — same non-null solid, same Sphere face count. (This checks Sphere-face-count
+// parity against the native writer's multi-LUNE full-sphere B-rep; the end-to-end WATERTIGHT
+// full sphere comes from the OCCT VERTEX_LOOP form — see
+// spherical_surface_vertex_loop_full_sphere_imports_watertight below and the sim parity gate.
+// Here we prove the revolvedCircle→Sphere REDUCTION: parity with the analytic-keyword import.)
 CC_TEST(surface_of_revolution_on_axis_circle_maps_to_sphere) {
   const std::string base = ex::writeStepString(sphere6(), "sph");
   const topo::Shape direct = ex::readStepString(base);
@@ -991,6 +991,125 @@ CC_TEST(surface_of_revolution_on_axis_circle_maps_to_sphere) {
   };
   CC_CHECK(sphereFaces(s) == sphereFaces(direct));  // parity with the direct SPHERICAL import
   CC_CHECK(sphereFaces(s) > 0);
+}
+
+namespace {
+
+// Author an OCCT-style FULL sphere solid: ONE ADVANCED_FACE whose bound is a
+// VERTEX_LOOP (a single degenerate pole vertex, NO edges) — exactly how OCCT 7.x
+// emits a whole sphere (no longitude-seam edge, no pole edges, just a bare periodic
+// SPHERICAL_SURFACE). `surfaceRecs` declares the face surface; `surfRef` is its #id.
+// The unit/product boilerplate is copied verbatim from the native writer (true mm) so
+// the reader's unit-context gate accepts it.
+std::string vertexLoopSolid(const std::string& surfaceRecs, const std::string& surfRef) {
+  std::string s;
+  s += "ISO-10303-21;\nHEADER;\n";
+  s += "FILE_DESCRIPTION(('vertex-loop sphere'),'2;1');\n";
+  s += "FILE_NAME('vl.step','',(''),(''),'t','t','');\n";
+  s += "FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));\nENDSEC;\nDATA;\n";
+  s += surfaceRecs;                                    // must declare surfRef (the FaceSurface)
+  s += "#40 = CARTESIAN_POINT('',(0.,0.,-6.));\n";     // the collapsed south-pole point
+  s += "#41 = VERTEX_POINT('',#40);\n";
+  s += "#42 = VERTEX_LOOP('',#41);\n";                 // single-vertex bound (no edges)
+  s += "#43 = FACE_BOUND('',#42,.T.);\n";
+  s += "#44 = ADVANCED_FACE('',(#43)," + surfRef + ",.T.);\n";
+  s += "#45 = CLOSED_SHELL('',(#44));\n";
+  s += "#46 = MANIFOLD_SOLID_BREP('vl',#45);\n";
+  s += "#115 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );\n";
+  s += "#116 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );\n";
+  s += "#117 = ( NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT() );\n";
+  s += "#118 = UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),#115,'','');\n";
+  s += "#119 = ( GEOMETRIC_REPRESENTATION_CONTEXT(3) "
+       "GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#118)) "
+       "GLOBAL_UNIT_ASSIGNED_CONTEXT((#115,#116,#117)) REPRESENTATION_CONTEXT('','') );\n";
+  s += "#120 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#46),#119);\n";
+  s += "ENDSEC;\nEND-ISO-10303-21;\n";
+  return s;
+}
+
+int sphereFaceCount(const topo::Shape& sh) {
+  int n = 0;
+  for (topo::Explorer e(sh, topo::ShapeType::Face); e.more(); e.next()) {
+    const auto sr = topo::surfaceOf(e.current());
+    if (sr && sr->surface && sr->surface->kind == topo::FaceSurface::Kind::Sphere) ++n;
+  }
+  return n;
+}
+
+}  // namespace
+
+// ── T (SPHERE, VERTEX_LOOP) — a full OCCT sphere face imports natively watertight ──────
+// OCCT writes a whole sphere as ONE SPHERICAL_SURFACE ADVANCED_FACE bounded by a
+// VERTEX_LOOP (one degenerate pole vertex, no edges). The reader maps that bare
+// periodic surface to a native Sphere face with a null outer wire; the tessellator
+// meshes its natural (u∈[0,2π], v∈[-π/2,π/2]) rectangle, welding the seam + both poles
+// → a watertight Sphere solid. Volume = 4/3·π·6³ within the deflection bound.
+CC_TEST(spherical_surface_vertex_loop_full_sphere_imports_watertight) {
+  const std::string step = vertexLoopSolid(
+      "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+      "#2 = DIRECTION('',(0.,0.,1.));\n"
+      "#3 = DIRECTION('',(1.,0.,0.));\n"
+      "#4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n"
+      "#5 = SPHERICAL_SURFACE('',#4,6.);\n",
+      "#5");
+  const topo::Shape s = ex::readStepString(step);
+  CC_CHECK(!s.isNull());                                 // now imports natively (declined before)
+  if (s.isNull()) return;
+  CC_CHECK(s.type() == topo::ShapeType::Solid);
+  CC_CHECK(sphereFaceCount(s) == 1);                     // ONE bare periodic Sphere face
+  CC_CHECK(watertight(s));                               // seam + both poles weld closed
+
+  const double v = volumeOf(s);
+  const double vAnalytic = 4.0 / 3.0 * 3.14159265358979323846 * 6.0 * 6.0 * 6.0;  // 904.7787
+  CC_CHECK(v > 0.0);
+  CC_CHECK(std::fabs(v - vAnalytic) / vAnalytic < 1e-2);  // converges to the true sphere
+
+  const Box b = worldBox(s);
+  for (int k = 0; k < 3; ++k) {
+    CC_CHECK(b.hi[k] <= 6.0 + 1e-6 && b.lo[k] >= -6.0 - 1e-6);  // inside the R=6 sphere
+    CC_CHECK(b.hi[k] > 5.9 && b.lo[k] < -5.9);                  // reaches ±R
+  }
+}
+
+// ── T (SPHERE, VERTEX_LOOP via SURFACE_OF_REVOLUTION) — same bare-surface path ─────────
+// The on-axis meridian-circle SURFACE_OF_REVOLUTION form (the sim runRevolvedSphere
+// fixture) reduces to the SAME native Sphere and, with a VERTEX_LOOP bound, takes the
+// same bare-surface route → a watertight sphere identical to the SPHERICAL keyword form.
+CC_TEST(revolution_on_axis_circle_vertex_loop_imports_watertight) {
+  const std::string step = vertexLoopSolid(
+      "#20 = CARTESIAN_POINT('',(0.,0.,0.));\n"          // circle centre ON the axis
+      "#21 = DIRECTION('',(0.,1.,0.));\n"                // circle-plane normal ⟂ +Z axis
+      "#22 = DIRECTION('',(0.,0.,1.));\n"
+      "#23 = AXIS2_PLACEMENT_3D('',#20,#21,#22);\n"
+      "#24 = CIRCLE('',#23,6.);\n"                       // meridian circle, plane CONTAINS axis
+      "#25 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+      "#26 = DIRECTION('',(0.,0.,1.));\n"
+      "#27 = AXIS1_PLACEMENT('',#25,#26);\n"             // +Z revolution axis
+      "#5 = SURFACE_OF_REVOLUTION('',#24,#27);\n",
+      "#5");
+  const topo::Shape s = ex::readStepString(step);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+  CC_CHECK(sphereFaceCount(s) == 1);
+  CC_CHECK(watertight(s));
+  const double v = volumeOf(s);
+  const double vAnalytic = 4.0 / 3.0 * 3.14159265358979323846 * 6.0 * 6.0 * 6.0;
+  CC_CHECK(std::fabs(v - vAnalytic) / vAnalytic < 1e-2);
+}
+
+// ── T (HONEST-OUT) — a VERTEX_LOOP bound on a NON-sphere surface DECLINES ──────────────
+// The bare-surface route closes watertight ONLY for a full sphere. A VERTEX_LOOP bound
+// on a CYLINDRICAL_SURFACE (an open, non-closable periodic wall) must keep the honest
+// OCCT deferral → NULL, never a forced/broken solid.
+CC_TEST(vertex_loop_bound_on_non_sphere_declines) {
+  const std::string step = vertexLoopSolid(
+      "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+      "#2 = DIRECTION('',(0.,0.,1.));\n"
+      "#3 = DIRECTION('',(1.,0.,0.));\n"
+      "#4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n"
+      "#5 = CYLINDRICAL_SURFACE('',#4,6.);\n",
+      "#5");
+  CC_CHECK(ex::readStepString(step).isNull());
 }
 
 // ── T2 (DECLINE) — a non-line generatrix revolves to a torus/general surface → NULL ────

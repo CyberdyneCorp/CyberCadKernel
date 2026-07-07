@@ -103,6 +103,19 @@ resolution. The curve *pipeline* exists; this is the *robustness* on adversarial
   Richardson bias-cancellation of `relativeSecondForm` — was empirically REFUTED in diagnosis
   (central difference is already O(δ²)) and NOT shipped (no dead code). REMAINING (asymptotic
   tail): general near-tangent breadth, coincident/overlapping freeform, self-intersection.
+- **Breadth attempt (M1-breadth) DECLINED — with a sharpened next-blocker.** A second freeform
+  regime was attempted and honestly declined; no code shipped (`src/native` byte-identical). The
+  diagnosis empirically refuted its own scoped pick (S4-f self-intersection *resolution*): on every
+  Gerono-lemniscate fixture the marcher actually produces, it traces ONE lobe only (or laps the whole
+  figure-eight ~2×, ~27 near-origin passes) — so no single clean transverse self-crossing exists to
+  partition; a resolution pass would be defer-only dead code or forced fabrication. **The real
+  blocker is upstream: marcher COMPLETENESS/dedup at the self-crossing** (trace both lobes exactly
+  once, cross the origin transversally once) — that must land *before* any sub-arc partition is
+  meaningful. Of the other two regimes: S4-a coincident/overlapping freeform is the only one with a
+  clean *native* result (`detectOverlap` lands `OverlapSubRegion`, 0 undecided) but its decisive
+  `IsDone=false`/`TheSame` OCCT oracle is only checkable on the sim (not at diagnose); S4-c general
+  near-tangent stays the hard moat core. So the M1-tail's next actionable slice is **marcher
+  self-crossing completeness**, not the partition.
 
 ### M2 — General freeform booleans · ~2–4 py · needs M0 + M1
 Lift `recogniseCurvedSolid` to accept **freeform (B-spline/NURBS) operands** (it rejects them

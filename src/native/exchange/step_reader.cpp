@@ -984,7 +984,17 @@ class Mapper {
     using K = topo::EdgeCurve::Kind;
     if (profile->kind == K::Line) return revolvedLine(*profile, ax->first, ax->second);
     if (profile->kind == K::Circle) return revolvedCircle(*profile, ax->first, ax->second);
-    return std::nullopt;  // Ellipse / BSpline / Bezier → general revolution → DECLINE
+    // An ELLIPSE or (non-rational) B-SPLINE generatrix that touches the axis at both
+    // ends and lies in a meridian half-plane revolves into a RATIONAL tensor-product
+    // B-spline surface (Piegl & Tiller A7.1) — representable as a native Kind::BSpline
+    // face with weights. OCCT emits such a full revolution bounded by a VERTEX_LOOP
+    // (a bare periodic surface), the same structure as a full sphere; advancedFace
+    // meshes it watertight over its natural (u∈[0,2π], v=profile) bounds. Anything
+    // that does not reduce faithfully (tilted/off-axis profile, profile off the axis
+    // at an end, rational STEP profile) DECLINES → OCCT.
+    if (profile->kind == K::Ellipse || profile->kind == K::BSpline)
+      return revolvedProfile(*profile, ax->first, ax->second);
+    return std::nullopt;  // Bezier / anything else → general revolution → DECLINE
   }
 
   // Closest approach between the generatrix support line (P, unit D) and the axis
@@ -1101,6 +1111,209 @@ class Mapper {
     s.minorRadius = R;     // MINOR radius = tube (generatrix circle) radius
     if (!torusOnSurface(circle, s)) return std::nullopt;  // faithful-reduction guard
     return s;
+  }
+
+  // ── General surface of revolution → rational tensor-product B-spline ─────────--
+  // A pole-to-pole MERIDIAN profile expressed in the axis frame: for each control
+  // pole, its radial distance `r` from the axis (along the shared meridian direction
+  // `xRef`, r ≥ 0) and its axial offset `z` along the axis, plus the profile's own
+  // v-direction basis (degree/knots) and per-pole rational weights `wv`. The full
+  // revolution surface is the tensor product of THIS profile (v) with the standard
+  // rational-quadratic full circle (u).
+  struct MeridianProfile {
+    math::Dir3 xRef;              // radial (equatorial) reference direction, ⟂ axis
+    std::vector<double> r;        // radial distance from the axis per profile pole
+    std::vector<double> z;        // axial offset from the axis location per profile pole
+    std::vector<double> wv;       // profile (v) weights
+    int degreeV = 0;
+    std::vector<double> knotsV;   // profile (v) flat knot vector
+  };
+
+  // Reduce an axis-aligned ELLIPSE generatrix (centre ON the axis, plane CONTAINING
+  // the axis, one semi-axis PARALLEL to the axis) to its pole-to-pole meridian as an
+  // exact rational-quadratic (two 90° elliptical arcs = 5 poles, weights
+  // {1,1/√2,1,1/√2,1}). An ellipse is an affine image of a circle, so its quarter arc
+  // is the affine image of the rational-quadratic quarter circle with the SAME weights
+  // — exact, not an approximation. A tilted / off-axis / non-touching ellipse has no
+  // faithful spheroid meridian → nullopt (DECLINE).
+  std::optional<MeridianProfile> ellipseMeridian(const topo::EdgeCurve& e,
+                                                 const math::Point3& L, const math::Dir3& A) {
+    const double rMaj = e.radius, rMin = e.minorRadius;
+    if (!(rMaj > 0.0) || !(rMin > 0.0)) return std::nullopt;
+    const math::Vec3 Av = A.vec();
+    const math::Vec3 cRel = e.frame.origin - L;
+    const double zc = math::dot(cRel, Av);                     // centre axial offset
+    const math::Vec3 cRad = cRel - Av * zc;                    // centre radial offset
+    if (math::norm(cRad) > 1e-7 * std::max(1.0, rMaj)) return std::nullopt;  // centre off axis
+    if (std::fabs(math::dot(e.frame.z.vec(), Av)) > 1e-7) return std::nullopt;  // plane ∦ axis
+    const double dxa = math::dot(e.frame.x.vec(), Av);
+    const double dya = math::dot(e.frame.y.vec(), Av);
+    double a = 0.0, b = 0.0;  // a = polar semi-axis (∥ axis), b = equatorial (radial)
+    math::Dir3 xRef;
+    if (std::fabs(std::fabs(dxa) - 1.0) < 1e-7) {              // major axis ∥ axis
+      a = rMaj; b = rMin; xRef = e.frame.y;                   // minor axis is radial
+    } else if (std::fabs(std::fabs(dya) - 1.0) < 1e-7) {      // minor axis ∥ axis
+      a = rMin; b = rMaj; xRef = e.frame.x;                   // major axis is radial
+    } else {
+      return std::nullopt;                                     // tilted → no pole meridian
+    }
+    if (!xRef.valid()) return std::nullopt;
+    const double s2 = 1.0 / std::sqrt(2.0);
+    MeridianProfile mp;
+    mp.xRef = xRef;
+    mp.degreeV = 2;
+    mp.r = {0.0, b, b, b, 0.0};
+    mp.z = {zc + a, zc + a, zc, zc - a, zc - a};
+    mp.wv = {1.0, s2, 1.0, s2, 1.0};
+    const double hp = kTwoPi * 0.25, pi = kTwoPi * 0.5;
+    mp.knotsV = {0.0, 0.0, 0.0, hp, hp, pi, pi, pi};
+    return mp;
+  }
+
+  // Reduce a (non-rational) B-SPLINE generatrix that lies in ONE meridian half-plane
+  // containing the axis to its (r,z) profile in the axis frame — degree/knots reused
+  // verbatim, weights 1. The u=0 column of the revolution then reproduces the profile
+  // curve EXACTLY. A profile with a pole off the meridian half-plane, or a rational
+  // STEP profile (bsplineCurve never sets weights), has no faithful reduction → nullopt.
+  std::optional<MeridianProfile> bsplineMeridian(const topo::EdgeCurve& e,
+                                                 const math::Point3& L, const math::Dir3& A) {
+    if (e.poles.size() < 2 || e.knots.empty() || !e.weights.empty()) return std::nullopt;
+    const math::Vec3 Av = A.vec();
+    std::vector<math::Vec3> rad(e.poles.size());
+    std::vector<double> zoff(e.poles.size());
+    math::Vec3 xr{0, 0, 0};
+    double maxr = 0.0;
+    for (std::size_t j = 0; j < e.poles.size(); ++j) {
+      const math::Vec3 rel = e.poles[j] - L;
+      zoff[j] = math::dot(rel, Av);
+      rad[j] = rel - Av * zoff[j];
+      const double rr = math::norm(rad[j]);
+      if (rr > maxr) { maxr = rr; xr = rad[j]; }
+    }
+    if (!(maxr > 1e-9)) return std::nullopt;                   // profile on the axis
+    const math::Dir3 xRef{xr};
+    if (!xRef.valid()) return std::nullopt;
+    MeridianProfile mp;
+    mp.xRef = xRef;
+    mp.degreeV = e.degree;
+    mp.knotsV = e.knots;
+    for (std::size_t j = 0; j < e.poles.size(); ++j) {
+      const double rj = math::dot(rad[j], xRef.vec());         // signed radial along xRef
+      const math::Vec3 resid = rad[j] - xRef.vec() * rj;       // out-of-meridian-plane part
+      if (math::norm(resid) > 1e-7 * std::max(1.0, maxr)) return std::nullopt;  // off plane
+      if (rj < -1e-7 * std::max(1.0, maxr)) return std::nullopt;  // wraps to the other side
+      mp.r.push_back(std::max(rj, 0.0));
+      mp.z.push_back(zoff[j]);
+      mp.wv.push_back(1.0);
+    }
+    return mp;
+  }
+
+  // Evaluate the reconstructed rational surface at (u,v). Used only by the faithful-
+  // reduction guard (the meshed face is bare — pcurveFor is never invoked on it).
+  static math::Point3 revolutionValue(const topo::FaceSurface& s, double u, double v) {
+    const math::SurfaceGrid grid{{s.poles.data(), s.poles.size()}, s.nPolesU, s.nPolesV};
+    return math::nurbsSurfacePoint(s.degreeU, s.degreeV, grid,
+                                   {s.weights.data(), s.weights.size()},
+                                   {s.knotsU.data(), s.knotsU.size()},
+                                   {s.knotsV.data(), s.knotsV.size()}, u, v);
+  }
+
+  // FAITHFUL-REDUCTION GUARD for a revolved profile: the meridian at u=0 must
+  // reproduce the ACTUAL generatrix. For an ELLIPSE that means every u=0 sample
+  // satisfies the ellipse equation (radial/b)² + (axial/a)² = 1; for a B-spline the
+  // u=0 column IS the profile curve by construction, so the sample must coincide with
+  // the STEP curve at the matching (shared) knot parameter. A failure DECLINES → OCCT.
+  bool revolutionReproducesProfile(const topo::FaceSurface& s, const topo::EdgeCurve& profile,
+                                   const math::Point3& L, const math::Dir3& A,
+                                   const MeridianProfile& mp) {
+    const math::Vec3 Av = A.vec();
+    const double v0 = s.knotsV.front(), v1 = s.knotsV.back();
+    if (profile.kind == topo::EdgeCurve::Kind::Ellipse) {
+      const double a = (std::fabs(math::dot(profile.frame.x.vec(), Av)) > 0.5)
+                           ? profile.radius : profile.minorRadius;   // polar semi-axis
+      const double b = (a == profile.radius) ? profile.minorRadius : profile.radius;
+      const double zc = math::dot(profile.frame.origin - L, Av);
+      const double scale = std::max(a, b);
+      for (int k = 0; k <= 12; ++k) {
+        const double v = v0 + (v1 - v0) * (k / 12.0);
+        const math::Point3 p = revolutionValue(s, 0.0, v);
+        const math::Vec3 rel = p - L;
+        const double zr = math::dot(rel, Av) - zc;
+        const double rr = math::norm(rel - Av * math::dot(rel, Av));
+        if (std::fabs((rr * rr) / (b * b) + (zr * zr) / (a * a) - 1.0) > 1e-6 * std::max(1.0, scale))
+          return false;
+      }
+      return true;
+    }
+    // B-spline: knotsV == the profile's own knots, so surface-v == curve-t.
+    double scale = 1.0;
+    for (const double r : mp.r) scale = std::max(scale, r);
+    for (int k = 0; k <= 12; ++k) {
+      const double v = v0 + (v1 - v0) * (k / 12.0);
+      const math::Point3 p = revolutionValue(s, 0.0, v);
+      if (math::distance(p, evalEdge(profile, v)) > 1e-6 * scale) return false;
+    }
+    return true;
+  }
+
+  // Build the exact rational tensor-product B-spline SURFACE_OF_REVOLUTION of a
+  // profile about the axis (L, A): u = the standard rational-quadratic FULL circle
+  // (degreeU=2, 9 poles, weights {1,1/√2,…}, knots {0,0,0,π/2,π/2,π,π,3π/2,3π/2,2π,2π,2π});
+  // v = the profile meridian. Tensor pole Pᵢⱼ places profile pole j (radial rⱼ, axial zⱼ)
+  // onto revolution column i; tensor weight wᵢⱼ = wᵘᵢ·wᵛⱼ. Returns a native Kind::BSpline
+  // face carrying the weights, or nullopt to DECLINE (unfaithful / malformed).
+  std::optional<topo::FaceSurface> revolvedProfile(const topo::EdgeCurve& profile,
+                                                   const math::Point3& L, const math::Dir3& A) {
+    if (!A.valid()) return std::nullopt;
+    std::optional<MeridianProfile> mp;
+    if (profile.kind == topo::EdgeCurve::Kind::Ellipse) mp = ellipseMeridian(profile, L, A);
+    else if (profile.kind == topo::EdgeCurve::Kind::BSpline) mp = bsplineMeridian(profile, L, A);
+    if (!mp) return std::nullopt;
+
+    const math::Vec3 Av = A.vec();
+    const math::Vec3 X = mp->xRef.vec();
+    const math::Vec3 Y = math::cross(Av, X);                  // A × xRef (unit, ⟂ both)
+    const double s2 = 1.0 / std::sqrt(2.0);
+    static constexpr double Cx[9] = {1, 1, 0, -1, -1, -1, 0, 1, 1};
+    static constexpr double Cy[9] = {0, 1, 1, 1, 0, -1, -1, -1, 0};
+    const double Cw[9] = {1, s2, 1, s2, 1, s2, 1, s2, 1};
+    const int nV = static_cast<int>(mp->r.size());
+
+    topo::FaceSurface s;
+    s.kind = topo::FaceSurface::Kind::BSpline;
+    s.degreeU = 2;
+    s.degreeV = mp->degreeV;
+    s.nPolesU = 9;
+    s.nPolesV = nV;
+    s.poles.reserve(static_cast<std::size_t>(9) * nV);
+    s.weights.reserve(static_cast<std::size_t>(9) * nV);
+    for (int i = 0; i < 9; ++i)
+      for (int j = 0; j < nV; ++j) {
+        const math::Vec3 radial = X * (Cx[i] * mp->r[j]) + Y * (Cy[i] * mp->r[j]);
+        s.poles.push_back(L + radial + Av * mp->z[j]);
+        s.weights.push_back(Cw[i] * mp->wv[j]);
+      }
+    const double hp = kTwoPi * 0.25, pi = kTwoPi * 0.5, tp = kTwoPi * 0.75, twp = kTwoPi;
+    s.knotsU = {0.0, 0.0, 0.0, hp, hp, pi, pi, tp, tp, twp, twp, twp};
+    s.knotsV = mp->knotsV;
+    if (s.knotsU.size() != static_cast<std::size_t>(s.nPolesU + s.degreeU + 1)) return std::nullopt;
+    if (s.knotsV.size() != static_cast<std::size_t>(s.nPolesV + s.degreeV + 1)) return std::nullopt;
+    if (!revolutionReproducesProfile(s, profile, L, A, *mp)) return std::nullopt;
+    return s;
+  }
+
+  // True for a face surface produced by revolvedProfile: the standard full-circle
+  // rational-quadratic in u (degree 2, 9 poles, u∈[0,2π]) with a weighted grid. Such a
+  // surface is the ONLY way the reader builds a Kind::BSpline surface with an EMPTY
+  // face bound (a full revolution's VERTEX_LOOP); a read B_SPLINE_SURFACE_WITH_KNOTS
+  // always carries real trim edges. advancedFace uses this to admit the bare periodic
+  // form (like a full sphere/torus).
+  static bool isFullRevolutionBSpline(const topo::FaceSurface& s) {
+    if (s.kind != topo::FaceSurface::Kind::BSpline) return false;
+    if (s.degreeU != 2 || s.nPolesU != 9 || s.weights.empty()) return false;
+    if (s.knotsU.size() < 2) return false;
+    return std::fabs(s.knotsU.front()) < 1e-9 && std::fabs(s.knotsU.back() - kTwoPi) < 1e-9;
   }
 
   // PLANE/CYLINDRICAL/SPHERICAL/CONICAL_SURFACE: an AXIS2_PLACEMENT_3D plus `nRadii`
@@ -1504,8 +1717,14 @@ class Mapper {
     }
     if (anyEmpty) {
       const topo::FaceSurface::Kind k = srf->kind;
+      // A full sphere/torus, or a full SURFACE_OF_REVOLUTION of an ellipse/B-spline
+      // generatrix (a rational tensor B-spline, VERTEX_LOOP-bounded like the sphere):
+      // build it as a BARE periodic surface. The tessellator meshes its natural bounds
+      // and welds the u-seam + collapses the axis pole(s) watertight; the engine's
+      // volume/watertight self-verify is the final arbiter (else it falls back to OCCT).
       if (allEmpty &&
-          (k == topo::FaceSurface::Kind::Sphere || k == topo::FaceSurface::Kind::Torus))
+          (k == topo::FaceSurface::Kind::Sphere || k == topo::FaceSurface::Kind::Torus ||
+           isFullRevolutionBSpline(*srf)))
         return topo::ShapeBuilder::makeFace(*srf, topo::Shape{}, {}, orient);
       decline();
       return {};

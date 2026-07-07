@@ -50,10 +50,17 @@
 // geometry): any unsupported entity/surface keyword, rational/weighted B-spline, a
 // NON-uniform-scale / shear component transform, a Form-B MAPPED_ITEM or lone
 // assembly-usage with no composable placement, non-mm unit context, malformed record,
-// or a reconstruction that does not self-verify watertight. A GENERAL revolution
-// (ELLIPSE / B_SPLINE_CURVE generatrix → a spheroid / general revolved surface) and a
-// PARTIAL torus (a TOROIDAL_SURFACE / off-axis revolution carrying real trim edges) have
-// no faithful native mesh path and DECLINE → OCCT (they already import fine there).
+// or a reconstruction that does not self-verify watertight. A GENERAL revolution whose
+// generatrix is an ELLIPSE or a (non-rational) B_SPLINE_CURVE touching the axis at both
+// ends now imports NATIVELY: the profile meridian is revolved into the EXACT rational
+// tensor-product B-spline (Piegl & Tiller A7.1 — u = the standard rational-quadratic full
+// circle; v = the ellipse promoted to two exact rational-quadratic 90° arcs, or the
+// B-spline profile used directly) and stored as a native Kind::BSpline face WITH weights,
+// bounded by the same VERTEX_LOOP bare-periodic path as the sphere and meshed watertight
+// over its natural (u∈[0,2π], v=profile) bounds (u-seam welded, axis poles collapsed). A
+// tilted/off-axis ellipse, a rational STEP profile, or a PARTIAL torus (a TOROIDAL_SURFACE
+// / off-axis revolution carrying real trim edges) has no faithful native mesh path and
+// DECLINES → OCCT (they already import fine there).
 //
 // OCCT-FREE. Declaration here; body in step_reader.cpp. clang++ -std=c++20.
 //

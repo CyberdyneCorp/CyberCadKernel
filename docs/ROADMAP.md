@@ -130,16 +130,27 @@ robustness tail keeps OCCT linked.** Canonical detail:
   its natural (`u,v∈[0,2π]²`) bounds, welding BOTH seams into a WATERTIGHT `Torus` solid (sim `native
   torus` vol 1771.77 vs OCCT 1776.53 rel 2.68e-3, V=2π²Rr², 0 boundary edges). The Torus mesh path is
   strictly ADDITIVE — it reuses the proven sphere bare-periodic path via the all-seam loop detector, so
-  `face_mesher.h`/`trim.h` are untouched and every existing mesh is byte-identical. A **PARTIAL/trimmed
-  torus** (a `TOROIDAL_SURFACE` carrying a real trim rim), an **ellipse / B-spline** generatrix (general
-  revolved surface), and a **skew** oblique line (hyperboloid) stay honest DECLINEs → OCCT.
+  `face_mesher.h`/`trim.h` are untouched and every existing mesh is byte-identical. An **ellipse OR
+  (non-rational) B-spline** generatrix revolution — the general profile case — now ALSO imports
+  NATIVELY WATERTIGHT (`add-native-step-general-revolution`): the reader reconstructs the exact
+  RATIONAL tensor-product B-spline surface by revolving the generatrix control net around the axis at
+  the standard revolution knot angles (`0, π/2, π, 3π/2, 2π`) with the standard rational weights
+  (`1, 1/√2, 1, 1/√2, 1`), maps it onto a native `FaceSurface::Kind::BSpline` face **carrying weights**
+  (`shape.h` already had `weights`), and the SAME bare-periodic (`VERTEX_LOOP`) mesh path meshes the
+  rational surface watertight — NO tessellator change was needed (sim `revolution→ellipsoid` nativeVol
+  6.6721 vs OCCT 6.70206 rel 4.47e-3; `revolution→bspline` 130.995 vs 131.342 rel 2.64e-3, both
+  watertight, 0 boundary edges; `[NIMPORT]` 69→77). A **PARTIAL/trimmed
+  torus** (a `TOROIDAL_SURFACE` carrying a real trim rim), an **off-axis ellipse** whose revolution
+  fails the faithful-reconstruction/watertight self-verify, and a **skew** oblique line (hyperboloid)
+  stay honest DECLINEs → OCCT.
   **Residual → OCCT** (honest): PMI/GD&T **semantics** (never turned into geometry),
   **non-uniform-scale / shear** transforms, deep-nested
   (multi-level) assemblies, a **PARTIAL/trimmed torus**, ellipse-bearing
   solids whose ellipse lies on a quadric (fails the watertight self-verify → whole solid falls back),
-  a `SURFACE_OF_REVOLUTION` with no faithful native kind (an ellipse / B-spline generatrix general
-  revolved surface, a skew-line hyperboloid; the full-sphere periodic-pole face and the full torus are
-  now NATIVE, above), complex/trimmed surfaces, rational/weighted B-splines,
+  a `SURFACE_OF_REVOLUTION` with no faithful native kind (an **off-axis ellipse** revolution that
+  fails the self-verify, a skew-line hyperboloid; the full-sphere periodic-pole face, the full torus,
+  and the ellipse / non-rational-B-spline generatrix general revolved surface are now NATIVE, above),
+  other complex/trimmed surfaces, arbitrary directly-authored rational/weighted B-spline surfaces,
   non-mm units;
   **all IGES import/export stays OCCT / dropped per the earlier decision.**
 - ✅ **Numeric foundations (#2)** — adopted **NumPP + SciPP** (MIT C++20 NumPy/SciPy

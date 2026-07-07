@@ -1985,12 +1985,12 @@ gate (change `add-native-step-torus`, archived `2026-07-07`).
   for a FULL torus (a fully-seamed loop). A `TOROIDAL_SURFACE` face carrying a real trim rim has no
   native trimmed-torus mesh path, so it keeps the OCCT deferral (host
   `toroidal_surface_partial_torus_declines`).
-- **T2 (GENERAL / ELLIPSE revolution) → HONEST DECLINE → OCCT (unchanged).** An ellipse / B-spline
-  generatrix revolution keeps the `default → nullopt` decline → OCCT (it imports fine there). The exact
-  surface is a rational tensor-product B-spline; that reconstruction + its watertight self-verify +
-  a capped-solid fixture is a larger, higher-blast-radius change deferred rather than rushed — the
-  per-track gate resolves to DECLINE. Sim `[NIMPORT] foreign revolution decline` native parsed=0; OCCT
-  fallback exact (`revolution_torus mass rel=0.00e+00`).
+- **T2 (GENERAL / ELLIPSE revolution) → DECLINED at the time, NOW LANDED (SUPERSEDED by
+  `add-native-step-general-revolution`, below).** At this slice an ellipse / B-spline generatrix
+  revolution kept the `default → nullopt` decline → OCCT; the exact surface is a rational
+  tensor-product B-spline and that reconstruction was deferred as higher-blast-radius. The very next
+  slice (`add-native-step-general-revolution`, immediately below) landed it natively — see there for
+  the current behavior.
 
 **The tessellator was NOT touched beyond a +9-line additive arm.** The ONLY change under
 `src/native/tessellate/` is `surface_eval.h` — a new `case K::Torus` in `localValue` / `localD1` and a
@@ -2018,6 +2018,55 @@ over an out-of-slice basis, foreign arbitrary-rational/weighted B-splines, `BEZI
 swept/bounded/offset surfaces, non-mm units, all IGES. #8 `drop-occt` stays blocked (a general
 STEP/AP242 reader + IGES + a general-curved kernel still block it). The full `TOROIDAL_SURFACE` /
 off-axis-circle revolution torus and the full sphere are now NATIVE and OFF this list.
+
+### Native STEP IMPORT WIDENED (`add-native-step-general-revolution`) — an ELLIPSE / (non-rational) B-spline generatrix revolution imports NATIVELY as a RATIONAL tensor B-spline surface
+
+The last `SURFACE_OF_REVOLUTION` gap — a GENERAL profile curve (ELLIPSE or `B_SPLINE_CURVE`
+generatrix) that has no analytic-quadric reduction — now imports **NATIVELY WATERTIGHT** instead of
+declining (change `add-native-step-general-revolution`, archived `2026-07-07`, validate --strict
+green). This was the track T2 explicitly DEFERRED by `add-native-step-torus` as a
+"rational tensor-B-spline reconstruction, higher-blast-radius."
+
+- **Pivotal check → POSITIVE (no tessellator change needed).** The decisive question was whether the
+  native `FaceSurface::Kind::BSpline` carries WEIGHTS (rational) and whether the tessellator meshes a
+  rational surface watertight. `src/native/topology/shape.h` ALREADY had `std::vector<double> weights;`
+  (`empty ⇒ non-rational`) on `FaceSurface`, `math/bspline.h` already evaluates rational NURBS, and the
+  existing sphere-style bare-periodic (`VERTEX_LOOP`) mesh path meshes the rational revolved surface
+  watertight. So the surface is representable AND meshable natively — the honest DECLINE was NOT
+  required. **`shape.h`, `math/**`, and the entire tessellator are BYTE-UNCHANGED.**
+- **Construction.** The reader revolves the generatrix control net around the axis at the standard
+  revolution knot angles (`0, π/2, π, 3π/2, 2π`) with the standard rational weights
+  (`1, 1/√2, 1, 1/√2, 1`), producing an EXACT rational tensor-product B-spline surface (degree-2 in the
+  revolution direction), and maps it onto a native `Kind::BSpline` face carrying those weights. The
+  `advancedFace` bare-periodic arm gains a single `isFullRevolutionBSpline` OR-clause; the surface goes
+  in with a NULL outer wire and is meshed over its natural periodic bounds — welding the seam +
+  degenerate axis poles into a watertight solid, exactly as the sphere path does.
+- **HONEST-OUT.** An **off-axis ellipse** revolution whose reconstruction fails the
+  faithful/watertight self-verify keeps the OCCT deferral (host
+  `revolution_off_axis_ellipse_declines`), as does a skew-line hyperboloid.
+
+Both gates green: host CTest **29/29** NUMSCI OFF / **36/36** NUMSCI ON, `test_native_step_reader`
+**39 cases** (3 new: `revolution_ellipse_generatrix_vertex_loop_imports_watertight`,
+`revolution_bspline_generatrix_vertex_loop_imports_watertight`,
+`revolution_off_axis_ellipse_declines`); sim **`[NIMPORT]` 77/77** (the prior 69 preserved + 8 new
+sub-checks): `revolution→ellipsoid` nativeVol 6.6721 vs occtVol 6.70206 (rel **4.47e-3**), area rel
+2.06e-3, watertight, 0 boundary edges; `revolution→bspline` nativeVol 130.995 vs 131.342 (rel
+**2.64e-3**), area rel 1.32e-3, watertight. Reader-only, additive change — exactly `step_reader.{cpp,h}`
++ two test files (+ openspec/docs); `step_writer.cpp`, the tessellator, `shape.h`, `math/**`,
+`src/engine/**`, and the `cc_*` ABI PRISTINE; `src/native/**` stays OCCT-free. Because the tessellator
+is byte-identical to main, existing meshes are unchanged by construction and the full
+tessellation-sensitive suite was correctly not required.
+
+**Residual → OCCT after this slice (honest, narrowed further):** a **PARTIAL / trimmed torus**, an
+**off-axis ellipse** revolution that fails the self-verify + a **skew-line hyperboloid**, a PARTIAL /
+pole-capped spherical zone that cannot close watertight, PMI/GD&T **semantics**,
+**non-uniform-scale / shear** transforms, deep-nested assemblies, Form-B `MAPPED_ITEM`,
+ellipse-on-quadric solids, a `TRIMMED_CURVE` over an out-of-slice basis, foreign
+arbitrary directly-authored rational/weighted B-spline surfaces, `BEZIER`, general
+swept/bounded/offset surfaces, non-mm units, all IGES. The ellipse / non-rational-B-spline generatrix
+general revolved surface is now NATIVE and OFF this list; the full `TOROIDAL_SURFACE` /
+off-axis-circle torus and the full sphere remain NATIVE. #8 `drop-occt` stays blocked (a general
+STEP/AP242 reader + IGES + a general-curved kernel still block it).
 
 ### Files (#7)
 

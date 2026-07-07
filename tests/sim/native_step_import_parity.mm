@@ -73,8 +73,17 @@
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
+#include <gp_Elips.hxx>
+#include <Geom_Ellipse.hxx>
+#include <Geom_BSplineCurve.hxx>
+#include <GC_MakeArcOfEllipse.hxx>
+#include <GeomAPI_PointsToBSpline.hxx>
+#include <TColgp_Array1OfPnt.hxx>
 
 #include <algorithm>
 #include <cmath>
@@ -991,6 +1000,78 @@ void runRevolvedSphere() {
     compareSphere("revolution_sphere", nat, oracle);
 }
 
+// ── (R4) ELLIPSE generatrix → native rational-B-spline spheroid ──────────────────
+// The last STEP-revolution gap. OCCT writes an ELLIPSE (equatorial b=1, polar a=1.6 along
+// the +Z revolution axis) revolved 360° as ONE SURFACE_OF_REVOLUTION(ELLIPSE) ADVANCED_FACE
+// bounded by a VERTEX_LOOP — a BARE periodic surface, exactly the sphere's structure. The
+// reader now revolves the ellipse meridian into the exact RATIONAL tensor-product B-spline
+// (Piegl & Tiller A7.1: u = the standard rational-quadratic full circle, 9 poles/weights
+// {1,1/√2,…}; v = the ellipse promoted to two exact rational-quadratic 90° arcs, 5 poles)
+// and stores it as a native Kind::BSpline face WITH weights. The unmodified tessellator
+// meshes its natural (u∈[0,2π], v∈[0,π]) bounds, welding the u-seam and collapsing both
+// axis poles → a WATERTIGHT spheroid whose mesh volume converges to 4/3·π·b²·a = 6.70206.
+// Like the bare sphere it carries 0 boundary edges natively (compareSphere encodes that).
+void runRevolvedEllipsoid() {
+    const std::string path = "/tmp/cck_nimport_ellipsoid.step";
+    const double a = 1.6, b = 1.0;  // polar (Z), equatorial radii
+    gp_Ax2 elipAx(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0), gp_Dir(0, 0, 1));  // Xdir = +Z = major
+    gp_Elips elips(elipAx, a, b);
+    GC_MakeArcOfEllipse arc(elips, 0.0, M_PI, Standard_True);  // north pole t=0 → south t=π
+    TopoDS_Edge eArc = BRepBuilderAPI_MakeEdge(arc.Value()).Edge();
+    TopoDS_Edge eAxis = BRepBuilderAPI_MakeEdge(gp_Pnt(0, 0, a), gp_Pnt(0, 0, -a)).Edge();
+    TopoDS_Wire w = BRepBuilderAPI_MakeWire(eArc, eAxis).Wire();
+    TopoDS_Face f = BRepBuilderAPI_MakeFace(w, Standard_True).Face();
+    TopoDS_Shape sol = BRepPrimAPI_MakeRevol(f, gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))).Shape();
+    if (!occtWriteStep(sol, path)) { record(false, "native", "ellipsoid author", "OCCT write failed"); return; }
+
+    const NativeProbe pr = probeNative(path);
+    const Props nat = importUnder(1, path);     // native reader (rational B-spline revolution)
+    const Props oracle = importUnder(0, path);  // OCCT re-import oracle (exact BRepGProp)
+    char d[320];
+    std::snprintf(d, sizeof d,
+                  "native raw parsed=%d watertight=%d solids=%d nativeVol=%.6g occtVol=%.6g",
+                  pr.parsed, pr.parsed && pr.allWatertight, pr.solids, nat.vol, oracle.vol);
+    const bool volOk = oracle.vol > 0 && std::fabs(nat.vol - oracle.vol) / oracle.vol < 5e-3;
+    record(pr.parsed && pr.allWatertight && pr.solids == 1 && volOk, "native", "revolution→ellipsoid", d);
+    compareSphere("revolution_ellipsoid", nat, oracle);
+}
+
+// ── (R5) non-rational B-SPLINE generatrix → native rational-B-spline body ─────────
+// A (non-rational) B_SPLINE_CURVE meridian from the north pole (0,0,4) through a bulge
+// (max radius 3) to the south pole (0,0,-4), revolved 360° about +Z. OCCT writes it as a
+// SURFACE_OF_REVOLUTION(B_SPLINE_CURVE_WITH_KNOTS) ADVANCED_FACE bounded by a VERTEX_LOOP.
+// The reader revolves the profile directly (its own degree/knots as v, weights 1) into the
+// rational tensor B-spline; the u=0 column reproduces the profile curve EXACTLY, so the
+// native body matches OCCT on volume/area/centroid, watertight, 0 boundary edges. Proves
+// the arm generalises beyond the ellipse to an arbitrary axis-touching meridian spline.
+void runRevolvedBSplineGeneratrix() {
+    const std::string path = "/tmp/cck_nimport_bspline_revol.step";
+    TColgp_Array1OfPnt pts(1, 5);
+    pts.SetValue(1, gp_Pnt(0, 0, 4));
+    pts.SetValue(2, gp_Pnt(2.4, 0, 2));
+    pts.SetValue(3, gp_Pnt(3.0, 0, 0));
+    pts.SetValue(4, gp_Pnt(2.4, 0, -2));
+    pts.SetValue(5, gp_Pnt(0, 0, -4));
+    Handle(Geom_BSplineCurve) bc = GeomAPI_PointsToBSpline(pts).Curve();
+    TopoDS_Edge eArc = BRepBuilderAPI_MakeEdge(bc).Edge();
+    TopoDS_Edge eAxis = BRepBuilderAPI_MakeEdge(gp_Pnt(0, 0, 4), gp_Pnt(0, 0, -4)).Edge();
+    TopoDS_Wire w = BRepBuilderAPI_MakeWire(eArc, eAxis).Wire();
+    TopoDS_Face f = BRepBuilderAPI_MakeFace(w, Standard_True).Face();
+    TopoDS_Shape sol = BRepPrimAPI_MakeRevol(f, gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))).Shape();
+    if (!occtWriteStep(sol, path)) { record(false, "native", "bspline-revol author", "OCCT write failed"); return; }
+
+    const NativeProbe pr = probeNative(path);
+    const Props nat = importUnder(1, path);
+    const Props oracle = importUnder(0, path);
+    char d[320];
+    std::snprintf(d, sizeof d,
+                  "native raw parsed=%d watertight=%d solids=%d nativeVol=%.6g occtVol=%.6g",
+                  pr.parsed, pr.parsed && pr.allWatertight, pr.solids, nat.vol, oracle.vol);
+    const bool volOk = oracle.vol > 0 && std::fabs(nat.vol - oracle.vol) / oracle.vol < 5e-3;
+    record(pr.parsed && pr.allWatertight && pr.solids == 1 && volOk, "native", "revolution→bspline", d);
+    compareSphere("revolution_bspline", nat, oracle);
+}
+
 }  // namespace
 
 int main() {
@@ -1042,6 +1123,13 @@ int main() {
     runRevolvedCone();       // R1 : SURFACE_OF_REVOLUTION(oblique line) → native Cone
     runRevolvedPlane();      // R2 : SURFACE_OF_REVOLUTION(⟂ line) → native Plane cap
     runRevolvedSphere();     // R3 : SURFACE_OF_REVOLUTION(on-axis circle) → native Sphere
+
+    // ── GENERAL REVOLUTION (this task) — the LAST STEP-revolution gap: an ELLIPSE or a
+    //    (non-rational) B-SPLINE generatrix revolves into a RATIONAL tensor-product
+    //    B-spline surface, mapped onto a native Kind::BSpline face WITH weights and meshed
+    //    watertight over its natural periodic+polar bounds (unmodified tessellator).
+    runRevolvedEllipsoid();          // R4 : SURFACE_OF_REVOLUTION(ellipse) → native rational B-spline
+    runRevolvedBSplineGeneratrix();  // R5 : SURFACE_OF_REVOLUTION(B-spline) → native rational B-spline
 
     cc_set_engine(0);  // restore the default engine before we leave
     std::printf("[NIMPORT] DONE  passed=%d failed=%d\n", g_passed, g_failed);

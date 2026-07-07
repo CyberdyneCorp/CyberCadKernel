@@ -1046,6 +1046,15 @@ int torusFaceCount(const topo::Shape& sh) {
   return n;
 }
 
+int bsplineFaceCount(const topo::Shape& sh) {
+  int n = 0;
+  for (topo::Explorer e(sh, topo::ShapeType::Face); e.more(); e.next()) {
+    const auto sr = topo::surfaceOf(e.current());
+    if (sr && sr->surface && sr->surface->kind == topo::FaceSurface::Kind::BSpline) ++n;
+  }
+  return n;
+}
+
 // Author an OCCT-style FULL torus solid: ONE ADVANCED_FACE on a TOROIDAL_SURFACE
 // (major R, minor r) whose single bound is a FULLY-SEAMED EDGE_LOOP — the equator
 // v-seam circle (radius R+r) and the tube u-seam circle (radius r), EACH referenced
@@ -1168,6 +1177,88 @@ CC_TEST(revolution_on_axis_circle_vertex_loop_imports_watertight) {
   CC_CHECK(std::fabs(v - vAnalytic) / vAnalytic < 1e-2);
 }
 
+// ── T (GENERAL REVOLUTION → rational B-spline) — an ELLIPSE generatrix imports watertight ──
+// OCCT emits an ELLIPSE (equatorial b=1, polar a=1.6 along the +Z revolution axis) revolved
+// 360° as ONE SURFACE_OF_REVOLUTION(ELLIPSE) ADVANCED_FACE bounded by a VERTEX_LOOP — the
+// same bare-periodic structure as a full sphere. The reader revolves the ellipse meridian
+// into the EXACT rational tensor-product B-spline (u = the standard rational-quadratic full
+// circle; v = the ellipse promoted to two rational-quadratic 90° arcs) and stores it as a
+// native Kind::BSpline face WITH weights; the tessellator meshes its natural (u∈[0,2π],
+// v∈[0,π]) bounds, welding the u-seam and collapsing both axis poles → a watertight spheroid.
+// V = 4/3·π·b²·a = 6.70206, within the deflection bound.
+CC_TEST(revolution_ellipse_generatrix_vertex_loop_imports_watertight) {
+  const std::string step = vertexLoopSolid(
+      "#20 = CARTESIAN_POINT('',(0.,0.,0.));\n"           // ellipse centre ON the axis
+      "#21 = DIRECTION('',(0.,1.,0.));\n"                 // ellipse-plane normal ⟂ +Z axis
+      "#22 = DIRECTION('',(0.,0.,1.));\n"                 // major-axis direction = +Z (polar)
+      "#23 = AXIS2_PLACEMENT_3D('',#20,#21,#22);\n"
+      "#24 = ELLIPSE('',#23,1.6,1.);\n"                   // semiAxis1=1.6 (∥ axis), semiAxis2=1.0
+      "#25 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+      "#26 = DIRECTION('',(0.,0.,1.));\n"
+      "#27 = AXIS1_PLACEMENT('',#25,#26);\n"             // +Z revolution axis
+      "#5 = SURFACE_OF_REVOLUTION('',#24,#27);\n",
+      "#5");
+  const topo::Shape s = ex::readStepString(step);
+  CC_CHECK(!s.isNull());                                  // now imports natively (declined before)
+  if (s.isNull()) return;
+  CC_CHECK(s.type() == topo::ShapeType::Solid);
+  CC_CHECK(bsplineFaceCount(s) == 1);                     // ONE bare periodic rational B-spline face
+  CC_CHECK(watertight(s));                                // u-seam + both axis poles weld closed
+  const double a = 1.6, b = 1.0;
+  const double vAnalytic = 4.0 / 3.0 * 3.14159265358979323846 * b * b * a;  // 6.70206
+  const double v = volumeOf(s);
+  CC_CHECK(v > 0.0);
+  CC_CHECK(std::fabs(v - vAnalytic) / vAnalytic < 1e-2);  // converges to the true spheroid
+}
+
+// ── T (GENERAL REVOLUTION → rational B-spline) — a non-rational B-SPLINE generatrix ────────
+// A non-rational B_SPLINE_CURVE meridian from the north pole (0,0,2) through a bulge to the
+// south pole (0,0,-2), revolved 360° about +Z, is emitted by OCCT with a VERTEX_LOOP bound.
+// The reader revolves the profile directly (its own degree/knots as v, weights 1); the u=0
+// column reproduces the profile curve EXACTLY, so the revolved rational B-spline meshes
+// watertight over its natural bounds. Proves the arm generalises beyond the ellipse.
+CC_TEST(revolution_bspline_generatrix_vertex_loop_imports_watertight) {
+  const std::string step = vertexLoopSolid(
+      "#20 = CARTESIAN_POINT('',(0.,0.,2.));\n"           // north pole ON the axis
+      "#21 = CARTESIAN_POINT('',(1.2,0.,1.));\n"
+      "#22 = CARTESIAN_POINT('',(1.5,0.,0.));\n"
+      "#23 = CARTESIAN_POINT('',(1.2,0.,-1.));\n"
+      "#24 = CARTESIAN_POINT('',(0.,0.,-2.));\n"          // south pole ON the axis
+      "#28 = B_SPLINE_CURVE_WITH_KNOTS('',4,(#20,#21,#22,#23,#24),"
+      ".UNSPECIFIED.,.F.,.F.,(5,5),(0.,1.),.PIECEWISE_BEZIER_KNOTS.);\n"
+      "#25 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+      "#26 = DIRECTION('',(0.,0.,1.));\n"
+      "#27 = AXIS1_PLACEMENT('',#25,#26);\n"             // +Z revolution axis
+      "#5 = SURFACE_OF_REVOLUTION('',#28,#27);\n",
+      "#5");
+  const topo::Shape s = ex::readStepString(step);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+  CC_CHECK(bsplineFaceCount(s) == 1);
+  CC_CHECK(watertight(s));
+  CC_CHECK(volumeOf(s) > 0.0);
+}
+
+// ── T (HONEST-OUT) — an ELLIPSE whose plane does NOT contain the axis DECLINES ─────────────
+// A faithful spheroid meridian requires the ellipse plane to CONTAIN the revolution axis and
+// one semi-axis to be PARALLEL to it (so the profile touches the axis at two poles). An
+// ellipse whose plane is ⟂ the axis revolves to a non-spheroidal surface with no faithful
+// rational-revolution reduction → NULL → OCCT (never a forced/broken solid).
+CC_TEST(revolution_off_axis_ellipse_declines) {
+  const std::string step = vertexLoopSolid(
+      "#20 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+      "#21 = DIRECTION('',(0.,0.,1.));\n"                 // ellipse-plane normal ∥ +Z axis (plane ⟂ axis)
+      "#22 = DIRECTION('',(1.,0.,0.));\n"
+      "#23 = AXIS2_PLACEMENT_3D('',#20,#21,#22);\n"
+      "#24 = ELLIPSE('',#23,1.6,1.);\n"
+      "#25 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+      "#26 = DIRECTION('',(0.,0.,1.));\n"
+      "#27 = AXIS1_PLACEMENT('',#25,#26);\n"
+      "#5 = SURFACE_OF_REVOLUTION('',#24,#27);\n",
+      "#5");
+  CC_CHECK(ex::readStepString(step).isNull());
+}
+
 // ── T (HONEST-OUT) — a VERTEX_LOOP bound on a NON-sphere surface DECLINES ──────────────
 // The bare-surface route closes watertight ONLY for a full sphere. A VERTEX_LOOP bound
 // on a CYLINDRICAL_SURFACE (an open, non-closable periodic wall) must keep the honest
@@ -1265,21 +1356,23 @@ CC_TEST(surface_of_revolution_skew_oblique_line_declines) {
   CC_CHECK(ex::readStepString(rev).isNull());  // hyperboloid → honest decline → OCCT
 }
 
-// ── T2 (DECLINE) — an ELLIPSE generatrix (→ general revolution) is honestly declined ────
-// An ELLIPSE generatrix revolves to a spheroid/general revolved surface with no native
-// FaceSurface kind (and no authored revolved-ellipse), so the reader DECLINES → NULL → OCCT.
+// ── T2 (DECLINE) — an ELLIPSE whose plane is ⟂ the axis is honestly declined ────────────
+// The general-revolution arm maps ONLY a faithful spheroid meridian: an axis-aligned ellipse
+// (plane CONTAINS the axis, one semi-axis PARALLEL to it, centre on the axis). This ellipse's
+// plane normal is PARALLEL to the +Y revolution axis (plane ⟂ axis) — revolving it sweeps a
+// flat washer, not a spheroid — so ellipseMeridian rejects it → NULL → OCCT.
 CC_TEST(surface_of_revolution_ellipse_generatrix_declines) {
   const std::string base = ex::writeStepString(cylinder(), "cyl");
   const std::string rev = revolveSurfaces(
       base, "CYLINDRICAL_SURFACE",
       "#800010 = CARTESIAN_POINT('',(0.,0.,0.));\n"
-      "#800011 = DIRECTION('',(0.,1.,0.));\n"
+      "#800011 = DIRECTION('',(0.,1.,0.));\n"       // ellipse-plane normal ∥ the +Y axis (plane ⟂ axis)
       "#800012 = DIRECTION('',(1.,0.,0.));\n"
       "#800013 = AXIS2_PLACEMENT_3D('',#800010,#800011,#800012);\n"
-      "#800004 = ELLIPSE('',#800013,5.,3.);\n",   // ellipse generatrix → general revolution
+      "#800004 = ELLIPSE('',#800013,5.,3.);\n",    // plane ⟂ axis → not a spheroid meridian
       "800004");
   CC_CHECK(rev.find("SURFACE_OF_REVOLUTION") != std::string::npos);
-  CC_CHECK(ex::readStepString(rev).isNull());  // no native kind → honest decline → OCCT
+  CC_CHECK(ex::readStepString(rev).isNull());  // plane ⟂ axis → honest decline → OCCT
 }
 
 // ── T2 (DECLINE) — an on-axis circle whose PLANE is ⟂ the axis is honestly declined ────

@@ -23,8 +23,14 @@
 //
 // FULL-PARAMETRIC primitive faces (a whole cylinder side, a whole sphere) that
 // need INTERIOR curvature sampling are meshed by the face mesher's structured-grid
-// path instead (a tensor grid whose boundary rows use the shared edge samples);
-// this header is only the trimmed-polygon triangulator.
+// path instead (a tensor grid whose boundary rows use the shared edge samples).
+//
+// A genuinely-trimmed CURVED FREE-FORM patch (a foreign B-spline / Bézier face with
+// an EDGE_LOOP boundary) is the one case that needs BOTH: a boundary-conforming
+// triangulation AND interior curvature samples. triangulateConstrained() (below)
+// serves it — it folds interior Steiner points into the boundary ear-clip by
+// point-location 1→3 subdivision, leaving triangulatePolygon (the planar path)
+// byte-identical for its existing callers.
 //
 // ── COMPLEXITY (systems band, flagged ~22) ───────────────────────────────────
 // Ear clipping (convex-ear test + point-in-ear rejection) and hole bridging are
@@ -38,6 +44,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace cybercad::native::tessellate {
@@ -236,6 +245,269 @@ inline std::vector<UVTri> triangulatePolygon(const std::vector<UV>& pts,
   for (const std::vector<int>* h : holes) outer = detail::bridgeHole(pts, outer, *h);
   detail::earClip(pts, outer, tris);
   return tris;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ConstrainedDelaunay — incremental constrained-Delaunay triangulator over the UV
+// plane, used by the face mesher's trimmed-FREE-FORM path (MOAT M0). A genuinely
+// trimmed CURVED patch (a foreign B-spline / Bézier face) needs its INTERIOR sampled
+// on the surface, not only its boundary; the pure ear-clip (triangulatePolygon) adds
+// no interior points, so a boundary-only mesh leaves the curved interior unresolved
+// (chord deflection unbounded — the foreign-patch decline).
+//
+// WHY DELAUNAY (not ear-clip + Steiner splits). Ear-clip produces long interior
+// diagonals (fan chords) that span the region. A 1→3 Steiner split can add interior
+// points but NEVER subdivides an existing edge, so the chord deflection ALONG such a
+// fan chord persists no matter how many interior points are added — the mesh cannot
+// meet the deflection bound and its enclosed volume never converges. A Delaunay
+// triangulation has no such spanning chords: an off-surface fan diagonal is
+// non-Delaunay once interior points exist near it and is FLIPPED away, so every
+// triangle is local and the surface is interpolated between nearby on-surface
+// samples. Volume/area then converge with the deflection bound (verified on the
+// analytic paraboloid-cap fixture: rel-volume 3.4%→1.1% as deflection halves).
+//
+// CONSTRUCTION. The base is triangulatePolygon(pts, loops) (unchanged — every
+// boundary segment is an edge, so the seam still welds watertight). Every loop edge
+// is marked CONSTRAINED and is never flipped, so the boundary segmentation is
+// preserved exactly. All interior diagonals are then Lawson-legalized to Delaunay,
+// interior Steiner points are inserted (point-location + 1→3 + legalize), and the
+// caller refines to the deflection bound (refine()). Interior points are appended to
+// the shared `pts`; the caller evaluates every entry as S(u,v).
+//
+// ROBUSTNESS. A flip fires only on a STRICT incircle violation (scale-relative eps),
+// so cocircular points on a regular grid (the incircle-degeneracy the header warns
+// of) never oscillate. A flip is also guarded by a convex-quad test, so it is valid
+// for a non-convex simple outer polygon, not just the convex slice. A Steiner point
+// that lands on an existing edge/vertex (not strictly inside any triangle) is skipped
+// rather than producing a sliver. Complexity is systems-band (~30), isolated here.
+// ═════════════════════════════════════════════════════════════════════════════
+namespace detail {
+
+// In-circle test: >0 ⇔ d is strictly inside the circumcircle of CCW triangle
+// (a,b,c). The classic 3×3 determinant on lifted points (translated to d for
+// conditioning). Sign is what matters; magnitude scales with the coordinates.
+inline double inCircle(const UV& a, const UV& b, const UV& c, const UV& d) noexcept {
+  const double ax = a.u - d.u, ay = a.v - d.v;
+  const double bx = b.u - d.u, by = b.v - d.v;
+  const double cx = c.u - d.u, cy = c.v - d.v;
+  return (ax * ax + ay * ay) * (bx * cy - cx * by) -
+         (bx * bx + by * by) * (ax * cy - cx * ay) +
+         (cx * cx + cy * cy) * (ax * by - bx * ay);
+}
+
+// A triangle carrying its three vertex indices (CCW) and the index of the neighbour
+// triangle across each edge v[i]→v[(i+1)%3] (−1 if none). This adjacency is what
+// makes Lawson legalization O(1) per flip.
+struct DTri {
+  int v[3];
+  int n[3];
+};
+
+// Undirected edge key (min,max) → hashable, for the constrained-edge set and the
+// neighbour-link build.
+inline long long edgeKey(int a, int b) noexcept {
+  const int lo = a < b ? a : b, hi = a < b ? b : a;
+  return (static_cast<long long>(lo) << 32) | static_cast<unsigned>(hi);
+}
+
+class ConstrainedDelaunay {
+ public:
+  // Build the CDT of the region bounded by `loops` (loops[0] outer; holes[1..]).
+  // `pts` is grown in place with any inserted interior points.
+  ConstrainedDelaunay(std::vector<UV>& pts, const std::vector<std::vector<int>>& loops)
+      : pts_(pts), loops_(loops) {
+    for (const std::vector<int>& lp : loops)
+      for (std::size_t i = 0; i < lp.size(); ++i)
+        constrained_.insert(edgeKey(lp[i], lp[(i + 1) % lp.size()]));
+    double span = 0.0;
+    for (const std::vector<int>& lp : loops)
+      for (int i : lp) span = std::max(span, std::fabs(pts_[i].u) + std::fabs(pts_[i].v));
+    eps_ = std::max(span, 1.0) * 1e-11;
+    build();
+  }
+
+  // Insert one interior Steiner point; skipped if it is not strictly inside the mesh.
+  void insert(const UV& p) {
+    const int ti = locate(p);
+    if (ti < 0) return;
+    const int a = tris_[ti].v[0], b = tris_[ti].v[1], c = tris_[ti].v[2];
+    const int nab = tris_[ti].n[0], nbc = tris_[ti].n[1], nca = tris_[ti].n[2];
+    const int pi = static_cast<int>(pts_.size());
+    pts_.push_back(p);
+    const int t0 = ti, t1 = static_cast<int>(tris_.size()), t2 = t1 + 1;
+    tris_[t0] = DTri{{a, b, pi}, {nab, t1, t2}};
+    tris_.push_back(DTri{{b, c, pi}, {nbc, t2, t0}});
+    tris_.push_back(DTri{{c, a, pi}, {nca, t0, t1}});
+    relink(nab, a, b, t0);
+    relink(nbc, b, c, t1);
+    relink(nca, c, a, t2);
+    legalize(t0, 0);
+    legalize(t1, 0);
+    legalize(t2, 0);
+  }
+
+  // Refine: while a triangle t satisfies needsSplit(t), insert its centroid. Bounded
+  // by `maxPasses` and a total-point cap so a pathological curvature cannot explode.
+  template <class Pred>
+  void refine(Pred needsSplit, int maxPasses, std::size_t maxPts) {
+    for (int pass = 0; pass < maxPasses; ++pass) {
+      const std::size_t before = pts_.size();
+      const std::size_t nt = tris_.size();
+      for (std::size_t i = 0; i < nt && pts_.size() < maxPts; ++i) {
+        const DTri& t = tris_[i];
+        if (needsSplit(t.v[0], t.v[1], t.v[2]))
+          insert(UV{(pts_[t.v[0]].u + pts_[t.v[1]].u + pts_[t.v[2]].u) / 3.0,
+                    (pts_[t.v[0]].v + pts_[t.v[1]].v + pts_[t.v[2]].v) / 3.0});
+      }
+      if (pts_.size() == before) break;  // converged (nothing split this pass)
+    }
+  }
+
+  // Export CCW triangles, dropping any whose centroid falls inside a hole loop.
+  std::vector<UVTri> triangles() const {
+    std::vector<UVTri> out;
+    out.reserve(tris_.size());
+    for (const DTri& t : tris_) {
+      if (loops_.size() > 1) {
+        const UV cen{(pts_[t.v[0]].u + pts_[t.v[1]].u + pts_[t.v[2]].u) / 3.0,
+                     (pts_[t.v[0]].v + pts_[t.v[1]].v + pts_[t.v[2]].v) / 3.0};
+        bool inHole = false;
+        for (std::size_t h = 1; h < loops_.size(); ++h)
+          if (pipImpl(loops_[h], cen)) { inHole = true; break; }
+        if (inHole) continue;
+      }
+      out.push_back(UVTri{t.v[0], t.v[1], t.v[2]});
+    }
+    return out;
+  }
+
+ private:
+  void build() {
+    const std::vector<UVTri> base = triangulatePolygon(pts_, loops_);
+    tris_.reserve(base.size());
+    for (const UVTri& t : base) tris_.push_back(DTri{{t.a, t.b, t.c}, {-1, -1, -1}});
+    // Neighbour links via a directed-edge map: triangle j across edge (a,b) is the
+    // one carrying the opposite directed edge (b,a).
+    std::unordered_map<long long, std::pair<int, int>> dirEdge;  // (a<<32|b) → (tri,edge)
+    dirEdge.reserve(tris_.size() * 3);
+    for (int i = 0; i < static_cast<int>(tris_.size()); ++i)
+      for (int e = 0; e < 3; ++e)
+        dirEdge[dkey(tris_[i].v[e], tris_[i].v[(e + 1) % 3])] = {i, e};
+    for (int i = 0; i < static_cast<int>(tris_.size()); ++i)
+      for (int e = 0; e < 3; ++e) {
+        const auto it = dirEdge.find(dkey(tris_[i].v[(e + 1) % 3], tris_[i].v[e]));
+        if (it != dirEdge.end()) tris_[i].n[e] = it->second.first;
+      }
+    // Legalize every interior edge of the ear-clip base to reach the CDT.
+    for (int i = 0; i < static_cast<int>(tris_.size()); ++i)
+      for (int e = 0; e < 3; ++e) legalize(i, e);
+  }
+
+  static long long dkey(int a, int b) noexcept {
+    return (static_cast<long long>(a) << 32) | static_cast<unsigned>(b);
+  }
+
+  // Point-location: the triangle strictly containing p (all three orient2d ≥ 0 for a
+  // CCW triangle, with an eps margin so a point on an edge is rejected). Linear scan
+  // — the interior grids are modest and this keeps the code degeneracy-free.
+  int locate(const UV& p) const {
+    for (int i = 0; i < static_cast<int>(tris_.size()); ++i) {
+      const DTri& t = tris_[i];
+      if (orient2d(pts_[t.v[0]], pts_[t.v[1]], p) > eps_ &&
+          orient2d(pts_[t.v[1]], pts_[t.v[2]], p) > eps_ &&
+          orient2d(pts_[t.v[2]], pts_[t.v[0]], p) > eps_)
+        return i;
+    }
+    return -1;
+  }
+
+  int edgeOf(int ti, int a, int b) const {
+    for (int e = 0; e < 3; ++e)
+      if (tris_[ti].v[e] == a && tris_[ti].v[(e + 1) % 3] == b) return e;
+    return -1;
+  }
+
+  // Repoint neighbour `nb`'s link on undirected edge (a,b) to triangle `to`.
+  void relink(int nb, int a, int b, int to) {
+    if (nb < 0) return;
+    int e = edgeOf(nb, b, a);
+    if (e < 0) e = edgeOf(nb, a, b);
+    if (e >= 0) tris_[nb].n[e] = to;
+  }
+
+  // Lawson legalize edge e=(a,b) of triangle ti: if it is unconstrained and the
+  // neighbour's apex is strictly inside ti's circumcircle AND the flip is a valid
+  // convex-quad flip, flip a-b → apex-opp and recurse on the two exposed edges.
+  void legalize(int ti, int e) {
+    if (ti < 0) return;
+    const int a = tris_[ti].v[e], b = tris_[ti].v[(e + 1) % 3], apex = tris_[ti].v[(e + 2) % 3];
+    if (constrained_.count(edgeKey(a, b))) return;
+    const int nb = tris_[ti].n[e];
+    if (nb < 0) return;
+    const int e2 = edgeOf(nb, b, a);
+    if (e2 < 0) return;
+    const int opp = tris_[nb].v[(e2 + 2) % 3];
+    if (inCircle(pts_[a], pts_[b], pts_[apex], pts_[opp]) <= eps_) return;  // Delaunay: keep
+    // Convex-quad guard: the flip diagonal apex→opp must cross the current edge a→b,
+    // i.e. a and b lie on STRICTLY OPPOSITE sides of line apex-opp. (Orientation-
+    // agnostic — a non-convex quad near a concave boundary would give same-side and
+    // must NOT be flipped, else the new diagonal leaves the region.)
+    const double sa = orient2d(pts_[apex], pts_[opp], pts_[a]);
+    const double sb = orient2d(pts_[apex], pts_[opp], pts_[b]);
+    if ((sa > 0.0) == (sb > 0.0) || sa == 0.0 || sb == 0.0) return;
+    // Neighbour links around the two triangles (before the flip).
+    const int nA = tris_[ti].n[(e + 1) % 3];   // across (b,apex)
+    const int nB = tris_[ti].n[(e + 2) % 3];   // across (apex,a)
+    const int nC = tris_[nb].n[(e2 + 1) % 3];  // across (a,opp)
+    const int nD = tris_[nb].n[(e2 + 2) % 3];  // across (opp,b)
+    tris_[ti] = DTri{{apex, a, opp}, {nB, nC, nb}};
+    tris_[nb] = DTri{{apex, opp, b}, {ti, nD, nA}};
+    relink(nB, apex, a, ti);
+    relink(nC, a, opp, ti);
+    relink(nD, opp, b, nb);
+    relink(nA, b, apex, nb);
+    legalize(ti, 1);  // new edge (a,opp)
+    legalize(nb, 1);  // new edge (opp,b)
+  }
+
+  std::vector<UV>& pts_;
+  const std::vector<std::vector<int>>& loops_;
+  std::vector<DTri> tris_;
+  std::unordered_set<long long> constrained_;
+  double eps_ = 1e-11;
+
+  // Even-odd point-in-polygon over an index loop (for the hole drop test).
+  bool pipImpl(const std::vector<int>& loop, const UV& p) const {
+    const std::size_t n = loop.size();
+    if (n < 3) return false;
+    bool in = false;
+    for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
+      const UV& A = pts_[loop[i]];
+      const UV& B = pts_[loop[j]];
+      if ((A.v > p.v) != (B.v > p.v)) {
+        const double x = (B.u - A.u) * (p.v - A.v) / (B.v - A.v) + A.u;
+        if (p.u < x) in = !in;
+      }
+    }
+    return in;
+  }
+};
+
+}  // namespace detail
+
+// triangulateConstrained — CDT of the region bounded by `loops` with `interior`
+// Steiner points folded in (see detail::ConstrainedDelaunay). `pts` is grown with the
+// interior points that were actually inserted. This is the interior-sampling
+// counterpart of triangulatePolygon; the planar path keeps calling triangulatePolygon
+// unchanged. Refinement to a deflection bound is driven by the caller via the class's
+// refine() (used directly by the face mesher, which owns the surface evaluator).
+inline std::vector<UVTri> triangulateConstrained(std::vector<UV>& pts,
+                                                 const std::vector<std::vector<int>>& loops,
+                                                 const std::vector<UV>& interior) {
+  if (loops.empty() || loops[0].size() < 3) return {};
+  detail::ConstrainedDelaunay cdt(pts, loops);
+  for (const UV& g : interior) cdt.insert(g);
+  return cdt.triangles();
 }
 
 }  // namespace cybercad::native::tessellate

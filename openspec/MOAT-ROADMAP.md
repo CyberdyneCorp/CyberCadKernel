@@ -58,6 +58,28 @@ patches. **Unblocks M1, M2, M3, and foreign-B-spline STEP import (M4).**
   the foreign-rational-B-spline STEP fixture that currently declines (M0 is exactly the gap
   that decline exposed).
 - *Bounded.* This is hard but finite: a trimmed-NURBS mesher is well-understood engineering.
+- **Status — narrow slice LANDED (mesher keystone).** The interior-sampling gap the foreign
+  patch hit is closed: a genuinely-trimmed curved free-form face (Bézier/B-spline, rational or
+  not, with an `EDGE_LOOP` outer bound and inner holes) now meshes with its INTERIOR sampled —
+  a constrained-Delaunay triangulation (`uv_triangulate.h::ConstrainedDelaunay`) folds a
+  curvature-driven interior grid into the shared-edge boundary and refines to the deflection
+  bound. Previously such a face took the boundary-only ear-clip path, leaving the curved
+  interior unresolved (chord deflection ≈ the whole bump height, unbounded — the decline the
+  STEP foreign-rational-B-spline slice exposed). Proven host-side: a trimmed bump-cap face
+  meshes ON the surface within the deflection bound; a cylinder capped by a trimmed free-form
+  patch meshes WATERTIGHT with the closed-form volume, converging as deflection → 0
+  (rel-vol 6.0 %→1.4 % as deflection halves). The change is STRICTLY ADDITIVE — a new arm in
+  `face_mesher.h::mesh()` reached ONLY by a curved genuinely-trimmed free-form face; every
+  existing surface kind's mesh is BYTE-IDENTICAL (triangle count / watertight / area / volume
+  diffed against `main`), and the full host suite (29/29) + NUMSCI-ON pass. Whitespace: no
+  tolerance weakened, no `cc_*` ABI change, tessellator otherwise pristine.
+- *Deferred (needs the OCCT-linked simulator):* STEP READER ADMISSION of a foreign
+  `B_SPLINE_SURFACE_WITH_KNOTS` face — a faithful curved-edge B-spline-surface pcurve arm in
+  `step_reader.cpp::pcurveFor` + a `S_face(pcurve(t)) = C_edge(t)` faithful-reconstruction guard
+  (decline → OCCT on any unfaithful edge). This is gated by the sim-side `BRepMesh` parity
+  oracle (watertight + area/volume vs OCCT) and by the STEP round-trip suites, none runnable in
+  an OCCT-OFF host worktree; it is intentionally NOT changed here so the reader keeps its honest
+  current behaviour until that gate can validate admission. The mesher it depends on is ready.
 
 ### M1 — General freeform surface–surface intersection robustness (SSI S4 general) · ~2–5 py
 Extend the SSI marcher (S1–S5 + S4-a…e already native) to the **general/freeform** degeneracy

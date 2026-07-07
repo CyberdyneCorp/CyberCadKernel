@@ -348,6 +348,122 @@ double maxDistToSphere(const Mesh& mesh, double R) {
   return d;
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// MOAT M0 — a genuinely-trimmed CURVED FREE-FORM face (the foreign-patch keystone).
+//
+// A biquadratic Bézier / B-spline "bump cap": z(x,y) = capZ + H·(1 − (x²+y²)/ρ²),
+// which is EXACTLY capZ on the trim circle (x²+y²=ρ²) and rises to capZ+H at the
+// centre. A biquadratic tensor patch reproduces this separable quadratic exactly,
+// so the analytic surface is known in closed form (bumpZ) for on-surface and chord
+// checks, and the enclosed volume above the rim has the closed form π·ρ²·H/2 (half
+// the bounding cylinder). The trim is a CIRCLE in (u,v) → a genuine EDGE_LOOP that
+// fails isFullRectangle, so the face takes the new trimmed-free-form arm. X(u)=u−½,
+// Y(v)=v−½ so the (u,v) trim radius equals the (x,y) radius. rational=true routes
+// the identical geometry through the nurbsSurface* (weights) evaluator.
+// ═════════════════════════════════════════════════════════════════════════════
+constexpr double kBumpH = 1.0;  // dome height above the rim
+double bumpZ(double x, double y, double capZ, double rho) {
+  return capZ + kBumpH * (1.0 - (x * x + y * y) / (rho * rho));
+}
+topo::FaceSurface bumpCapSurface(double capZ, double rho, bool rational) {
+  const double k = kBumpH / (rho * rho), c0 = kBumpH / 2 - 0.25 * k, c1 = kBumpH / 2 + 0.25 * k;
+  const double xc[3] = {-0.5, 0.0, 0.5}, fz[3] = {c0, c1, c0};  // Bézier z-coeffs of f(u)
+  topo::FaceSurface s{};
+  s.nPolesU = 3;
+  s.nPolesV = 3;
+  if (rational) {
+    s.kind = topo::FaceSurface::Kind::BSpline;
+    s.degreeU = 2;
+    s.degreeV = 2;
+    s.knotsU = {0, 0, 0, 1, 1, 1};
+    s.knotsV = {0, 0, 0, 1, 1, 1};
+  } else {
+    s.kind = topo::FaceSurface::Kind::Bezier;
+  }
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) {
+      s.poles.push_back(m::Point3{xc[i], xc[j], capZ + fz[i] + fz[j]});  // z = f(u)+g(v)
+      if (rational) s.weights.push_back(1.0);
+    }
+  return s;
+}
+// A single trimmed bump-cap FACE (open patch), trimmed by the circle at z=capZ.
+topo::Shape bumpCapFace(double R, double capZ, bool rational) {
+  topo::FaceSurface cap = bumpCapSurface(capZ, R, rational);
+  auto v = vertexAt(R, 0, capZ);
+  topo::Shape circ = circleEdge3d(R, capZ, v, v);
+  topo::Shape f0 = topo::ShapeBuilder::makeFace(cap, topo::Shape{});
+  topo::PCurve pc{};
+  pc.kind = topo::EdgeCurve::Kind::Circle;
+  pc.origin2d = {0.5, 0.5, 0};
+  pc.dir2d = {R, 0, 0};
+  topo::Shape cOn = topo::ShapeBuilder::addPCurve(circ, f0.tshape(), pc);
+  return topo::ShapeBuilder::makeFace(cap, topo::ShapeBuilder::makeWire({cOn}));
+}
+// A CLOSED solid: cylinder side (z∈[0,h]) + flat bottom disk + bump cap on top. The
+// cap shares the top circle edge with the side (a curved seam) but — unlike a flat
+// disk cap — meets the vertical wall at a dihedral angle, so the weld is a genuine
+// watertight test (no coincident-flat-triangle degeneracy).
+topo::Shape bumpCappedCylinderSolid(double R, double h) {
+  const m::Ax3 fr{m::Point3{0, 0, 0}, m::Dir3{1, 0, 0}, m::Dir3{0, 1, 0}, m::Dir3{0, 0, 1}};
+  topo::FaceSurface sideS{};
+  sideS.kind = topo::FaceSurface::Kind::Cylinder;
+  sideS.frame = fr;
+  sideS.radius = R;
+  auto vb = vertexAt(R, 0, 0), vt = vertexAt(R, 0, h);
+  topo::Shape botC = circleEdge3d(R, 0, vb, vb), topC = circleEdge3d(R, h, vt, vt);
+  topo::Shape seam0 = lineEdge(vb, vt), seam1 = lineEdge(vb, vt);
+  topo::Shape sf0 = topo::ShapeBuilder::makeFace(sideS, topo::Shape{});
+  auto pcLine = [&](m::Point3 o, m::Vec3 d) {
+    topo::PCurve pc{}; pc.kind = topo::EdgeCurve::Kind::Line; pc.origin2d = o; pc.dir2d = d; return pc;
+  };
+  auto bS = topo::ShapeBuilder::addPCurve(botC, sf0.tshape(), pcLine({0, 0, 0}, {1, 0, 0}));
+  auto tS = topo::ShapeBuilder::addPCurve(topC, sf0.tshape(), pcLine({0, h, 0}, {1, 0, 0}));
+  auto s0 = topo::ShapeBuilder::addPCurve(seam0, sf0.tshape(), pcLine({0, 0, 0}, {0, h, 0}));
+  auto s1 = topo::ShapeBuilder::addPCurve(seam1, sf0.tshape(), pcLine({2 * kPi, 0, 0}, {0, h, 0}));
+  topo::Shape sideFace = topo::ShapeBuilder::makeFace(
+      sideS, topo::ShapeBuilder::makeWire({bS, s1, tS.reversedShape(), s0.reversedShape()}));
+  // Flat bottom disk (plane z=0, Reversed ⇒ outward −z).
+  topo::FaceSurface disk{};
+  disk.kind = topo::FaceSurface::Kind::Plane;
+  disk.frame = fr;
+  topo::Shape kf0 = topo::ShapeBuilder::makeFace(disk, topo::Shape{});
+  topo::PCurve pcd{}; pcd.kind = topo::EdgeCurve::Kind::Circle; pcd.origin2d = {0, 0, 0}; pcd.dir2d = {R, 0, 0};
+  auto dOn = topo::ShapeBuilder::addPCurve(botC, kf0.tshape(), pcd);
+  topo::Shape botCap = topo::ShapeBuilder::makeFace(disk, topo::ShapeBuilder::makeWire({dOn}), {},
+                                                    topo::Orientation::Reversed);
+  // Bump cap (trimmed free-form, Forward ⇒ outward +z), sharing the top circle.
+  topo::FaceSurface cap = bumpCapSurface(h, R, /*rational=*/false);
+  topo::Shape cf0 = topo::ShapeBuilder::makeFace(cap, topo::Shape{});
+  topo::PCurve pcc{}; pcc.kind = topo::EdgeCurve::Kind::Circle; pcc.origin2d = {0.5, 0.5, 0}; pcc.dir2d = {R, 0, 0};
+  auto cOn = topo::ShapeBuilder::addPCurve(topC, cf0.tshape(), pcc);
+  topo::Shape capFace = topo::ShapeBuilder::makeFace(cap, topo::ShapeBuilder::makeWire({cOn}), {},
+                                                     topo::Orientation::Forward);
+  return topo::ShapeBuilder::makeSolid(
+      {topo::ShapeBuilder::makeShell({sideFace, botCap, capFace})});
+}
+// Max chord deviation of a mesh from the analytic bump surface: the perpendicular
+// distance from each triangle's plane to S at the triangle centroid + edge midpoints.
+double maxBumpChordDeviation(const Mesh& mesh, double capZ, double rho) {
+  double dmax = 0.0;
+  for (const Triangle& t : mesh.triangles) {
+    const math::Point3 A = mesh.vertices[t.a], B = mesh.vertices[t.b], C = mesh.vertices[t.c];
+    math::Vec3 n = math::cross(B - A, C - A);
+    const double L = math::norm(n);
+    if (L < 1e-30) continue;
+    n = n / L;
+    const math::Point3 pr[4] = {{(A.x + B.x + C.x) / 3, (A.y + B.y + C.y) / 3, 0},
+                                {(A.x + B.x) / 2, (A.y + B.y) / 2, 0},
+                                {(B.x + C.x) / 2, (B.y + C.y) / 2, 0},
+                                {(C.x + A.x) / 2, (C.y + A.y) / 2, 0}};
+    for (const math::Point3& q : pr) {
+      const math::Point3 S{q.x, q.y, bumpZ(q.x, q.y, capZ, rho)};
+      dmax = std::max(dmax, std::fabs(math::dot(S - A, n)));
+    }
+  }
+  return dmax;
+}
+
 }  // namespace
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -547,6 +663,87 @@ CC_TEST(cylinder_solid_watertight_converges) {
   const double coarse = std::fabs(areaAt(0.2) - truthA);
   const double fine = std::fabs(areaAt(0.01) - truthA);
   CC_CHECK(fine < coarse);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MOAT M0 — trimmed CURVED FREE-FORM face (the keystone the foreign B-spline patch
+// needed). The pure ear-clip path samples only the boundary, so a curved trimmed
+// patch's interior was left unresolved (chord deflection unbounded → the import
+// declines). The new arm folds curvature samples into a constrained-Delaunay
+// triangulation; these tests assert it meshes ON the surface, within the deflection
+// bound, watertight as a solid, and with the closed-form volume.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// The trimmed bump-cap FACE is sampled INTERIOR (not just the boundary): every
+// vertex lies on the analytic surface, the apex is reached, and every triangle's
+// chord deviation is within the deflection bound. A boundary-only mesh would leave
+// the apex un-sampled with deflection ≈ H (the whole bump height).
+CC_TEST(trimmed_freeform_face_on_surface_within_deflection) {
+  const double R = 0.4, capZ = 0.5, defl = 0.01;
+  MeshParams p; p.deflection = defl;
+  Mesh mesh = FaceMesher{p}.mesh(bumpCapFace(R, capZ, /*rational=*/false));
+  CC_CHECK(mesh.triangleCount() > 0);
+  CC_CHECK(isTwoManifold(mesh));  // valid manifold-with-boundary patch
+  // Every vertex ON the analytic bump surface (S(u,v) is exact for a biquadratic).
+  double onSurf = 0.0, apex = 0.0;
+  for (const auto& v : mesh.vertices) {
+    onSurf = std::max(onSurf, std::fabs(v.z - bumpZ(v.x, v.y, capZ, R)));
+    apex = std::max(apex, v.z);
+  }
+  CC_CHECK(onSurf < 1e-9);                       // vertices on the true surface
+  CC_CHECK(apex > capZ + kBumpH - 0.02);         // the apex region IS sampled
+  // Interior curvature is resolved: chord deviation within the deflection bound.
+  CC_CHECK(maxBumpChordDeviation(mesh, capZ, R) <= defl * 1.02);
+}
+
+// Finer deflection ⇒ the chord deviation tightens (converges), and the boundary-only
+// failure mode (deviation pinned at ~H regardless of deflection) is gone.
+CC_TEST(trimmed_freeform_deflection_converges) {
+  const double R = 0.4, capZ = 0.5;
+  auto devAt = [&](double defl) {
+    MeshParams p; p.deflection = defl;
+    return maxBumpChordDeviation(FaceMesher{p}.mesh(bumpCapFace(R, capZ, false)), capZ, R);
+  };
+  const double coarse = devAt(0.02), fine = devAt(0.005);
+  CC_CHECK(coarse <= 0.02 * 1.02);
+  CC_CHECK(fine <= 0.005 * 1.02);
+  CC_CHECK(fine < coarse);  // strictly tighter with a finer bound
+}
+
+// The RATIONAL (weights / nurbsSurface*) evaluation of the identical geometry meshes
+// the same way — on-surface and within deflection.
+CC_TEST(trimmed_freeform_rational_matches) {
+  const double R = 0.4, capZ = 0.5, defl = 0.01;
+  MeshParams p; p.deflection = defl;
+  Mesh mesh = FaceMesher{p}.mesh(bumpCapFace(R, capZ, /*rational=*/true));
+  CC_CHECK(mesh.triangleCount() > 0);
+  CC_CHECK(isTwoManifold(mesh));
+  double onSurf = 0.0;
+  for (const auto& v : mesh.vertices) onSurf = std::max(onSurf, std::fabs(v.z - bumpZ(v.x, v.y, capZ, R)));
+  CC_CHECK(onSurf < 1e-9);
+  CC_CHECK(maxBumpChordDeviation(mesh, capZ, R) <= defl * 1.02);
+}
+
+// A CLOSED solid whose TOP is a trimmed free-form cap meshes WATERTIGHT and its
+// enclosed volume matches the closed form V = πR²h (cylinder) + πR²H/2 (cap dome),
+// converging as the deflection shrinks. This is the solid-level keystone: a foreign
+// curved patch welded into a watertight solid with the correct volume.
+CC_TEST(trimmed_freeform_solid_watertight_volume_converges) {
+  const double R = 0.4, h = 0.5;
+  const double truthV = kPi * R * R * h + kPi * R * R * kBumpH / 2.0;
+  auto volAt = [&](double defl) {
+    MeshParams p; p.deflection = defl;
+    Mesh mesh = SolidMesher{p}.mesh(bumpCappedCylinderSolid(R, h));
+    CC_CHECK(mesh.triangleCount() > 0);
+    CC_CHECK(isTwoManifold(mesh));
+    CC_CHECK(isWatertight(mesh));            // curved cap↔side seam welded ⇒ closed
+    CC_CHECK(boundaryEdgeCount(mesh) == 0);
+    return std::fabs(enclosedVolume(mesh));
+  };
+  const double coarse = std::fabs(volAt(0.02) - truthV);
+  const double fine = std::fabs(volAt(0.005) - truthV);
+  CC_CHECK(fine < coarse);                   // volume converges to the closed form
+  CC_CHECK(fine < 0.03 * truthV);            // and is tight (≤3% at defl 0.005)
 }
 
 CC_RUN_ALL()

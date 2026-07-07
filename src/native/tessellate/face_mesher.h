@@ -249,6 +249,21 @@ class FaceMesher {
     if (region.holes.empty() && region.isFullRectangle(1e-4, /*requireCorners=*/planar))
       return structuredGrid(eval, region, box, flip, /*hasBoundary=*/true, freeForm, anchors);
 
+    // ── ADDITIVE trimmed-FREE-FORM arm (MOAT M0) ──────────────────────────────
+    // A genuinely-trimmed CURVED free-form (Bézier/B-spline) face — a foreign patch
+    // bounded by a real EDGE_LOOP, NOT the full parametric rectangle — reaches here.
+    // The pure ear-clip path (below) samples only its BOUNDARY, so its curved
+    // interior is never sampled and the chord deflection is unbounded (a foreign
+    // rational-B-spline STEP patch declines for exactly this reason). trimmedFreeform
+    // Mesh() reuses the SAME boundary (flattenWireShared + anchors) as the ear-clip,
+    // then folds interior curvature samples into it (triangulateConstrained) and
+    // refines to the deflection bound. This arm is reachable ONLY by this case:
+    // our own bare-periodic B-spline faces are the full parametric rectangle
+    // (structured-grid path above); analytic primitives and planar trims never set
+    // freeForm here — so every existing mesh is byte-identical (see face_mesher tests).
+    if (freeForm)
+      return trimmedFreeformMesh(eval, loops, region, flip, anchors);
+
     return earClipMesh(eval, loops, flip, anchors);
   }
 
@@ -469,6 +484,89 @@ class FaceMesher {
     for (const UV& p : region.outer) c.push_back(uDir ? p.u : p.v);
     std::sort(c.begin(), c.end());
     return c;
+  }
+
+  // ── TRIMMED-FREE-FORM path (MOAT M0: curved patch, real EDGE_LOOP boundary) ───
+  // Boundary from the shared per-edge discretization (identical, in 3D, to the
+  // neighbour's — so the seam welds exactly like the ear-clip cap). The interior is
+  // sampled by a CONSTRAINED-DELAUNAY triangulation (uv_triangulate ConstrainedDelaunay)
+  // seeded with the curvature-driven grid and refined until every triangle's chord
+  // deviation is within the deflection bound. Delaunay (not ear-clip + Steiner) is
+  // essential: it flips away the boundary-spanning fan chords that would otherwise
+  // hold an unbounded deflection and stop the volume from converging. Every emitted
+  // vertex is S(u,v) on the true surface; boundary vertices snap to canonical anchors.
+  Mesh trimmedFreeformMesh(const SurfaceEvaluator& eval, const std::vector<UVPolygon>& loops,
+                           const UVRegion& region, bool flip,
+                           const BoundaryAnchors& anchors) const {
+    std::vector<UV> pts;
+    const std::vector<std::vector<int>> loopIdx = appendBoundaryLoops(loops, pts);
+    if (loopIdx.empty() || loopIdx[0].size() < 3) return {};
+
+    detail::ConstrainedDelaunay cdt(pts, loopIdx);
+    for (const UV& g : interiorGridPoints(eval, region)) cdt.insert(g);
+    const auto maxPts = static_cast<std::size_t>(p_.maxDiv) * static_cast<std::size_t>(p_.maxDiv);
+    cdt.refine(
+        [&](int a, int b, int c) { return triangleDeflection(eval, pts, a, b, c) > p_.deflection; },
+        /*maxPasses=*/20, maxPts);
+    const std::vector<UVTri> tris = cdt.triangles();
+
+    Mesh m = evaluatePoints(eval, pts, flip, anchors);
+    m.triangles.reserve(tris.size());
+    for (const UVTri& t : tris) {
+      const auto ia = static_cast<std::uint32_t>(t.a);
+      const auto ib = static_cast<std::uint32_t>(t.b);
+      const auto ic = static_cast<std::uint32_t>(t.c);
+      if (flip) m.addTriangle(ia, ic, ib); else m.addTriangle(ia, ib, ic);
+    }
+    return m;
+  }
+
+  // Curvature-driven interior UV sample grid, kept strictly inside the trimmed
+  // region. Divisions come from the SAME sagitta law and worstCurvature(foldTwist)
+  // used by the structured-grid path, so a foreign patch is sampled at the same
+  // interior density its curvature demands. Boundary rows/cols (i,j at 0 or n) are
+  // omitted — the boundary is already the shared-edge polygon.
+  std::vector<UV> interiorGridPoints(const SurfaceEvaluator& eval, const UVRegion& region) const {
+    std::vector<UV> out;
+    const UVBox& b = region.box;
+    const double du = b.uMax - b.uMin, dv = b.vMax - b.vMin;
+    if (du <= 0.0 || dv <= 0.0) return out;
+    const auto d2 = detail::worstCurvature(eval, b.uMin, b.uMax, b.vMin, b.vMax, /*foldTwist=*/true);
+    const int nu = detail::divisionsFor(du, d2[0], p_);
+    const int nv = detail::divisionsFor(dv, d2[1], p_);
+    for (int i = 1; i < nu; ++i)
+      for (int j = 1; j < nv; ++j) {
+        const UV g{b.uMin + du * (static_cast<double>(i) / nu),
+                   b.vMin + dv * (static_cast<double>(j) / nv)};
+        if (region.inside(g)) out.push_back(g);
+      }
+    return out;
+  }
+
+  // Chord deviation of a UV triangle (vertex indices a,b,c into `pts`): the max
+  // distance from the true surface to the triangle's 3D plane, probed at the centroid
+  // and the three edge midpoints (where a smooth patch bulges farthest from the flat
+  // triangle). A UV triangle that maps to a degenerate (zero-area) 3D triangle
+  // contributes no deviation. Drives the CDT refinement's split predicate.
+  static double triangleDeflection(const SurfaceEvaluator& eval, const std::vector<UV>& pts, int a,
+                                   int b, int c) {
+    const math::Point3 A = eval.value(pts[a].u, pts[a].v);
+    const math::Point3 B = eval.value(pts[b].u, pts[b].v);
+    const math::Point3 C = eval.value(pts[c].u, pts[c].v);
+    math::Vec3 n = math::cross(B - A, C - A);
+    const double L = math::norm(n);
+    if (L < 1e-30) return 0.0;
+    n = n / L;
+    const UV probes[4] = {{(pts[a].u + pts[b].u + pts[c].u) / 3.0, (pts[a].v + pts[b].v + pts[c].v) / 3.0},
+                          {(pts[a].u + pts[b].u) / 2.0, (pts[a].v + pts[b].v) / 2.0},
+                          {(pts[b].u + pts[c].u) / 2.0, (pts[b].v + pts[c].v) / 2.0},
+                          {(pts[c].u + pts[a].u) / 2.0, (pts[c].v + pts[a].v) / 2.0}};
+    double dmax = 0.0;
+    for (const UV& q : probes) {
+      const math::Point3 P = eval.value(q.u, q.v);
+      dmax = std::max(dmax, std::fabs(math::dot(P - A, n)));
+    }
+    return dmax;
   }
 
   // ── EAR-CLIP path (genuinely trimmed faces) ──────────────────────────────────

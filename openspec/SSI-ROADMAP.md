@@ -288,7 +288,7 @@ corrector/step outside the band is unchanged). Deeper near-coincident bands, gen
 are now crossed — see S4-e below) and self-intersection (S4-f) remain the tail: anything not
 robustly crossable is still an honest `NearTangent` gap deferred to OCCT.
 
-#### S4-d — Branch points · ◐ FIRST HONEST SLICE DONE AT THE BAR (elementary transversal self-crossing — the Steinmetz family; general/freeform/cusp branches remain)
+#### S4-d — Branch points · ◐ TWO HONEST SLICES DONE AT THE BAR (analytic Steinmetz self-crossing + FIRST FREEFORM branch point: a B-spline saddle ∩ plane OPEN-ARM X-crossing; general multi-line/cusp/saddle∩saddle branches remain)
 The hardest SSI piece: where the intersection **locus itself crosses** (multiple curve arms
 meet at one point), LOCALIZE the branch point, ENUMERATE the outgoing arms from the local
 second-order structure, ROUTE each arm with the S3 marcher, then ASSEMBLE the multi-arm
@@ -327,15 +327,40 @@ spheres at `d = R₁+R₂`) STILL ENDS with zero arms (definite `H` ⇒ no real 
 graze still crosses (`crossed = 22`); the flag-off eq-cyl control still defers; the 5
 transversal pairs stay `nt = 0` bit-identical.
 
-- **Honest scope / risk:** only the **elementary two-real-distinct-line transversal
-  self-crossing** (the Steinmetz family) is traced. **General/freeform branch points**
-  (arbitrary self-crossings on freeform surfaces, three-plus tangent lines at one point),
-  **cusps** (double root of the tangent-cone quadratic), and **general small-loop / topology
-  repair (the S4-f residual)** all remain DEFERRED → OCCT, reported with the measured gap, never
-  faked. (**S4-e chart singularities** — the sphere parametric pole + cone apex — are now crossed
-  natively; and a **single-arm figure-eight self-intersection** is now DETECTED + traced-through
-  as typed data by the S4-f guard — `branchPts=0`, distinct from this locus branch — though it is
-  not yet split into sub-arcs; see the S4-e and S4-f slices below.)
+**Second slice — FIRST FREEFORM branch point (M1, `moat-m1-ssi-s4-general`, gated
+`CYBERCAD_HAS_NUMSCI`, additive to `marching.{h,cpp}` only — no change to `branch_point.h`).**
+The S4-d machinery (`localize` / `enumerateArms` / `sharedTangentFrame` / `relativeSecondForm` /
+`solveTangentCone` / `routeArm` / `routeBranches`) is SURFACE-AGNOSTIC — it touches a surface only
+through `SurfaceAdapter` — so a **bicubic B-spline saddle tangent to a plane through its saddle
+point** localizes `branchPoints == 1` on both surfaces ≤ `onSurfTol` and enumerates the correct FOUR
+arm rays with the EXISTING code. The ONE gap was ASSEMBLY, not geometry: the Steinmetz branch is a
+CLOSED network (each arc runs branch-to-branch, so `reclassifyBranchArcs` recognised only
+both-ends-on-a-branch), but a freeform X-crossing on a FINITE patch radiates FOUR **OPEN** arms
+(each branch-to-boundary — one end the localized branch, the other a clean domain exit). Fix (the
+whole slice): two additive `WLine` flags `frontNearTangent` / `backNearTangent` record WHICH end
+stalled at a near-tangency, and `reclassifyBranchArcs` is generalised to the honest OPEN-ARM rule —
+reclassify to `BranchArc` iff every END that stalled sits on a localized branch point and at least
+one does; a near-tangent end NOT on a branch keeps the arc a `nearTangentGaps` gap (defer → OCCT).
+This reduces EXACTLY to the both-ends rule for Steinmetz (bit-identical). At the bar (host + sim):
+`saddle s4d-g branchPts=1 NTgaps=0 traced=4 arms=3 onCurve=8.93e-8 onSurf=5.10e-10 occtBr=4` — every
+arm node on the OCCT `GeomAPI_IntSS` locus and on both surfaces, the branch at the saddle. The
+honesty control (a B-spline BUMP `z=0.15·(x²+y²)` tangent to a plane, definite `H`, Δ ≤ 0) still ENDS
+with NO arms (`branchPoints == 0`, never a fabricated arm); the not-through-saddle (`z=0`) plane
+still traces two DISJOINT open curves with `branchPoints == 0`. NOTE: the once-hypothesised
+Richardson third-derivative bias-cancellation was REFUTED (the central-difference `relativeSecondForm`
+already cancels odd-order terms, κ at B is O(δ²)-accurate ~1e-7) and is NOT shipped — no dead code.
+
+- **Honest scope / risk:** the **elementary two-real-distinct-line transversal self-crossing** is
+  now traced for BOTH the analytic Steinmetz family (closed network) AND the first FREEFORM case (a
+  B-spline saddle ∩ plane, open arms). Still DEFERRED → OCCT, reported with the measured gap, never
+  faked: **non-transversal (definite) freeform contacts** (end with no arms — pinned by the bump
+  control), **freeform cusps** (double root of the tangent-cone quadratic), **higher-multiplicity
+  junctions** (three-plus tangent lines at one point), **both-operand-freeform saddle∩saddle** whose
+  branch does not verify, and **general small-loop / topology repair (the S4-f residual)**. (**S4-e
+  chart singularities** — the sphere parametric pole + cone apex — are crossed natively; and a
+  **single-arm figure-eight self-intersection** is DETECTED + traced-through as typed data by the
+  S4-f guard — `branchPts=0`, distinct from this locus branch — though it is not yet split into
+  sub-arcs; see the S4-e and S4-f slices below.)
 - **Unlocks:** **Steinmetz is now unblocked** natively; the multi-arm `TraceSet` +
   `BranchNode` connectivity is available to S5 curved booleans for self-crossing loci.
 

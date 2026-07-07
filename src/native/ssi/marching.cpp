@@ -1212,6 +1212,10 @@ WLine march_branch_impl(const SurfaceAdapter& A, const SurfaceAdapter& B, const 
     else if (f.end == DirEnd::NearTangent || b.end == DirEnd::NearTangent) {
       line.status = TraceStatus::NearTangent;
       line.stopReason = typeNearTangentStop(A, B, f, b, scale);  // S4-b: type the stop
+      // Record WHICH end stalled: points = [reversed backward half] seed [forward half], so
+      // points.front() is the backward-march terminus (b) and points.back() the forward (f).
+      line.frontNearTangent = (b.end == DirEnd::NearTangent);
+      line.backNearTangent = (f.end == DirEnd::NearTangent);
     } else
       line.status = TraceStatus::BoundaryExit;
   }
@@ -1394,10 +1398,25 @@ std::optional<WLine> routeArm(const SurfaceAdapter& A, const SurfaceAdapter& B,
   return w;
 }
 
-// RECLASSIFY branch-terminated arcs. An arc whose NearTangent ends both sit on a LOCALIZED
-// branch point is NOT an unresolved S4 gap — it is a resolved junction (the arcs meet at B,
-// recorded in the BranchNode). Convert it to BranchArc (a complete arc of the multi-arm
-// locus) and take it out of `nearTangentGaps`. This drives Steinmetz to nearTangentGaps == 0.
+// RECLASSIFY branch-terminated arcs. A NearTangent arc is a resolved arm of the self-crossing
+// locus — NOT an unresolved S4 gap — when EVERY end that stalled at a near-tangency sits on a
+// LOCALIZED branch point, and at least one end does. Convert it to BranchArc (a complete arc of
+// the multi-arm locus) and take it out of `nearTangentGaps`.
+//
+// TWO topologies are covered by the same honesty rule:
+//   * CLOSED NETWORK (Steinmetz): both ends are near-tangent stalls sitting on the TWO branch
+//     points — a branch-to-branch arc. Drives Steinmetz to nearTangentGaps == 0 (unchanged).
+//   * OPEN ARM (a general/freeform X-crossing on a FINITE patch, e.g. a B-spline saddle tangent
+//     to a plane through its saddle point): ONE end is the near-tangent stall on the single
+//     localized branch point, the OTHER end a clean domain-boundary exit. The four arms radiate
+//     branch-to-boundary; each is a complete arm, not a residual gap.
+//
+// HONESTY GATE (why this never hides a real S4 gap). An end is UNRESOLVED when it stalled at a
+// near-tangency (frontNearTangent / backNearTangent) that is NOT within mergeRadius of any
+// localized branch point. If either end is unresolved, the arc is left as a NearTangent gap —
+// only ends whose stall IS a genuine, arm-enumerated branch point (localizeBranchPoints already
+// gated Δ>0: no arms ⇒ no BranchNode) are treated as resolved. A boundary/loop end (not a stall)
+// is a clean terminus and never blocks reclassification.
 void reclassifyBranchArcs(TraceSet& res, double mergeRadius) {
   auto atBranch = [&](const Point3& p) {
     for (const BranchNode& n : res.branchNodes)
@@ -1406,13 +1425,16 @@ void reclassifyBranchArcs(TraceSet& res, double mergeRadius) {
   };
   for (WLine& w : res.lines) {
     if (w.status != TraceStatus::NearTangent || w.points.size() < 2) continue;
-    if (atBranch(w.points.front().point) && atBranch(w.points.back().point)) {
-      w.status = TraceStatus::BranchArc;
-      w.stopReason.reset();
-      --res.nearTangentGaps;
-      ++res.openCurves;
-      ++res.tracedBranches;
-    }
+    const bool frontAtBr = atBranch(w.points.front().point);
+    const bool backAtBr = atBranch(w.points.back().point);
+    // A near-tangent END that is not on a branch point is a genuine, still-open S4 gap → defer.
+    if ((w.frontNearTangent && !frontAtBr) || (w.backNearTangent && !backAtBr)) continue;
+    if (!(frontAtBr || backAtBr)) continue;  // no branch end ⇒ not a branch arc
+    w.status = TraceStatus::BranchArc;
+    w.stopReason.reset();
+    --res.nearTangentGaps;
+    ++res.openCurves;
+    ++res.tracedBranches;
   }
 }
 

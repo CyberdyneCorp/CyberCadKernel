@@ -219,6 +219,20 @@ struct WLine {
   int selfIntersectionCount = 0;
   std::vector<SelfIntersection> selfIntersections{};
 
+  /// S4-d (OPEN-ARM ASSEMBLY): whether the FRONT / BACK end of `points` stopped at a
+  /// near-tangency (an S4 stall) as opposed to a clean domain-boundary exit or loop close.
+  /// `points.front()` is the backward-march terminus, `points.back()` the forward-march
+  /// terminus (see marching.cpp assembly). Only meaningful when `status == NearTangent`
+  /// (at least one is true then); both false for Closed / BoundaryExit. Used by
+  /// reclassifyBranchArcs to tell a resolved open branch arm (its near-tangent end sits on
+  /// a LOCALIZED branch point, its other end a genuine boundary) from an unresolved S4 gap
+  /// (a near-tangent end NOT on any branch point) — so an X-crossing on a freeform patch,
+  /// whose four arms each run branch-to-boundary, is reported as resolved BranchArcs rather
+  /// than four residual nearTangentGaps. Additive: default false ⇒ every non-branch trace
+  /// (S3 / S4-c / S4-e / S4-f) is byte-identical.
+  bool frontNearTangent = false;
+  bool backNearTangent = false;
+
   bool isClosed() const noexcept { return status == TraceStatus::Closed; }
   bool truncated() const noexcept { return status == TraceStatus::NearTangent; }
 };

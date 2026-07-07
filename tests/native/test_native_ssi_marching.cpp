@@ -522,4 +522,120 @@ CC_TEST(march_tangent_point_never_branches_s4d) {
   CC_CHECK(tr.deferredTangent >= 1);           // S4 gap echoed, not faked
 }
 
+// ── S4-d GENERAL/FREEFORM OPEN-ARM branch point — a bicubic B-spline SADDLE tangent to a
+// plane through its saddle point → an X-shaped self-crossing of the intersection LOCUS.
+//
+// The B-spline saddle z ≈ 0.15·(x²−y²) is a general (non-quadric, non-Steinmetz) FREEFORM
+// patch; its actual saddle point sits at the patch centre (z ≈ 0.2449, ABOVE the z=0 plane of
+// march_plane_wavy_bspline_open_segments — where the two hyperbola branches are DISJOINT). A
+// plane placed THROUGH the saddle point makes the z=const level set DEGENERATE to the crossing:
+// the intersection self-crosses at one branch point with FOUR arms (the two diagonals). The
+// transversality sine collapses to 0 there — a genuine tangency.
+//
+// BEFORE (branch points OFF): the S3/S4-c marcher DEFERS at the saddle — ONE honest S4 gap, no
+// branch structure. AFTER (branch points ON): the branch LOCALIZES on the freeform pair (the
+// tangent-cone Δ>0 yields four arms), each arm routes branch-to-BOUNDARY on the finite patch,
+// and reclassifyBranchArcs recognises the OPEN-ARM topology (one end on the localized branch,
+// the other a clean domain boundary) → four resolved BranchArcs, ZERO residual near-tangent
+// gaps. Every node stays on BOTH surfaces (never a fabricated point past the degeneracy).
+CC_TEST(march_freeform_saddle_branch_open_arms_s4d) {
+  const int deg = 3, n = 4;
+  const std::vector<double> k = {0, 0, 0, 0, 1, 1, 1, 1};
+  const double xs[4] = {-3, -1, 1, 3};
+  const double ys[4] = {-2, -0.7, 0.7, 2};
+  std::vector<Point3> saddle;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j)
+      saddle.push_back({xs[i], ys[j], 0.15 * (xs[i] * xs[i] - ys[j] * ys[j])});
+  auto A = ssi::makeBSplineAdapter(deg, deg, saddle, n, n, k, k);
+  const nmath::SurfaceGrid grid{saddle, n, n};
+
+  // The B-spline's saddle point is the surface value at the patch centre (symmetric net ⇒
+  // centred at (0,0)); the plane THROUGH it forces the tangency.
+  const Point3 saddlePt = A.point(0.5, 0.5);
+  nmath::Plane pl{frameZ({0, 0, saddlePt.z})};
+  ssi::ParamBox pd{-4.0, 4.0, -3.0, 3.0};
+  auto B = ssi::makePlaneAdapter(pl, pd);
+  const double tol = 1e-5;
+
+  // BEFORE — branch points OFF: DEFER at the saddle (one honest S4 gap, no branch, X truncated).
+  ssi::MarchOptions off;
+  auto before = ssi::trace_intersection(A, B, defaultSeedOpts(), off);
+  CC_CHECK(before.branchPoints == 0);
+  CC_CHECK(before.nearTangentGaps == 1);
+  CC_CHECK(before.tracedBranches == 0);
+
+  // AFTER — branch points ON: one localized freeform branch, four resolved arms, no gaps.
+  ssi::MarchOptions on;
+  on.enableBranchPoints = true;
+  auto tr = ssi::trace_intersection(A, B, defaultSeedOpts(), on);
+
+  CC_CHECK(tr.branchPoints == 1);       // ONE localized freeform branch point
+  CC_CHECK(tr.nearTangentGaps == 0);    // NO residual gap — every arm resolved
+  CC_CHECK(tr.tracedBranches == 4);     // the four arms of the X-crossing
+  CC_CHECK(tr.openCurves == 4);
+  CC_CHECK(tr.curveCount() == 4);
+
+  CC_CHECK(tr.branchNodes.size() == 1);
+  if (tr.branchNodes.size() == 1) {
+    const ssi::BranchNode& node = tr.branchNodes[0];
+    CC_CHECK(node.onSurfResidual < tol);                       // B is on BOTH surfaces
+    CC_CHECK(node.branchSine < 1e-3);                          // the transversality collapsed at B
+    CC_CHECK(nmath::distance(node.point, saddlePt) < 1e-2);    // B is the saddle point
+  }
+
+  // Every arm is a resolved BranchArc: on BOTH surfaces, ONE end on the branch, the other a
+  // domain boundary (an OPEN arm — never fabricated past the branch).
+  const double mergeR = 1e-3 * std::max(A.modelScale, B.modelScale);
+  auto atBranch = [&](const Point3& p) {
+    for (const ssi::BranchNode& nd : tr.branchNodes)
+      if (nmath::distance(nd.point, p) <= mergeR) return true;
+    return false;
+  };
+  int armsMeetingBranch = 0;
+  for (const ssi::WLine& w : tr.lines) {
+    CC_CHECK(w.status == ssi::TraceStatus::BranchArc);
+    CC_CHECK(w.points.size() >= 2);
+    CC_CHECK(w.onSurfResidual < tol);
+    for (const ssi::WLinePoint& nd : w.points) {
+      CC_CHECK(std::fabs(nd.point.z - saddlePt.z) < tol);      // on the plane
+      CC_CHECK(nmath::distance(nmath::surfacePoint(deg, deg, grid, k, k, nd.u1, nd.v1),
+                               nd.point) < tol);               // on the B-spline
+    }
+    const bool frB = atBranch(w.points.front().point);
+    const bool bkB = atBranch(w.points.back().point);
+    CC_CHECK(frB != bkB);   // EXACTLY one end on the branch (open arm), the other a boundary
+    if (frB || bkB) ++armsMeetingBranch;
+  }
+  CC_CHECK(armsMeetingBranch == 4);
+}
+
+// ── S4-d honesty control — a DEFINITE freeform contact NEVER sprouts arms. A bicubic B-spline
+// BOWL z = 0.15·(x²+y²) tangent to a plane through its minimum touches at a single point; the
+// relative second fundamental form is sign-DEFINITE (tangent-cone Δ≤0), so enumerateArms returns
+// NO arms and the curve ENDS. With branch points ON the marcher STILL fabricates nothing —
+// distinguishing the transversal saddle self-crossing (arms) from an isolated tangent contact.
+CC_TEST(march_freeform_bump_definite_never_branches_s4d) {
+  const int deg = 3, n = 4;
+  const std::vector<double> k = {0, 0, 0, 0, 1, 1, 1, 1};
+  const double xs[4] = {-3, -1, 1, 3};
+  const double ys[4] = {-2, -0.7, 0.7, 2};
+  std::vector<Point3> bump;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j)
+      bump.push_back({xs[i], ys[j], 0.15 * (xs[i] * xs[i] + ys[j] * ys[j])});
+  auto A = ssi::makeBSplineAdapter(deg, deg, bump, n, n, k, k);
+  const Point3 lo = A.point(0.5, 0.5);       // the bowl minimum
+  nmath::Plane pl{frameZ({0, 0, lo.z})};
+  auto B = ssi::makePlaneAdapter(pl, ssi::ParamBox{-4.0, 4.0, -3.0, 3.0});
+
+  ssi::MarchOptions on;
+  on.enableBranchPoints = true;
+  auto tr = ssi::trace_intersection(A, B, defaultSeedOpts(), on);
+  CC_CHECK(tr.branchPoints == 0);        // definite contact is NOT a branch
+  CC_CHECK(tr.routedArms == 0);          // no arms sprouted
+  CC_CHECK(tr.curveCount() == 0);        // the curve ends — no fabricated arc
+  CC_CHECK(tr.deferredTangent >= 1);     // honest S4 gap echoed, not faked
+}
+
 int main() { return cctest::run_all(); }

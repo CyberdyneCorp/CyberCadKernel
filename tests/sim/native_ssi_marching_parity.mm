@@ -748,6 +748,86 @@ void pairEqualCylindersBranchS4d() {
   std::fflush(stdout);
 }
 
+// ── S4-d GENERAL/FREEFORM open-arm branch point, vs OCCT ──────────────────────────────
+// A bicubic B-spline SADDLE z = 0.15·(x²−y²) (a genuine FREEFORM operand, NOT a quadric)
+// TANGENT to a plane placed THROUGH its saddle point (the surface value at the patch centre,
+// z ≈ 0.2449 — NOT z=0, where the two hyperbola branches are DISJOINT). The intersection locus
+// self-crosses at ONE branch point with FOUR arms radiating OPEN to the patch boundary. The
+// native tracer must LOCALIZE the branch point, ENUMERATE + ROUTE the four arms, and RECLASSIFY
+// each OPEN arm (branch-to-boundary) as a resolved BranchArc → branchPoints==1, nearTangentGaps==0.
+// Verified against the OCCT GeomAPI_IntSS oracle on the SAME Geom_BSplineSurface ∩ Geom_Plane:
+//   * every native arc node lies on the OCCT locus (nearest OCCT branch) AND on both surfaces;
+//   * the localized branch point lies on both OCCT surfaces AND on the OCCT locus, at the saddle;
+//   * branchPoints==1, nearTangentGaps==0, tracedBranches≥4 (the four open arms).
+void pairFreeformSaddleBranchS4d() {
+  const int deg = 3, n = 4;
+  const auto k = clampedKnots(deg, n);
+  const double xs[4] = {-3, -1, 1, 3};
+  const double ys[4] = {-2, -0.7, 0.7, 2};
+  std::vector<Point3> saddle;
+  saddle.reserve(16);
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j)
+      saddle.push_back({xs[i], ys[j], 0.15 * (xs[i] * xs[i] - ys[j] * ys[j])});
+  auto A = ssi::makeBSplineAdapter(deg, deg, saddle, n, n, k, k);
+
+  // The plane through the B-spline saddle point (the surface value at the patch centre).
+  const Point3 saddlePt = A.point(0.5, 0.5);
+  const double cutZ = saddlePt.z;
+  nm::Plane pl{Ax3{{0, 0, cutZ}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+  ssi::ParamBox pd{-4.0, 4.0, -3.0, 3.0};
+  auto B = ssi::makePlaneAdapter(pl, pd);
+
+  Handle(Geom_Surface) sa = toOcctBSpline(saddle, n, n, deg, deg);
+  Handle(Geom_Surface) sb = new Geom_Plane(toOcctAx3(Ax3{{0, 0, cutZ}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}));
+
+  ssi::SeedOptions sopt; sopt.initialGridU = 3; sopt.initialGridV = 3;
+  ssi::MarchOptions mo;
+  mo.enableBranchPoints = true;
+  const ssi::TraceSet ts = ssi::trace_intersection(A, B, sopt, mo);
+
+  const double onCurveTol = 5e-4, onSurfTol = 5e-4, bpTol = 1e-2;
+
+  // OCCT locus branches (for the on-locus check).
+  GeomAPI_IntSS iss(sa, sb, 1e-7);
+  std::vector<OcctBranch> occtBr;
+  if (iss.IsDone())
+    for (int i = 1; i <= iss.NbLines(); ++i)
+      occtBr.push_back(classifyBranch(iss.Line(i), sa, sb, /*tangentSine=*/1e-2));
+
+  // Every native arc node on the OCCT locus AND on both surfaces.
+  double maxOnCurve = 0.0, maxOnSurf = 0.0;
+  for (const auto& w : ts.lines)
+    for (const auto& nd : w.points) {
+      double best = 1e30;
+      for (const auto& b : occtBr) best = std::min(best, distToOcctCurve(b.curve, nd.point));
+      if (!occtBr.empty()) maxOnCurve = std::max(maxOnCurve, best);
+      maxOnSurf = std::max(maxOnSurf,
+                           std::max(distToOcctSurface(sa, nd.point), distToOcctSurface(sb, nd.point)));
+    }
+
+  // The single branch point localized at the saddle point, on both OCCT surfaces + the OCCT locus.
+  bool bpAtSaddle = false, bpOnSurf = true, bpOnLocus = true;
+  for (const auto& bn : ts.branchNodes) {
+    if (nm::distance(bn.point, Point3{0, 0, cutZ}) < bpTol) bpAtSaddle = true;
+    if (distToOcctSurface(sa, bn.point) > onSurfTol || distToOcctSurface(sb, bn.point) > onSurfTol)
+      bpOnSurf = false;
+    double best = 1e30;
+    for (const auto& b : occtBr) best = std::min(best, distToOcctCurve(b.curve, bn.point));
+    if (!occtBr.empty() && best > onCurveTol) bpOnLocus = false;
+  }
+
+  const bool ok = ts.branchPoints == 1 && ts.nearTangentGaps == 0 && ts.tracedBranches >= 4 &&
+                  bpAtSaddle && bpOnSurf && bpOnLocus &&
+                  maxOnCurve <= onCurveTol && maxOnSurf <= onSurfTol;
+  if (ok) ++g_pass; else ++g_fail;
+  std::printf("[NMARCH] %-4s %-18s branchPts=%d NTgaps=%d traced=%d arms=%d onCurve=%.2e "
+              "onSurf=%.2e occtBr=%d (freeform saddle open-arm)\n",
+              ok ? "PASS" : "FAIL", "saddle s4d-g", ts.branchPoints, ts.nearTangentGaps,
+              ts.tracedBranches, ts.routedArms, maxOnCurve, maxOnSurf, (int)occtBr.size());
+  std::fflush(stdout);
+}
+
 // ── S4-e helpers: force MARCHING through a chart singularity + verify vs OCCT ─────────
 // A one-seed SeedSet on hand params (trace_from_seeds forces marching, bypassing S1/S2 so
 // the analytic pair does not short-circuit to a closed form and the march actually walks
@@ -996,6 +1076,7 @@ int main() {
   pairNearTangentCrossedS4c();   // S4-c: graze marched through, full curve vs OCCT
   pairEqualCylindersDefer();     // S4-c: branch saddle still deferred (not crossed) — control
   pairEqualCylindersBranchS4d(); // S4-d: branch points localized + arms routed vs OCCT
+  pairFreeformSaddleBranchS4d(); // S4-d-g: FREEFORM saddle open-arm branch localized + routed vs OCCT
   pairSpherePoleS4e();           // S4-e: sphere parametric pole crossed, full great circle vs OCCT
   pairConeApexS4e();             // S4-e: cone apex crossed, both nappes vs OCCT
   pairFreeformPoleS4e();         // S4-e: FREEFORM (NURBS) parametric pole crossed, full circle vs OCCT

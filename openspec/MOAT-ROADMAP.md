@@ -111,6 +111,35 @@ whole SSI arc was built for.
 - *Oracle:* `BRepAlgoAPI_{Fuse,Cut,Common}` volume/area/watertight on NURBS↔NURBS and
   freeform↔analytic pairs.
 - *Bounded per family, asymptotic in full generality* (arbitrary self-intersecting inputs).
+- **Status — first-slice attempt DECLINED (honest, no code shipped).** The Wave-2 slice tried
+  to lift `recogniseCurvedSolid` to admit ONE tractable freeform operand pair (freeform↔analytic,
+  COMMON/CUT) and route it through split→classify→weld. It DID NOT land: the freeform boolean
+  requires a from-scratch subsystem whose entry points do not yet exist, and no half-built dead
+  code was left behind (working tree clean, `src/native` byte-identical, `src/native/**`
+  OCCT-free). The measured blockers, confirmed in source at
+  `src/native/boolean/ssi_boolean.h`:
+  - **B1 — recognition rejects freeform.** `recogniseCurvedSolid` (line 200)
+    `default: return std::nullopt; // BSpline / Bezier → freeform → OCCT` — only
+    Cylinder/Sphere/Cone surfaces are admitted; any B-spline/NURBS face declines before any
+    trace runs. The S5 assembler is analytic-only.
+  - **B2 — no freeform face split.** There is no path to split a trimmed freeform face along the
+    S3/M1-traced WLine into in/out sub-faces (only analytic caps/walls are assembled).
+  - **B3 — no freeform point-in-solid.** `classifyPoint` (line 247) evaluates only the analytic
+    `CurvedSolid` wall (cylinder/sphere/cone radial/spherical/conic half-space + planar caps);
+    it has no point-in-freeform-solid classifier, so in/out labelling of split fragments is
+    unavailable for a freeform operand.
+  - **B4/B5 — no freeform weld/assembly.** With B1–B3 open there is no consumer wiring the split
+    fragments back through the M0 trimmed-free-form mesher into a watertight welded solid, nor a
+    self-verify tuned for freeform output.
+  Both mandatory gates remain **green with zero regression**: host-analytic native suites pass
+  (incl. `freeform_bspline_face_operand_declines_before_trace`, which directly exercises B1), and
+  the sim native-vs-OCCT run is `24 passed / 0 failed / 6 fell-back (native-pass=18)` — the 6
+  fall-backs are exactly the `sphere×box` and `cone×box` freeform/box families across all three
+  ops, each logging `recogniseCurvedSolid … gate declines → native NULL → OCCT`. No wrong or leaky
+  result is ever emitted: freeform operands honestly self-decline to the OCCT oracle. This is a
+  first-class HONEST DECLINE for a research-grade stage; the B1–B5 subsystem is bounded per surface
+  family and remains the next critical-path target. No OpenSpec change was archived (nothing landed);
+  this roadmap entry is the tracker for the measured blocker.
 
 ### M3 — General freeform blends + wrap-emboss · ~2–4 py · needs M2
 The curved-curved blends and freeform-base features that sit on booleans: cyl↔cyl-canal /
@@ -220,7 +249,7 @@ slices used). Both are captured below.
 | **M6** completeness / fuzzing harness | test infra + `ssi/` | — | ✅ **Wave-1 slice LANDED** — bar continues (gates M8) |
 | **M7a** guided sweep · hard loft | `construct/` | — | **Wave-1 eligible — NOT yet started** (independent, can start anytime) |
 | **M4** general STEP/AP242 import | `exchange/` | M0 | ▶ **Wave 2 — OPEN NOW** (M0 mesher ready) |
-| **M2** general freeform booleans | `boolean/` | M0 **+** M1 | ▶ **Wave 2 — OPEN NOW** (M0 + M1 first slices landed) |
+| **M2** general freeform booleans | `boolean/` | M0 **+** M1 | ▶ **Wave 2 — OPEN, first-slice attempt DECLINED** (blocker B1–B5, see §M2; freeform → OCCT) |
 | **M3** freeform blends + wrap-emboss | `blend/` · `feature/` | M2 | **Wave 3** — after M2 |
 | **M7b** fine-pitch self-intersecting thread | `construct/` | M2 | **Wave 3** — after M2 |
 | **M8** `drop-occt` — unlink | `engine/occt` (delete) | ALL + M6 bar | **Terminal** |

@@ -437,6 +437,198 @@ CC_TEST(foreign_trimmed_bspline_unfaithful_edge_declines) {
   CC_CHECK(ex::readStepString(step).isNull());  // guard declines the unfaithful curved edge
 }
 
+// ── M4-RATIONAL — foreign RATIONAL B-spline surface via the combined record ─────
+// OCCT STEPControl_Writer emits a rational NURBS surface NOT as the bare
+// B_SPLINE_SURFACE_WITH_KNOTS keyword but as a COMBINED Part-21 instance whose fields are
+// split across sub-records:
+//   ( BOUNDED_SURFACE() B_SPLINE_SURFACE(degU,degV,((poles)),form,cU,cV,si)
+//     B_SPLINE_SURFACE_WITH_KNOTS((uM),(vM),(uK),(vK),spec) GEOMETRIC_REPRESENTATION_ITEM()
+//     RATIONAL_B_SPLINE_SURFACE(((weights))) REPRESENTATION_ITEM('') SURFACE() )
+// The reader now parses that record, populates FaceSurface::weights, and admits the face
+// through the SAME guard + M0 mesher as the non-rational path. These host gates prove it
+// against independent oracles with NO OCCT linked.
+namespace {
+
+// Split `s` on top-level commas (commas inside () or '' are ignored).
+std::vector<std::string> splitTopCommas(const std::string& s) {
+  std::vector<std::string> out;
+  int depth = 0;
+  bool inStr = false;
+  std::size_t start = 0;
+  for (std::size_t i = 0; i < s.size(); ++i) {
+    const char c = s[i];
+    if (inStr) {
+      if (c == '\'') inStr = false;
+      continue;
+    }
+    if (c == '\'') inStr = true;
+    else if (c == '(') ++depth;
+    else if (c == ')') --depth;
+    else if (c == ',' && depth == 0) {
+      out.push_back(s.substr(start, i - start));
+      start = i + 1;
+    }
+  }
+  out.push_back(s.substr(start));
+  return out;
+}
+
+// Rewrite the single non-rational B_SPLINE_SURFACE_WITH_KNOTS record OCCT/the native writer
+// emits into the COMBINED RATIONAL_B_SPLINE_SURFACE form, injecting `weights` (a "((w..)..)"
+// grid). Splits the 13 keyword args EXACTLY as OCCT splits them across sub-records: degrees +
+// poles + form flags into B_SPLINE_SURFACE, the RLE knots into B_SPLINE_SURFACE_WITH_KNOTS,
+// the weights into RATIONAL_B_SPLINE_SURFACE. When `withRational` is false the RATIONAL
+// sub-record is omitted (a plain combined surface the reader must still DECLINE). Everything
+// else in the file (cylinder side, disk, edges) is the writer's genuine output.
+std::string rationalizeCap(const std::string& step, const std::string& weights,
+                           bool withRational = true) {
+  const std::string kw = "B_SPLINE_SURFACE_WITH_KNOTS(";
+  const std::size_t kwPos = step.find(kw);
+  if (kwPos == std::string::npos) return step;
+  const std::size_t argStart = kwPos + kw.size();
+  int depth = 1;
+  bool inStr = false;
+  std::size_t i = argStart;
+  for (; i < step.size(); ++i) {
+    const char c = step[i];
+    if (inStr) {
+      if (c == '\'') inStr = false;
+      continue;
+    }
+    if (c == '\'') inStr = true;
+    else if (c == '(') ++depth;
+    else if (c == ')' && --depth == 0) break;
+  }
+  const std::vector<std::string> a = splitTopCommas(step.substr(argStart, i - argStart));
+  if (a.size() < 13) return step;
+  std::string combined = "( BOUNDED_SURFACE() B_SPLINE_SURFACE(" + a[1] + "," + a[2] + "," +
+                         a[3] + "," + a[4] + "," + a[5] + "," + a[6] + "," + a[7] +
+                         ") B_SPLINE_SURFACE_WITH_KNOTS(" + a[8] + "," + a[9] + "," + a[10] +
+                         "," + a[11] + "," + a[12] + ")";
+  if (withRational)
+    combined += " GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_SURFACE(" + weights + ")";
+  combined += " REPRESENTATION_ITEM('') SURFACE() )";
+  return step.substr(0, kwPos) + combined + step.substr(i + 1);
+}
+
+// Author the 9×5 tensor-product rational-quadratic grid of an EXACT sphere of radius R,
+// centre origin, +Z axis — the SAME grid the reader's internal revolvedProfile builds for a
+// (a=b=R) axis ellipse (u = standard rational full circle {1,1/√2,..}; v = pole-to-pole
+// meridian half-circle promoted to two 90° rational-quadratic arcs {1,1/√2,1,1/√2,1}). Emits
+// the 45 CARTESIAN_POINTs and the combined RATIONAL_B_SPLINE_SURFACE #5 record. Because the
+// grid is byte-identical to the proven revolution path, it meshes watertight to V=4/3·πR³.
+std::string rationalSphereRecords(double R) {
+  const double s2 = 1.0 / std::sqrt(2.0);
+  const double Cx[9] = {1, 1, 0, -1, -1, -1, 0, 1, 1};
+  const double Cy[9] = {0, 1, 1, 1, 0, -1, -1, -1, 0};
+  const double Cw[9] = {1, s2, 1, s2, 1, s2, 1, s2, 1};
+  const double mr[5] = {0, R, R, R, 0}, mz[5] = {R, R, 0, -R, -R}, mw[5] = {1, s2, 1, s2, 1};
+  auto num = [](double x) {
+    std::ostringstream o;
+    o.precision(15);
+    o << x;
+    std::string t = o.str();
+    if (t.find('.') == std::string::npos && t.find('e') == std::string::npos) t += ".";
+    return t;
+  };
+  std::ostringstream pts, grid, wgrid;
+  int id = 200, pid[9][5];
+  for (int u = 0; u < 9; ++u)
+    for (int v = 0; v < 5; ++v) {
+      pid[u][v] = id;
+      pts << "#" << id << " = CARTESIAN_POINT('',(" << num(Cx[u] * mr[v]) << ","
+          << num(Cy[u] * mr[v]) << "," << num(mz[v]) << "));\n";
+      ++id;
+    }
+  grid << "(";
+  wgrid << "(";
+  for (int u = 0; u < 9; ++u) {
+    grid << (u ? ",(" : "(");
+    wgrid << (u ? ",(" : "(");
+    for (int v = 0; v < 5; ++v) {
+      grid << (v ? "," : "") << "#" << pid[u][v];
+      wgrid << (v ? "," : "") << num(Cw[u] * mw[v]);
+    }
+    grid << ")";
+    wgrid << ")";
+  }
+  grid << ")";
+  wgrid << ")";
+  const double hp = 1.5707963267948966, pi = 3.141592653589793, tp = 4.71238898038469,
+               twp = 6.283185307179586;
+  std::ostringstream rec;
+  rec << "#5 = ( BOUNDED_SURFACE() B_SPLINE_SURFACE(2,2," << grid.str()
+      << ",.UNSPECIFIED.,.T.,.F.,.F.) B_SPLINE_SURFACE_WITH_KNOTS((3,2,2,2,3),(3,2,3),(" << num(0.)
+      << "," << num(hp) << "," << num(pi) << "," << num(tp) << "," << num(twp) << "),(" << num(0.)
+      << "," << num(hp) << "," << num(pi)
+      << "),.UNSPECIFIED.) GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_SURFACE(" << wgrid.str()
+      << ") REPRESENTATION_ITEM('') SURFACE() );\n";
+  return pts.str() + rec.str();
+}
+
+}  // namespace
+
+// The all-unit-weight rational record denotes the SAME surface as the non-rational keyword
+// form: the combined-record cap admits, meshes watertight, and reproduces the SAME solid as
+// the non-rational M4 import — proving the split-record parse (fillBsplineGrid shared factor)
+// and the row-major weight read pair correctly with the poles, and the rational-aware guard
+// (bsplineSurfaceValue → math::nurbsSurfacePoint) accepts the faithful curved rim.
+CC_TEST(foreign_rational_bspline_surface_unit_weights_matches_nonrational) {
+  const double R = 0.4, h = 0.5;
+  const topo::Shape orig = bumpCappedCylinder(R, h, 0.0);
+  const std::string nonRat = ex::writeStepString(orig, "bumpcap");
+  const std::string rat = rationalizeCap(nonRat, "((1.,1.,1.),(1.,1.,1.),(1.,1.,1.))");
+  CC_CHECK(rat.find("RATIONAL_B_SPLINE_SURFACE") != std::string::npos);  // now a combined record
+  const topo::Shape rBack = ex::readStepString(rat);
+  const topo::Shape nBack = ex::readStepString(nonRat);
+  CC_CHECK(!rBack.isNull());  // admitted via the combined rational arm
+  CC_CHECK(!nBack.isNull());
+  if (rBack.isNull() || nBack.isNull()) return;
+  CC_CHECK(watertight(rBack));
+  const double vr = volumeOf(rBack), vn = volumeOf(nBack);
+  CC_CHECK(vr > 0.0 && vn > 0.0);
+  CC_CHECK(std::fabs(vr - vn) / vn < 1e-9);  // unit weights ⇒ identical geometry to non-rational
+  CC_CHECK(countType(rBack, topo::ShapeType::Face) == countType(nBack, topo::ShapeType::Face));
+}
+
+// The rational-aware faithful guard REJECTS an off-surface boundary: the perturbed cap (rim no
+// longer on the surface), delivered as a unit-weight combined rational record, still DECLINES →
+// OCCT. Proves the guard runs on the rational path (weights populated) exactly as non-rational.
+CC_TEST(foreign_rational_bspline_surface_unfaithful_edge_declines) {
+  const std::string rat = rationalizeCap(ex::writeStepString(bumpCappedCylinder(0.4, 0.5, 0.05),
+                                                             "bad"),
+                                         "((1.,1.,1.),(1.,1.,1.),(1.,1.,1.))");
+  CC_CHECK(rat.find("RATIONAL_B_SPLINE_SURFACE") != std::string::npos);
+  CC_CHECK(ex::readStepString(rat).isNull());  // rational-aware guard rejects the off-surface rim
+}
+
+// A malformed weight grid is an HONEST DECLINE (NULL → OCCT), never a clamped weight: a ragged
+// row, a wrong row/column cardinality, or a non-positive (zero/negative) weight each declines.
+CC_TEST(foreign_rational_bspline_surface_malformed_weights_decline) {
+  const std::string base = ex::writeStepString(bumpCappedCylinder(0.4, 0.5, 0.0), "c");
+  CC_CHECK(base.find("B_SPLINE_SURFACE_WITH_KNOTS") != std::string::npos);
+  // Ragged (middle row has 2, not 3) → decline.
+  CC_CHECK(ex::readStepString(rationalizeCap(base, "((1.,1.,1.),(1.,1.),(1.,1.,1.))")).isNull());
+  // Wrong row count (2 rows, poles are 3×3) → decline.
+  CC_CHECK(ex::readStepString(rationalizeCap(base, "((1.,1.,1.),(1.,1.,1.))")).isNull());
+  // Zero weight (not strictly positive) → decline.
+  CC_CHECK(ex::readStepString(rationalizeCap(base, "((1.,1.,1.),(1.,0.,1.),(1.,1.,1.))")).isNull());
+  // Negative weight → decline.
+  CC_CHECK(
+      ex::readStepString(rationalizeCap(base, "((1.,1.,1.),(1.,-1.,1.),(1.,1.,1.))")).isNull());
+}
+
+// A COMBINED surface record that carries NO RATIONAL_B_SPLINE_SURFACE sub-record keeps the
+// honest OCCT decline (unchanged): the new arm is reachable ONLY by the rational sub-record, so
+// every other combined surface still returns NULL — the zero-regression contract at the read.
+CC_TEST(combined_bspline_surface_without_rational_sub_declines) {
+  const std::string base = ex::writeStepString(bumpCappedCylinder(0.4, 0.5, 0.0), "c");
+  const std::string comb = rationalizeCap(base, "", /*withRational=*/false);
+  CC_CHECK(comb.find("( BOUNDED_SURFACE()") != std::string::npos);          // genuinely combined
+  CC_CHECK(comb.find("RATIONAL_B_SPLINE_SURFACE") == std::string::npos);    // but not rational
+  CC_CHECK(ex::readStepString(comb).isNull());  // other combined surfaces still decline → OCCT
+}
+
 // ── T2 — multi-solid file → a Compound of watertight Solids ────────────────────
 // Concatenate two independent native box files' DATA sections into ONE file with two
 // MANIFOLD_SOLID_BREP roots (renumbered so #ids don't collide), no assembly transform
@@ -1189,6 +1381,27 @@ int bsplineFaceCount(const topo::Shape& sh) {
     if (sr && sr->surface && sr->surface->kind == topo::FaceSurface::Kind::BSpline) ++n;
   }
   return n;
+}
+
+// A GENUINELY rational (non-unit weight) B-spline surface, delivered as the combined
+// RATIONAL_B_SPLINE_SURFACE record, reproduces the EXACT closed-form sphere: the reader parses
+// the split record, populates the weights, admits the bare-periodic face, and the M0 mesher
+// closes it watertight with V = 4/3·πR³. Proven against an independent closed form, NO OCCT.
+// (rationalSphereRecords is defined in the M4-RATIONAL fixtures block above.)
+CC_TEST(foreign_rational_bspline_sphere_combined_record_imports_watertight) {
+  const double R = 2.0;
+  const std::string step = vertexLoopSolid(rationalSphereRecords(R), "#5");
+  CC_CHECK(step.find("RATIONAL_B_SPLINE_SURFACE") != std::string::npos);
+  const topo::Shape s = ex::readStepString(step);
+  CC_CHECK(!s.isNull());  // admitted via the NEW combined rational arm (declined before)
+  if (s.isNull()) return;
+  CC_CHECK(s.type() == topo::ShapeType::Solid);
+  CC_CHECK(bsplineFaceCount(s) == 1);  // one bare-periodic rational B-spline sphere face
+  CC_CHECK(watertight(s));             // u-seam welded, both axis poles collapsed
+  const double vA = 4.0 / 3.0 * 3.14159265358979323846 * R * R * R;
+  const double v = volumeOf(s);
+  CC_CHECK(v > 0.0);
+  CC_CHECK(std::fabs(v - vA) / vA < 1e-2);  // converges to the true sphere within deflection
 }
 
 // Author an OCCT-style FULL torus solid: ONE ADVANCED_FACE on a TOROIDAL_SURFACE

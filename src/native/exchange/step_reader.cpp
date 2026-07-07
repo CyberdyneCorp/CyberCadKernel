@@ -915,7 +915,17 @@ class Mapper {
   // the quadrics share the ('',#placement[,radius[,semiAngle]]) shape.
   std::optional<topo::FaceSurface> surface(long id) {
     const Record* r = rec(id);
-    if (!r || r->combined) return std::nullopt;
+    if (!r) return std::nullopt;
+    // A COMBINED Part-21 instance is how OCCT STEPControl_Writer emits a RATIONAL
+    // B-spline surface: ( BOUNDED_SURFACE() B_SPLINE_SURFACE(..) B_SPLINE_SURFACE_WITH_KNOTS(..)
+    // GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_SURFACE(((weights))) .. SURFACE() ).
+    // Route ONLY the RATIONAL_B_SPLINE_SURFACE-bearing combined record to the rational arm
+    // (reusing the sub-record scan the reader already uses for rational curves / assembly
+    // relationships); every OTHER combined surface record keeps the honest decline it had.
+    if (r->combined) {
+      if (hasSub(*r, "RATIONAL_B_SPLINE_SURFACE")) return rationalBsplineSurface(*r);
+      return std::nullopt;
+    }
     using K = topo::FaceSurface::Kind;
     if (r->keyword == "PLANE") return placedSurface(*r, K::Plane, /*nRadii=*/0);
     if (r->keyword == "CYLINDRICAL_SURFACE") return placedSurface(*r, K::Cylinder, 1);
@@ -1337,37 +1347,105 @@ class Mapper {
     return s;
   }
 
-  // B_SPLINE_SURFACE_WITH_KNOTS('',degU,degV,((poles)..),form,uClosed,vClosed,
-  //   self_int,(uMults),(vMults),(uKnots),(vKnots),form). Poles row-major (U outer).
-  std::optional<topo::FaceSurface> bsplineSurface(const Record& r) {
-    if (r.args.size() < 12) return std::nullopt;
-    if (!r.args[1].isInt() || !r.args[2].isInt() || !r.args[3].isList()) return std::nullopt;
-    if (!r.args[8].isList() || !r.args[9].isList() || !r.args[10].isList() || !r.args[11].isList())
-      return std::nullopt;
-    topo::FaceSurface s;
-    s.kind = topo::FaceSurface::Kind::BSpline;
-    s.degreeU = static_cast<int>(r.args[1].asInt());
-    s.degreeV = static_cast<int>(r.args[2].asInt());
-    const ArgList& rows = r.args[3].list;  // U outer
-    s.nPolesU = static_cast<int>(rows.size());
+  // Combined-instance sub-record scan (mirrors relationshipAndTransform's pattern): the
+  // first sub-record whose keyword matches, or nullptr. Non-combined records have no subs.
+  static const SubRecord* findSub(const Record& r, const char* kw) {
+    for (const SubRecord& s : r.subs)
+      if (s.keyword == kw) return &s;
+    return nullptr;
+  }
+  static bool hasSub(const Record& r, const char* kw) { return findSub(r, kw) != nullptr; }
+
+  // Shared pole-grid + RLE-knot fill for BOTH the non-rational B_SPLINE_SURFACE_WITH_KNOTS
+  // KEYWORD path and the combined RATIONAL_B_SPLINE_SURFACE path (whose degrees + poles live
+  // in the B_SPLINE_SURFACE sub-record and whose knots live in the B_SPLINE_SURFACE_WITH_KNOTS
+  // sub-record). `out` is filled as a Kind::BSpline surface; returns false (caller → nullopt →
+  // decline) on any malformed / ragged / short input. Poles row-major (U outer, V inner) — the
+  // SAME layout the non-rational keyword path produced, so it stays byte-identical.
+  bool fillBsplineGrid(int degU, int degV, const Arg& polesArg, const Arg& uMultsArg,
+                       const Arg& vMultsArg, const Arg& uKnotsArg, const Arg& vKnotsArg,
+                       topo::FaceSurface& out) {
+    if (!polesArg.isList() || !uMultsArg.isList() || !vMultsArg.isList() ||
+        !uKnotsArg.isList() || !vKnotsArg.isList())
+      return false;
+    out.kind = topo::FaceSurface::Kind::BSpline;
+    out.degreeU = degU;
+    out.degreeV = degV;
+    const ArgList& rows = polesArg.list;  // U outer
+    out.nPolesU = static_cast<int>(rows.size());
     int vCount = -1;
     for (const Arg& row : rows) {
-      if (!row.isList()) return std::nullopt;
+      if (!row.isList()) return false;
       if (vCount < 0) vCount = static_cast<int>(row.list.size());
-      else if (static_cast<int>(row.list.size()) != vCount) return std::nullopt;  // ragged
+      else if (static_cast<int>(row.list.size()) != vCount) return false;  // ragged
       for (const Arg& p : row.list) {
-        if (!p.isRef()) return std::nullopt;
+        if (!p.isRef()) return false;
         const auto pt = point(p.ref);
-        if (!pt) return std::nullopt;
-        s.poles.push_back(*pt);  // row-major (U outer, V inner)
+        if (!pt) return false;
+        out.poles.push_back(*pt);  // row-major (U outer, V inner)
       }
     }
-    s.nPolesV = vCount < 0 ? 0 : vCount;
-    s.knotsU = expandKnots(r.args[10].list, r.args[8].list);
-    s.knotsV = expandKnots(r.args[11].list, r.args[9].list);
-    if (s.nPolesU <= 0 || s.nPolesV <= 0) return std::nullopt;
-    if (s.knotsU.size() != static_cast<std::size_t>(s.nPolesU + s.degreeU + 1)) return std::nullopt;
-    if (s.knotsV.size() != static_cast<std::size_t>(s.nPolesV + s.degreeV + 1)) return std::nullopt;
+    out.nPolesV = vCount < 0 ? 0 : vCount;
+    out.knotsU = expandKnots(uKnotsArg.list, uMultsArg.list);
+    out.knotsV = expandKnots(vKnotsArg.list, vMultsArg.list);
+    if (out.nPolesU <= 0 || out.nPolesV <= 0) return false;
+    if (out.knotsU.size() != static_cast<std::size_t>(out.nPolesU + out.degreeU + 1)) return false;
+    if (out.knotsV.size() != static_cast<std::size_t>(out.nPolesV + out.degreeV + 1)) return false;
+    return true;
+  }
+
+  // B_SPLINE_SURFACE_WITH_KNOTS('',degU,degV,((poles)..),form,uClosed,vClosed,
+  //   self_int,(uMults),(vMults),(uKnots),(vKnots),form). Poles row-major (U outer).
+  // Non-rational KEYWORD form (no weights) — byte-identical to before the shared-grid factor.
+  std::optional<topo::FaceSurface> bsplineSurface(const Record& r) {
+    if (r.args.size() < 12) return std::nullopt;
+    if (!r.args[1].isInt() || !r.args[2].isInt()) return std::nullopt;
+    topo::FaceSurface s;
+    if (!fillBsplineGrid(static_cast<int>(r.args[1].asInt()), static_cast<int>(r.args[2].asInt()),
+                         r.args[3], r.args[8], r.args[9], r.args[10], r.args[11], s))
+      return std::nullopt;
+    return s;
+  }
+
+  // Combined RATIONAL B-spline surface — the ONLY new read this slice adds. OCCT
+  // STEPControl_Writer emits a rational NURBS surface as a combined instance whose fields are
+  // split across sub-records:
+  //   B_SPLINE_SURFACE(degU, degV, ((poles)), form, uClosed, vClosed, selfInt)   — degrees+poles
+  //   B_SPLINE_SURFACE_WITH_KNOTS((uMults),(vMults),(uKnots),(vKnots),spec)       — RLE knots
+  //   RATIONAL_B_SPLINE_SURFACE(((weights)))                                      — weight grid
+  // Read all three, populate FaceSurface::weights in the SAME row-major (U-outer/V-inner) order
+  // as the poles, then let the (already rational-aware) faithful guard + M0 mesher + engine
+  // self-verify do the rest. Any malformed / ragged / mismatched / non-positive weight grid, or
+  // any missing sibling sub-record, returns nullopt → DECLINE → OCCT (never a clamped weight).
+  std::optional<topo::FaceSurface> rationalBsplineSurface(const Record& r) {
+    const SubRecord* bs = findSub(r, "B_SPLINE_SURFACE");
+    const SubRecord* wk = findSub(r, "B_SPLINE_SURFACE_WITH_KNOTS");
+    const SubRecord* rs = findSub(r, "RATIONAL_B_SPLINE_SURFACE");
+    if (!bs || !wk || !rs) return std::nullopt;
+    if (bs->args.size() < 3 || !bs->args[0].isInt() || !bs->args[1].isInt()) return std::nullopt;
+    if (wk->args.size() < 4) return std::nullopt;
+    topo::FaceSurface s;
+    if (!fillBsplineGrid(static_cast<int>(bs->args[0].asInt()),
+                         static_cast<int>(bs->args[1].asInt()), bs->args[2], wk->args[0],
+                         wk->args[1], wk->args[2], wk->args[3], s))
+      return std::nullopt;
+    // Weight grid ((w)…): row-major (U outer), SAME nPolesU × nPolesV shape as the poles.
+    if (rs->args.empty() || !rs->args[0].isList()) return std::nullopt;
+    const ArgList& wrows = rs->args[0].list;
+    if (static_cast<int>(wrows.size()) != s.nPolesU) return std::nullopt;
+    std::vector<double> w;
+    w.reserve(s.poles.size());
+    for (const Arg& row : wrows) {
+      if (!row.isList() || static_cast<int>(row.list.size()) != s.nPolesV) return std::nullopt;
+      for (const Arg& a : row.list) {
+        if (!a.isNumber()) return std::nullopt;
+        const double wv = a.asReal();
+        if (!std::isfinite(wv) || !(wv > 0.0)) return std::nullopt;  // strict-positive, never clamp
+        w.push_back(wv);
+      }
+    }
+    if (w.size() != s.poles.size()) return std::nullopt;
+    s.weights = std::move(w);
     return s;
   }
 

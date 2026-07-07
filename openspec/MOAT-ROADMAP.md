@@ -139,6 +139,52 @@ M7 Tier-4 construction (guided sweep / hard loft / fine-pitch) ──► (fine-p
                           ALL of M0–M7 native at the bar + M6 holds ──► M8 drop-occt
 ```
 
+## Parallelism — what can be researched concurrently
+
+These are multi-py research arcs, so "parallel" means **separate efforts / tracks**, not the
+short-lived workflow-parallelism used for bounded slices. Two things make a stage
+parallelizable: (a) its **upstream dependency** is met, and (b) it touches a **disjoint
+`src/native` module** (so tracks integrate cleanly — the same isolation the parallel bounded
+slices used). Both are captured below.
+
+| Stage | Module (disjoint unit) | Needs | Wave — can start when |
+|---|---|---|---|
+| **M0** freeform mesher/trimmer | `tessellate/` | — | **Wave 1 — NOW** (keystone) |
+| **M1** SSI S4 general robustness | `ssi/marching` | — | **Wave 1 — NOW** |
+| **M5** shape-healing robustness | `heal/` | — | **Wave 1 — NOW** |
+| **M6** completeness / fuzzing harness | test infra + `ssi/` | — | **Wave 1 — NOW** (harness; the *bar* gates M8) |
+| **M7a** guided sweep · hard loft | `construct/` | — | **Wave 1 — NOW** |
+| **M4** general STEP/AP242 import | `exchange/` | M0 | **Wave 2** — after M0 |
+| **M2** general freeform booleans | `boolean/` | M0 **+** M1 | **Wave 2** — after M0 + M1 |
+| **M3** freeform blends + wrap-emboss | `blend/` · `feature/` | M2 | **Wave 3** — after M2 |
+| **M7b** fine-pitch self-intersecting thread | `construct/` | M2 | **Wave 3** — after M2 |
+| **M8** `drop-occt` — unlink | `engine/occt` (delete) | ALL + M6 bar | **Terminal** |
+
+```
+WAVE 1 (5 fully-independent tracks, disjoint modules, start immediately)
+  M0 tessellate  │  M1 ssi/marching  │  M5 heal  │  M6 fuzz-harness  │  M7a construct(sweep/loft)
+        │  └──────────────┐                                                 │
+        ├──► WAVE 2        │                                                 │ (M7a lands independently)
+        │    M4 exchange (needs M0)                                         │
+        └──► M2 boolean (needs M0 + M1) ◄─────────────────────────┘
+                  │
+                  └──► WAVE 3:  M3 blend/feature   +   M7b construct(fine-pitch)   (both need M2)
+
+  ALL of M0–M7 native at the bar  +  M6 completeness bar holds  ──►  M8 drop-occt
+```
+
+**Reading it:** up to **5 arcs run in parallel from day one** (M0, M1, M5, M6-harness, M7a) —
+they share no module and no dependency. The freeform payoff chain is the critical path:
+**M0 + M1 → M2 → M3** (booleans gate blends). M4 (import) branches off M0 in parallel with M2.
+M5 (healing) and M6 (fuzzing) run the whole time and *gate the finish* (M4 quality, M8) rather
+than the middle. M8 is terminal — it starts only when every track is native at the bar and the
+M6 bar holds.
+
+**Critical path (longest serial chain):** `M0 → M1↘ M2 → M3` (≈ 6–13 py end-to-end), so the
+minimum wall-clock to drop-OCCT is set by the freeform-boolean chain + the asymptotic M5/M6
+tails — not by the total py, because M4/M5/M6/M7 overlap it. Staffing the 5 Wave-1 tracks
+concurrently is what compresses the calendar.
+
 ## Effort rollup (honest)
 
 | | Person-years |

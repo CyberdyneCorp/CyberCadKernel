@@ -49,6 +49,17 @@
 
 #include <STEPControl_Reader.hxx>
 #include <STEPControl_Writer.hxx>
+// XDE (STEPCAFControl_Writer) — the ONLY faithful author of a genuine multi-level nested
+// assembly (a component that is itself an assembly). Plain STEPControl_Writer on a nested
+// Compound flattens the hierarchy; XCAFDoc AddComponent emits the true 2-level CDSR /
+// REPRESENTATION_RELATIONSHIP chain (child SR placed into a sub-assembly SR placed into
+// the root SR), which is what the nested chain-walk composes. Used ONLY by runNestedAssembly.
+#include <STEPCAFControl_Writer.hxx>
+#include <TDocStd_Application.hxx>
+#include <TDocStd_Document.hxx>
+#include <XCAFDoc_DocumentTool.hxx>
+#include <XCAFDoc_ShapeTool.hxx>
+#include <TDF_Label.hxx>
 #include <Standard_Failure.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <TopoDS_Shape.hxx>
@@ -562,6 +573,74 @@ void runTransformedAssembly() {
     const Props nat = importUnder(1, path);
     const Props oracle = importUnder(0, path);
     compare("assembly", "two_box", nat, oracle, 5e-3, 5e-3);
+}
+
+// ── (H2) NESTED ASSEMBLY (MOAT M4-tail) — a 2-LEVEL transform tree vs OCCT ───────
+// Author a GENUINE nested assembly with STEPCAFControl_Writer (XDE): a leaf 6-cube is
+// placed by T₂ (rotate 0.5 rad about Z + translate (10,0,0)) into a SUB-ASSEMBLY, which
+// is in turn placed by T₁ (rotate 0.3 rad about X + translate (0,20,0)) into the TOP
+// assembly. This emits the true 2-level CDSR chain (child SR → sub-assembly SR → root SR).
+// The native reader must COMPOSE the full chain W = T₁ ∘ T₂ so the single leaf lands at
+// its true world placement — NOT the T₂-only mis-placement the pre-M4-tail reader emitted
+// (which passed the completeness gate yet dropped the ancestor transform). GATES: (b) the
+// native import matches the OCCT STEPControl_Reader re-import on solid COUNT / VOLUME /
+// BBOX / CENTROID; and an INDEPENDENT OCCT gp_Trsf compose (W = T₁·T₂ applied to the local
+// centroid) cross-checks the placement. A native decline here would fall back to OCCT and
+// still match — so the parsed=1 + centroid==W gate is what proves native genuinely composed.
+void runNestedAssembly() {
+    const std::string path = "/tmp/cck_nimport_nested.step";
+    Handle(TDocStd_Application) app = new TDocStd_Application();
+    Handle(TDocStd_Document) doc;
+    app->NewDocument("MDTV-XCAF", doc);
+    Handle(XCAFDoc_ShapeTool) stool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+
+    const TopoDS_Shape leaf = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 6, 6, 6).Shape();  // vol 216
+    const TDF_Label leafL = stool->AddShape(leaf, Standard_False);
+    const TDF_Label subL = stool->NewShape();
+    gp_Trsf rot2; rot2.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 0.5);
+    gp_Trsf tr2;  tr2.SetTranslation(gp_Vec(10, 0, 0));
+    const gp_Trsf T2 = tr2 * rot2;
+    stool->AddComponent(subL, leafL, TopLoc_Location(T2));
+    const TDF_Label topL = stool->NewShape();
+    gp_Trsf rot1; rot1.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), 0.3);
+    gp_Trsf tr1;  tr1.SetTranslation(gp_Vec(0, 20, 0));
+    const gp_Trsf T1 = tr1 * rot1;
+    stool->AddComponent(topL, subL, TopLoc_Location(T1));
+    stool->UpdateAssemblies();
+
+    STEPCAFControl_Writer w;
+    if (!w.Transfer(doc, STEPControl_AsIs) || w.Write(path.c_str()) != IFSelect_RetDone) {
+        record(false, "assembly", "nested author", "STEPCAF assembly write failed"); return;
+    }
+
+    // Native reader probe: must PARSE (not fall back) a placed single leaf solid whose
+    // watertight volume matches the OCCT oracle (216).
+    const NativeProbe pr = probeNative(path);
+    const double ov = occtStepVolume(path);
+    char d[400];
+    std::snprintf(d, sizeof d, "native parsed=%d solids=%d nativeVol=%.6g occtVol=%.6g",
+                  pr.parsed, pr.solids, pr.vol, ov);
+    const bool volOk = ov > 0 && std::fabs(pr.vol - ov) / ov < 5e-3;
+    record(pr.parsed && pr.solids == 1 && pr.allWatertight && volOk, "assembly", "nested native", d);
+
+    // INDEPENDENT world centroid: W = T₁·T₂ (OCCT gp_Trsf compose, NOT the native graph
+    // walk) applied to the local cube centroid (3,3,3). The native import's centroid must
+    // equal it — this is the composition-order proof (T₂-only would miss T₁ entirely).
+    cc_set_engine(1);
+    const CCShapeId nid = cc_step_import(path.c_str());
+    const Props nat = measure(nid);
+    const gp_Pnt cWorld = gp_Pnt(3, 3, 3).Transformed(T1 * T2);
+    const double cd = std::max({std::fabs(nat.cx - cWorld.X()), std::fabs(nat.cy - cWorld.Y()),
+                                std::fabs(nat.cz - cWorld.Z())});
+    char e[320];
+    std::snprintf(e, sizeof e, "native centroid=(%.4f,%.4f,%.4f) W·local=(%.4f,%.4f,%.4f) Δ=%.2e",
+                  nat.cx, nat.cy, nat.cz, cWorld.X(), cWorld.Y(), cWorld.Z(), cd);
+    record(nat.ok && cd < 5e-3, "assembly", "nested centroid", e);
+
+    // Through the facade: native import (composed placement) vs OCCT re-import — count /
+    // volume / bbox / centroid / topology all within tolerance.
+    const Props oracle = importUnder(0, path);
+    compare("assembly", "nested", nat, oracle, 5e-3, 5e-3);
 }
 
 // ── (I) FOREIGN AP214 header accepted — schema-independent import ─────────────────
@@ -1382,6 +1461,7 @@ int main() {
     // ── ASSEMBLIES (this slice) — a TRANSFORMED assembly imports as a placed
     //    Compound vs OCCT; an AP214 foreign header is accepted (schema-independent).
     runTransformedAssembly();// two boxes placed via the transform tree → placed compound
+    runNestedAssembly();     // M4-tail: 2-LEVEL nested assembly (W = T₁ ∘ T₂) vs OCCT
     runAp214Header();        // foreign AP214 (AUTOMOTIVE_DESIGN) header accepted
 
     // ── WIDENED SLICE (this task, T1/T2) — SCALED + MIRRORED component placements and

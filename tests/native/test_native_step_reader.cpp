@@ -808,6 +808,211 @@ CC_TEST(assembly_rotated_placement_composes) {
   CC_CHECK(found);
 }
 
+// ── NESTED (M4-tail) — a 2-level assembly composes W = T₁ ∘ T₂ (HOST ANALYTIC) ──
+// A leaf (box B, a 6-cube) sits in a child shape-representation placed INTO a
+// sub-assembly SR by T₂ (a 90° rotation about +Z then translate (10,0,0)); the
+// sub-assembly SR is in turn placed INTO the root SR by T₁ (translate (0,40,0)). Box A
+// (the 10-cube root) stays at the origin. The reader must compose the FULL chain so the
+// leaf lands at W = T₁ ∘ T₂ (not T₂-only — the latent nested mis-placement) — the leaf's
+// world box is [4,10]×[40,46]×[0,6], centroid (7,43,3). GATE (a): this is verified against
+// an INDEPENDENT math::Transform composition (T₁.composedWith(T₂)) with NO OCCT.
+namespace {
+
+namespace nm = cybercad::native::math;
+
+struct TwoBox { std::string sa; std::string bodyB; long brepB; };
+TwoBox twoBox() {
+  const double pa[] = {0, 0, 10, 0, 10, 10, 0, 10};  // 10-cube root (vol 1000)
+  const double pb[] = {0, 0, 6, 0, 6, 6, 0, 6};       // 6-cube leaf  (vol 216)
+  TwoBox t;
+  t.sa = ex::writeStepString(cst::build_prism(pa, 4, 10.0), "A");
+  const std::string sb = ex::writeStepString(cst::build_prism(pb, 4, 6.0), "B");
+  t.bodyB = renumberedDataBody(sb, 100000);
+  t.brepB = firstBrepId(t.bodyB);
+  return t;
+}
+std::string mergeAsm(const TwoBox& t, const std::string& asm_) {
+  std::string merged = t.sa;
+  const std::size_t insert = merged.find('\n', merged.find("DATA;")) + 1;
+  merged.insert(insert, t.bodyB + asm_);
+  return merged;
+}
+
+// The three shape-representations + the two frame-pair transforms shared by the nested
+// fixtures. `leaf` lists box B's brep; `sub` and `root` are empty assembly reps. T₂ =
+// R90z + (10,0,0) via the frame pair (#900004 identity FROM, #900006 TO); T₁ = (0,40,0)
+// via (#900004 FROM, #900106 TO). The leaf-into-`sub` and `sub`-into-`root` CDSRs are
+// authored per-test so the decline variants (cycle / ambiguous / dangling / shear) can
+// re-route them.
+std::string nestedReps(long brepB) {
+  return "#900008 = SHAPE_REPRESENTATION('',(#" + std::to_string(brepB) + "),#900020);\n"
+         "#900030 = SHAPE_REPRESENTATION('',(),#900020);\n"
+         "#900009 = SHAPE_REPRESENTATION('',(),#900020);\n"
+         "#900020 = GEOMETRIC_REPRESENTATION_CONTEXT(3);\n"
+         "#900001 = CARTESIAN_POINT('',(0.,0.,0.));\n"
+         "#900002 = DIRECTION('',(0.,0.,1.));\n"
+         "#900003 = DIRECTION('',(1.,0.,0.));\n"
+         "#900004 = AXIS2_PLACEMENT_3D('',#900001,#900002,#900003);\n"   // identity FROM
+         "#900005 = CARTESIAN_POINT('',(10.,0.,0.));\n"
+         "#900014 = DIRECTION('',(0.,1.,0.));\n"                          // TO X = +Y (R90z)
+         "#900006 = AXIS2_PLACEMENT_3D('',#900005,#900002,#900014);\n"   // T2 TO
+         "#900007 = ITEM_DEFINED_TRANSFORMATION('','',#900004,#900006);\n"  // T2
+         "#900105 = CARTESIAN_POINT('',(0.,40.,0.));\n"
+         "#900106 = AXIS2_PLACEMENT_3D('',#900105,#900002,#900003);\n"   // T1 TO (no rot)
+         "#900107 = ITEM_DEFINED_TRANSFORMATION('','',#900004,#900106);\n";  // T1
+}
+// The two placing CDSRs of the well-formed nested tree: leaf(#900008) → sub(#900030) by
+// T2(#900007); sub(#900030) → root(#900009) by T1(#900107).
+std::string nestedCdsrs() {
+  return "#900010 = ( REPRESENTATION_RELATIONSHIP('','',#900008,#900030) "
+         "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900007) "
+         "SHAPE_REPRESENTATION_RELATIONSHIP() );\n"
+         "#900011 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900010,#900012);\n"
+         "#900012 = PRODUCT_DEFINITION_SHAPE('','',#900013);\n"
+         "#900013 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('2','','',#900008,#900030,$);\n"
+         "#900110 = ( REPRESENTATION_RELATIONSHIP('','',#900030,#900009) "
+         "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900107) "
+         "SHAPE_REPRESENTATION_RELATIONSHIP() );\n"
+         "#900111 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900110,#900112);\n"
+         "#900112 = PRODUCT_DEFINITION_SHAPE('','',#900113);\n"
+         "#900113 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#900030,#900009,$);\n";
+}
+
+// The world box of the nested leaf (box B), discriminated from the 10-cube root by its
+// y-placement (the leaf is translated to y ≥ 40; the root stays at y ∈ [0,10]).
+Box nestedLeafBox(const topo::Shape& shape) {
+  for (topo::Explorer e(shape, topo::ShapeType::Solid); e.more(); e.next()) {
+    const Box b = worldBox(e.current());
+    if (b.lo[1] > 20.0) return b;
+  }
+  return Box{{0, 0, 0}, {0, 0, 0}};
+}
+
+}  // namespace
+
+CC_TEST(nested_two_level_assembly_composes_chain) {
+  const TwoBox t = twoBox();
+  const topo::Shape shape = ex::readStepString(mergeAsm(t, nestedReps(t.brepB) + nestedCdsrs()));
+  CC_CHECK(!shape.isNull());
+  if (shape.isNull()) return;
+  CC_CHECK(shape.type() == topo::ShapeType::Compound);
+
+  int solids = 0;
+  double volSum = 0.0;
+  bool allWatertight = true;
+  for (topo::Explorer e(shape, topo::ShapeType::Solid); e.more(); e.next()) {
+    ++solids;
+    if (!watertight(e.current())) allWatertight = false;
+    volSum += volumeOf(e.current());
+  }
+  CC_CHECK(solids == 2);
+  CC_CHECK(allWatertight);
+  CC_CHECK(std::fabs(volSum - (1000.0 + 216.0)) < 1e-6);  // both members, correct volumes
+
+  // INDEPENDENT composition (no OCCT, no reader graph walk): T₂ = R90z + (10,0,0),
+  // T₁ = (0,40,0); W = T₁ ∘ T₂ places the local centroid (3,3,3) at (7,43,3).
+  const nm::Transform T2{nm::Mat3{0, -1, 0, 1, 0, 0, 0, 0, 1}, nm::Vec3{10, 0, 0}};
+  const nm::Transform T1{nm::Mat3{1, 0, 0, 0, 1, 0, 0, 0, 1}, nm::Vec3{0, 40, 0}};
+  const nm::Point3 wc = T1.composedWith(T2).applyToPoint(nm::Point3{3, 3, 3});
+  CC_CHECK(std::fabs(wc.x - 7.0) < 1e-9 && std::fabs(wc.y - 43.0) < 1e-9 &&
+           std::fabs(wc.z - 3.0) < 1e-9);
+
+  // The reader's placed leaf box must equal W·(local box): [4,10]×[40,46]×[0,6], centre
+  // (7,43,3) = W·centroid_local. (T₂-only would give y∈[0,6]; T₁-only x∈[0,6] — both
+  // rejected, so this pins the FULL chain composition and its order.)
+  const Box b = nestedLeafBox(shape);
+  CC_CHECK(std::fabs(b.lo[0] - 4.0) < 1e-6 && std::fabs(b.hi[0] - 10.0) < 1e-6);
+  CC_CHECK(std::fabs(b.lo[1] - 40.0) < 1e-6 && std::fabs(b.hi[1] - 46.0) < 1e-6);
+  CC_CHECK(std::fabs(b.lo[2] - 0.0) < 1e-6 && std::fabs(b.hi[2] - 6.0) < 1e-6);
+  const double cx = 0.5 * (b.lo[0] + b.hi[0]), cy = 0.5 * (b.lo[1] + b.hi[1]),
+               cz = 0.5 * (b.lo[2] + b.hi[2]);
+  CC_CHECK(std::fabs(cx - wc.x) < 1e-6 && std::fabs(cy - wc.y) < 1e-6 &&
+           std::fabs(cz - wc.z) < 1e-6);
+}
+
+// ── NESTED (DECLINE) — a CYCLE in the parent-edge forest → NULL → OCCT ──────────
+// leaf(#900008) → sub(#900030) by T₂, and sub(#900030) → leaf(#900008) by T₁: the chain
+// walk revisits #900008 (visited-set hit) and DECLINES rather than looping forever.
+CC_TEST(nested_cyclic_graph_declines) {
+  const TwoBox t = twoBox();
+  const std::string cyc =
+      "#900010 = ( REPRESENTATION_RELATIONSHIP('','',#900008,#900030) "
+      "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900007) SHAPE_REPRESENTATION_RELATIONSHIP() );\n"
+      "#900011 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900010,#900012);\n"
+      "#900012 = PRODUCT_DEFINITION_SHAPE('','',#900013);\n"
+      "#900013 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('2','','',#900008,#900030,$);\n"
+      "#900110 = ( REPRESENTATION_RELATIONSHIP('','',#900030,#900008) "  // back-edge → cycle
+      "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900107) SHAPE_REPRESENTATION_RELATIONSHIP() );\n"
+      "#900111 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900110,#900112);\n"
+      "#900112 = PRODUCT_DEFINITION_SHAPE('','',#900113);\n"
+      "#900113 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#900030,#900008,$);\n";
+  CC_CHECK(ex::readStepString(mergeAsm(t, nestedReps(t.brepB) + cyc)).isNull());
+}
+
+// ── NESTED (DECLINE) — an AMBIGUOUS child (two distinct parents) → NULL → OCCT ──
+// leaf(#900008) is placed into BOTH sub(#900030) and an alternate parent(#900009) by two
+// CDSRs: a shared sub-assembly instanced twice needs per-instance world transforms this
+// slice does not model → parentEdges declines (childSr with two distinct parents).
+CC_TEST(nested_ambiguous_two_parent_declines) {
+  const TwoBox t = twoBox();
+  const std::string amb =
+      "#900010 = ( REPRESENTATION_RELATIONSHIP('','',#900008,#900030) "
+      "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900007) SHAPE_REPRESENTATION_RELATIONSHIP() );\n"
+      "#900011 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900010,#900012);\n"
+      "#900012 = PRODUCT_DEFINITION_SHAPE('','',#900013);\n"
+      "#900013 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('2','','',#900008,#900030,$);\n"
+      "#900110 = ( REPRESENTATION_RELATIONSHIP('','',#900008,#900009) "  // second parent
+      "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900107) SHAPE_REPRESENTATION_RELATIONSHIP() );\n"
+      "#900111 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900110,#900112);\n"
+      "#900112 = PRODUCT_DEFINITION_SHAPE('','',#900113);\n"
+      "#900113 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#900008,#900009,$);\n";
+  CC_CHECK(ex::readStepString(mergeAsm(t, nestedReps(t.brepB) + amb)).isNull());
+}
+
+// ── NESTED (DECLINE) — a DANGLING transform reference → NULL → OCCT ─────────────
+// The sub-assembly level's transform_operator references a non-existent id (#900777): the
+// chain walk cannot resolve that level's placement and DECLINES rather than dropping it.
+CC_TEST(nested_dangling_transform_declines) {
+  const TwoBox t = twoBox();
+  const std::string dangling =
+      "#900010 = ( REPRESENTATION_RELATIONSHIP('','',#900008,#900030) "
+      "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900007) SHAPE_REPRESENTATION_RELATIONSHIP() );\n"
+      "#900011 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900010,#900012);\n"
+      "#900012 = PRODUCT_DEFINITION_SHAPE('','',#900013);\n"
+      "#900013 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('2','','',#900008,#900030,$);\n"
+      "#900110 = ( REPRESENTATION_RELATIONSHIP('','',#900030,#900009) "
+      "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900777) "  // dangling operator id
+      "SHAPE_REPRESENTATION_RELATIONSHIP() );\n"
+      "#900111 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900110,#900112);\n"
+      "#900112 = PRODUCT_DEFINITION_SHAPE('','',#900113);\n"
+      "#900113 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#900030,#900009,$);\n";
+  CC_CHECK(ex::readStepString(mergeAsm(t, nestedReps(t.brepB) + dangling)).isNull());
+}
+
+// ── NESTED (DECLINE) — a NON-CONFORMAL (shear) ancestor level → NULL → OCCT ─────
+// The OUTER level places the sub-assembly into the root by a CARTESIAN_TRANSFORMATION_-
+// OPERATOR_3D with a NON-ORTHOGONAL triad (axis2 = (1,1,0)) — a shear, MᵀM ≠ k²·I. The
+// per-level conformality gate in the chain walk rejects it (only rigid / uniform-scale /
+// mirror are applied), so the whole file DECLINES → OCCT even though the inner T₂ is rigid.
+CC_TEST(nested_non_conformal_ancestor_declines) {
+  const TwoBox t = twoBox();
+  const std::string shear =
+      "#900010 = ( REPRESENTATION_RELATIONSHIP('','',#900008,#900030) "
+      "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900007) SHAPE_REPRESENTATION_RELATIONSHIP() );\n"
+      "#900011 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900010,#900012);\n"
+      "#900012 = PRODUCT_DEFINITION_SHAPE('','',#900013);\n"
+      "#900013 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('2','','',#900008,#900030,$);\n"
+      "#900201 = DIRECTION('',(1.,0.,0.));\n#900202 = DIRECTION('',(1.,1.,0.));\n"  // shear
+      "#900203 = DIRECTION('',(0.,0.,1.));\n#900204 = CARTESIAN_POINT('',(0.,40.,0.));\n"
+      "#900207 = CARTESIAN_TRANSFORMATION_OPERATOR_3D('',#900201,#900202,#900204,1.,#900203);\n"
+      "#900110 = ( REPRESENTATION_RELATIONSHIP('','',#900030,#900009) "
+      "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900207) SHAPE_REPRESENTATION_RELATIONSHIP() );\n"
+      "#900111 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900110,#900112);\n"
+      "#900112 = PRODUCT_DEFINITION_SHAPE('','',#900113);\n"
+      "#900113 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#900030,#900009,$);\n";
+  CC_CHECK(ex::readStepString(mergeAsm(t, nestedReps(t.brepB) + shear)).isNull());
+}
+
 // ── DECLINE: a non-composable assembly structure (Form B) → NULL ───────────────
 // A MAPPED_ITEM / REPRESENTATION_MAP placement (Form B) is out of this slice: the
 // reader must decline the WHOLE file rather than place the sub-solid at a wrong

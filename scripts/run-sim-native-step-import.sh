@@ -61,8 +61,16 @@ while IFS= read -r src; do KERNEL_SRCS+=("$src"); done \
 # broad toolkit set the sibling harnesses use (most-derived → base). TKDESTEP provides
 # both STEPControl_Writer (the OCCT writer path) and STEPControl_Reader (the harness
 # re-read); TKMesh/TKBRep/TKMath cover BRepGProp/BRepBndLib/TopExp.
-TKS="TKDESTEP TKDEIGES TKXSBase TKDE TKMesh TKShHealing TKOffset TKFillet TKBool \
-     TKPrim TKBO TKTopAlgo TKGeomAlgo TKBRep TKGeomBase TKG3d TKG2d TKMath TKernel"
+# TKXCAF/TKCAF/TKLCAF/TKCDF/TKBinL/TKStdL are the XDE (CAF document) toolkits the
+# nested-assembly author (STEPCAFControl_Writer + XCAFDoc_ShapeTool, runNestedAssembly)
+# needs; listed most-derived → base ahead of TKXSBase so the static back-references from
+# TKDESTEP (STEPCAFControl) into XCAFDoc/TDocStd resolve. TKService supplies the
+# Graphic3d PBR-material / texture symbols that TKXCAF's XCAFDoc_VisMaterial /
+# XCAFPrs_Texture objects pull in (math-only material classes — no GPU/Metal is linked).
+# (TKVCAF is deliberately OMITTED — it drags the full AIS presentation stack.) Rest unchanged.
+TKS="TKDESTEP TKDEIGES TKXCAF TKCAF TKLCAF TKCDF TKBinL TKStdL TKXSBase TKDE \
+     TKMesh TKShHealing TKOffset TKFillet TKBool \
+     TKPrim TKBO TKTopAlgo TKGeomAlgo TKBRep TKGeomBase TKG3d TKG2d TKService TKMath TKernel"
 LFLAGS=""; for tk in $TKS; do LFLAGS="$LFLAGS -l$tk"; done
 
 echo "── compiling native-STEP parity harness for iphonesimulator (arm64)"

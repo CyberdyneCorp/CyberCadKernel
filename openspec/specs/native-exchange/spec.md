@@ -133,10 +133,13 @@ Part 21) file — **independently of its `FILE_SCHEMA` header** (AP203, AP214 `A
 are all accepted; the reader gates on entities + the mm length-unit context, not the schema string, and
 **skips** AP242 PMI / annotation entities and additive plane-angle / solid-angle / PMI unit contexts) —
 and reconstructs a native `topology::Shape`: a `Solid` (one root `MANIFOLD_SOLID_BREP`), a **flat**
-`Compound` (several co-equal roots, no transform tree), or a **placed** `Compound` (a single-level
-assembly composed by a rigid / uniform-scale / mirror transform, else DECLINE, with mirror
-orientation-compensation so each placed solid self-verifies watertight; the tessellator SHALL NOT be
-modified and no normal SHALL be fabricated). The faces SHALL carry surfaces of kind `PLANE`,
+`Compound` (several co-equal roots, no transform tree), or a **placed** `Compound` (a single- OR
+**multi-level (nested)** assembly composed by walking the `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION` /
+`REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION` relationship chain from each leaf shape-representation to
+its UNIQUE root, composing the per-level rigid / uniform-scale / mirror transforms into ONE world placement
+per leaf, else DECLINE — a `MAPPED_ITEM` / `REPRESENTATION_MAP`, a cyclic / ambiguous / dangling chain, or a
+non-conformal composed transform declines — with mirror orientation-compensation so each placed solid
+self-verifies watertight; the tessellator SHALL NOT be modified and no normal SHALL be fabricated). The faces SHALL carry surfaces of kind `PLANE`,
 `CYLINDRICAL_SURFACE`, `CONICAL_SURFACE`, `SPHERICAL_SURFACE`, `B_SPLINE_SURFACE_WITH_KNOTS`
 (non-rational), a **`TOROIDAL_SURFACE`** (→ native `Kind::Torus`), or a **`SURFACE_OF_REVOLUTION`** that
 maps to a native surface — a straight generatrix **parallel** (→ cylinder), **oblique-meeting** (→ cone),
@@ -199,6 +202,11 @@ does not describe, nor weaken any tolerance, nor commit any dead reconstruction 
 - WHEN `step_import_native` reads the buffer back and the result is tessellated
 - THEN the reader SHALL return a `Solid` that is valid + watertight AND whose volume, bounding box, and face / edge / vertex counts / topology match the original box EXACTLY (the reader inverts the writer)
 
+#### Scenario: A 2-level nested rigid assembly composes each leaf's world placement by walking the relationship chain (host)
+- GIVEN an in-scope ISO-10303-21 buffer describing a NESTED assembly — a leaf `MANIFOLD_SOLID_BREP` placed into a SUB-assembly shape-representation by a rigid `ITEM_DEFINED_TRANSFORMATION` `T₂` (one `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION`), and that sub-assembly placed into the ROOT shape-representation by a rigid `T₁` (a second `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION`), read on the host with no OCCT
+- WHEN `step_import_native` walks the relationship chain from the leaf shape-representation to its unique root
+- THEN it SHALL return a placed `Compound` whose leaf `Solid` is located by the COMPOSED world transform `W = T₁ ∘ T₂` (its world centroid at `W` applied to the leaf-local centroid — NOT at `T₂` alone and NOT at the origin), the composition matching an INDEPENDENT matrix multiplication of the two frame-pair transforms read from the file, AND a single-level chain (length 1) SHALL still compose to exactly today's placement (the landed single-level path is byte-identical)
+
 #### Scenario: A SURFACE_OF_REVOLUTION of an ellipse / B-spline profile maps to a native rational B-spline or declines honestly (host)
 - GIVEN an in-scope ISO-10303-21 buffer with a `SURFACE_OF_REVOLUTION` face whose profile is an `ELLIPSE` or a non-rational `B_SPLINE_CURVE_WITH_KNOTS`, read on the host with no OCCT
 - WHEN `step_import_native` resolves the surface
@@ -258,7 +266,11 @@ enclosed volume > 0; for a `Compound` (flat OR placed), EVERY member `Solid` SHA
 self-verify watertight with enclosed volume > 0. A **uniformly-scaled** placed member SHALL
 self-verify with enclosed volume `k³ × V₀ > 0`; a **mirror** placed member SHALL self-verify (after
 the reader's orientation compensation) with the correct POSITIVE enclosed volume — a mirror whose
-world normals point inward yields a negative enclosed volume and FAILS the self-verify → OCCT. When
+world normals point inward yields a negative enclosed volume and FAILS the self-verify → OCCT. A
+**multi-level (nested)** placed member SHALL be self-verified identically — its `Location` is the composed
+leaf→root relationship chain, and a rigid / uniform-scale / mirror composition still preserves (or, for a
+reflection, compensates to preserve) the outward watertight solid with the correct POSITIVE enclosed volume.
+When
 `step_import_native` returns a NULL Shape (DECLINE) OR the self-verify FAILS, the engine SHALL fall
 through to OCCT `STEPControl_Reader` (labelled), re-reading the SAME file from scratch. The native
 reader and the OCCT fallback SHALL keep OCCT behind `CYBERCAD_HAS_OCCT`; `src/native/**` SHALL contain
@@ -286,8 +298,8 @@ change the default engine (stays OCCT).
 - WHEN `cc_step_import(path)` imports it natively AND OCCT `STEPControl_Reader` imports the same file
 - THEN the native import SHALL return the SOLID valid + watertight AND its volume / bounding box / count SHALL match the OCCT re-import within tolerance, with the PMI ignored on both sides, proving AP242 geometry import with PMI skipped
 
-#### Scenario: An out-of-scope file (torus / non-uniform-scale or deep-nested assembly) falls through to OCCT (sim vs OCCT)
-- GIVEN a foreign OCCT-authored STEP with a `TOROIDAL_SURFACE` face, or an assembly with a component placed by a non-uniform-scale / shear transform, or a deep-nested structure, with the native engine active (`cc_set_engine(1)`)
+#### Scenario: An out-of-scope file (torus / non-uniform-scale or a MAPPED_ITEM / cyclic assembly) falls through to OCCT (sim vs OCCT)
+- GIVEN a foreign OCCT-authored STEP with a `TOROIDAL_SURFACE` face, or an assembly with a component placed by a non-uniform-scale / shear transform, or a `MAPPED_ITEM` / `REPRESENTATION_MAP` (Form-B) instance, or a cyclic / ambiguous relationship chain the reader cannot compose to a unique root, with the native engine active (`cc_set_engine(1)`)
 - WHEN `cc_step_import(path)` is called
 - THEN `step_import_native` SHALL return NULL (DECLINE) AND the file SHALL be imported by OCCT `STEPControl_Reader` identical to `cc_set_engine(0)`, proving fall-through with no native interception and no fabricated geometry
 
@@ -852,4 +864,68 @@ scope (unchanged decline).
 - GIVEN a foreign rational B-spline face that passes the per-edge pcurve guard but whose native mesh does not close watertight (or whose volume/area does not match the OCCT oracle)
 - WHEN the engine runs its mandatory watertight + volume/area self-verify
 - THEN the native result SHALL be DISCARDED and the import SHALL fall through to OCCT, so a wrong or leaky mesh is never emitted downstream
+
+### Requirement: Native STEP import composes a multi-level (nested) assembly transform chain, verified vs OCCT
+
+The reader SHALL compose a **nested** assembly by treating the
+`CONTEXT_DEPENDENT_SHAPE_REPRESENTATION` /
+`REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION` graph as a set of **parent edges**
+`childShapeRepresentation → (parentShapeRepresentation, T, mirrorFlag)`, where `T` is the
+per-level conformal transform read exactly as the landed single-level path reads it
+(`ITEM_DEFINED_TRANSFORMATION('',desc,#from,#to)` → `T = frameToWorld(to) ∘ frameToWorld(from)⁻¹`,
+or `CARTESIAN_TRANSFORMATION_OPERATOR_3D` for a uniform-scale / mirror). For each leaf
+`MANIFOLD_SOLID_BREP`, the reader SHALL locate its owning shape-representation and **walk the
+parent edges to a UNIQUE root** (a shape-representation with no outgoing parent edge), composing
+the per-level transforms — outermost (root) first — into ONE world transform
+`W = T_root ∘ … ∘ T_leaf`. `W` SHALL be classified ONCE by the landed
+`classifyPlacement` (rigid / uniform-scale / mirror); the leaf `Solid` SHALL be reconstructed at
+its component-local coordinates by the unchanged `mapManifoldBrep`, then placed by
+`Shape::located(Location{W})` with the landed mirror orientation-compensation, and collected into a
+placed `Compound`. The composition SHALL be **depth-general** (the FIRST slice VERIFIES it at 2
+levels; there is NO artificial depth cap) yet SHALL **DECLINE → OCCT** (NULL, never a partial or
+identity-placed import) whenever the graph is not a clean forest of conformal placements to a unique
+root: a **`MAPPED_ITEM` / `REPRESENTATION_MAP`** (Form-B) instance, a **cyclic** parent chain, an
+**ambiguous** chain (a representation reached by two distinct parents, or a leaf placed more than
+once), a **dangling / missing** relationship reference, or a **non-conformal** composed transform.
+A **single-level** chain (length 1) SHALL compose to EXACTLY the landed single-level placement, so
+the landed single-level assembly path (and the flat multi-solid / single-solid paths) SHALL remain
+**byte-identical**. This walk SHALL remain OCCT-free and host-buildable, SHALL reference no OCCT /
+`IEngine` / `EngineShape` type, SHALL NOT modify the STEP writer or the tessellator, and SHALL NOT
+fabricate a placement or a solid the file does not describe, nor weaken any tolerance.
+
+The slice SHALL be verified by (a) a **HOST ANALYTIC gate (no OCCT)**: for an OCCT-free nested
+buffer with known per-level transforms, each leaf's composed world `Location` SHALL equal an
+INDEPENDENT matrix-composition of the file's frame-pair transforms, and each placed leaf's world
+centroid SHALL sit at that composed placement; the single-level, flat, and round-trip cases SHALL
+still pass unchanged; and the decline cases (`MAPPED_ITEM`, cyclic, ambiguous, dangling,
+non-conformal) SHALL return NULL; and (b) a **SIM native-vs-OCCT gate** (booted iOS simulator, OCCT
+linked) through the `cc_*` facade: a FOREIGN OCCT-authored 2-level nested rigid assembly (authored by
+`STEPCAFControl_Writer` on a nested XCAF assembly document) SHALL import natively as a placed
+`Compound` whose solid **COUNT**, per-solid **volume**, per-solid **bounding box**, and per-solid
+**centroid / placement** (and hence TOTAL volume) match the OCCT `STEPControl_Reader` re-import
+within tolerance; and a `MAPPED_ITEM` / non-conformal / cyclic file SHALL DECLINE natively and import
+via OCCT identical to `cc_set_engine(0)`. The parity test SHALL restore the OCCT default in teardown
+and SHALL carry its own `main()` (on the `run-sim-suite.sh` SKIP list) so the suite assertion count
+is unchanged. Every existing suite (`scripts/run-sim-suite.sh`, host CTest, GPU / Phase-3) and every
+prior native capability SHALL stay green at the OCCT default with no regression.
+
+#### Scenario: A 2-level nested rigid assembly matches OCCT and the single-level path is byte-identical (host analytic)
+- GIVEN an OCCT-free ISO-10303-21 nested buffer — a leaf solid placed into a sub-assembly by a rigid `T₂`, the sub-assembly placed into the root by a rigid `T₁` — read on the host with no OCCT
+- WHEN `step_import_native` walks the leaf's relationship chain to its unique root
+- THEN the leaf `Solid` SHALL be located by the composed `W = T₁ ∘ T₂`, VERIFIED against an independent matrix multiplication of the two frame-pair transforms (its world centroid at `W` applied to the leaf-local centroid), AND an otherwise-identical SINGLE-level buffer (chain length 1) SHALL produce the byte-identical placement the landed path produces today
+
+#### Scenario: A foreign OCCT-authored 2-level nested assembly imports natively and matches OCCT (sim vs OCCT — the correctness gate)
+- GIVEN a 2-level nested assembly (a leaf part placed in a sub-assembly, the sub-assembly placed in the top assembly by distinct rigid transforms) authored by OCCT `STEPCAFControl_Writer` on a nested XCAF document, on a booted iOS simulator with the native engine active (`cc_set_engine(1)`)
+- WHEN `cc_step_import(path)` imports it natively AND OCCT `STEPControl_Reader` imports the same file
+- THEN the native import SHALL return a placed `Compound` whose solid COUNT, per-solid volume, per-solid bounding box, and per-solid centroid / placement (and TOTAL volume) match the OCCT re-import within tolerance, proving the native reader composes a foreign-authored NESTED transform tree the native writer never produces
+
+#### Scenario: A MAPPED_ITEM, cyclic, ambiguous, or non-conformal chain declines to OCCT (host + sim)
+- GIVEN a STEP file whose placement is a `MAPPED_ITEM` / `REPRESENTATION_MAP` (Form-B) instance, OR whose relationship graph is cyclic, OR whose leaf representation is reached by two distinct parents (ambiguous), OR whose composed transform is non-conformal (non-uniform-scale / shear), read on the host with no OCCT and on a booted iOS simulator with the native engine active (`cc_set_engine(1)`)
+- WHEN `step_import_native` attempts to walk the chain
+- THEN it SHALL return a NULL Shape (DECLINE) — no leaf placed at a partial or identity location, no non-conformal transform applied, no cycle silently truncated — and the engine SHALL fall through to OCCT `STEPControl_Reader` identical to `cc_set_engine(0)`, proving honest fall-through with no fabricated placement or geometry
+
+#### Scenario: Existing suites and prior native capabilities stay green (no regression)
+- GIVEN this change applied on an OCCT build with the engine left at its default
+- WHEN `scripts/run-sim-suite.sh`, host CTest, and the GPU / Phase-3 suites are run
+- THEN all SHALL stay green with no behavioural change, and the STEP export slice, the flat multi-solid + ELLIPSE + bspline-face + torus + revolution + single-level / scaled / mirrored assembly import slices, shape healing, SSI S1–S5, native blends + #6/#7, marching, boolean, construct, and tessellation SHALL NOT regress
 

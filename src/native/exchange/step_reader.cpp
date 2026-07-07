@@ -30,6 +30,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -627,24 +628,103 @@ class Mapper {
     return frameToWorld(*to).composedWith(*fromInv);
   }
 
-  // Locate the REPRESENTATION_RELATIONSHIP and the IDT id inside the combined
-  // instance a CONTEXT_DEPENDENT_SHAPE_REPRESENTATION points to (arg[0]). The
-  // instance carries a REPRESENTATION_RELATIONSHIP sub-record (rep_1=child(arg[2]),
-  // rep_2=parent(arg[3])) and a REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION
-  // sub-record (transform_operator=IDT(arg[0])). Returns {childSrId, idtId} or
-  // {0,0} if the shape is not the expected combined form.
-  std::pair<long, long> relationshipAndTransform(long relId) {
+  // One placing relationship, read from the combined instance a
+  // CONTEXT_DEPENDENT_SHAPE_REPRESENTATION points to (arg[0]): the child (placed) and
+  // parent (placed-into) shape-representations and the transform operator.
+  struct RelTriple {
+    long childSr = 0;   ///< REPRESENTATION_RELATIONSHIP.rep_1 (arg[2]) — the placed rep
+    long parentSr = 0;  ///< REPRESENTATION_RELATIONSHIP.rep_2 (arg[3]) — the placed-INTO rep
+    long opId = 0;      ///< REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION.transform_operator
+  };
+
+  // Read the REPRESENTATION_RELATIONSHIP (rep_1=child(arg[2]), rep_2=parent(arg[3])) and
+  // the REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION (transform_operator=arg[0]) inside
+  // the combined instance `relId`. Returns a zero-filled triple if it is not the expected
+  // combined form. `parentSr` (rep_2) is what turns the single-level placement into a
+  // parent-edge for the nested chain walk (parentEdges / composeChain).
+  RelTriple relationshipTriple(long relId) {
+    RelTriple t;
     const Record* r = rec(relId);
-    if (!r || !r->combined) return {0, 0};
-    long childSr = 0, idt = 0;
+    if (!r || !r->combined) return t;
     for (const SubRecord& sub : r->subs) {
       if (sub.keyword == "REPRESENTATION_RELATIONSHIP") {
-        if (sub.args.size() >= 3 && sub.args[2].isRef()) childSr = sub.args[2].ref;
+        if (sub.args.size() >= 3 && sub.args[2].isRef()) t.childSr = sub.args[2].ref;
+        if (sub.args.size() >= 4 && sub.args[3].isRef()) t.parentSr = sub.args[3].ref;
       } else if (sub.keyword == "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION") {
-        if (!sub.args.empty() && sub.args[0].isRef()) idt = sub.args[0].ref;
+        if (!sub.args.empty() && sub.args[0].isRef()) t.opId = sub.args[0].ref;
       }
     }
-    return {childSr, idt};
+    return t;
+  }
+
+  // {childSrId, idtId} of a placing relationship (the landed single-level accessor,
+  // now a thin projection of relationshipTriple used by assemblyDisposition / assembly).
+  std::pair<long, long> relationshipAndTransform(long relId) {
+    const RelTriple t = relationshipTriple(relId);
+    return {t.childSr, t.opId};
+  }
+
+  // ── Nested assembly: the parent-edge forest + leaf→root chain walk ────────────
+  //
+  // A component that is itself an assembly places its leaf through TWO (or more) levels
+  // of transform: the leaf sits in a child shape-representation placed into a sub-assembly
+  // SR (op T₂), which is in turn placed into the root SR (op T₁). OCCT's
+  // STEPCAFControl_Writer emits one CDSR per level, each carrying
+  // REPRESENTATION_RELATIONSHIP(child, parent) + the level's transform_operator. Modelling
+  // these as parent edges over shape-representations lets a single leaf compose its full
+  // world placement W = T₁ ∘ T₂ (a length-1 chain reproduces the landed single-level
+  // placement byte-identically — see assembly()).
+
+  // childSr → (parentSr, opId), one edge per placing CDSR. Returns nullopt to DECLINE if a
+  // childSr carries TWO DISTINCT parent edges (a shape-representation placed into two
+  // parents = a shared sub-assembly instanced twice, which needs per-instance world
+  // transforms this slice does not model). Identical duplicate edges (the same
+  // parent+operator emitted twice) are tolerated.
+  struct ParentEdge {
+    long parentSr = 0;
+    long opId = 0;
+  };
+  std::optional<std::unordered_map<int, ParentEdge>> parentEdges() {
+    std::unordered_map<int, ParentEdge> edges;
+    for (const auto& [id, r] : recs_) {
+      if (r.combined || r.keyword != "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION") continue;
+      if (r.args.empty() || !r.args[0].isRef()) continue;
+      const RelTriple t = relationshipTriple(r.args[0].ref);
+      if (t.childSr == 0 || t.opId == 0) continue;  // not a composable placement edge
+      const auto [it, inserted] =
+          edges.try_emplace(static_cast<int>(t.childSr), ParentEdge{t.parentSr, t.opId});
+      if (!inserted && (it->second.parentSr != t.parentSr || it->second.opId != t.opId))
+        return std::nullopt;  // ambiguous: one child placed into two distinct parents
+    }
+    return edges;
+  }
+
+  // Compose the world placement of a leaf whose child representation is `startSr`, by
+  // walking parent edges up to a UNIQUE root (an SR with no parent edge), composing
+  // W = T_root ∘ … ∘ T_start with each level's transform applied on the LEFT (outermost).
+  // Returns {W, mirror} where mirror is the AUTHORITATIVE classification of the COMPOSED W
+  // (a product of conformal maps is conformal; classifyPlacement yields the single
+  // rigid / uniform-scale / mirror verdict). Returns nullopt to DECLINE on: a cycle
+  // (visited-set hit), a level whose operator does not resolve to a conformal transform
+  // (dangling / unreadable / non-uniform-shear), or a non-conformal composed W. A
+  // length-1 chain (single-level file) yields exactly resolveOperator(op) — byte-identical.
+  std::optional<std::pair<math::Transform, bool>> composeChain(
+      long startSr, const std::unordered_map<int, ParentEdge>& edges) {
+    math::Transform w = math::Transform::identity();
+    std::unordered_set<int> visited;
+    long sr = startSr;
+    while (true) {
+      if (!visited.insert(static_cast<int>(sr)).second) return std::nullopt;  // cycle
+      const auto it = edges.find(static_cast<int>(sr));
+      if (it == edges.end()) break;  // a root: no parent edge → stop
+      const auto op = resolveOperator(it->second.opId);  // per-level conformal gate
+      if (!op) return std::nullopt;  // dangling / unreadable / non-conformal level
+      w = op->first.composedWith(w);  // apply this level on the LEFT (root-most outermost)
+      sr = it->second.parentSr;
+    }
+    const auto cls = classifyPlacement(w);  // authoritative composed-transform verdict
+    if (!cls) return std::nullopt;
+    return std::make_pair(w, *cls == PlacementClass::Mirror);
   }
 
   // Build a placed Compound from the assembly transform tree. Declines (fail_) on
@@ -664,6 +744,11 @@ class Mapper {
         decline();
         return {};
       }
+
+    // The parent-edge forest over shape-representations (childSr → parent, op). An
+    // ambiguous shared sub-assembly (one childSr with two distinct parents) declines here.
+    const auto edges = parentEdges();
+    if (!edges) { decline(); return {}; }
 
     // Seed every root at identity; each product CDSR places exactly one brep once.
     std::unordered_map<int, math::Transform> placement;
@@ -690,10 +775,17 @@ class Mapper {
         decline();
         return {};
       }
-      const auto op = resolveOperator(opId);  // rigid / uniform-scale / mirror, or decline
-      if (!op) { decline(); return {}; }
-      pit->second = op->first;
-      mirrored[static_cast<int>(brep)] = op->second;
+      // Compose the FULL leaf→root chain from THIS component's child representation. A
+      // single-level file has no parent edge above childSr → a length-1 chain whose W is
+      // exactly resolveOperator(opId) (the landed placement, byte-identical). A nested
+      // component (childSr placed into a sub-assembly placed into the root) composes every
+      // ancestor transform so the leaf lands at its true world placement (else the ancestor
+      // transform would be silently dropped — the latent nested mis-placement this fixes).
+      // (childSr's own operator is opId; composeChain reads it via parentEdges[childSr].)
+      const auto composed = composeChain(childSr, *edges);
+      if (!composed) { decline(); return {}; }
+      pit->second = composed->first;
+      mirrored[static_cast<int>(brep)] = composed->second;
       placed[static_cast<int>(brep)] = true;
       ++placedCount;
     }

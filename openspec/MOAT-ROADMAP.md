@@ -254,7 +254,12 @@ construction + the M0 mesher + M2 booleans.
 ### M4 — General STEP / AP242 import (+ IGES stays dropped) · ~1.5–3 py · needs M0
 The remaining import breadth on the landed AP203+ reader: **foreign rational/general B-spline
 patches** (needs M0 to mesh them), AP242 **PMI semantics** (not just skip), general **trimmed
-surfaces**, deep-nested/`MAPPED_ITEM` assemblies. IGES is **descoped** (STEP-only; `cc_iges_*`
+surfaces**. **DEEP-NESTED (multi-level) rigid/conformal assemblies now LAND** (M4-tail): the
+Form-A CDSR relationship graph is modelled as a parent-edge forest over shape-representations
+and each leaf composes its full world placement `W = T_root ∘ … ∘ T_leaf` via a leaf→root
+chain walk (single-level is the length-1 special case, byte-identical). `MAPPED_ITEM` /
+`REPRESENTATION_MAP` (Form-B) remains the deferred assembly tail (honest DECLINE → OCCT), as do
+cyclic / ambiguous-shared / non-conformal graphs. IGES is **descoped** (STEP-only; `cc_iges_*`
 stays OCCT until removed/stubbed at drop-occt — never reimplemented).
 - *Oracle:* `STEPControl_Reader` re-import (count/volume/watertight/topology) + foreign files.
 - *Bounded* (mechanical parser breadth, once M0 meshes the surfaces).
@@ -470,7 +475,7 @@ freeform-boolean chain's *enablers* are done; the *payoff breadth* is what's ahe
 |---|---|---|---|---|
 | **M2 breadth** | freeform booleans across families: NURBS↔NURBS, all 3 ops, **multi-face / holed / multi-branch-seam** splits (first slice reachable once B1 lands; breadth ahead) | bounded *per family*, asymptotic in full generality | substrate (B1+B2+B3) | assembly serial; **families parallelize** |
 | **M3** blends + wrap-emboss | curved-curved fillets/chamfers + wrap-emboss on **freeform bases** | bounded per family | **M2** | after M2; families parallel |
-| **M4 tail** | rational-*curve* trims · AP242 **PMI semantics** · deep-nested / `MAPPED_ITEM` assemblies | bounded (parser breadth) | M0 ✅ | ✅ **now** (`exchange/`) |
+| **M4 tail** | rational-*curve* trims · AP242 **PMI semantics** · ~~deep-nested rigid/conformal assemblies~~ **LANDED** (Form-A CDSR chain walk, verified vs OCCT) · `MAPPED_ITEM` (Form-B) still deferred | bounded (parser breadth) | M0 ✅ | ✅ **now** (`exchange/`) |
 | **M5 tail** | self-intersecting-wire repair · pcurve reconstruction · **arbitrary broken industrial B-rep** | **ASYMPTOTIC** (`ShapeFix` moat) | — | ✅ **now** (`heal/`) |
 | **M6 bar** | fuzz the remaining domains (blends, healing) + **HOLD** zero-silent-wrong across the whole surface | **ASYMPTOTIC** — the *gate*, never "done" | tracks it guards | ✅ **now** (test infra) |
 | **M7 tail** | guided-sweep **orientation law** (the measured self-verify trap needs a correct law) · curved-rail morph · fine-pitch thread | bounded-ish | some need M2 | partly now (`construct/`) |

@@ -37,14 +37,24 @@
 // applied as a fallback (planar-only; a curved solid that fails to reconstruct
 // declines to OCCT rather than being planarized).
 //
-// ASSEMBLIES: a single-level product placement (CONTEXT_DEPENDENT_SHAPE_REPRESENTATION
-// → REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION) reaching a MANIFOLD_SOLID_BREP is
-// composed into a placed Compound. The component transform may be RIGID (an
-// ITEM_DEFINED_TRANSFORMATION AXIS2 frame pair) or a UNIFORM-SCALE / MIRROR
-// (a CARTESIAN_TRANSFORMATION_OPERATOR_3D — the entity that can carry a scale/reflection;
-// a mirror's faces are orientation-complemented so it meshes outward/watertight). AP242
-// PMI / GD&T / annotation entities (and their relationship graph that does NOT reach a
-// brep) are SKIPPED — the geometry imports, the PMI is dropped.
+// ASSEMBLIES: a product placement (CONTEXT_DEPENDENT_SHAPE_REPRESENTATION →
+// REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION) reaching a MANIFOLD_SOLID_BREP is
+// composed into a placed Compound. The placement may be SINGLE-level OR MULTI-level
+// (nested): a component that is itself an assembly is modelled as a parent-edge forest over
+// shape-representations (each placing CDSR is one childSr → parentSr edge), and each leaf's
+// world placement is the chain product W = T_root ∘ … ∘ T_leaf walked from the leaf's child
+// representation up to a UNIQUE root (a length-1 chain reproduces the single-level placement
+// exactly). Each level's transform may be RIGID (an ITEM_DEFINED_TRANSFORMATION AXIS2 frame
+// pair) or a UNIFORM-SCALE / MIRROR (a CARTESIAN_TRANSFORMATION_OPERATOR_3D — the entity that
+// can carry a scale/reflection); the COMPOSED W is re-classified conformal (rigid /
+// uniform-scale / mirror), and a mirror's faces are orientation-complemented so it meshes
+// outward/watertight. AP242 PMI / GD&T / annotation entities (and their relationship graph
+// that does NOT reach a brep) are SKIPPED — the geometry imports, the PMI is dropped.
+//
+// The nested walk DECLINES → OCCT (never a mis-placed solid) on a CYCLE in the parent-edge
+// forest, an AMBIGUOUS child (one shape-representation placed into two distinct parents = a
+// shared sub-assembly instanced twice), a DANGLING / unreadable level transform, or a
+// NON-CONFORMAL composed W. A Form-B MAPPED_ITEM / REPRESENTATION_MAP is still declined.
 //
 // DECLINE (returns a NULL Shape → engine falls to OCCT, never fabricates
 // geometry): any unsupported entity/surface keyword, rational/weighted B-spline, a

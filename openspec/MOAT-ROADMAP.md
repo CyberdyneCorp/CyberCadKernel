@@ -158,6 +158,28 @@ whole SSI arc was built for.
   assembly is what turns three green subsystems into the first freeform boolean. The live critical
   path refines to **[B2 ∥ B3] → B1 → M2 → M3**.
 
+  **M2c (B3) — first slice LANDED (this change).** `src/native/boolean/freeform_membership.h`
+  (header-only, OCCT-free, cognitive-complexity ≤ 12 per function): isolated Möller–Trumbore and
+  exact point-triangle-distance kernels, and `classifyPointInMesh(mesh, bbox, meshDeflection, p,
+  tol) → {In,Out,On,Unknown}`. Odd/even crossing parity over a fixed 7-ray non-axis set with
+  degenerate-ray discard + unanimity/quorum consensus; a principled ON-band
+  `max(absTol, relTol·diag) + 2·meshDeflection` (the measured chord-secant mesh inset); watertight
+  precondition ⇒ `Unknown` (never a fabricated verdict). Strictly ADDITIVE — `classifyPoint`/
+  `recogniseCurvedSolid` and the whole tessellator are byte-identical vs `main`; no `cc_*` ABI change.
+  - **Gate A (HOST ANALYTIC, no OCCT)** — `tests/native/test_native_freeform_membership.cpp`.
+    Fixture: the M0 keystone `bumpCappedCylinderSolid` (Bézier paraboloid "bump cap" top wall,
+    closed-form membership), meshed watertight at deflection 0.02. Away-from-band batch (3000 pts,
+    clearance > 3·band): **agree 3000 / WRONG 0 / declined 0**. On-surface samples all resolve `On`.
+    Full 40 000-pt random batch: **crispWRONG 0** (the load-bearing no-silent-wrong invariant).
+  - **Gate B (SIM native-vs-OCCT)** — `tests/sim/native_freeform_membership_parity.mm` (runner
+    `scripts/run-sim-native-freeform-membership.sh`). Bridged NURBS solids (all faces
+    `Geom_BSplineSurface`) meshed with M0, classified vs `BRepClass3d_SolidClassifier`.
+    `nurbs_box` (watertight): **N=3000, crispAgree 2933, crispDISAGREE 0**, in-band/declined 67 → GATE PASS.
+    `nurbs_cylinder` (curved): an **honest R1 decline** — the bridged-freeform M0 mesh is non-watertight
+    (measured 273 open edges: the periodic BSpline seam edge does not weld), so the classifier declines
+    to `Unknown` rather than fabricate. This is the asymptotic curved-bridged tail, not a classifier
+    defect (the curved case is proven crisp-correct against analytic truth in Gate A).
+
 ### M3 — General freeform blends + wrap-emboss · ~2–4 py · needs M2
 The curved-curved blends and freeform-base features that sit on booleans: cyl↔cyl-canal /
 elliptical-crease / variable-on-freeform fillets, general chamfers, and wrap-emboss on a
@@ -296,7 +318,7 @@ slices used). Both are captured below.
 | **M7a** guided sweep · hard loft | `construct/` | — | ✅ **Wave-1 slice LANDED** — N-section loft ABI (`cc_solid_loft_sections`); guided sweep + non-planar-cap loft remain |
 | **M4** general STEP/AP242 import | `exchange/` | M0 | ▶ **Wave 2 — OPEN NOW** (M0 mesher ready) |
 | **M2b (B2)** freeform face-split | `boolean/` · `ssi/` | M0 ✅ + M1 ✅ | ▶ **OPEN NOW — parallel** (M2 substrate; oracle: sub-faces tile + mesh watertight) |
-| **M2c (B3)** freeform point-in-solid | `boolean/` | M0 ✅ | ▶ **OPEN NOW — parallel** (M2 substrate; oracle: `BRepClass3d_SolidClassifier`) |
+| **M2c (B3)** freeform point-in-solid | `boolean/` | M0 ✅ | ✅ **Wave-2 first slice LANDED** — `boolean/freeform_membership.h` `classifyPointInMesh` (ray-cast odd/even, OCCT-free, header-only). Gates below. Curved-bridged tail (asymptotic) continues |
 | **M2a (B1)** freeform operand descriptor | `boolean/` | `shape.h` | ▶ **OPEN NOW — scaffold** (M2 substrate; join point for B2 + B3) |
 | **M2** general freeform booleans (assembly) | `boolean/` | **B1 + B2 + B3** | ▶ **Wave 2 — first attempt DECLINED**; unblocks once the substrate above lands (see §M2) |
 | **M3** freeform blends + wrap-emboss | `blend/` · `feature/` | M2 | **Wave 3** — after M2 |

@@ -781,4 +781,63 @@ CC_TEST(cone_sphere_coaxial_common_fuse_cut_watertight_matches_analytic) {
   CC_CHECK(nb::ssi_boolean_solid(sph, cone, nb::Op::Cut).isNull());
 }
 
+// ── (11) FREEFORM (B-spline-face) operand: the honest S5 DECLINE, pinned. ──────────
+// The deepest S5 slice would be a native B-SPLINE-FACE solid ∩/− an analytic solid,
+// split along the S3-traced WLine seam and welded. It is NOT reachable in one pass, and
+// this test PINS the existing clean decline so it stays a contract (no dead assembler is
+// written for an unreachable path). Three code-verified facts, asserted here:
+//
+//   1. A native watertight B-spline-FACE operand genuinely EXISTS. build_prism_profile_
+//      spline extrudes a wavy prism whose one bulging side wall is a single degree-(p,1)
+//      FaceSurface::Kind::BSpline face (residuals.h splineWallSurface). So the operand is
+//      not the blocker — we assert the prism is non-null and carries exactly one BSpline
+//      face.
+//   2. recogniseCurvedSolid REJECTS a freeform operand. Its face-kind switch accepts only
+//      Cylinder/Sphere/Cone and returns nullopt on BSpline/Bezier (ssi_boolean.h). So a
+//      prism with a BSpline wall is NOT recognised → we assert recognise == nullopt.
+//   3. ssi_boolean_solid therefore DECLINES a freeform operand BEFORE any trace — the GATE
+//      `if (!csA || !csB) return {};` returns NULL when either operand fails recognition.
+//      We assert NULL for COMMON / CUT / FUSE, in BOTH operand orders (prism∩cyl, cyl∩prism).
+//
+// The remaining blocker (why the assembler is not written even if recognition were
+// extended): the tessellator's S(pcurve)=C_edge weld contract (residuals.h) samples a
+// free-form 2D pcurve by linear pole interpolation while the 3D edge cache discretizes the
+// true curve — a trimmed B-spline wall fragment bounded by a NON-iso-parametric WLine seam
+// needs exactly the forbidden B-spline pcurve, so a diagonal freeform seam cannot weld
+// watertight without a tessellator change. A correct DECLINE (OCCT owns the result) is the
+// honest outcome; native-pass is unchanged.
+CC_TEST(freeform_bspline_face_operand_declines_before_trace) {
+  // (1) Build a native B-spline-face solid: a wavy prism whose top wall is one BSpline
+  // face (control points bulge the profile above y=6 — the residuals.h fixture).
+  const double splineXY[] = {10, 6, 7, 8, 3, 8, 0, 6};
+  std::vector<cst::ProfileSegment> segs(4);
+  segs[0].kind = 0; segs[0].x0 = 0;  segs[0].y0 = 0; segs[0].x1 = 10; segs[0].y1 = 0;  // bottom
+  segs[1].kind = 0; segs[1].x0 = 10; segs[1].y0 = 0; segs[1].x1 = 10; segs[1].y1 = 6;  // right
+  segs[2].kind = 3; segs[2].ptOffset = 0; segs[2].ptCount = 4;                          // spline top
+  segs[3].kind = 0; segs[3].x0 = 0;  segs[3].y0 = 6; segs[3].x1 = 0;  segs[3].y1 = 0;  // left
+  const ntopo::Shape prism = cst::build_prism_profile_spline(segs, splineXY, 8, {}, {}, 4.0);
+  CC_CHECK(!prism.isNull());
+  if (prism.isNull()) return;
+
+  // The operand genuinely carries a freeform surface: exactly one BSpline wall face.
+  int bsplineFaces = 0;
+  for (ntopo::Explorer ex(prism, ntopo::ShapeType::Face); ex.more(); ex.next()) {
+    const auto surf = ntopo::surfaceOf(ex.current());
+    if (surf && surf->surface->kind == ntopo::FaceSurface::Kind::BSpline) ++bsplineFaces;
+  }
+  CC_CHECK(bsplineFaces == 1);
+
+  // (2) recogniseCurvedSolid rejects the freeform operand (accepts only cyl/sphere/cone).
+  CC_CHECK(!sd::recogniseCurvedSolid(prism).has_value());
+
+  // (3) The boolean GATE therefore returns NULL before tracing, for every op and order,
+  // against an analytic operand the path WOULD otherwise recognise (a plain cylinder).
+  const ntopo::Shape cyl = makeCyl(2, 4.0, -5.0, 5.0);  // Z-axis cylinder, R=4
+  CC_CHECK(sd::recogniseCurvedSolid(cyl).has_value());  // sanity: the analytic side IS recognised
+  for (const nb::Op op : {nb::Op::Common, nb::Op::Cut, nb::Op::Fuse}) {
+    CC_CHECK(nb::ssi_boolean_solid(prism, cyl, op).isNull());
+    CC_CHECK(nb::ssi_boolean_solid(cyl, prism, op).isNull());
+  }
+}
+
 int main() { return cctest::run_all(); }

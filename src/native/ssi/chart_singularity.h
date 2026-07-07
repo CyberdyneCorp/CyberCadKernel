@@ -113,6 +113,56 @@ inline double poleContinuationU(double uIn, double uPeriod) {
   return u;
 }
 
+// ── freeform pole far-side longitude inversion (uPeriod == 0) ─────────────────────
+//
+// The analytic sphere pole has a CLOSED-FORM far meridian (poleContinuationU returns u_in+π at
+// the SAME latitude v — the far arc leaves the pole on the opposite meridian and runs back down
+// from the same pole edge), but that closed form only exists because the surface is 2π-periodic
+// in u. A FREEFORM parametric pole — a collapsed B-spline/NURBS control ROW where ‖dU‖ → 0 while
+// the 3D point + normal stay finite (the spline analog of the sphere pole / cone tip) — carries
+// uPeriod == 0, so there is NO analytic u+π to apply. We recover the SAME map numerically:
+// KEEP the latitude v = vFix (just inside the pole edge, exactly as the analytic reflect does)
+// and solve only for the far LONGITUDE — the u at that fixed latitude whose 3D point is nearest
+// the marcher's CONTINUED tangent target `anchor + t★·h`. A 1-D search over the u domain (coarse
+// scan + shrinking refine) at the FIXED near-pole latitude.
+//
+// Holding v OFF the pole edge is what keeps this well posed: a full 2-D nearest-point search
+// would collapse onto the degenerate pole TIP (every u there maps to one point), whereas at a
+// fixed v just inside the edge the tiny parallel ring still distinguishes the near vs far
+// meridian by u, so the far longitude is recovered cleanly. POINT-ONLY: touches only S.point,
+// never the degenerate dU (the reason it is well posed at the pole, like the point-based
+// corrector). It yields only a SEED — the caller's fixed-plane corrector does the exact landing
+// and VERIFIES on BOTH surfaces ≤ onSurfTol, so a wrong pick simply fails verification and the
+// march DEFERS (no fabrication). The non-periodic analog of poleContinuationU; the periodic
+// (analytic) path never calls it and stays bit-identical.
+inline double freeformChartInvert(const SurfaceAdapter& S, const Point3& target, double vFix) {
+  const ParamBox& d = S.domain;
+  auto dist2 = [&](double u) {
+    const Vec3 e = S.point(u, vFix) - target;
+    return math::dot(e, e);
+  };
+  const int nu = 64;
+  double bu = d.u0, best = dist2(bu);
+  for (int i = 1; i <= nu; ++i) {
+    const double u = d.u0 + (d.u1 - d.u0) * (static_cast<double>(i) / nu);
+    const double f = dist2(u);
+    if (f < best) { best = f; bu = u; }
+  }
+  // Shrinking local refine from the best scan node (the corrector finishes the landing).
+  double hu = (d.u1 - d.u0) / nu;
+  for (int it = 0; it < 40; ++it) {
+    bool improved = false;
+    for (const double su : {+hu, -hu}) {
+      const double u = bu + su;
+      if (u < d.u0 || u > d.u1) continue;
+      const double f = dist2(u);
+      if (f < best) { best = f; bu = u; improved = true; }
+    }
+    if (!improved) hu *= 0.5;
+  }
+  return bu;
+}
+
 }  // namespace chartsing
 
 }  // namespace cybercad::native::ssi

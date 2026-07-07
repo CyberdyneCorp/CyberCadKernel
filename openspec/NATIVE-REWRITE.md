@@ -439,8 +439,10 @@ longest; a native exchange is lower priority than the modelling core.
   the near-tangent / coincident / branch-point surface-surface-intersection moat stays
   capability #5 as S4 (its DETECTION + CLASSIFICATION layer S4-a/b + the first
   near-tangent MARCH-THROUGH slice S4-c + the first BRANCH-POINT slice S4-d — the
-  Steinmetz self-crossing bicylinder localized + routed — + the first CHART-SINGULARITY slice
-  S4-e — a curve crossing a sphere parametric pole / cone apex now fully traced — + the
+  Steinmetz self-crossing bicylinder localized + routed — + the CHART-SINGULARITY slices
+  S4-e — a curve crossing a sphere parametric pole / cone apex AND a FREEFORM NURBS collapsed-row
+  pole (via the point-only `freeformChartInvert` far-side re-seed) now fully traced; the curve
+  cusp declined by the IFT argument — + the
   COMPLETENESS + LOOP-ROBUSTNESS slice S4-f — robust TRUE-RETURN loop-closure (no false-close),
   a self-intersection guard (figure-eight crossing detected + traced-through as data), and an
   adaptive completeness-critic re-seed that recovers small loops the fixed subdivision misses
@@ -738,8 +740,9 @@ longest; a native exchange is lower priority than the modelling core.
     `src/native/ssi/marching.{h,cpp}` + `tests/native/test_native_ssi_marching.cpp` +
     `tests/sim/native_ssi_marching_parity.mm` + `scripts/run-sim-native-ssi-s4d.sh`. Living
     change `openspec/changes/add-native-ssi-s4d-branch-points` **archived** (`2026-07-04`).
-  - **SSI Stage S4-e (CHART SINGULARITIES — sphere pole + cone apex) — FIRST HONEST SLICE
-    DONE at the verification bar (both gates).** A **chart (removable) singularity** is where
+  - **SSI Stage S4-e (CHART SINGULARITIES — analytic sphere pole + cone apex, and the FREEFORM
+    NURBS collapsed-row pole) — TWO HONEST SLICES DONE at the verification bar (both gates);
+    the curve cusp declined by IFT.** A **chart (removable) singularity** is where
     ONE surface's own `(u,v)` parametrization degenerates (`‖dU‖ → 0`) while its 3D point +
     normal stay finite — a **sphere parametric pole** (`v = ±π/2`) or a **cone apex** (signed
     radius `= 0`). The intersection can be perfectly TRANSVERSAL through it (the pair sine need
@@ -774,14 +777,38 @@ longest; a native exchange is lower priority than the modelling core.
     A genuine finite cylinder `v`-cap still exits as a `BoundaryExit` (chart machinery does NOT
     misfire). No regressions: the 5 transversal pairs stay `nt = 0` bit-identical, the S4-c
     graze still `crossed = 22`, the S4-d Steinmetz still `branchPts = 2 traced = 4`, S5
-    `native-pass = 6` persists, tessellator byte-identical. **Honest scope:** only the two
-    elementary chart singularities (sphere pole + cone apex) are crossed; **general / freeform
-    parametric singularities** (NURBS degenerate edges, collapsed spline poles), **higher-order
-    / curve cusps**, and **S4-f self-intersection completeness** remain DEFERRED → OCCT with the
-    measured gap, never faked; any pole/apex that will not verify on both surfaces defers the
-    same way. Files: `src/native/ssi/chart_singularity.h` + `src/native/ssi/marching.{h,cpp}` +
+    `native-pass = 6` persists, tessellator byte-identical. Files:
+    `src/native/ssi/chart_singularity.h` + `src/native/ssi/marching.{h,cpp}` +
     `tests/native/test_native_ssi_s4e_singularities.cpp` + `tests/sim/native_ssi_marching_parity.mm`.
     Living change `openspec/changes/add-native-ssi-s4e-singularities` **archived** (`2026-07-05`).
+    **SECOND SLICE — FREEFORM parametric pole (DONE at the bar):** the same point-based corrector
+    is extended to a NURBS unit sphere — a genuine freeform pole (a `uPeriod == 0`
+    collapsed-control-ROW surface of revolution, so NO analytic `u + π` meridian map; the
+    degenerate normal `normalize(Sᵤ×Sᵥ)` is a finite near-zero `Dir3`, never NaN). The ONLY new
+    code is the far-side re-seed: `chartsing::freeformChartInvert` recovers the far LONGITUDE by a
+    POINT-ONLY 1-D search (the `u` at the fixed near-pole latitude minimizing `‖S.point(u,vFix) −
+    target‖`, using `S.point` alone — no `dU`, no normal), and `chartFarUV` branches on `uPeriod`
+    (the analytic `uPeriod > 0` path stays byte-identical). A NURBS-sphere ∩ plane that S3
+    truncated at the first pole (half circle, `len ≈ 3.1415`) now crosses BOTH freeform poles and
+    closes the full great circle: host `s4e_freeform_nurbs_pole_full_great_circle` LANDS
+    (`singularitiesCrossed ≥ 2`, `nearTangentGaps == 0`, `Closed`, every node on both surfaces ≤
+    1e-6) + sim `freeform-pole s4e singX=2 NTgaps=0 closed=1`, `len` native 6.2829 vs OCCT 6.2832,
+    on both surfaces ≤ 1.51e-07. A collapsed-row Bézier cone-tip on the v=1 DOMAIN BOUNDARY (a
+    genuine surface ENDPOINT, no far side) correctly still DEFERS — control
+    `s4e_freeform_tip_endpoint_still_defers` asserts `singularitiesCrossed == 0`, `NearTangent`
+    (honest truncation → OCCT), no point fabricated past the tip. **CURVE CUSP — honest DECLINE
+    (no dead code):** a cusp (marcher velocity `‖n_A × n_B‖ → 0`) is IDENTICALLY the S4-c/S4-d
+    pair-tangency witness, not the single-surface chart witness; by the IFT a cusp with regular
+    charts + healthy pair sine is the empty set, so a standalone S4-e cusp witness would be
+    unreachable dead code — none added; cusps route to S4-c/S4-d/OCCT, never faked. **Honest tail
+    (DEFERRED → OCCT, measured gap, never faked):** **asymmetric** freeform poles whose
+    continued-tangent re-seed does not verify on both surfaces, **higher-order / edge / seam**
+    degeneracies, a full B-rep degenerate-pole B-spline SOLID through the boolean pipeline (no
+    native construct yet feeds a freeform-pole face to the marcher — the fixtures are hand-seeded,
+    like the analytic S4-e ones), and **S4-f self-intersection completeness**. Files unchanged from
+    the first slice (`chart_singularity.h` gains `freeformChartInvert`, `marching.cpp` branches
+    `chartFarUV` on `uPeriod`). Living change `openspec/changes/add-native-ssi-s4e-general`
+    **archived** (`2026-07-07`).
   - **SSI Stage S5-d (BRANCHED-TRACE CURVED BOOLEAN — Steinmetz COMMON) — DONE at the
     verification bar (both gates); the FUSE/CUT completion follows immediately below.** The S4-d
     branched trace is now turned into a native BOOLEAN: the Steinmetz bicylinder COMMON. On the S4 decline edge (`nearTangentGaps > 0`,

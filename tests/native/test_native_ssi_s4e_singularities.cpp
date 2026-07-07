@@ -87,6 +87,68 @@ ssi::SeedSet handSeed(double u1, double v1, double u2, double v2, const Point3& 
   return ss;
 }
 
+constexpr double kC = 0.70710678118654752440;  // 1/√2 — the NURBS circle mid-weight
+
+// A rational (NURBS) UNIT SPHERE as a surface of revolution: a half-circle profile in (R,z)
+// revolved a full turn. BOTH v-edges (v=0 south, v=2 north) are DEGENERATE POLES — a collapsed
+// control ROW where the whole u circle maps to one point, ‖dU‖ → 0 with a finite 3D point + a
+// finite-limit normal. This is the FREEFORM analog of the analytic sphere pole (the surface is
+// NON-analytic to the marcher: it flows through makeNurbsAdapter as a generic point/normal
+// evaluator, carrying uPeriod == 0 — there is NO closed-form meridian map). u-domain [0,4] maps
+// to the full 2π revolution; v-domain [0,2] runs south-pole → equator (v=1) → north-pole.
+ssi::SurfaceAdapter nurbsUnitSphere() {
+  const int degU = 2, degV = 2, nU = 9, nV = 5;
+  const double px[5] = {0.0, 1.0, 1.0, 1.0, 0.0};   // profile radius R
+  const double pz[5] = {-1.0, -1.0, 0.0, 1.0, 1.0}; // profile height z
+  const double pw[5] = {1.0, kC, 1.0, kC, 1.0};     // profile rational weights
+  std::vector<Point3> poles(static_cast<std::size_t>(nU) * nV);
+  std::vector<double> w(static_cast<std::size_t>(nU) * nV);
+  for (int k = 0; k < nU; ++k) {
+    const double ang = k * 45.0 * kPi / 180.0;
+    const bool corner = (k % 2) == 1;               // odd u-poles are the rational circle corners
+    const double wc = corner ? kC : 1.0, rs = corner ? (1.0 / kC) : 1.0;
+    const double ck = std::cos(ang), sk = std::sin(ang);
+    for (int j = 0; j < nV; ++j) {
+      const double R = px[j] * rs;
+      poles[static_cast<std::size_t>(k) * nV + j] = Point3{R * ck, R * sk, pz[j]};
+      w[static_cast<std::size_t>(k) * nV + j] = wc * pw[j];
+    }
+  }
+  std::vector<double> kU{0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4};
+  std::vector<double> kV{0, 0, 0, 1, 1, 2, 2, 2};
+  return ssi::makeNurbsAdapter(degU, degV, poles, w, nU, nV, kU, kV);
+}
+
+// The plane x = 0 (the yz-plane): normal +X, its (u,v) parametrize (y, z). Contains the sphere's
+// +Z axis, so sphere ∩ plane is the great circle through BOTH poles. Frame {origin, X=+y, Y=+z,
+// Z(normal)=+x}, so a world point (0, y, z) has plane params (u=y, v=z).
+ssi::SurfaceAdapter planeX0(const ssi::ParamBox& dom) {
+  nmath::Plane pl;
+  pl.pos = Ax3{Point3{0, 0, 0}, Dir3{0, 1, 0}, Dir3{0, 0, 1}, Dir3{1, 0, 0}};
+  return ssi::makePlaneAdapter(pl, dom);
+}
+
+// A bi-quadratic Bézier surface with a COLLAPSED TOP V-ROW (all three v=1 poles equal one apex):
+// a "spline cone tip". At v=1 the whole u-span maps to the apex, so ‖dU‖ → 0 with a finite point
+// — a freeform pole, BUT on the v=1 DOMAIN BOUNDARY: a genuine surface ENDPOINT (there is no
+// surface beyond the tip). A curve reaching it TERMINATES; the far side does not exist, so the
+// crossing must DEFER. The freeform "must-still-defer" control.
+ssi::SurfaceAdapter bezierConeTip() {
+  const int degU = 2, degV = 2, nRows = 3, nCols = 3;
+  std::vector<Point3> poles(9);
+  auto set = [&](int i, int j, Point3 p) { poles[static_cast<std::size_t>(i) * nCols + j] = p; };
+  const Point3 apex{0, 0, 1};
+  set(0, 0, {-1, 0, 0});      set(1, 0, {0, -1.2, 0});    set(2, 0, {1, 0, 0});      // v=0 open arc
+  set(0, 1, {-0.5, 0.1, 0.5}); set(1, 1, {0, -0.4, 0.5}); set(2, 1, {0.5, 0.1, 0.5}); // v=½ lifted
+  set(0, 2, apex);            set(1, 2, apex);            set(2, 2, apex);           // v=1 COLLAPSED
+  std::vector<double> kU{0, 0, 0, 1, 1, 1}, kV{0, 0, 0, 1, 1, 1};
+  return ssi::makeBSplineAdapter(degU, degV, poles, nRows, nCols, kU, kV);
+}
+double distToUnitSphereO(const Point3& x) {  // distance to the unit sphere at the origin
+  return std::fabs(std::sqrt(x.x * x.x + x.y * x.y + x.z * x.z) - 1.0);
+}
+double distToPlaneX0(const Point3& x) { return std::fabs(x.x); }
+
 }  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -268,6 +330,90 @@ CC_TEST(s4e_switch_on_does_not_perturb_s4d_steinmetz) {
   CC_CHECK(tr.branchPoints == 2);
   CC_CHECK(tr.nearTangentGaps == 0);
   CC_CHECK(tr.singularitiesCrossed == 0);// no chart singularity here — a locus self-crossing
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (e) FREEFORM PARAMETRIC POLE — a NURBS unit sphere (a collapsed-row surface of revolution,
+// uPeriod == 0, so NO analytic meridian map) ∩ plane through the axis. The freeform analog of
+// (a): OFF truncates at the first pole (half circle); ON crosses BOTH freeform poles via the
+// point-only far-longitude re-seed and closes the full great circle. Every node on both surfaces.
+// ─────────────────────────────────────────────────────────────────────────────
+CC_TEST(s4e_freeform_nurbs_pole_full_great_circle) {
+  auto A = nurbsUnitSphere();                              // v-domain [0,2]; poles at v=0 and v=2
+  auto B = planeX0(ssi::ParamBox{-2.0, 2.0, -2.0, 2.0});
+  // Seed on the equator (v=1) at world (0,1,0): sphere (u=1,v=1), plane (u=y=1, v=z=0).
+  const Point3 sp = A.point(1.0, 1.0);
+  auto seeds = handSeed(1.0, 1.0, sp.y, sp.z, sp);
+  const double tol = 1e-6;
+
+  // BEFORE — chart switch OFF: the S3 marcher truncates at the first freeform pole (arc ≈ π).
+  ssi::MarchOptions off;
+  auto before = ssi::trace_from_seeds(A, B, seeds, off);
+  CC_CHECK(before.singularitiesCrossed == 0);
+  CC_CHECK(before.curveCount() == 1);
+  if (before.curveCount() == 1) {
+    CC_CHECK(before.lines[0].status == ssi::TraceStatus::BoundaryExit);  // spurious exit at the pole
+    CC_CHECK(polylineLength(before.lines[0]) < 0.75 * (2.0 * kPi));      // only HALF the loop (≈ π)
+  }
+
+  // AFTER — chart switch ON: both freeform poles crossed, the full closed great circle traced.
+  ssi::MarchOptions on;
+  on.enableChartSingularities = true;
+  auto tr = ssi::trace_from_seeds(A, B, seeds, on);
+
+  CC_CHECK(tr.curveCount() == 1);
+  if (tr.curveCount() != 1) return;
+  const ssi::WLine& w = tr.lines[0];
+  CC_CHECK(w.isClosed());                       // full closed loop, not a truncated meridian
+  CC_CHECK(tr.closedCurves == 1);
+  CC_CHECK(tr.nearTangentGaps == 0);            // the freeform poles were crossed, not deferred
+  CC_CHECK(tr.singularitiesCrossed >= 2);       // BOTH freeform poles stepped across
+  CC_CHECK(w.chartSingularCrossed >= 2);
+
+  const double len = polylineLength(w);
+  CC_CHECK(len <= 2.0 * kPi + 1e-4);            // never longer than the true circumference
+  CC_CHECK(len >= 0.90 * (2.0 * kPi));          // the FULL loop (not the truncated π half)
+  double v1lo = 1e9, v1hi = -1e9;
+  for (const auto& n : w.points) {
+    CC_CHECK(distToUnitSphereO(n.point) < tol); // every node on BOTH surfaces (no fabricated pole)
+    CC_CHECK(distToPlaneX0(n.point) < tol);
+    v1lo = std::min(v1lo, n.v1);
+    v1hi = std::max(v1hi, n.v1);
+  }
+  CC_CHECK(v1lo < 0.05);                         // reaches the south freeform pole (v→0)
+  CC_CHECK(v1hi > 1.95);                         // and the north freeform pole (v→2)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (f) FREEFORM TIP ENDPOINT control — a collapsed-row Bézier "cone tip" whose pole is on the v=1
+// DOMAIN BOUNDARY (a genuine surface endpoint, no far side). A curve reaching it must DEFER: the
+// chart witness FIRES (‖dU‖ collapses), but the far-side re-seed cannot verify past a nonexistent
+// surface, so the crossing rolls back and the march stops (singularitiesCrossed == 0). This pins
+// that the freeform crossing NEVER fabricates a point past a real tip — the must-still-defer twin
+// of the analytic cylinder-cap boundary control (c).
+// ─────────────────────────────────────────────────────────────────────────────
+CC_TEST(s4e_freeform_tip_endpoint_still_defers) {
+  auto A = bezierConeTip();                                // apex (collapsed row) on the v=1 edge
+  // plane x = 0: cuts the meridian-like curve u≈½ running from the v=0 arc UP to the apex.
+  auto B = planeX0(ssi::ParamBox{-2.0, 2.0, -2.0, 2.0});
+  const Point3 sp = A.point(0.5, 0.0);                     // base of the curve, (0, −1.2, 0)
+  auto seeds = handSeed(0.5, 0.0, sp.y, sp.z, sp);
+  const double tol = 1e-6;
+
+  ssi::MarchOptions on;
+  on.enableChartSingularities = true;  // switch ON — must STILL defer at a genuine tip endpoint
+  auto tr = ssi::trace_from_seeds(A, B, seeds, on);
+
+  CC_CHECK(tr.curveCount() == 1);
+  if (tr.curveCount() != 1) return;
+  const ssi::WLine& w = tr.lines[0];
+  CC_CHECK(tr.singularitiesCrossed == 0);       // the tip has NO far side → the crossing defers
+  CC_CHECK(w.chartSingularCrossed == 0);
+  CC_CHECK(w.status == ssi::TraceStatus::NearTangent);  // honest truncation at the tip → OCCT
+  for (const auto& n : w.points) {              // every EMITTED node is still on both surfaces
+    CC_CHECK(distToPlaneX0(n.point) < tol);
+    CC_CHECK(n.v1 <= 1.0 + tol);                // never stepped past the v=1 tip boundary
+  }
 }
 
 int main() { return cctest::run_all(); }

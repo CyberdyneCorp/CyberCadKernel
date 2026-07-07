@@ -890,6 +890,98 @@ void pairConeApexS4e() {
   std::fflush(stdout);
 }
 
+// ── S4-e (c): FREEFORM PARAMETRIC POLE — a NURBS unit sphere crossed vs OCCT ──────────
+// A NATIVE rational (NURBS) unit sphere — a surface of revolution whose two v-EDGE control ROWS
+// are COLLAPSED to the poles (‖dU‖ → 0, finite point + finite-limit normal) and which carries
+// uPeriod == 0 (NO analytic meridian map) — ∩ the plane x = 0 → the great circle through both
+// FREEFORM poles. This is the freeform analog of pairSpherePoleS4e: OFF truncates to one meridian
+// at the first pole; ON crosses BOTH freeform poles via the point-only far-longitude re-seed
+// (freeformChartInvert) and closes the full loop. The OCCT ORACLE is the analytic
+// Geom_SphericalSurface (geometrically identical — OCCT has no parametric pole there), so the
+// asserted facts are on-locus + on-both-surfaces + closed + arc ≈ the OCCT circle, exactly the
+// S3 contract: the native FREEFORM-pole crossing must reproduce the OCCT great circle.
+constexpr double kC = 0.70710678118654752440;  // 1/√2 — the NURBS circle mid-weight
+ssi::SurfaceAdapter nativeNurbsSphere() {
+  const int degU = 2, degV = 2, nU = 9, nV = 5;
+  const double px[5] = {0.0, 1.0, 1.0, 1.0, 0.0}, pz[5] = {-1.0, -1.0, 0.0, 1.0, 1.0},
+               pw[5] = {1.0, kC, 1.0, kC, 1.0};
+  std::vector<Point3> poles(static_cast<std::size_t>(nU) * nV);
+  std::vector<double> w(static_cast<std::size_t>(nU) * nV);
+  for (int k = 0; k < nU; ++k) {
+    const double ang = k * 45.0 * kPi / 180.0;
+    const bool corner = (k % 2) == 1;
+    const double wc = corner ? kC : 1.0, rs = corner ? (1.0 / kC) : 1.0;
+    const double ck = std::cos(ang), sk = std::sin(ang);
+    for (int j = 0; j < nV; ++j) {
+      const double R = px[j] * rs;
+      poles[static_cast<std::size_t>(k) * nV + j] = Point3{R * ck, R * sk, pz[j]};
+      w[static_cast<std::size_t>(k) * nV + j] = wc * pw[j];
+    }
+  }
+  std::vector<double> kU{0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4}, kV{0, 0, 0, 1, 1, 2, 2, 2};
+  return ssi::makeNurbsAdapter(degU, degV, poles, w, nU, nV, kU, kV);
+}
+// Native / OCCT plane x = 0 (the yz-plane, normal +X): contains the sphere axis, so ∩ sphere is
+// the great circle through both poles. Native frame {origin, X=+y, Y=+z, normal=+x}.
+ssi::SurfaceAdapter nativePlaneX0(const ssi::ParamBox& dom) {
+  nm::Plane pl;
+  pl.pos = Ax3{Point3{0, 0, 0}, Dir3{0, 1, 0}, Dir3{0, 0, 1}, Dir3{1, 0, 0}};
+  return ssi::makePlaneAdapter(pl, dom);
+}
+Handle(Geom_Surface) occtPlaneX0() {
+  return new Geom_Plane(gp_Ax3(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0), gp_Dir(0, 1, 0)));
+}
+void pairFreeformPoleS4e() {
+  auto A = nativeNurbsSphere();  // v-domain [0,2]; freeform poles at v=0 and v=2
+  auto B = nativePlaneX0(ssi::ParamBox{-2.0, 2.0, -2.0, 2.0});
+  Handle(Geom_Surface) sa = new Geom_SphericalSurface(toOcctAx3(frameZ()), 1.0);
+  Handle(Geom_Surface) sb = occtPlaneX0();
+  const Point3 sp = A.point(1.0, 1.0);                     // equator (0,1,0)
+  auto seeds = handSeed(1.0, 1.0, sp.y, sp.z, sp);         // plane x=0 params (u=y, v=z)
+
+  // BEFORE — chart switch OFF: truncates at the first freeform pole (< the full 2π loop).
+  ssi::MarchOptions off;
+  const ssi::TraceSet before = ssi::trace_from_seeds(A, B, seeds, off);
+  double lenBefore = 0.0;
+  for (const auto& w : before.lines) lenBefore += wlineLength(w);
+
+  // AFTER — chart switch ON: both freeform poles crossed → the full great circle.
+  ssi::MarchOptions on; on.enableChartSingularities = true;
+  const ssi::TraceSet ts = ssi::trace_from_seeds(A, B, seeds, on);
+
+  GeomAPI_IntSS iss(sa, sb, 1e-7);
+  const int occtN = iss.IsDone() ? iss.NbLines() : 0;
+  std::vector<OcctBranch> occtBr;
+  double occtLen = 0.0;
+  for (int i = 1; i <= occtN; ++i) {
+    occtBr.push_back(classifyBranch(iss.Line(i), sa, sb, 1e-2));
+    occtLen += occtBr.back().length;
+  }
+
+  const double onCurveTol = 5e-4, onSurfTol = 1e-4, lengthTol = 3e-2;
+  double maxOnCurve = 0.0, maxOnSurf = 0.0, nativeLen = 0.0;
+  for (const auto& w : ts.lines) {
+    nativeLen += wlineLength(w);
+    for (const Point3& p : sampleWLine(w)) {
+      double best = 1e30;
+      for (const auto& b : occtBr) best = std::min(best, distToOcctCurve(b.curve, p));
+      maxOnCurve = std::max(maxOnCurve, best);
+      maxOnSurf = std::max(maxOnSurf, std::max(distToOcctSurface(sa, p), distToOcctSurface(sb, p)));
+    }
+  }
+  const double lenDelta = occtLen > 1e-12 ? std::fabs(nativeLen - occtLen) / occtLen : nativeLen;
+
+  const bool ok = ts.singularitiesCrossed >= 2 && ts.nearTangentGaps == 0 &&
+                  ts.closedCurves == 1 && occtN > 0 && lenBefore < 0.75 * occtLen &&
+                  maxOnCurve <= onCurveTol && maxOnSurf <= onSurfTol && lenDelta <= lengthTol;
+  if (ok) ++g_pass; else ++g_fail;
+  std::printf("[NMARCH] %-4s %-18s singX=%d NTgaps=%d closed=%d onCurve=%.2e onSurf=%.2e "
+              "lenDelta=%.2e (before=%.4f nat=%.4f occt=%.4f) occtBr=%d\n",
+              ok ? "PASS" : "FAIL", "freeform-pole s4e", ts.singularitiesCrossed, ts.nearTangentGaps,
+              ts.closedCurves, maxOnCurve, maxOnSurf, lenDelta, lenBefore, nativeLen, occtLen, occtN);
+  std::fflush(stdout);
+}
+
 }  // namespace
 
 int main() {
@@ -906,6 +998,7 @@ int main() {
   pairEqualCylindersBranchS4d(); // S4-d: branch points localized + arms routed vs OCCT
   pairSpherePoleS4e();           // S4-e: sphere parametric pole crossed, full great circle vs OCCT
   pairConeApexS4e();             // S4-e: cone apex crossed, both nappes vs OCCT
+  pairFreeformPoleS4e();         // S4-e: FREEFORM (NURBS) parametric pole crossed, full circle vs OCCT
 
   std::printf("== %d passed, %d failed ==\n", g_pass, g_fail);
   std::fflush(stdout);

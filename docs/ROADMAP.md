@@ -179,7 +179,7 @@ robustness tail keeps OCCT linked.** Canonical detail:
   `TangentPoint` (spheres d=R₁+R₂) STILL ENDS with zero arms (definite tangent cone ⇒ no
   real roots). Only the elementary transversal self-crossing (Steinmetz family) is handled;
   general/freeform branch points and cusps DEFER → OCCT. **Steinmetz is now unblocked.**
-- ✅ **SSI S4-e FIRST CHART-SINGULARITY SLICE (sphere pole + cone apex)** — where ONE
+- ✅ **SSI S4-e CHART-SINGULARITY SLICES (analytic sphere pole + cone apex, and the FREEFORM NURBS pole)** — where ONE
   surface's own `(u,v)` parametrization degenerates (`‖dU‖ → 0`) while its 3D point + normal
   stay finite — a **sphere parametric pole** (`v = ±π/2`) or a **cone apex** — the intersection
   can be perfectly transversal yet S3's single-surface Jacobian goes rank-1 and truncates. The
@@ -192,9 +192,19 @@ robustness tail keeps OCCT linked.** Canonical detail:
   on locus + both surfaces ≤ 1.51e-07); a double-cone∩plane line through the apex that S3
   step-collapsed at is **FULLY traced across both nappes** (`singX=1`, 159 nodes, `v∈[−2,+2]`,
   on-surface ≤ 6.79e-16). A genuine finite cylinder `v`-cap still exits as a `BoundaryExit`; any
-  pole/apex that will not verify on both surfaces DEFERS → OCCT — no crossing fabricated. Only
-  the sphere-pole + cone-apex chart singularities are crossed; general/freeform parametric
-  degeneracies and higher-order/curve cusps remain the tail.
+  pole/apex that will not verify on both surfaces DEFERS → OCCT — no crossing fabricated. A
+  **SECOND slice** extends this to the FREEFORM analog: a NURBS unit sphere (a `uPeriod==0`
+  collapsed-control-row pole — a genuine freeform degeneracy, no analytic `u+π` meridian map)
+  ∩ plane is now FULLY traced by re-seeding the far side with `freeformChartInvert` (a
+  point-only far-longitude inversion at the fixed near-pole latitude; the corrector never
+  touches the degenerate `dU` or the near-zero normal) — `singX=2`, closed, `len` 6.2829 vs
+  OCCT 6.2832, on both surfaces ≤ 1.51e-07. A collapsed-row endpoint on a domain boundary (a
+  Bézier cone-tip with no far side) correctly still DEFERS `NearTangent` → OCCT. The **curve
+  cusp** (marcher velocity `‖n_A×n_B‖ → 0`) was assessed and DECLINED: by the IFT it coincides
+  with the pair-tangency S4-c/S4-d regime, so a standalone S4-e cusp witness would be
+  unreachable dead code — cusps route to S4-c/S4-d/OCCT, never faked. Remaining: **asymmetric**
+  freeform poles whose continued-tangent re-seed does not verify, higher-order / edge / seam
+  degeneracies, and a degenerate-pole B-spline SOLID through the boolean pipeline stay the tail.
 - ◐ **SSI S5-a/b/c/d/e/f (curved-boolean slices)** — the SSI-curve-driven
   split→classify→weld pipeline (`src/native/boolean/ssi_boolean.{h,cpp}`, consumes the
   S3 `TraceSet` — and, for S5-d, the S4-d branched re-trace) produces **sixteen native
@@ -336,7 +346,8 @@ robustness tail keeps OCCT linked.** Canonical detail:
   tail: general/freeform branch points, higher-order/curve cusps, general/freeform parametric
   singularities, watertight self-intersection resolution / topology repair, deeper near-coincident
   bands — S4-a/b classification + the S4-c near-tangent march-through + the S4-d Steinmetz
-  branch-point slice + the S4-e sphere-pole/cone-apex chart-singularity slice + the S4-f robust
+  branch-point slice + the S4-e sphere-pole/cone-apex + FREEFORM NURBS-pole chart-singularity
+  slices (curve cusp declined by IFT; asymmetric/higher-order freeform poles remain) + the S4-f robust
   true-return closure / self-intersection guard / adaptive completeness critic (measured recall
   wins on small-loop / many-loop fixtures, honest asymptotic floor + residual) + the S5-d branched
   Steinmetz COMMON boolean already landed, and the sphere∩sphere op-set is now COMPLETE 3/3

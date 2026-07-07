@@ -580,7 +580,13 @@ bool chartRecovered(const SurfaceAdapter& A, const SurfaceAdapter& B, const Stat
 //  * SPHERE POLE. A great arc through the pole continues on the OPPOSITE meridian: the longitude
 //    jumps by half a turn (poleContinuationU, u_in+π) while the latitude REFLECTS about the pole
 //    (v stays near ±π/2, then decreases back into the domain) — so the far-side v seed is the
-//    SAME magnitude, kept just inside the pole edge. The corrector re-lands the exact v.
+//    SAME magnitude, kept just inside the pole edge. The corrector re-lands the exact v. This is
+//    the PERIODIC (uPeriod>0) analytic path; it stays bit-identical.
+//  * FREEFORM POLE. A collapsed B-spline/NURBS control ROW (‖dU‖→0, finite point+normal — the
+//    spline analog of the sphere pole) carries uPeriod==0, so no analytic meridian jump exists.
+//    The far-side (u,v) is re-seeded by a POINT-ONLY nearest-(u,v) inversion of the continued 3D
+//    tangent target (chartsing::freeformChartInvert) — the same removable-singularity crossing,
+//    generalized. The corrector confirms it on both surfaces exactly as for the analytic pole.
 //  * CONE APEX. The apex is a single 3D point; the curve passes straight through to the far
 //    nappe, whose signed radius (hence v) has the OPPOSITE sign. Flip v; the longitude is
 //    unchanged (the straight line keeps its azimuth). The corrector confirms the far nappe.
@@ -596,14 +602,23 @@ bool isPoleEdge(const SurfaceAdapter& S, double v) {
   return v <= d.v0 + ev || v >= d.v1 - ev;
 }
 
-void chartFarUV(const SurfaceAdapter& S, bool poleCase, double u, double v, double& uOut,
-                double& vOut) {
+void chartFarUV(const SurfaceAdapter& S, bool poleCase, double u, double v, const Point3& target,
+                double& uOut, double& vOut) {
   if (poleCase) {
     // Sphere pole: the great arc CONTINUES on the OPPOSITE meridian — jump the longitude by half
     // a turn (poleContinuationU, u_in+π) and KEEP the latitude (the far arc runs back DOWN from
     // the same pole edge, v unchanged; there is no v beyond ±π/2). The corrector re-lands v.
-    uOut = S.uPeriod > 0.0 ? chartsing::poleContinuationU(u, S.uPeriod) : u;
-    vOut = v;
+    if (S.uPeriod > 0.0) {
+      uOut = chartsing::poleContinuationU(u, S.uPeriod);
+    } else {
+      // FREEFORM pole (uPeriod == 0 — a collapsed B-spline/NURBS control row): no analytic u+π
+      // meridian jump exists, so recover the far LONGITUDE numerically from the CONTINUED 3D
+      // tangent target (point-only, at the SAME latitude — chart_singularity.h). The corrector
+      // then verifies it on both surfaces exactly like the analytic pole; a wrong pick fails and
+      // the march defers.
+      uOut = chartsing::freeformChartInvert(S, target, v);
+    }
+    vOut = v;  // KEEP the latitude (analytic reflect and freeform share this — far arc runs back down)
   } else {
     uOut = u;       // apex: azimuth unchanged (the straight line keeps its longitude)
     vOut = -v;      // far nappe: signed radius (hence v) flips sign through the apex
@@ -670,8 +685,8 @@ ChartCrossOut crossChartSingularity(const SurfaceAdapter& A, const SurfaceAdapte
     const ChartHit hitCur = chartCondition(A, B, cur, scale, t);
     if (!crossed && hitCur.surf != ChartSurf::None) {
       double uO, vO;
-      if (singularIsA) { chartFarUV(A, poleCase, cur.u1, cur.v1, uO, vO); seed.u1 = uO; seed.v1 = vO; }
-      else             { chartFarUV(B, poleCase, cur.u2, cur.v2, uO, vO); seed.u2 = uO; seed.v2 = vO; }
+      if (singularIsA) { chartFarUV(A, poleCase, cur.u1, cur.v1, target, uO, vO); seed.u1 = uO; seed.v1 = vO; }
+      else             { chartFarUV(B, poleCase, cur.u2, cur.v2, target, uO, vO); seed.u2 = uO; seed.v2 = vO; }
       crossed = true;
     }
 

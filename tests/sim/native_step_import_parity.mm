@@ -401,6 +401,118 @@ void runSplineFaceRoundTrip() {
     record(pr.parsed && pr.allWatertight && pr.solids == 1 && volOk, "native", "splineface roundtrip", d);
 }
 
+// ── (G2) FOREIGN TRIMMED B_SPLINE_SURFACE face — curved (u,v) boundary (MOAT M4) ──
+// A bump-capped cylinder: cylinder side + flat bottom + a biquadratic B_SPLINE_SURFACE
+// dome cap trimmed by the top CIRCLE (a genuinely CURVED-in-(u,v) boundary, not an
+// isoparametric line). Authoring it natively and re-importing exercises the M4 reader
+// admission: the reader reconstructs the curved circle pcurve, the faithful-reconstruction
+// guard ACCEPTS it, and the M0 mesher welds the curved cap↔side seam WATERTIGHT. The gate:
+// the native re-import is watertight with the same volume as the source AND matches the
+// OCCT STEPControl_Reader re-import of the SAME file (native-vs-OCCT). The deliberately
+// unfaithful variant (centre pole lifted off the dome) must DECLINE natively → the file
+// still round-trips through OCCT unchanged (both PASS).
+namespace bumpcap {
+namespace nm = cybercad::native::math;
+constexpr double kBumpH = 1.0;
+constexpr double kTwoPi = 6.28318530717958647692;
+ntopo::Shape vtx(double x, double y, double z) { return ntopo::ShapeBuilder::makeVertex(nm::Point3{x, y, z}); }
+ntopo::Shape lineE(const ntopo::Shape& a, const ntopo::Shape& b) {
+    ntopo::EdgeCurve c{}; c.kind = ntopo::EdgeCurve::Kind::Line;
+    return ntopo::ShapeBuilder::makeEdge(c, 0.0, 1.0, a, b);
+}
+ntopo::Shape circE(double R, double z, const ntopo::Shape& v0, const ntopo::Shape& v1) {
+    ntopo::EdgeCurve c{}; c.kind = ntopo::EdgeCurve::Kind::Circle;
+    c.frame = nm::Ax3{nm::Point3{0, 0, z}, nm::Dir3{1, 0, 0}, nm::Dir3{0, 1, 0}, nm::Dir3{0, 0, 1}};
+    c.radius = R;
+    return ntopo::ShapeBuilder::makeEdgeWithVertices(c, 0.0, kTwoPi, {v0, v1});
+}
+ntopo::FaceSurface capSurf(double capZ, double rho, double perturb) {
+    const double k = kBumpH / (rho * rho), c0 = kBumpH / 2 - 0.25 * k, c1 = kBumpH / 2 + 0.25 * k;
+    const double xc[3] = {-0.5, 0.0, 0.5}, fz[3] = {c0, c1, c0};
+    ntopo::FaceSurface s{}; s.kind = ntopo::FaceSurface::Kind::BSpline;
+    s.nPolesU = 3; s.nPolesV = 3; s.degreeU = 2; s.degreeV = 2;
+    s.knotsU = {0, 0, 0, 1, 1, 1}; s.knotsV = {0, 0, 0, 1, 1, 1};
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) {
+            const double dz = (i == 1 && j == 1) ? perturb : 0.0;
+            s.poles.push_back(nm::Point3{xc[i], xc[j], capZ + fz[i] + fz[j] + dz});
+            s.weights.push_back(1.0);
+        }
+    return s;
+}
+ntopo::Shape solid(double R, double h, double perturb) {
+    const nm::Ax3 fr{nm::Point3{0, 0, 0}, nm::Dir3{1, 0, 0}, nm::Dir3{0, 1, 0}, nm::Dir3{0, 0, 1}};
+    ntopo::FaceSurface sideS{}; sideS.kind = ntopo::FaceSurface::Kind::Cylinder; sideS.frame = fr; sideS.radius = R;
+    auto vb = vtx(R, 0, 0), vt = vtx(R, 0, h);
+    ntopo::Shape botC = circE(R, 0, vb, vb), topC = circE(R, h, vt, vt);
+    ntopo::Shape seam0 = lineE(vb, vt), seam1 = lineE(vb, vt);
+    ntopo::Shape sf0 = ntopo::ShapeBuilder::makeFace(sideS, ntopo::Shape{});
+    auto pcL = [&](nm::Point3 o, nm::Vec3 d) {
+        ntopo::PCurve pc{}; pc.kind = ntopo::EdgeCurve::Kind::Line; pc.origin2d = o; pc.dir2d = d; return pc; };
+    auto bS = ntopo::ShapeBuilder::addPCurve(botC, sf0.tshape(), pcL({0, 0, 0}, {1, 0, 0}));
+    auto tS = ntopo::ShapeBuilder::addPCurve(topC, sf0.tshape(), pcL({0, h, 0}, {1, 0, 0}));
+    auto s0 = ntopo::ShapeBuilder::addPCurve(seam0, sf0.tshape(), pcL({0, 0, 0}, {0, h, 0}));
+    auto s1 = ntopo::ShapeBuilder::addPCurve(seam1, sf0.tshape(), pcL({kTwoPi, 0, 0}, {0, h, 0}));
+    ntopo::Shape sideFace = ntopo::ShapeBuilder::makeFace(
+        sideS, ntopo::ShapeBuilder::makeWire({bS, s1, tS.reversedShape(), s0.reversedShape()}));
+    ntopo::FaceSurface disk{}; disk.kind = ntopo::FaceSurface::Kind::Plane; disk.frame = fr;
+    ntopo::Shape kf0 = ntopo::ShapeBuilder::makeFace(disk, ntopo::Shape{});
+    ntopo::PCurve pcd{}; pcd.kind = ntopo::EdgeCurve::Kind::Circle; pcd.origin2d = {0, 0, 0}; pcd.dir2d = {R, 0, 0};
+    auto dOn = ntopo::ShapeBuilder::addPCurve(botC, kf0.tshape(), pcd);
+    ntopo::Shape botCap = ntopo::ShapeBuilder::makeFace(disk, ntopo::ShapeBuilder::makeWire({dOn}), {},
+                                                        ntopo::Orientation::Reversed);
+    ntopo::FaceSurface cap = capSurf(h, R, perturb);
+    ntopo::Shape cf0 = ntopo::ShapeBuilder::makeFace(cap, ntopo::Shape{});
+    ntopo::PCurve pcc{}; pcc.kind = ntopo::EdgeCurve::Kind::Circle; pcc.origin2d = {0.5, 0.5, 0}; pcc.dir2d = {R, 0, 0};
+    auto cOn = ntopo::ShapeBuilder::addPCurve(topC, cf0.tshape(), pcc);
+    ntopo::Shape capFace = ntopo::ShapeBuilder::makeFace(cap, ntopo::ShapeBuilder::makeWire({cOn}), {},
+                                                         ntopo::Orientation::Forward);
+    return ntopo::ShapeBuilder::makeSolid({ntopo::ShapeBuilder::makeShell({sideFace, botCap, capFace})});
+}
+}  // namespace bumpcap
+
+void runBumpCapBSplineAdmission() {
+    const double R = 0.4, h = 0.5, kPi = 3.14159265358979323846;
+    const double truth = kPi * R * R * h + kPi * R * R * bumpcap::kBumpH / 2.0;
+    const std::string path = "/tmp/cck_nimport_bumpcap_nat.step";
+    const ntopo::Shape src = bumpcap::solid(R, h, 0.0);
+    if (src.isNull() || !nex::step_can_export_native(src)) {
+        record(false, "native", "bumpcap build", "native bump-cap build/export unsupported"); return;
+    }
+    const double vOrig = nativeVol(src);
+    if (!nex::step_export_native(src, path)) { record(false, "native", "bumpcap export", "write failed"); return; }
+    const NativeProbe pr = probeNative(path);         // native reader admits the curved patch
+    const double ov = occtStepVolume(path);           // OCCT STEPControl_Reader re-import (EXACT B-rep)
+    // OCCT integrates the exact B-rep; the native side is a MESH, so its dome volume
+    // converges to OCCT only as the chord deflection shrinks. Re-mesh the admitted solid
+    // at a fine deflection for a genuine mesh-vs-exact parity (0.5%); a fixed-deflection
+    // mesh under-measures the dome purely by tessellation (proven convergent on the host).
+    const ntopo::Shape reimp = nex::step_import_native(path);
+    const double fineVol = reimp.isNull() ? -1.0 : nativeVol(reimp, 0.001);
+    char d[400];
+    std::snprintf(d, sizeof d,
+                  "native parsed=%d watertight=%d solids=%d fineVol=%.6g occtVol=%.6g truth=%.6g",
+                  pr.parsed, pr.parsed && pr.allWatertight, pr.solids, fineVol, ov, truth);
+    const bool vsOrig = vOrig > 0 && std::fabs(pr.vol - vOrig) / vOrig < 1e-6;  // reader == source mesh
+    const bool vsOcct = ov > 0 && fineVol > 0 && std::fabs(fineVol - ov) / ov < 5e-3;   // native == OCCT
+    const bool vsTruth = fineVol > 0 && std::fabs(fineVol - truth) / truth < 5e-3;      // == closed form
+    record(pr.parsed && pr.allWatertight && pr.solids == 1 && vsOrig && vsOcct && vsTruth,
+           "native", "bumpcap admit", d);
+
+    // Unfaithful variant: the reader must DECLINE (parsed=0) → OCCT still round-trips it.
+    const std::string badPath = "/tmp/cck_nimport_bumpcap_bad_nat.step";
+    const ntopo::Shape bad = bumpcap::solid(R, h, 0.05);
+    if (nex::step_can_export_native(bad) && nex::step_export_native(bad, badPath)) {
+        const NativeProbe badPr = probeNative(badPath);
+        const double badOv = occtStepVolume(badPath);
+        char e[320];
+        std::snprintf(e, sizeof e, "native parsed=%d (must be 0 → decline) occtVol=%.6g", badPr.parsed, badOv);
+        record(!badPr.parsed && badOv > 0, "native", "bumpcap decline", e);
+    } else {
+        record(false, "native", "bumpcap decline", "bad-variant export failed");
+    }
+}
+
 // ── (H) TRANSFORMED ASSEMBLY — two boxes placed via the transform tree ───────────
 // Author a genuine 2-component assembly: a Compound of two boxes where the SECOND box
 // carries a rigid TopLoc_Location (rotate 0.5 rad about Z + translate) that is NOT
@@ -1093,6 +1205,7 @@ int main() {
     runEllipseCut();         // T1a: ELLIPSE edge (foreign slant-cut cylinder) — honest probe
     runMultiSolid();         // T2 : flat 2-solid file → native Compound of solids
     runSplineFaceRoundTrip();// T3 : native B_SPLINE_SURFACE-face solid round-trip (exact)
+    runBumpCapBSplineAdmission(); // M4: foreign trimmed B-spline patch (curved UV boundary) vs OCCT
 
     // ── ASSEMBLIES (this slice) — a TRANSFORMED assembly imports as a placed
     //    Compound vs OCCT; an AP214 foreign header is accepted (schema-independent).

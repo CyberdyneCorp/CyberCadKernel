@@ -15,6 +15,7 @@
 #include "native/exchange/step_reader.h"
 
 #include "native/math/native_math.h"
+#include "native/tessellate/trim.h"
 #include "native/topology/accessors.h"
 #include "native/topology/native_topology.h"
 
@@ -35,6 +36,7 @@
 namespace cybercad::native::exchange {
 
 namespace math = cybercad::native::math;
+namespace tess = cybercad::native::tessellate;
 
 namespace {
 
@@ -1761,20 +1763,29 @@ class Mapper {
     // midpoint of the arcs' u-range as the reference the line u's are unwrapped to.
     const double uRef = angularURef(srf, outer);
 
-    // Rebuild each wire's edges with a pcurve attached, keyed to `face`'s node.
+    // Rebuild each wire's edges with a pcurve attached, keyed to `face`'s node. On a
+    // B-spline face EVERY rebuilt edge passes the faithful-reconstruction guard, or the
+    // face declines (sets fail_) so advancedFace / closedShell abort → OCCT.
+    const bool guard = srf.kind == topo::FaceSurface::Kind::BSpline;
     auto rebuildWire = [&](const topo::Shape& wire) -> topo::Shape {
       std::vector<topo::Shape> edges;
       for (const topo::Shape& e : wire.tshape()->children()) {
         const topo::PCurve pc = pcurveFor(srf, e, uRef);
+        if (guard && !pcurveEdgeFaithful(srf, e, pc)) { decline(); return {}; }
         const topo::Shape withPc = topo::ShapeBuilder::addPCurve(e, face.tshape(), pc);
         edges.push_back(withPc.oriented(e.orientation()));
       }
       return topo::ShapeBuilder::makeWire(std::move(edges));
     };
     const topo::Shape outer2 = rebuildWire(outer);
+    if (fail_) return {};
     std::vector<topo::Shape> holes2;
     holes2.reserve(holes.size());
-    for (const topo::Shape& h : holes) holes2.push_back(rebuildWire(h));
+    for (const topo::Shape& h : holes) {
+      const topo::Shape h2 = rebuildWire(h);
+      if (fail_) return {};
+      holes2.push_back(h2);
+    }
     return topo::ShapeBuilder::makeFace(srf, outer2, holes2, orient);
   }
 
@@ -1823,6 +1834,15 @@ class Mapper {
     const math::Point3 e1 = evalEdge(c, last);
     const auto uv0 = projectUV(srf, e0);
     const auto uv1 = projectUV(srf, e1);
+
+    // A foreign trimmed B_SPLINE_SURFACE face: reconstruct the pcurve faithfully BEFORE
+    // the analytic-surface arms below (whose angular-u assumption does not hold on a
+    // free-form patch). A straight-in-(u,v) rim/seam stays a UV Line byte-identical to the
+    // generic-linear arm; a genuinely curved edge becomes a UV B-spline. The per-edge
+    // faithful-reconstruction guard (buildFaceWithPCurves) DECLINES → OCCT on any
+    // unfaithful edge.
+    if (srf.kind == topo::FaceSurface::Kind::BSpline)
+      return bsplinePCurveFor(srf, c, uv0, uv1, first, last);
 
     if (srf.kind == topo::FaceSurface::Kind::Plane) {
       // A straight edge on a plane is a straight UV line; a circle on a plane is a
@@ -1914,6 +1934,220 @@ class Mapper {
     pc.origin2d = math::Point3{uv0.first, uv0.second, 0.0};
     pc.dir2d = math::Vec3{(uv1.first - uv0.first) / len, (uv1.second - uv0.second) / len, 0.0};
     return pc;
+  }
+
+  // Reconstruct the pcurve of an edge on a B-spline surface. Classify straight-vs-curved
+  // by the projected midpoint's deviation from the straight UV chord (UV-domain-relative):
+  //   * straight-in-(u,v) (rim / seam / isoparametric trim) → a UV Line through the two
+  //     projected endpoints — BYTE-IDENTICAL to the generic-linear arm, so the existing
+  //     native B-spline-wall round-trips (T3) are unchanged;
+  //   * curved → an analytic/free-form UV pcurve reconstructed from the 3D curve.
+  topo::PCurve bsplinePCurveFor(const topo::FaceSurface& srf, const topo::EdgeCurve& c,
+                                std::pair<double, double> uv0, std::pair<double, double> uv1,
+                                double first, double last) {
+    const math::Point3 em = evalEdge(c, 0.5 * (first + last));
+    const auto uvm = projectUV(srf, em);
+    if (uvStraightUV(uv0, uv1, uvm)) {
+      topo::PCurve pc;
+      pc.kind = topo::EdgeCurve::Kind::Line;
+      pc.origin2d = math::Point3{uv0.first, uv0.second, 0.0};
+      const double len = std::max(last - first, 1e-12);
+      pc.dir2d = math::Vec3{(uv1.first - uv0.first) / len, (uv1.second - uv0.second) / len, 0.0};
+      return pc;
+    }
+    return curvedPCurveUV(srf, c, first, last);
+  }
+
+  // A projected midpoint lies on the straight UV chord iff its perpendicular deviation is
+  // a negligible fraction of the chord length (UV-domain-relative). A closed loop (uv0 ≈
+  // uv1, e.g. a full rim circle) has a degenerate chord ⇒ never straight.
+  static bool uvStraightUV(std::pair<double, double> a, std::pair<double, double> b,
+                           std::pair<double, double> m) {
+    const double dx = b.first - a.first, dy = b.second - a.second;
+    const double len = std::sqrt(dx * dx + dy * dy);
+    if (len < 1e-12) return false;
+    const double perp = std::fabs(dx * (m.second - a.second) - dy * (m.first - a.first)) / len;
+    return perp <= 1e-9 * std::max(len, 1.0);
+  }
+
+  // The tessellator welds a boundary vertex to its canonical 3D edge anchor only within
+  // BoundaryAnchors::kSnapEps (face_mesher.h) = 1e-6. Reconstruct a curved pcurve well
+  // INSIDE that radius so the admitted patch welds watertight; a curve that cannot be
+  // brought inside it is caught by the faithful-reconstruction guard → decline → OCCT.
+  static constexpr double kWeldEps = 1e-6;
+
+  // Reconstruct a genuinely CURVED edge's UV pcurve as a degree-≤3 B-spline that
+  // INTERPOLATES the projected on-surface samples (curvePoint(t) ≈ projectUV(C_edge(t))).
+  // Because every sampled edge point lies ON the surface, its inversion is machine-exact;
+  // a global interpolant then reconstructs the whole edge to O(hᵖ⁺¹). The sample count is
+  // DENSIFIED until the reconstruction sits comfortably inside the mesher's weld radius
+  // (kWeldEps) — tying the pcurve density to the watertight-weld tolerance. Uniform for
+  // Circle / Ellipse / B-spline / curved-Line edges (no per-kind special case); the guard
+  // is the final arbiter of faithfulness.
+  topo::PCurve curvedPCurveUV(const topo::FaceSurface& srf, const topo::EdgeCurve& c,
+                              double first, double last) {
+    topo::PCurve pc;
+    for (int mSeg = 8; mSeg <= 256; mSeg *= 2) {
+      pc = interpolatedPCurveUV(srf, c, first, last, mSeg);
+      if (curvedReconError(srf, c, first, last, pc) < 0.5 * kWeldEps) break;
+    }
+    return pc;
+  }
+
+  // A clamped degree-p (p = min(3, mSeg)) B-spline in the edge parameter that interpolates
+  // the mSeg+1 projected samples Q_k = projectUV(C_edge(t_k)) at uniform t_k ∈ [first,last]
+  // (Piegl & Tiller A9.1: averaged knots + basis-collocation solve). Evaluated as-is by the
+  // landed trim.h pcurveValue case K::BSpline at the SAME edge parameter t.
+  topo::PCurve interpolatedPCurveUV(const topo::FaceSurface& srf, const topo::EdgeCurve& c,
+                                    double first, double last, int mSeg) {
+    const int p = std::min(3, mSeg);
+    const int n = mSeg;  // last control-point index (n+1 = mSeg+1 samples/poles)
+    std::vector<double> tk(n + 1);
+    std::vector<math::Point3> Q(n + 1);
+    for (int k = 0; k <= n; ++k) {
+      tk[k] = first + (last - first) * (static_cast<double>(k) / n);
+      const auto uv = projectUV(srf, evalEdge(c, tk[k]));
+      Q[k] = math::Point3{uv.first, uv.second, 0.0};
+    }
+    const std::vector<double> U = averagedKnots(tk, p, first, last);
+    std::vector<math::Point3> P = solveInterpolation(tk, Q, U, p);
+    topo::PCurve pc;
+    pc.kind = topo::EdgeCurve::Kind::BSpline;
+    pc.degree = p;
+    pc.knots = U;
+    pc.poles2d = std::move(P);
+    pc.origin2d = pc.poles2d.front();
+    return pc;
+  }
+
+  // Clamped averaged knot vector over [first,last] for interpolation params `tk`
+  // (P&T eq. 9.8): p+1 clamps at each end, interior knots = running average of p params.
+  static std::vector<double> averagedKnots(const std::vector<double>& tk, int p, double first,
+                                           double last) {
+    const int n = static_cast<int>(tk.size()) - 1;
+    std::vector<double> U(static_cast<std::size_t>(n + p + 2));
+    for (int i = 0; i <= p; ++i) { U[i] = first; U[U.size() - 1 - i] = last; }
+    for (int j = 1; j <= n - p; ++j) {
+      double s = 0.0;
+      for (int i = j; i <= j + p - 1; ++i) s += tk[i];
+      U[j + p] = s / p;
+    }
+    return U;
+  }
+
+  // Solve the (n+1)×(n+1) basis-collocation system A·P = Q (A[k][·] = the p+1 nonzero
+  // basis functions at tk[k]) for the interpolation control points, for the u and v
+  // components together (Gaussian elimination with partial pivoting — n+1 ≤ 257, ample).
+  static std::vector<math::Point3> solveInterpolation(const std::vector<double>& tk,
+                                                      const std::vector<math::Point3>& Q,
+                                                      const std::vector<double>& U, int p) {
+    const int n = static_cast<int>(tk.size()) - 1;
+    const int N = n + 1;
+    std::vector<double> A(static_cast<std::size_t>(N) * N, 0.0);
+    std::vector<double> bu(N), bv(N);
+    std::vector<double> basis(static_cast<std::size_t>(p) + 1);
+    for (int k = 0; k <= n; ++k) {
+      const int span = math::findSpan(n, p, tk[k], {U.data(), U.size()});
+      math::basisFuns(span, tk[k], p, {U.data(), U.size()}, {basis.data(), basis.size()});
+      for (int j = 0; j <= p; ++j) A[static_cast<std::size_t>(k) * N + (span - p + j)] = basis[j];
+      bu[k] = Q[k].x;
+      bv[k] = Q[k].y;
+    }
+    gaussSolve2(A, bu, bv, N);
+    std::vector<math::Point3> P(N);
+    for (int i = 0; i < N; ++i) P[i] = math::Point3{bu[i], bv[i], 0.0};
+    return P;
+  }
+
+  // In-place Gaussian elimination with partial pivoting on the N×N row-major matrix `A`
+  // for two right-hand sides `bu`,`bv`. Singular pivots leave the RHS untouched (the guard
+  // then declines the resulting non-interpolating pcurve).
+  static void gaussSolve2(std::vector<double>& A, std::vector<double>& bu, std::vector<double>& bv,
+                          int N) {
+    for (int col = 0; col < N; ++col) {
+      int piv = col;
+      for (int r = col + 1; r < N; ++r)
+        if (std::fabs(A[static_cast<std::size_t>(r) * N + col]) >
+            std::fabs(A[static_cast<std::size_t>(piv) * N + col]))
+          piv = r;
+      if (std::fabs(A[static_cast<std::size_t>(piv) * N + col]) < 1e-300) return;
+      if (piv != col) {
+        for (int j = 0; j < N; ++j)
+          std::swap(A[static_cast<std::size_t>(col) * N + j], A[static_cast<std::size_t>(piv) * N + j]);
+        std::swap(bu[col], bu[piv]);
+        std::swap(bv[col], bv[piv]);
+      }
+      const double d = A[static_cast<std::size_t>(col) * N + col];
+      for (int r = col + 1; r < N; ++r) {
+        const double f = A[static_cast<std::size_t>(r) * N + col] / d;
+        if (f == 0.0) continue;
+        for (int j = col; j < N; ++j) A[static_cast<std::size_t>(r) * N + j] -= f * A[static_cast<std::size_t>(col) * N + j];
+        bu[r] -= f * bu[col];
+        bv[r] -= f * bv[col];
+      }
+    }
+    for (int col = N - 1; col >= 0; --col) {
+      double su = bu[col], sv = bv[col];
+      for (int j = col + 1; j < N; ++j) {
+        su -= A[static_cast<std::size_t>(col) * N + j] * bu[j];
+        sv -= A[static_cast<std::size_t>(col) * N + j] * bv[j];
+      }
+      const double d = A[static_cast<std::size_t>(col) * N + col];
+      bu[col] = su / d;
+      bv[col] = sv / d;
+    }
+  }
+
+  // Max reconstruction error of a candidate curved pcurve, sampled between the interpolation
+  // nodes (where a smooth interpolant deviates most): max_t |S_face(pcurve(t)) − C_edge(t)|.
+  double curvedReconError(const topo::FaceSurface& srf, const topo::EdgeCurve& c, double first,
+                          double last, const topo::PCurve& pc) {
+    constexpr int kProbes = 97;
+    double e = 0.0;
+    for (int i = 0; i <= kProbes; ++i) {
+      const double f = static_cast<double>(i) / kProbes;
+      const double t = first + (last - first) * f;
+      const tess::UV uv = tess::pcurveValue(pc, t, f);
+      e = std::max(e, math::distance(surfaceValue(srf, uv.u, uv.v), evalEdge(c, t)));
+    }
+    return e;
+  }
+
+  // Extent of the surface control net from its frame origin — the scale the faithful-
+  // reconstruction guard tolerance is relative to (≥ 1, so it never tightens below fp64).
+  static double controlNetScale(const topo::FaceSurface& s) {
+    double sc = 0.0;
+    for (const math::Point3& p : s.poles) sc = std::max(sc, math::distance(p, s.frame.origin));
+    return sc;
+  }
+
+  // FAITHFUL-RECONSTRUCTION GUARD for a B-spline-face edge. At several parameters across
+  // [first,last], require S_face(pcurve(t)) = C_edge(t) within a scale-relative tolerance
+  // (the SAME 1e-6·max(1,scale) form as pointOnSurface — NEVER weakened), evaluating the
+  // pcurve through the SAME tess::pcurveValue the mesher flattens (no evaluator drift).
+  // A false result ⇒ the edge is not faithfully reconstructed ⇒ the face declines → OCCT.
+  bool pcurveFaithful(const topo::FaceSurface& srf, const topo::EdgeCurve& c, double first,
+                      double last, const topo::PCurve& pc) {
+    const double tol = 1e-6 * std::max(1.0, controlNetScale(srf));
+    constexpr int kSamples = 9;
+    for (int i = 0; i <= kSamples; ++i) {
+      const double f = static_cast<double>(i) / kSamples;
+      const double t = first + (last - first) * f;
+      const tess::UV uv = tess::pcurveValue(pc, t, f);
+      const math::Point3 sp = surfaceValue(srf, uv.u, uv.v);
+      if (math::distance(sp, evalEdge(c, t)) > tol) return false;
+    }
+    return true;
+  }
+
+  // Guard one rebuilt edge on a B-spline face. An edge whose curve/range cannot be
+  // resolved is treated as unfaithful (cannot verify ⇒ decline, never fabricate).
+  bool pcurveEdgeFaithful(const topo::FaceSurface& srf, const topo::Shape& edge,
+                          const topo::PCurve& pc) {
+    const auto cr = topo::curveOf(edge);
+    const auto rr = topo::rangeOf(edge);
+    if (!cr || !cr->curve || !rr) return false;
+    return pcurveFaithful(srf, *cr->curve, rr->first, rr->last, pc);
   }
 
   // Evaluate an EdgeCurve at parameter t (LOCAL == world here; the reader builds
@@ -2025,8 +2259,24 @@ class Mapper {
       case K::Cone:     return math::Cone{s.frame, s.radius, s.semiAngle}.value(u, v);
       case K::Sphere:   return math::Sphere{s.frame, s.radius}.value(u, v);
       case K::Torus:    return math::Torus{s.frame, s.radius, s.minorRadius}.value(u, v);
+      case K::BSpline:  return bsplineSurfaceValue(s, u, v);
       default:          return s.frame.origin;
     }
+  }
+
+  // Forward-evaluate a B-spline surface at (u,v) — the exact inverse of projectBSplineUV,
+  // via the same grid/knot setup. Rational-aware: when the patch carries per-pole weights
+  // it evaluates through nurbsSurfacePoint (mirroring revolutionValue), else the
+  // non-rational surfacePoint. Used only by the faithful-reconstruction guard.
+  static math::Point3 bsplineSurfaceValue(const topo::FaceSurface& s, double u, double v) {
+    if (s.nPolesU <= 0 || s.nPolesV <= 0 || s.poles.empty()) return s.frame.origin;
+    const math::SurfaceGrid grid{{s.poles.data(), s.poles.size()}, s.nPolesU, s.nPolesV};
+    const std::span<const double> ku{s.knotsU.data(), s.knotsU.size()};
+    const std::span<const double> kv{s.knotsV.data(), s.knotsV.size()};
+    if (!s.weights.empty() && s.weights.size() == s.poles.size())
+      return math::nurbsSurfacePoint(s.degreeU, s.degreeV, grid,
+                                     {s.weights.data(), s.weights.size()}, ku, kv, u, v);
+    return math::surfacePoint(s.degreeU, s.degreeV, grid, ku, kv, u, v);
   }
 
   // FAITHFUL-REDUCTION GUARD. A point lies on the candidate surface iff projecting it

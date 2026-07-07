@@ -301,6 +301,142 @@ CC_TEST(spline_wall_face_round_trip_exact_volume_and_watertight) {
   CC_CHECK(countType(back, topo::ShapeType::Face) == countType(orig, topo::ShapeType::Face));
 }
 
+// ── M4 — foreign trimmed B_SPLINE_SURFACE face admission (curved UV boundary) ───
+// The MOAT M4 first slice: a trimmed B_SPLINE_SURFACE_WITH_KNOTS face whose EDGE_LOOP is a
+// genuinely CURVED-in-(u,v) boundary (a rim CIRCLE, not an isoparametric line) is admitted
+// and meshed watertight by the landed M0 mesher — PROVIDED the reconstructed pcurve is
+// faithful (S_face(pcurve(t)) = C_edge(t)); any unfaithful edge DECLINES → OCCT. The
+// fixture is a bump-capped cylinder: cylinder side + flat bottom disk + a biquadratic
+// B-spline dome cap trimmed by the top circle (the M0 host keystone). Enclosed volume has
+// the closed form V = πR²h (cylinder) + πR²H/2 (cap dome above the rim).
+namespace {
+
+namespace m = cybercad::native::math;
+constexpr double kBumpH = 1.0;  // dome height above the rim (mirrors the M0 host gate)
+
+topo::Shape bvertex(double x, double y, double z) {
+  return topo::ShapeBuilder::makeVertex(m::Point3{x, y, z});
+}
+topo::Shape blineEdge(const topo::Shape& a, const topo::Shape& b) {
+  topo::EdgeCurve c{};
+  c.kind = topo::EdgeCurve::Kind::Line;
+  return topo::ShapeBuilder::makeEdge(c, 0.0, 1.0, a, b);
+}
+topo::Shape bcircleEdge(double R, double z, const topo::Shape& v0, const topo::Shape& v1) {
+  topo::EdgeCurve c{};
+  c.kind = topo::EdgeCurve::Kind::Circle;
+  c.frame = m::Ax3{m::Point3{0, 0, z}, m::Dir3{1, 0, 0}, m::Dir3{0, 1, 0}, m::Dir3{0, 0, 1}};
+  c.radius = R;
+  return topo::ShapeBuilder::makeEdgeWithVertices(c, 0.0, 6.28318530717958647692, {v0, v1});
+}
+// A biquadratic B-spline (knotted, unit-weight) bump-cap surface. `perturb` lifts the
+// centre pole off the true dome so the rim circle no longer lies on the surface (the
+// deliberately-unfaithful fixture the guard must reject).
+topo::FaceSurface bumpCapBSpline(double capZ, double rho, double perturb) {
+  const double k = kBumpH / (rho * rho), c0 = kBumpH / 2 - 0.25 * k, c1 = kBumpH / 2 + 0.25 * k;
+  const double xc[3] = {-0.5, 0.0, 0.5}, fz[3] = {c0, c1, c0};
+  topo::FaceSurface s{};
+  s.kind = topo::FaceSurface::Kind::BSpline;
+  s.nPolesU = 3;
+  s.nPolesV = 3;
+  s.degreeU = 2;
+  s.degreeV = 2;
+  s.knotsU = {0, 0, 0, 1, 1, 1};
+  s.knotsV = {0, 0, 0, 1, 1, 1};
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) {
+      const double dz = (i == 1 && j == 1) ? perturb : 0.0;
+      s.poles.push_back(m::Point3{xc[i], xc[j], capZ + fz[i] + fz[j] + dz});
+      s.weights.push_back(1.0);
+    }
+  return s;
+}
+// Closed solid: cylinder side (z∈[0,h]) + flat bottom disk + B-spline dome cap sharing the
+// top circle. `perturb` != 0 makes the cap unfaithful to its rim.
+topo::Shape bumpCappedCylinder(double R, double h, double perturb) {
+  const double kPi = 3.14159265358979323846, kTwoPi = 6.28318530717958647692;
+  const m::Ax3 fr{m::Point3{0, 0, 0}, m::Dir3{1, 0, 0}, m::Dir3{0, 1, 0}, m::Dir3{0, 0, 1}};
+  topo::FaceSurface sideS{};
+  sideS.kind = topo::FaceSurface::Kind::Cylinder;
+  sideS.frame = fr;
+  sideS.radius = R;
+  auto vb = bvertex(R, 0, 0), vt = bvertex(R, 0, h);
+  topo::Shape botC = bcircleEdge(R, 0, vb, vb), topC = bcircleEdge(R, h, vt, vt);
+  topo::Shape seam0 = blineEdge(vb, vt), seam1 = blineEdge(vb, vt);
+  topo::Shape sf0 = topo::ShapeBuilder::makeFace(sideS, topo::Shape{});
+  auto pcLine = [&](m::Point3 o, m::Vec3 d) {
+    topo::PCurve pc{};
+    pc.kind = topo::EdgeCurve::Kind::Line;
+    pc.origin2d = o;
+    pc.dir2d = d;
+    return pc;
+  };
+  auto bS = topo::ShapeBuilder::addPCurve(botC, sf0.tshape(), pcLine({0, 0, 0}, {1, 0, 0}));
+  auto tS = topo::ShapeBuilder::addPCurve(topC, sf0.tshape(), pcLine({0, h, 0}, {1, 0, 0}));
+  auto s0 = topo::ShapeBuilder::addPCurve(seam0, sf0.tshape(), pcLine({0, 0, 0}, {0, h, 0}));
+  auto s1 = topo::ShapeBuilder::addPCurve(seam1, sf0.tshape(), pcLine({kTwoPi, 0, 0}, {0, h, 0}));
+  topo::Shape sideFace = topo::ShapeBuilder::makeFace(
+      sideS, topo::ShapeBuilder::makeWire({bS, s1, tS.reversedShape(), s0.reversedShape()}));
+  topo::FaceSurface disk{};
+  disk.kind = topo::FaceSurface::Kind::Plane;
+  disk.frame = fr;
+  topo::Shape kf0 = topo::ShapeBuilder::makeFace(disk, topo::Shape{});
+  topo::PCurve pcd{};
+  pcd.kind = topo::EdgeCurve::Kind::Circle;
+  pcd.origin2d = {0, 0, 0};
+  pcd.dir2d = {R, 0, 0};
+  auto dOn = topo::ShapeBuilder::addPCurve(botC, kf0.tshape(), pcd);
+  topo::Shape botCap = topo::ShapeBuilder::makeFace(disk, topo::ShapeBuilder::makeWire({dOn}), {},
+                                                    topo::Orientation::Reversed);
+  topo::FaceSurface cap = bumpCapBSpline(h, R, perturb);
+  topo::Shape cf0 = topo::ShapeBuilder::makeFace(cap, topo::Shape{});
+  topo::PCurve pcc{};
+  pcc.kind = topo::EdgeCurve::Kind::Circle;
+  pcc.origin2d = {0.5, 0.5, 0};
+  pcc.dir2d = {R, 0, 0};
+  auto cOn = topo::ShapeBuilder::addPCurve(topC, cf0.tshape(), pcc);
+  topo::Shape capFace = topo::ShapeBuilder::makeFace(cap, topo::ShapeBuilder::makeWire({cOn}), {},
+                                                     topo::Orientation::Forward);
+  (void)kPi;
+  return topo::ShapeBuilder::makeSolid(
+      {topo::ShapeBuilder::makeShell({sideFace, botCap, capFace})});
+}
+
+}  // namespace
+
+// The faithful fixture round-trips: the writer emits the B_SPLINE_SURFACE cap; the reader
+// reconstructs the curved (circle) UV pcurve, the guard ACCEPTS it, and the M0 mesher meshes
+// the solid WATERTIGHT with the same volume as the source and within tol of the closed form.
+CC_TEST(foreign_trimmed_bspline_curved_boundary_admitted_watertight) {
+  const double R = 0.4, h = 0.5;
+  const double kPi = 3.14159265358979323846;
+  const double truth = kPi * R * R * h + kPi * R * R * kBumpH / 2.0;
+  const topo::Shape orig = bumpCappedCylinder(R, h, 0.0);
+  CC_CHECK(!orig.isNull());
+  const std::string step = ex::writeStepString(orig, "bumpcap");
+  CC_CHECK(step.find("B_SPLINE_SURFACE") != std::string::npos);  // genuine foreign patch
+  const topo::Shape back = ex::readStepString(step);
+  CC_CHECK(!back.isNull());  // admitted (NOT declined) — the guard accepted the curved pcurve
+  if (back.isNull()) return;
+  CC_CHECK(watertight(back));  // the M0 mesher welded the curved cap↔side seam
+  const double vb = volumeOf(back), vo = volumeOf(orig);
+  CC_CHECK(vb > 0.0 && vo > 0.0);
+  CC_CHECK(std::fabs(vb - vo) / vo < 1e-9);       // reconstructs the SAME solid as the source
+  CC_CHECK(std::fabs(vb - truth) / truth < 0.03); // and matches the closed form within defl
+  CC_CHECK(countType(back, topo::ShapeType::Face) == countType(orig, topo::ShapeType::Face));
+}
+
+// The deliberately-unfaithful fixture (centre pole lifted off the dome, so the rim circle
+// no longer lies on the cap surface) DECLINES → NULL: the faithful-reconstruction guard
+// measures the beyond-tolerance gap and refuses to emit an off-surface trimmed patch. The
+// never-fabricate-geometry contract, so the engine round-trips the file through OCCT.
+CC_TEST(foreign_trimmed_bspline_unfaithful_edge_declines) {
+  const topo::Shape bad = bumpCappedCylinder(0.4, 0.5, 0.05);
+  const std::string step = ex::writeStepString(bad, "bumpcapbad");
+  CC_CHECK(step.find("B_SPLINE_SURFACE") != std::string::npos);
+  CC_CHECK(ex::readStepString(step).isNull());  // guard declines the unfaithful curved edge
+}
+
 // ── T2 — multi-solid file → a Compound of watertight Solids ────────────────────
 // Concatenate two independent native box files' DATA sections into ONE file with two
 // MANIFOLD_SOLID_BREP roots (renumbered so #ids don't collide), no assembly transform

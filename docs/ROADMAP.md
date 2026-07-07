@@ -68,7 +68,9 @@ robustness tail keeps OCCT linked.** Canonical detail:
 - ✅ Booleans — planar-polyhedron fuse/cut/common (BSP-CSG, exact) + axis-aligned
   box∩cylinder curved slice.
 - ✅ Blends — planar chamfer, constant-radius planar-dihedral fillet, offset-face, shell,
-  + CURVED-circular chamfer (convex cylinder↔cap rim → cone-frustum straight bevel, C0).
+  + CURVED-circular chamfer (convex cylinder↔cap rim → cone-frustum straight bevel, C0 —
+  SYMMETRIC via `cc_chamfer_edges` and ASYMMETRIC two-distance `d1≠d2` via `cc_chamfer_edges_asym`,
+  an oblique cone frustum, C0 at two different angles).
 - ✅ **STEP export** (native AP203).
 - ✅ **STEP import — native slice, now WIDENED** (OCCT-free Part-21 reader for the elementary/B-spline
   AP203 subset the native writer emits + foreign OCCT-written box/cylinder; healed via the healing
@@ -324,7 +326,20 @@ robustness tail keeps OCCT linked.** Canonical detail:
   native volume matches the exact closed-form Pappus removed volume `π·d²·(Rc − d/3)` (rel ≤ 3.25e-3);
   bevel normal cos=1/√2 to BOTH faces, explicitly ≠1. Sim `run-sim-native-curved-chamfer.sh` **9/9**
   (3 fixtures), host `test_native_blend` chamfer cases green.
-  Residual → OCCT: non-circular / asymmetric two-distance / concave / cyl↔cyl (curved↔curved) chamfer.
+- ✅ **Asymmetric two-distance chamfer #6c (CONVEX cyl↔cap rim, `d1≠d2` → OBLIQUE cone frustum, C0 at
+  two angles)** — generalizes #6b's `buildChamferedCylinder(g,d,defl)` to
+  `buildChamferedCylinderAsym(g,d1,d2,defl)` (symmetric = the exact `d1=d2` case, byte-identical soup):
+  an oblique frustum between the wall setback circle `(Rc, H−s·d1)` and the cap setback circle `(Rc−d2, H)`,
+  meeting the wall at `cos=d1/√(d1²+d2²)` and the cap at `cos=d2/√(d1²+d2²)` — two DISTINCT angles, both
+  ≠1 (C0, never G1). Additive `cc_chamfer_edges_asym(body,edgeIds,count,d1,d2)` + `IEngine::chamfer_edges_asym`
+  (OCCT override → `MakeChamfer::Add(d1,d2,edge,face)` on the wall face) + `NativeEngine::chamfer_edges_asym`
+  behind the SAME SHRINK self-verify; `cc_chamfer_edges` byte-unchanged. Native volume matches the exact
+  Pappus removed volume `π·d1·d2·(Rc − d2/3)`; native-vs-OCCT vol rel ≤ 3.25e-3. Sim
+  `run-sim-native-curved-chamfer.sh` **18/18** (9 symmetric controls + 9 asymmetric), host `test_native_blend`
+  4 new asym cases green. Change `add-native-fillet-chamfer-breadth` archived.
+  Residual → OCCT: non-circular / concave / cyl↔cyl (curved↔curved) chamfer; the ELLIPTICAL-crease fillet
+  (cylinder ∩ oblique plane, T2) and the CYL↔CYL-canal fillet (T3) are HONEST DECLINES → OCCT (no native
+  constructor / model gap; documented in `NativeEngine::fillet_edges`, no dead code).
 - ✅ **Wrap-emboss #7 — native EMBOSS + DEBOSS + NON-RECTANGULAR POLYGON on a cylinder** — the native
   builder (`src/native/feature/wrap_emboss.h`, OCCT-free) wraps the footprint by the SAME map the OCCT
   oracle uses (`u = px/R`, `v = py + vMid`). FIRST SLICE (control, unchanged): a raised RECTANGULAR pad
@@ -372,11 +387,12 @@ robustness tail keeps OCCT linked.** Canonical detail:
   curved booleans** (Steinmetz fuse/cut, general non-Steinmetz branched pairs,
   more families, consuming the S3 WLines + the S4 typed regions/contacts + multi-arm branch loci).
 - ☐ General curved **booleans** & **blends** beyond the first slices (sit on SSI): NON-LINEAR-law /
-  CONCAVE-variable / non-circular-crease / cyl↔cyl-canal fillets, non-circular / asymmetric two-distance /
+  CONCAVE-variable / non-circular-crease (elliptical, T2) / cyl↔cyl-canal (T3) fillets, non-circular /
   concave / cyl↔cyl curved chamfer; general curved
   **wrap-emboss** (non-cylindrical / freeform base, self-intersecting / dense profiles, >2π footprints).
   _(The constant-radius circular cyl↔cap fillet #6 (convex + concave), the VARIABLE-radius (linear-law)
-  convex circular cyl↔cap fillet, the convex-circular cyl↔cap CONE-FRUSTUM chamfer #6b, and the
+  convex circular cyl↔cap fillet, the convex-circular cyl↔cap CONE-FRUSTUM chamfer #6b + the ASYMMETRIC
+  two-distance `d1≠d2` oblique-frustum chamfer #6c (`cc_chamfer_edges_asym`), and the
   wrap-emboss #7 native tracks — rectangular pad-on-cylinder emboss + DEBOSS + NON-RECTANGULAR polygon
   emboss/deboss — are now native; freeform-base emboss honestly declines to OCCT. See above.)_
 - ☐ Non-planar/guided/rail sweep robustness; general loft; fine-pitch threads.

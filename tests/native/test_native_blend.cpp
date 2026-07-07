@@ -525,6 +525,107 @@ CC_TEST(curved_chamfer_both_rims_and_planar_declines) {
   CC_CHECK(nearRel(v, v0 - chamferVremoved(Rc, d), 5e-3));
 }
 
+// ── T1: asymmetric two-distance chamfer (oblique cone-frustum bevel) ──────────────--
+
+namespace {
+// Exact removed corner-ring volume of an ASYMMETRIC chamfer (axial wall setback d1,
+// radial cap setback d2) on a circular rim (radius Rc): the right triangle legs d1 (axial)
+// × d2 (radial), area ½·d1·d2, centroid radial Rc − d2/3, revolved about the axis (Pappus):
+// V_removed = π·d1·d2·(Rc − d2/3). d1 = d2 reduces to the symmetric π·d²·(Rc − d/3).
+double chamferVremovedAsym(double Rc, double d1, double d2) {
+  return M_PI * d1 * d2 * (Rc - d2 / 3.0);
+}
+}  // namespace
+
+CC_TEST(asym_chamfer_oblique_frustum_watertight_volume) {
+  // Rc=5, h=10 capped cylinder; chamfer the top rim with d1=2 (axial WALL setback) and
+  // d2=1 (radial CAP setback) → an OBLIQUE cone-frustum bevel between the wall seam
+  // (Rc, h−d1) and the cap seam (Rc−d2, h). Watertight, BELOW the sharp cylinder, matching
+  // the exact Pappus removed volume π·d1·d2·(Rc−d2/3)=29.3215 → chamfered ≈ 756.0766.
+  const double Rc = 5.0, h = 10.0, d1 = 2.0, d2 = 1.0;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  bool wt0 = false;
+  const double v0 = vol(cyl, wt0);
+  CC_CHECK(wt0);
+  const int rim = findRimAtZ(cyl, h);
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  topo::Shape ch = blend::curved_chamfer_edge_asym(cyl, ids, 1, d1, d2, 0.005);
+  bool wt = false;
+  const double v = vol(ch, wt);
+  CC_CHECK(!ch.isNull());
+  CC_CHECK(wt);                 // oblique frustum welds watertight to wall + trimmed cap
+  CC_CHECK(v < v0);             // a convex chamfer REDUCES the volume
+  const double expected = v0 - chamferVremovedAsym(Rc, d1, d2);
+  CC_CHECK(nearRel(v, expected, 5e-3));  // deflection-bounded facet approximation
+  // A swapped fixture (d1=1, d2=2) removes a different corner (still exact).
+  topo::Shape ch2 = blend::curved_chamfer_edge_asym(cyl, ids, 1, 1.0, 2.0, 0.005);
+  bool wt2 = false;
+  const double v2 = vol(ch2, wt2);
+  CC_CHECK(!ch2.isNull() && wt2);
+  CC_CHECK(nearRel(v2, v0 - chamferVremovedAsym(Rc, 1.0, 2.0), 5e-3));
+}
+
+CC_TEST(asym_chamfer_symmetric_special_case) {
+  // d1 == d2 must reproduce the SYMMETRIC chamfer volume EXACTLY (byte-identical builder
+  // path via buildChamferedCylinderAsym(g,d,d,defl)); it also equals curved_chamfer_edge.
+  const double Rc = 5.0, h = 10.0, d = 1.5;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  const int rim = findRimAtZ(cyl, h);
+  int ids[] = {rim};
+  bool wa = false, wb = false;
+  const double va = vol(blend::curved_chamfer_edge_asym(cyl, ids, 1, d, d, 0.005), wa);
+  const double vb = vol(blend::curved_chamfer_edge(cyl, ids, 1, d, 0.005), wb);
+  CC_CHECK(wa && wb);
+  CC_CHECK(nearRel(va, vb, 1e-12));  // asym(d,d) == symmetric, exactly
+  CC_CHECK(nearRel(va, vol(cyl, wa) - chamferVremoved(Rc, d), 5e-3));
+}
+
+CC_TEST(asym_chamfer_two_bevel_angles_c0) {
+  // ANALYTIC bevel-angle assertion (no OCCT, no mesh): the OBLIQUE frustum outward normal
+  // is radial·d1 + s·axial·d2, so it makes cos=d1/√(d1²+d2²) with the cylinder radial
+  // normal and cos=d2/√(d1²+d2²) with the cap axial normal — two DIFFERENT angles, both
+  // explicitly ≠ 1 (C0, NOT G1). This is the T1 inversion vs the symmetric 45° bevel.
+  const nmath::Vec3 axis{0, 0, 1};  // capped-cylinder axis; s=+1 (cap at the top)
+  const double d1 = 2.0, d2 = 1.0;
+  const double den = std::sqrt(d1 * d1 + d2 * d2);
+  for (int k = 0; k < 8; ++k) {
+    const double u = 2.0 * M_PI * k / 8.0;
+    const nmath::Vec3 radial{std::cos(u), std::sin(u), 0.0};
+    const nmath::Vec3 bevel = nmath::Dir3{radial * d1 + axis * d2}.vec();
+    const double cosWall = nmath::dot(bevel, radial);
+    CC_CHECK(nearRel(cosWall, d1 / den, 1e-12));
+    CC_CHECK(std::fabs(cosWall - 1.0) > 0.05);  // NOT tangent to the wall
+    const double cosCap = nmath::dot(bevel, axis);
+    CC_CHECK(nearRel(cosCap, d2 / den, 1e-12));
+    CC_CHECK(std::fabs(cosCap - 1.0) > 0.05);  // NOT tangent to the cap
+    // The two angles DIFFER (asymmetric), unlike the symmetric 45° case.
+    CC_CHECK(std::fabs(cosWall - cosCap) > 0.1);
+  }
+}
+
+CC_TEST(asym_chamfer_scope_defers) {
+  const double Rc = 5.0, h = 10.0;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  const int rim = findRimAtZ(cyl, h);
+  int ids[] = {rim};
+  // Rc − d2 ≤ 0 guard: d2=5 ⇒ the cap seam crosses the axis ⇒ NULL (defers to OCCT).
+  CC_CHECK(blend::curved_chamfer_edge_asym(cyl, ids, 1, 1.0, 5.0, 0.01).isNull());
+  // Wall shorter than d1 (d1=12 > h) ⇒ far end not beyond the wall seam ⇒ NULL.
+  CC_CHECK(blend::curved_chamfer_edge_asym(cyl, ids, 1, 12.0, 1.0, 0.01).isNull());
+  // Zero / negative distance (either) → NULL.
+  CC_CHECK(blend::curved_chamfer_edge_asym(cyl, ids, 1, 0.0, 1.0, 0.01).isNull());
+  CC_CHECK(blend::curved_chamfer_edge_asym(cyl, ids, 1, 1.0, 0.0, 0.01).isNull());
+  // More than one picked edge → NULL (this slice handles a single rim).
+  int ids2[] = {rim, 1};
+  CC_CHECK(blend::curved_chamfer_edge_asym(cyl, ids2, 2, 2.0, 1.0, 0.01).isNull());
+  // A straight (Line) box edge is not a circular crease → NULL.
+  topo::Shape b = box(10, 10, 10);
+  const int le = findEdgeId(b, {0, 10, 10}, {10, 10, 10});
+  int idsb[] = {le};
+  CC_CHECK(blend::curved_chamfer_edge_asym(b, idsb, 1, 2.0, 1.0, 0.01).isNull());
+}
+
 // ── concave fillet (material-side torus canal on a boss ↔ larger shoulder rim) ────--
 
 namespace {

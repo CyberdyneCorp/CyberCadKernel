@@ -60,8 +60,12 @@ Date: 2026-07-03 · Branch: `main`.
   native-curved-fillet result table below (`add-native-curved-fillet` +
   `add-native-concave-fillet` archived) — and a VARIABLE-radius LINEAR-law convex circular
   cyl↔cap fillet (`cc_fillet_edges_variable`, swept-radius canal, G1 at both varying-radius seams,
-  `add-native-variable-fillet` archived). Blind-hole bottom rim, NON-linear law, concave-variable,
-  cyl↔cyl canal, non-circular creases and curved-edge chamfer stay OCCT.
+  `add-native-variable-fillet` archived). The CURVED CHAMFER on the convex circular cyl↔cap rim is
+  native too — SYMMETRIC (`cc_chamfer_edges`) AND ASYMMETRIC two-distance `d1≠d2` (`cc_chamfer_edges_asym`,
+  OBLIQUE cone frustum, C0 at two angles, removed volume `π·d1·d2·(Rc−d2/3)`, `add-native-fillet-chamfer-breadth`
+  archived). Blind-hole bottom rim, NON-linear law, concave-variable, cyl↔cyl-canal (T3) and
+  non-circular/elliptical (T2) fillet creases, and non-circular / concave / cyl↔cyl chamfer stay OCCT
+  (T2/T3 fillet = honest declines documented in `NativeEngine::fillet_edges`, no dead code).
 - **Capability #5 `native-booleans` — PLANAR-polyhedron slice done at the
   verification bar; curved / general still OCCT-fallthrough (honest).** Native
   `cc_boolean` (fuse / cut / common) for planar-faced solids (axis-aligned boxes,
@@ -126,9 +130,12 @@ Date: 2026-07-03 · Branch: `main`.
   OCCT-fallthrough AS OF THIS PLANAR SLICE (native builder returns NULL / self-verify
   discards → forwarded or honest error, never faked): CURVED-face inputs, CONCAVE edges,
   variable-radius `cc_fillet_edges_variable`, `cc_fillet_face`, an edge shared by ≠2 faces,
-  multi-edge fillet interference, non-convex shell, oversized thickness. _(Later slices #6/#6b
+  multi-edge fillet interference, non-convex shell, oversized thickness. _(Later slices #6/#6b/#6c
   moved the circular cyl↔cap fillet — constant CONVEX + CONCAVE and VARIABLE-radius linear-law
-  convex — to native; see the native-curved-fillet result table.)_ New `src/native/blend/`
+  convex — AND the circular cyl↔cap CHAMFER — SYMMETRIC cone-frustum (#6b) + ASYMMETRIC two-distance
+  `d1≠d2` oblique frustum via `cc_chamfer_edges_asym` (#6c) — to native; see the native-curved-fillet /
+  -chamfer result tables. The elliptical-crease (T2) and cyl↔cyl-canal (T3) fillets remain honest
+  OCCT declines.)_ New `src/native/blend/`
   functions are 🟢 Excellent (≤10) except the two op drivers `fillet_edges` (13) /
   `chamfer_edges` (11) in the 🟡 Acceptable band (systems-band per-edge loop). **Gate 2
   (sim native-vs-OCCT parity, `native_blend_parity.mm` vs `BRepFilletAPI` /

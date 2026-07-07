@@ -284,6 +284,13 @@ CCShapeId cc_solid_revolve_profile(const CCProfileSeg *segs, int segCount,
 CCShapeId cc_fillet_edges(CCShapeId body, const int *edgeIds, int edgeCount, double radius);
 CCShapeId cc_fillet_edges_variable(CCShapeId body, const int *edgeIds, int edgeCount, double radius1, double radius2);
 CCShapeId cc_chamfer_edges(CCShapeId body, const int *edgeIds, int edgeCount, double distance);
+/* ASYMMETRIC two-distance chamfer: distance1 = the setback on the FIRST (wall) face,
+ * distance2 = the setback on the SECOND (cap) face. distance1 == distance2 is equivalent
+ * to cc_chamfer_edges. Native engine: T1 oblique cone-frustum bevel on a convex circular
+ * cylinder↔coaxial-cap rim (C0 at two different angles), self-verified watertight/shrink,
+ * else OCCT BRepFilletAPI_MakeChamfer::Add(d1,d2,edge,face). Returns 0 on failure. */
+CCShapeId cc_chamfer_edges_asym(CCShapeId body, const int *edgeIds, int edgeCount,
+                                double distance1, double distance2);
 CCShapeId cc_shell(CCShapeId body, const int *faceIds, int faceCount, double thickness);
 CCShapeId cc_offset_face(CCShapeId body, int faceId, double distance);
 CCShapeId cc_replace_face(CCShapeId body, int faceId, double offset, double tiltDeg);

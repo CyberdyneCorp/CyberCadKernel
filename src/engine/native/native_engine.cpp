@@ -1046,6 +1046,20 @@ ShapeResult NativeEngine::fillet_edges(EngineShape body, const int* e, int ec, d
     if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/true))
         return track(wrapNative(std::move(result)));
 
+    // T2 (ELLIPTICAL-crease fillet, cylinder ↔ oblique plane) and T3 (CYL↔CYL-canal
+    // fillet) are HONEST DECLINES → OCCT-fallthrough, NO native builder (no dead code):
+    //   * T2 needs a native body carrying a true Cylinder face + oblique Plane face
+    //     meeting at an Ellipse edge. No OCCT-FREE constructor produces that topology:
+    //     native booleans are planar-faced only, and the SSI curved boolean recognizes
+    //     only quadric↔quadric pairs (cyl-cyl / sphere-sphere / cone-cyl), NOT a cylinder
+    //     cut by an oblique half-space. An oblique cut is therefore OCCT-built, so the
+    //     body is never a NativeShape and the elliptical path is UNREACHABLE natively; a
+    //     builder would be untestable dead code. OCCT owns it (ref: Rc=5,H=10,60° oblique,
+    //     r=1 → filleted 383.454285, Δ=−9.244796 vs MakeFillet).
+    //   * T3 (equal-radius perpendicular Steinmetz) the two crease loops CROSS at the two
+    //     poles; a single swept-r-circle canal cannot close that corner-blend watertight
+    //     and G1 fails at the crossing — a genuine model gap, not a tolerance (ref: Rc=3,
+    //     L=20,r=0.5 COMMON → 143.179260, Δ=−0.820740). Both stay OCCT-only.
     return make_error(
         "native fillet_edges: no verified watertight result for this native body "
         "(non-circular curved crease / blind-hole rim / Rc<2r convex / ≠cyl-plane rim / "
@@ -1092,6 +1106,25 @@ ShapeResult NativeEngine::chamfer_edges(EngineShape body, const int* e, int ec, 
         "native chamfer_edges: no verified watertight result for this native body "
         "(curved face / concave edge / ≠2-face edge / asymmetric / non-circular / "
         "Rc<d convex / cyl-cyl rim → OCCT-only)");
+}
+ShapeResult NativeEngine::chamfer_edges_asym(EngineShape body, const int* e, int ec, double d1,
+                                             double d2) {
+    if (!isNative(body)) return fallback().chamfer_edges_asym(body, e, ec, d1, d2);
+    const auto* h = static_cast<const NativeShape*>(body.get());
+    // T1: an ASYMMETRIC two-distance chamfer on a CONVEX circular cylinder↔coaxial-cap
+    // rim — an OBLIQUE cone-frustum bevel (C0 at two DIFFERENT angles) between the setback
+    // circles (Rc, H−s·d1) and (Rc−d2, H). d1 = the axial wall setback, d2 = the radial
+    // cap setback. A chamfer REMOVES material → verified SHRINK (wantGrow=false), the same
+    // gate the symmetric chamfer uses; d1 == d2 reproduces the symmetric result. NULL /
+    // unverified (non-circular / concave / tilted / Rc ≤ d2 / wall < d1 / multi-edge) →
+    // honest error → OCCT BRepFilletAPI_MakeChamfer::Add(d1,d2,edge,face).
+    ntopo::Shape result = nblend::curved_chamfer_edge_asym(h->shape, e, ec, d1, d2);
+    if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
+        return track(wrapNative(std::move(result)));
+    return make_error(
+        "native chamfer_edges_asym: no verified watertight result for this native body "
+        "(non-circular / concave / tilted cap / Rc≤d2 / wall<d1 / cyl-cyl rim / "
+        "multi-edge → OCCT-only)");
 }
 ShapeResult NativeEngine::shell(EngineShape body, const int* f, int fc, double t) {
     if (!isNative(body)) return fallback().shell(body, f, fc, t);

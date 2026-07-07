@@ -253,6 +253,110 @@ void runCase(double Rc, double h, double d) {
     cc_shape_release(oracle.id);
 }
 
+// ── T1: ASYMMETRIC two-distance chamfer (oblique cone frustum) ────────────────────
+
+// Build the capped cylinder under `buildEngine`, ASYMMETRIC-chamfer its top rim (d1 = the
+// axial wall setback, d2 = the radial cap setback) under `blendEngine`. The oracle path is
+// OCCT BRepFilletAPI_MakeChamfer::Add(d1,d2,edge,face) (via cc_chamfer_edges_asym).
+Snapshot buildAndChamferAsym(double Rc, double h, double d1, double d2, int buildEngine,
+                             int blendEngine) {
+    cc_set_engine(buildEngine);
+    const CCShapeId body = buildCappedCylinder(Rc, h);
+    cc_set_engine(blendEngine);
+    Snapshot s;
+    s.activeNative = cc_active_engine() == 1;
+    if (body != 0) {
+        const int rim = findRimEdge(body, h, 1e-6);
+        if (rim != 0) {
+            const int ids[1] = {rim};
+            s.id = cc_chamfer_edges_asym(body, ids, 1, d1, d2);
+            if (s.id != 0) s.mass = cc_mass_properties(s.id);
+        }
+    }
+    if (body) cc_shape_release(body);
+    return s;
+}
+
+// Exact removed corner-ring volume of the ASYMMETRIC chamfer (Pappus): the right triangle
+// legs d1 (axial) × d2 (radial), area ½·d1·d2, centroid radial Rc−d2/3, revolved about the
+// axis. V_removed = π·d1·d2·(Rc − d2/3). d1 = d2 reduces to the symmetric π·d²·(Rc − d/3).
+double exactRemovedVolumeAsym(double Rc, double d1, double d2) {
+    return kPi * d1 * d2 * (Rc - d2 / 3.0);
+}
+
+// One native asymmetric-chamfer case: build Rc×h capped cylinder, chamfer the top rim by
+// (d1,d2), compare native to the OCCT oracle and the exact oblique-frustum removed volume.
+void runCaseAsym(double Rc, double h, double d1, double d2) {
+    char detail[512];
+    char lbl[96];
+    std::snprintf(lbl, sizeof lbl, "asym-chamfer Rc=%.1f h=%.1f d1=%.1f d2=%.1f", Rc, h, d1, d2);
+    const std::string base = lbl;
+
+    const Snapshot oracle = buildAndChamferAsym(Rc, h, d1, d2, /*build*/ 0, /*blend*/ 0);
+    if (oracle.id == 0 || oracle.mass.valid == 0) {
+        std::snprintf(detail, sizeof detail, "OCCT oracle failed: %s", cc_last_error());
+        record(false, base + " oracle", detail);
+        cc_set_engine(0);
+        if (oracle.id) cc_shape_release(oracle.id);
+        return;
+    }
+    const Snapshot cand = buildAndChamferAsym(Rc, h, d1, d2, /*build*/ 1, /*blend*/ 1);
+    const CCMesh cMesh = cand.id ? cc_tessellate(cand.id, 0.02) : CCMesh{nullptr, 0, nullptr, 0};
+    if (cand.id == 0 || cand.mass.valid == 0) {
+        std::snprintf(detail, sizeof detail, "native active=%d asym-chamfer->0 (%s)",
+                      cand.activeNative ? 1 : 0, cc_last_error());
+        record(false, base + " native", detail);
+        cc_set_engine(0);
+        cc_shape_release(oracle.id);
+        return;
+    }
+
+    // Volume / area vs the OCCT oracle AND vs the exact removed volume. An oblique cone
+    // frustum is EXACT (only the angular tiling is deflection-bounded), so parity is TIGHT.
+    const double sharp = kPi * Rc * Rc * h;
+    const double exact = sharp - exactRemovedVolumeAsym(Rc, d1, d2);
+    const double volRelO = std::fabs(cand.mass.volume - oracle.mass.volume) / oracle.mass.volume;
+    const double volRelX = std::fabs(cand.mass.volume - exact) / exact;
+    const double areaRel = oracle.mass.area > 0.0
+                               ? std::fabs(cand.mass.area - oracle.mass.area) / oracle.mass.area
+                               : 1.0;
+    const bool massOk = cand.activeNative && volRelO < 1e-2 && volRelX < 1e-2 && areaRel < 2e-2 &&
+                        cand.mass.volume < sharp;  // a convex chamfer REDUCES the volume
+    std::snprintf(detail, sizeof detail,
+                  "vol o=%.6g n=%.6g exact=%.6g relO=%.2e relX=%.2e | area rel=%.2e",
+                  oracle.mass.volume, cand.mass.volume, exact, volRelO, volRelX, areaRel);
+    record(massOk, base + " mass", detail);
+
+    // Native mesh watertight + mesh volume matches the B-rep.
+    const bool haveMesh = cMesh.triangleCount > 0;
+    const bool wt = haveMesh && meshWatertight(cMesh);
+    const double meshVol = haveMesh ? meshVolume(cMesh) : 0.0;
+    const double meshVolRel = (haveMesh && cand.mass.volume > 0.0)
+                                  ? std::fabs(meshVol - cand.mass.volume) / cand.mass.volume
+                                  : 1.0;
+    const bool tessOk = haveMesh && wt && meshVolRel < 2e-2;
+    std::snprintf(detail, sizeof detail, "watertight=%d tris=%d meshVolRel=%.2e", wt ? 1 : 0,
+                  cMesh.triangleCount, meshVolRel);
+    record(tessOk, base + " tessellate", detail);
+
+    // C0 at TWO DIFFERENT bevel angles (analytic): the oblique frustum normal is
+    // radial·d1 + s·axial·d2, so cos = d1/√(d1²+d2²) with the cylinder radial normal and
+    // cos = d2/√(d1²+d2²) with the cap axial normal — both explicitly ≠ 1 (C0, not G1) and,
+    // for d1 ≠ d2, DIFFERENT from each other (the asymmetry discriminator vs the 45° bevel).
+    const double den = std::sqrt(d1 * d1 + d2 * d2);
+    const double cWall = d1 / den, cCap = d2 / den;
+    const bool c0Ok = std::fabs(cWall - 1.0) > 0.05 && std::fabs(cCap - 1.0) > 0.05 &&
+                      std::fabs(cWall - cCap) > 0.1;  // NOT tangent, and two distinct angles
+    std::snprintf(detail, sizeof detail,
+                  "cos(wall)=%.9f cos(cap)=%.9f (two distinct angles, NOT 1 -> C0)", cWall, cCap);
+    record(c0Ok, base + " C0-two-angles", detail);
+
+    if (haveMesh) cc_mesh_free(cMesh);
+    cc_set_engine(0);
+    cc_shape_release(cand.id);
+    cc_shape_release(oracle.id);
+}
+
 }  // namespace
 
 int main() {
@@ -261,6 +365,11 @@ int main() {
     runCase(5.0, 10.0, 1.0);   // fixture A: d=1.0
     runCase(5.0, 10.0, 2.0);   // fixture B: d=2.0
     runCase(4.0, 8.0, 1.0);    // a second body
+    // T1 — ASYMMETRIC two-distance chamfer (d1 ≠ d2, oblique cone frustum) vs OCCT
+    // BRepFilletAPI_MakeChamfer::Add(d1,d2,edge,face). ≥ 2 asymmetric fixtures.
+    runCaseAsym(5.0, 10.0, 2.0, 1.0);  // T1 fixture A: d1=2 wall, d2=1 cap
+    runCaseAsym(5.0, 10.0, 1.0, 2.0);  // T1 fixture B: swapped
+    runCaseAsym(4.0, 8.0, 1.5, 0.8);   // T1 fixture C: a second body
     std::printf("== %d passed, %d failed ==\n", g_passed, g_failed);
     std::fflush(stdout);
     std::_Exit(g_failed == 0 ? 0 : 1);

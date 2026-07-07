@@ -543,6 +543,17 @@ CCShapeId cc_chamfer_edges(CCShapeId body, const int* edgeIds, int edgeCount, do
         CCShapeId{0});
 }
 
+CCShapeId cc_chamfer_edges_asym(CCShapeId body, const int* edgeIds, int edgeCount,
+                                double distance1, double distance2) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            auto r = active_engine()->chamfer_edges_asym(resolve(body), edgeIds, edgeCount,
+                                                         distance1, distance2);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
+}
+
 CCShapeId cc_shell(CCShapeId body, const int* faceIds, int faceCount, double thickness) {
     return cyber::guard(
         [&]() -> CCShapeId {

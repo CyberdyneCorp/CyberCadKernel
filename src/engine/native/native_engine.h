@@ -211,6 +211,8 @@ public:
                                       double radius1, double radius2) override;
     ShapeResult chamfer_edges(EngineShape body, const int* edgeIds, int edgeCount,
                               double distance) override;
+    ShapeResult chamfer_edges_asym(EngineShape body, const int* edgeIds, int edgeCount,
+                                   double distance1, double distance2) override;
     ShapeResult shell(EngineShape body, const int* faceIds, int faceCount,
                       double thickness) override;
     ShapeResult offset_face(EngineShape body, int faceId, double distance) override;

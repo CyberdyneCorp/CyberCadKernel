@@ -222,6 +222,15 @@ public:
         (void)body; (void)edgeIds; (void)edgeCount; (void)distance;
         return engine_unsupported("chamfer_edges");
     }
+    // Additive: an ASYMMETRIC two-distance chamfer — distance1 = the setback on the
+    // FIRST (wall) face, distance2 = the setback on the SECOND (cap) face. distance1 ==
+    // distance2 reduces to chamfer_edges. Stub / non-overriding engines inherit
+    // unsupported. [T1 native-fillet-chamfer-breadth]
+    virtual ShapeResult chamfer_edges_asym(EngineShape body, const int* edgeIds, int edgeCount,
+                                           double distance1, double distance2) {
+        (void)body; (void)edgeIds; (void)edgeCount; (void)distance1; (void)distance2;
+        return engine_unsupported("chamfer_edges_asym");
+    }
     virtual ShapeResult shell(EngineShape body, const int* faceIds, int faceCount,
                               double thickness) {
         (void)body; (void)faceIds; (void)faceCount; (void)thickness;

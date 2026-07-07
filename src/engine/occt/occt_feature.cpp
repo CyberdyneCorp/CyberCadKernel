@@ -45,6 +45,9 @@
 #include <GeomAbs_SurfaceType.hxx>
 #include <GeomAbs_JoinType.hxx>
 #include <TopTools_ListOfShape.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
+#include <TopTools_ListIteratorOfListOfShape.hxx>
+#include <TopExp.hxx>
 #include <TopoDS_Wire.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Ax1.hxx>
@@ -98,6 +101,40 @@ ShapeResult OcctEngine::chamfer_edges(EngineShape body, const int* edgeIds, int 
         chamfer.Build();
         if (!chamfer.IsDone()) { return make_error("chamfer_edges: build failed"); }
         return occt::addIfValid(chamfer.Shape(), "chamfer_edges: invalid");
+    });
+}
+
+ShapeResult OcctEngine::chamfer_edges_asym(EngineShape body, const int* edgeIds, int edgeCount,
+                                           double distance1, double distance2) {
+    return occt::occtGuard([&]() -> ShapeResult {
+        const TopoDS_Shape* sp = occt::unwrap(body);
+        if (sp == nullptr || distance1 <= 0 || distance2 <= 0) {
+            return make_error("chamfer_edges_asym: invalid input");
+        }
+        const std::vector<TopoDS_Edge> edges = occt::edgesByIds(*sp, edgeIds, edgeCount);
+        if (edges.empty()) { return make_error("chamfer_edges_asym: no edges"); }
+        // Ancestor faces of each edge — Add(d1, d2, edge, face) measures d1 on `face`.
+        // Pick the CYLINDRICAL wall face so distance1 is the axial wall setback (parity
+        // with the native T1 convention); fall back to the first ancestor face.
+        TopTools_IndexedDataMapOfShapeListOfShape edgeFaces;
+        TopExp::MapShapesAndAncestors(*sp, TopAbs_EDGE, TopAbs_FACE, edgeFaces);
+        BRepFilletAPI_MakeChamfer chamfer(*sp);
+        for (const TopoDS_Edge& edge : edges) {
+            if (!edgeFaces.Contains(edge)) return make_error("chamfer_edges_asym: edge has no face");
+            const TopTools_ListOfShape& faceList = edgeFaces.FindFromKey(edge);
+            TopoDS_Face onFace;
+            for (TopTools_ListIteratorOfListOfShape it(faceList); it.More(); it.Next()) {
+                const TopoDS_Face f = TopoDS::Face(it.Value());
+                if (onFace.IsNull()) onFace = f;  // default: first ancestor face
+                BRepAdaptor_Surface surf(f);
+                if (surf.GetType() == GeomAbs_Cylinder) { onFace = f; break; }  // prefer the wall
+            }
+            if (onFace.IsNull()) return make_error("chamfer_edges_asym: edge has no face");
+            chamfer.Add(distance1, distance2, edge, onFace);
+        }
+        chamfer.Build();
+        if (!chamfer.IsDone()) { return make_error("chamfer_edges_asym: build failed"); }
+        return occt::addIfValid(chamfer.Shape(), "chamfer_edges_asym: invalid");
     });
 }
 

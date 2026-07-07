@@ -914,7 +914,7 @@ longest; a native exchange is lower priority than the modelling core.
   non-planar loft, a truly self-intersecting sweep or thread, a general SPLINE
   surface-of-revolution, and a spindle torus.
 - â **#6 `native-blends` â tractable PLANAR slice done at the verification bar (both
-  gates green); the curved CIRCULAR cyl<->plane fillet (CONVEX + CONCAVE constant-radius, AND VARIABLE-radius LINEAR-law convex via `cc_fillet_edges_variable`) and the curved CIRCULAR cyl<->cap CHAMFER (CONVEX, CONE-FRUSTUM straight bevel, C0) landed natively in later slices (see the #6 / #6b / #6c curved-blend entries below); non-linear-law / concave-variable / cyl<->cyl-canal / non-circular-crease fillets, non-circular / asymmetric / concave / cyl<->cyl chamfer, and fillet_face still OCCT-fallthrough (honest).** Native
+  gates green); the curved CIRCULAR cyl<->plane fillet (CONVEX + CONCAVE constant-radius, AND VARIABLE-radius LINEAR-law convex via `cc_fillet_edges_variable`) and the curved CIRCULAR cyl<->cap CHAMFER (CONVEX, CONE-FRUSTUM straight bevel, C0 — SYMMETRIC via `cc_chamfer_edges` AND ASYMMETRIC two-distance `d1!=d2` via `cc_chamfer_edges_asym`, an OBLIQUE cone frustum, C0 at two different angles) landed natively in later slices (see the #6 / #6b / #6c curved-blend entries below); non-linear-law / concave-variable / cyl<->cyl-canal / non-circular-crease fillets, non-circular / concave / cyl<->cyl chamfer, and fillet_face still OCCT-fallthrough (honest).** Native
   `cc_chamfer_edges` / `cc_fillet_edges` (constant radius) / `cc_offset_face` /
   `cc_shell` for the tractable planar cases, built OCCT-free under
   `src/native/blend/` (`blend_geom.h`, `chamfer_edges.h`, `fillet_edges.h`,
@@ -1093,10 +1093,40 @@ longest; a native exchange is lower priority than the modelling core.
   genuine independent bevel-angle measurement is the host `curved_chamfer_is_c0_bevel_not_g1`).
   Fixtures: Rc=5/d=1, Rc=5/d=2, Rc=4/d=1. STILL OCCT-fallthrough (NULL / self-verify discards, honest
   error, never faked): NON-circular curved creases (cone/sphere/ellipse/spline rim, tilted/non-coaxial
-  plane), ASYMMETRIC two-distance / distance+angle (oblique) chamfer, CONCAVE circular rim (frustum
-  would ADD material), cyl<->cyl (curved<->curved) chamfer, freeform neighbours, `Rc <= d` (cap circle
-  collapses) or wall shorter than `d`, multi-edge. Change `add-native-curved-chamfer` archived
-  `2026-07-06`.
+  plane), CONCAVE circular rim (frustum would ADD material), cyl<->cyl (curved<->curved) chamfer,
+  freeform neighbours, `Rc <= d` (cap circle collapses) or wall shorter than `d`, multi-edge. Change
+  `add-native-curved-chamfer` archived `2026-07-06`. (ASYMMETRIC two-distance on the same convex
+  circular rim is now native too -- see #6c.)
+- ✅ **#6c `native-blends` — ASYMMETRIC TWO-DISTANCE chamfer LANDED NATIVE on the CONVEX circular
+  cylinder<->coaxial-planar-cap rim (`d1 != d2`, OBLIQUE cone frustum, C0 at TWO DIFFERENT angles),
+  verified vs OCCT `BRepFilletAPI_MakeChamfer::Add(d1,d2,edge,face)`.** The symmetric #6b frustum is the
+  exact `d1 == d2` special case; the asymmetric bevel is an OBLIQUE cone frustum between the two setback
+  circles `(Rc, H-s*d1)` (wall, axial setback `d1`) and `(Rc-d2, H)` (cap, radial setback `d2`), meeting
+  the wall at `cos = d1/sqrt(d1^2+d2^2)` and the cap at `cos = d2/sqrt(d1^2+d2^2)` — two DISTINCT angles,
+  both explicitly `!= 1` (C0, never G1). Built OCCT-FREE by generalizing `src/native/blend/curved_chamfer.h`
+  `buildChamferedCylinder(g,d,defl)` -> `buildChamferedCylinderAsym(g,d1,d2,defl)` (the symmetric entry now
+  wraps it with `d1=d2=d`, byte-identical soup) + a new `curved_chamfer_edge_asym(...)` reusing the same
+  rim recognition, welded watertight via `assembleSolid`. ADDITIVE facade `cc_chamfer_edges_asym(body,
+  edgeIds, count, d1, d2)` + `IEngine::chamfer_edges_asym` (OCCT override prefers the cylinder WALL face so
+  `d1` is the wall setback) + `NativeEngine::chamfer_edges_asym` gated by the SAME SHRINK self-verify
+  `blendResultVerified(wantGrow=false)`; `cc_chamfer_edges` is BYTE-UNCHANGED. Gate 1 GREEN — host
+  `test_native_blend` adds `asym_chamfer_oblique_frustum_watertight_volume` (watertight + removed volume
+  `pi*d1*d2*(Rc-d2/3)`), `asym_chamfer_two_bevel_angles_c0` (the two distinct `!= 1` cosines),
+  `asym_chamfer_symmetric_special_case` (`d1=d2` -> the symmetric removed volume), `asym_chamfer_scope_defers`
+  (31 cases / 0 failed; host CTest 29/29 OFF, 36/36 ON). Gate 2 GREEN — `run-sim-native-curved-chamfer.sh`
+  **18/18** (9 symmetric controls unchanged + 9 new asymmetric) through `cc_chamfer_edges_asym` under
+  `cc_set_engine(1)`, native oblique frustum vs OCCT `Add(d1,d2,edge,face)`: native == OCCT to rel <=
+  3.25e-3 AND matches the exact Pappus removed volume `pi*d1*d2*(Rc-d2/3)`, watertight, mesh-vol == B-rep,
+  the two distinct bevel cosines `!= 1`. Fixtures Rc5/H10 d1=2/d2=1 + swapped (1,2), Rc4/H8 d1=1.5/d2=0.8.
+  STILL OCCT-fallthrough (honest, never faked): asymmetric on a NON-circular / concave / tilted / cyl<->cyl
+  rim, `Rc <= d2`, wall shorter than `d1`, multi-edge. Change `add-native-fillet-chamfer-breadth` archived
+  `2026-07-07`. **The T2 ELLIPTICAL-crease fillet (cylinder ∩ oblique plane) and T3 CYL<->CYL-canal fillet
+  from the same change are HONEST DECLINES → OCCT (documented OCCT-fallthrough in `NativeEngine::fillet_edges`,
+  NO dead code): T2 has no OCCT-FREE constructor for a native Cylinder+oblique-Plane+Ellipse body (SSI reads
+  only quadric↔quadric pairs, oblique cuts are OCCT-built → the path is unreachable natively; OCCT ref Rc5/H10/60°/r1
+  → 383.454285); T3's equal-radius perpendicular Steinmetz crease loops cross at the poles so a single swept-r-circle
+  canal cannot close the corner blend watertight/G1 — a model gap, not a tolerance (OCCT ref Rc3/L20/r0.5 COMMON
+  → 143.179260).**
 - **#7 `native-wrap-emboss` -- NATIVE now covers EMBOSS + DEBOSS + NON-RECTANGULAR POLYGON
   on a CYLINDER, verified vs OCCT `cc_wrap_emboss`.** The control (raised RECTANGULAR pad
   on a cylinder) is unchanged; the breadth change `add-native-wrap-emboss-breadth` (archived

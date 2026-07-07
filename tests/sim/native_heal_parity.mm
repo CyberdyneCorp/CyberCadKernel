@@ -88,6 +88,15 @@ static std::vector<Quad> cubeQuads(double jitter) {
   return q;
 }
 
+// A perfect unit cube whose +Z (top) face is lifted by `g`: every top-ring corner is
+// a near-miss seam of gap `g` (the M5 bounded-bridging fixture — see host test
+// cubeTopSeam / gap_bridge.h). q[1] is the +Z face in cubeQuads order.
+static std::vector<Quad> cubeTopSeamQuads(double g) {
+  std::vector<Quad> q = cubeQuads(0.0);  // exact cube (no jitter) so a bridged heal is exact
+  for (auto& p : q[1].p) p.z += g;       // lift only the top face → a uniform seam gap g
+  return q;
+}
+
 // ── Native soup builder ────────────────────────────────────────────────────────
 static topo::Shape nativeQuadFace(const Quad& q, bool reversed) {
   const m::Vec3 ref = std::fabs(q.n.z()) < 0.9 ? m::Vec3{0,0,1} : m::Vec3{1,0,0};
@@ -193,6 +202,47 @@ int main() {
                   (int)nr.reason, (int)orr.validSolid, (int)orr.watertight);
     const bool ok = !nr.healed() && !orr.watertight;  // both leave it open
     check("open-shell UNHEALED matches OCCT", ok, buf);
+  }
+
+  // ── M5 BOUNDED GAP BRIDGING (opt-in) ─────────────────────────────────────────
+  // In-band: a near-miss seam gap g in (tol, budget] closes natively under the
+  // bounded bridging pass and OCCT closes it by sewing at tolerance ≈ budget. Both
+  // land a watertight/valid unit cube; the sewn-vertex position is implementation-
+  // defined WITHIN the gap, so volumes agree only within the sewing tolerance (~g).
+  {
+    const double g = 5e-3, budget = 1e-2;
+    const heal::HealResult nr =
+        heal::healShell(nativeSoup(cubeTopSeamQuads(g)), heal::HealOptions{tol, budget});
+    const cyber::occt::SewFixResult orr =
+        cyber::occt::sewAndFix(occtSoup(cubeTopSeamQuads(g)), budget);  // OCCT sews at ≈ budget
+    const double nv = nr.healed() ? nativeVolume(nr.shape) : 0.0;
+    char buf[200];
+    std::snprintf(buf, sizeof buf,
+                  "(native V=%.5f watertight=%d bridged=%d | OCCT V=%.5f valid=%d)", nv,
+                  (int)nr.metrics.watertight, nr.metrics.nBridgedGaps, orr.volume,
+                  (int)orr.validSolid);
+    const bool ok = nr.healed() && nr.metrics.watertight && nr.metrics.nBridgedGaps > 0 &&
+                    orr.validSolid && std::fabs(nv - 1.0) < budget &&
+                    std::fabs(std::fabs(orr.volume) - 1.0) < budget &&
+                    std::fabs(nv - std::fabs(orr.volume)) < budget;
+    check("bridge-in-band matches OCCT sew@budget", ok, buf);
+  }
+
+  // Out-of-budget: a gap g > budget declines natively (GapBeyondBudget) and OCCT,
+  // sewing at tolerance ≈ budget, also cannot close it — the verdicts agree.
+  {
+    const double g = 5e-2, budget = 1e-2;
+    const heal::HealResult nr =
+        heal::healShell(nativeSoup(cubeTopSeamQuads(g)), heal::HealOptions{tol, budget});
+    const cyber::occt::SewFixResult orr =
+        cyber::occt::sewAndFix(occtSoup(cubeTopSeamQuads(g)), budget);
+    char buf[200];
+    std::snprintf(buf, sizeof buf,
+                  "(native UNHEALED reason=%d residual=%.4g | OCCT valid=%d)", (int)nr.reason,
+                  nr.metrics.maxResidualGap, (int)orr.validSolid);
+    const bool ok = !nr.healed() && nr.reason == heal::UnhealedReason::GapBeyondBudget &&
+                    nr.metrics.maxResidualGap > budget && !orr.validSolid;
+    check("bridge-out-of-budget decline matches OCCT", ok, buf);
   }
 
   std::printf("== %d passed, %d failed ==\n", g_pass, g_fail);

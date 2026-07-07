@@ -9,6 +9,7 @@
 #include "native/heal/assemble_shell.h"
 #include "native/heal/degenerate.h"
 #include "native/heal/face_soup.h"
+#include "native/heal/gap_bridge.h"
 #include "native/heal/orient.h"
 #include "native/heal/self_verify.h"
 #include "native/heal/tolerant_sew.h"
@@ -61,10 +62,33 @@ HealResult healShell(const topo::Shape& shape, const HealOptions& opts) {
 
   // A manifold closed shell has NO boundary edges: every side is shared by exactly
   // two faces. A surviving boundary side means a real hole (missing face) or a
-  // beyond-tolerance gap — report honestly, do not fake closure.
+  // beyond-tolerance gap.
+  //
+  // Opt-in bounded bridging (M5): when a caller supplies a budget, try to close a
+  // NEAR-MISS seam whose gap sits in the bounded band (tol, min(budget,
+  // ¼·localFeature)] by snapping the unpaired corners onto their partner and
+  // re-sewing (gap_bridge.h). The primary weld `tol` is NEVER widened; a gap past
+  // the effective bound stays a surviving boundary edge and is reported honestly
+  // below. With budget == 0 this block is a no-op (dead-guarded) and the path is
+  // byte-identical to the landed slice.
+  if (sr.boundaryEdges > 0 && opts.gapBridgeBudget > 0.0) {
+    const BridgeResult br = bridgeGaps(clean, tol, opts.gapBridgeBudget);
+    if (br.applied) {
+      m.nBridgedGaps = br.nBridged;
+      m.maxBridgedGap = br.maxBridged;
+      sr = sew(br.soup, tol);  // re-sew the bridged soup; boundary edges recomputed
+      m.nMergedVerts = sr.mergedVerts;
+      m.nMergedEdges = sr.mergedEdges;
+    }
+  }
+
+  // Still open after the (optional) bridging → report honestly, do not fake closure.
   if (sr.boundaryEdges > 0) {
     const UnhealedReason why =
-        sr.maxResidualGap > tol ? UnhealedReason::GapBeyondTolerance : UnhealedReason::OpenShell;
+        sr.maxResidualGap > tol
+            ? (opts.gapBridgeBudget > 0.0 ? UnhealedReason::GapBeyondBudget
+                                          : UnhealedReason::GapBeyondTolerance)
+            : UnhealedReason::OpenShell;
     return unhealed(shape, why, sr.maxResidualGap, m);
   }
 

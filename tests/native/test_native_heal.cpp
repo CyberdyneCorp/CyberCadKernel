@@ -143,6 +143,25 @@ std::vector<topo::Shape> cubeFaceSoup(double jitter) {
   return f;
 }
 
+// A perfect unit cube whose +Z (top) face is lifted by `g`: the four side faces
+// keep their top edge at z=1 while the top face sits at z=1+g, so every top-ring
+// corner is a NEAR-MISS seam of gap `g` (the canonical "exporter wrote the seam a
+// hair too far apart" defect the landed slice declines). Bottom + sides are exactly
+// coincident (jitter 0) so a bridged heal lands at exactly V=1.
+std::vector<topo::Shape> cubeTopSeam(double g) {
+  const Corners k = cubeCorners();
+  auto up = [&](const m::Point3& p) { return m::Point3{p.x, p.y, p.z + g}; };  // lift a top corner
+  std::vector<topo::Shape> f;
+  f.push_back(quadFace(k.c[0], k.c[3], k.c[2], k.c[1], m::Dir3{0, 0, -1}));          // bottom z=0
+  f.push_back(quadFace(up(k.c[4]), up(k.c[5]), up(k.c[6]), up(k.c[7]),               // top z=1+g
+                       m::Dir3{0, 0, 1}));
+  f.push_back(quadFace(k.c[0], k.c[1], k.c[5], k.c[4], m::Dir3{0, -1, 0}));          // −Y (top edge z=1)
+  f.push_back(quadFace(k.c[3], k.c[7], k.c[6], k.c[2], m::Dir3{0, 1, 0}));           // +Y
+  f.push_back(quadFace(k.c[0], k.c[4], k.c[7], k.c[3], m::Dir3{-1, 0, 0}));          // −X
+  f.push_back(quadFace(k.c[1], k.c[2], k.c[6], k.c[5], m::Dir3{1, 0, 0}));           // +X
+  return f;
+}
+
 const heal::HealOptions kOpts{1e-4};
 
 // Verify a healed solid meshes watertight with the expected enclosed volume.
@@ -263,6 +282,59 @@ CC_TEST(heal_never_weakens_tolerance) {
   auto f = cubeFaceSoup(1e-2);
   const heal::HealResult r = heal::healShell(topo::ShapeBuilder::makeShell(f), heal::HealOptions{1e-4});
   CC_CHECK(!r.healed());  // a 1e-2 gap is NOT closed by silently widening 1e-4
+}
+
+// ── (H) BOUNDED BRIDGING — in-band near-miss seam heals watertight ──────────────
+// gap g in (tol, budget] AND g < ¼·edge → the opt-in bridging pass snaps the four
+// unpaired top corners onto the side geometry and re-sews to a watertight unit cube.
+CC_TEST(heal_bridge_in_band_heals) {
+  const double g = 5e-3;
+  auto f = cubeTopSeam(g);
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r = heal::healShell(input, heal::HealOptions{1e-4, 1e-2});
+  CC_CHECK(r.healed());
+  CC_CHECK(r.metrics.watertight);
+  CC_CHECK(r.metrics.valid);
+  CC_CHECK(r.metrics.nBridgedGaps > 0);                     // corners were bridged
+  CC_CHECK(std::fabs(r.metrics.maxBridgedGap - g) < 1e-9);  // largest gap closed ≈ g
+  CC_CHECK(r.metrics.maxResidualGap == 0.0);                // fully closed after bridging
+  CC_CHECK(watertightVolumeNear(r.shape, 1.0, 1e-6));       // exact unit cube
+}
+
+// ── (H2) BOUNDED BRIDGING — a gap beyond the budget stays UNHEALED, honestly ─────
+CC_TEST(heal_bridge_out_of_budget_unhealed) {
+  const double g = 5e-2;  // ≫ budget 1e-2
+  auto f = cubeTopSeam(g);
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r = heal::healShell(input, heal::HealOptions{1e-4, 1e-2});
+  CC_CHECK(!r.healed());
+  CC_CHECK(r.reason == heal::UnhealedReason::GapBeyondBudget);
+  CC_CHECK(r.metrics.nBridgedGaps == 0);                      // nothing in-band to bridge
+  CC_CHECK(std::fabs(r.metrics.maxResidualGap - g) < 1e-9);   // honest measured residual
+  CC_CHECK(r.shape.isSameGeometry(input));                    // input UNCHANGED
+}
+
+// ── (H3) DEFAULT-OFF — budget 0 ⇒ no bridging ⇒ landed-slice decline preserved ──
+CC_TEST(heal_bridge_default_off_no_op) {
+  const double g = 5e-3;
+  auto f = cubeTopSeam(g);
+  const heal::HealResult r = heal::healShell(topo::ShapeBuilder::makeShell(f), kOpts);  // budget 0
+  CC_CHECK(!r.healed());
+  CC_CHECK(r.reason == heal::UnhealedReason::GapBeyondTolerance);  // NOT widened, NOT bridged
+  CC_CHECK(r.metrics.nBridgedGaps == 0);
+}
+
+// ── (H4) FEATURE CAP — a large budget cannot bridge a gap ≥ ¼·edge (cap governs) ─
+// budget 0.5 > g=0.4, but ¼·edge = 0.25 < 0.4, so the local-feature cap refuses the
+// bridge: the caller's budget does NOT override the geometric guarantee.
+CC_TEST(heal_bridge_feature_cap_refuses) {
+  const double g = 0.4;
+  auto f = cubeTopSeam(g);
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r = heal::healShell(input, heal::HealOptions{1e-4, 0.5});
+  CC_CHECK(!r.healed());                                  // refused despite budget > g
+  CC_CHECK(r.metrics.nBridgedGaps == 0);                  // the cap, not the budget, governs
+  CC_CHECK(r.shape.isSameGeometry(input));                // input UNCHANGED
 }
 
 CC_RUN_ALL()

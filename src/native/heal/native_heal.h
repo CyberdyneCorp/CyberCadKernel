@@ -16,6 +16,14 @@
 //   2. VERTEX / TOLERANCE UNIFY  — near-coincident vertices merged onto one node.
 //   3. DEGENERATE REMOVAL        — zero-length edges + sliver/zero-area faces dropped.
 //   4. ORIENTATION FIX           — flood-fill consistent outward winding.
+//   5. BOUNDED GAP BRIDGING      — OPT-IN (HealOptions.gapBridgeBudget > 0): close a
+//                                  near-miss seam whose gap sits in the bounded band
+//                                  (tolerance, min(budget, ¼·localFeature)] by
+//                                  snapping the unpaired corners onto their partner
+//                                  and re-sewing. The primary weld tolerance is NEVER
+//                                  widened; a gap past the effective bound stays
+//                                  Unhealed{GapBeyondBudget} with the measured
+//                                  residual. Default budget 0 ⇒ this pass is a no-op.
 //
 // ── HONEST SCOPE (asymptotic completeness, like SSI S4-f — NOT a guarantee) ──
 // This slice heals the coincident-within-tolerance / degenerate / orientation defect
@@ -55,6 +63,7 @@
 #include "native/heal/assemble_shell.h"
 #include "native/heal/degenerate.h"
 #include "native/heal/face_soup.h"
+#include "native/heal/gap_bridge.h"
 #include "native/heal/orient.h"
 #include "native/heal/self_verify.h"
 #include "native/heal/tolerant_sew.h"

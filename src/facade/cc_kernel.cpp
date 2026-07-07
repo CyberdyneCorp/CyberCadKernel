@@ -409,6 +409,17 @@ CCShapeId cc_guided_sweep(const double* profileXY, int profileCount, const doubl
         CCShapeId{0});
 }
 
+CCShapeId cc_guided_orient_sweep(const double* profileXY, int profileCount, const double* pathXYZ,
+                                 int pathCount, const double* guideXYZ, int guideCount) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            auto r = active_engine()->guided_orient_sweep(profileXY, profileCount, pathXYZ,
+                                                          pathCount, guideXYZ, guideCount);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
+}
+
 CCShapeId cc_wrap_emboss(CCShapeId body, int faceId, const double* profileXY, int count,
                          double depth, int boss) {
     return cyber::guard(

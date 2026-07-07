@@ -276,6 +276,97 @@ CC_TEST(guided_sweep_degenerate_deferred) {
   CC_CHECK(cst::build_guided_sweep(prof, 2, path, 2, guide, 2).isNull());  // <3 profile
 }
 
+// ── NATIVE: guided_orient_sweep — section ORIENTATION fixed by a guide (NoContact) ──
+// The perpendicular-plane plane-trihedron law: at each straight-spine station the section
+// frame is [N, B, T] with N pointing to the guide point in the plane ⟂ T. GATE (a),
+// host-analytic (OCCT-free): verify BOTH the closed-form volume AND the spatial extent
+// (bbox), since a rigid guide-rotation preserves volume but MUST change the bbox — the
+// M7a spatial discriminator that a volume-only check is blind to.
+
+// Axis-aligned mesh bbox helper (host, OCCT-free).
+bool orientBBox(const topo::Shape& s, double deflection, double lo[3], double hi[3]) {
+  if (s.isNull()) return false;
+  tess::MeshParams p;
+  p.deflection = deflection;
+  const tess::Mesh m = tess::SolidMesher{p}.mesh(s);
+  if (m.vertices.empty()) return false;
+  for (int i = 0; i < 3; ++i) { lo[i] = 1e300; hi[i] = -1e300; }
+  for (const auto& v : m.vertices) {
+    const double c[3] = {v.x, v.y, v.z};
+    for (int i = 0; i < 3; ++i) { lo[i] = std::min(lo[i], c[i]); hi[i] = std::max(hi[i], c[i]); }
+  }
+  return true;
+}
+
+// OFFSET guide → constant N → IDENTITY frame → an exact axis-aligned 4×2×10 prism (the
+// guide induces no rotation). Volume 80 EXACT, 6 faces, watertight, bbox axis-aligned.
+CC_TEST(guided_orient_offset_is_axis_aligned_prism) {
+  const double prof[] = {-2, -1, 2, -1, 2, 1, -2, 1};  // 4×2 rectangle, area 8
+  const double path[] = {0, 0, 0, 0, 0, 10};
+  const double guide[] = {3, 0, 0, 3, 0, 10};  // straight offset guide → constant N=+X
+  const topo::Shape s = cst::build_guided_orient_sweep(prof, 4, path, 2, guide, 2);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+  CC_CHECK_EQ(countSub(s, topo::ShapeType::Face), 6);  // collapses to a 2-station prism
+  double vol = 0.0;
+  CC_CHECK(watertightAllDeflections(s, vol));
+  CC_CHECK(std::fabs(vol - 80.0) < 1e-6);  // 4·2·10 EXACT
+  double lo[3], hi[3];
+  CC_CHECK(orientBBox(s, 0.01, lo, hi));
+  CC_CHECK(std::fabs(lo[0] + 2) < 1e-6 && std::fabs(hi[0] - 2) < 1e-6);  // x∈[-2,2]
+  CC_CHECK(std::fabs(lo[1] + 1) < 1e-6 && std::fabs(hi[1] - 1) < 1e-6);  // y∈[-1,1]
+  CC_CHECK(std::fabs(lo[2]) < 1e-6 && std::fabs(hi[2] - 10) < 1e-6);     // z∈[0,10]
+}
+
+// ROTATING guide (θ = 90°·z/H at radius 3): the section rigidly ROTATES with the guide.
+// Volume ~unchanged (rigid frame), but the bbox GROWS to the union of the rotated
+// rectangle — the closed form is x,y extent = max over θ∈[0,90°] of the rotated corners.
+// For a 4×2 rect rotated to 90° the union half-extent in x and y is √(2²+1²)=√5≈2.2361.
+// Watertight at every deflection; the bbox must match the rotated-union closed form
+// (NOT the axis-aligned [-2,2]×[-1,1] — that would be a wrong, non-rotating frame).
+CC_TEST(guided_orient_rotating_bbox_matches_rotated_union) {
+  const double prof[] = {-2, -1, 2, -1, 2, 1, -2, 1};
+  const double H = 10.0, rho = 3.0, Theta = M_PI / 2.0;  // 90°
+  const double path[] = {0, 0, 0, 0, 0, H};
+  const int n = 24;
+  std::vector<double> guide;
+  for (int k = 0; k < n; ++k) {
+    const double z = H * k / (n - 1), th = Theta * z / H;
+    guide.push_back(rho * std::cos(th));
+    guide.push_back(rho * std::sin(th));
+    guide.push_back(z);
+  }
+  const topo::Shape s =
+      cst::build_guided_orient_sweep(prof, 4, path, 2, guide.data(), n);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+  double vol = 0.0;
+  CC_CHECK(watertightAllDeflections(s, vol));
+  CC_CHECK(std::fabs(vol - 80.0) / 80.0 < 3e-2);  // rigid rotation preserves volume (polyline-bounded)
+  double lo[3], hi[3];
+  CC_CHECK(orientBBox(s, 0.002, lo, hi));
+  const double sqrt5 = std::sqrt(5.0);  // rotated-union half-extent
+  CC_CHECK(std::fabs(hi[0] - sqrt5) < 5e-3 && std::fabs(lo[0] + sqrt5) < 5e-3);  // x grew to √5
+  CC_CHECK(std::fabs(hi[1] - sqrt5) < 5e-3 && std::fabs(lo[1] + sqrt5) < 5e-3);  // y grew to √5
+  CC_CHECK(hi[0] > 2.1 && hi[1] > 1.1);  // NOT the axis-aligned [-2,2]×[-1,1] — orientation moved
+}
+
+// ── DEFERRED: guided_orient_sweep on a CURVED spine → NULL (→ OCCT) ─────────────────
+// A curved spine's per-station tangent varies and OCCT's CompatibleWires guide resample
+// shifts the perpendicular-plane aim — not spatially reproducible without the guide
+// surface itself, so the native builder defers. Degenerate input also defers.
+CC_TEST(guided_orient_curved_spine_and_degenerate_defer) {
+  const double prof[] = {-2, -1, 2, -1, 2, 1, -2, 1};
+  const double guide[] = {3, 0, 0, 3, 0, 5, 3, 0, 10};
+  const double bent[] = {0, 0, 0, 0, 0, 5, 3, 0, 10};  // L-bent spine → curved
+  CC_CHECK(cst::build_guided_orient_sweep(prof, 4, bent, 3, guide, 3).isNull());
+  const double path[] = {0, 0, 0, 0, 0, 10};
+  const double through[] = {0, 0, 0, 0, 0, 10};  // guide ON the spine → degenerate N
+  CC_CHECK(cst::build_guided_orient_sweep(prof, 4, path, 2, through, 2).isNull());
+  CC_CHECK(cst::build_guided_orient_sweep(prof, 2, path, 2, guide, 3).isNull());  // <3 profile
+  CC_CHECK(cst::build_guided_orient_sweep(nullptr, 4, path, 2, guide, 3).isNull());
+}
+
 // ── NATIVE: loft_along_rail on a STRAIGHT rail is a perpendicular-framed ruled loft ─
 // cc_loft_along_rail morphs section A (4×4 square) into section B (2×2 square) along a
 // straight rail. For a straight rail the OCCT MakePipeShell reduces EXACTLY to a ruled

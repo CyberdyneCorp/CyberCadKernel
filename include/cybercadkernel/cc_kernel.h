@@ -232,6 +232,14 @@ CCShapeId cc_guided_sweep(const double *profileXY, int profileCount,
                           const double *pathXYZ, int pathCount,
                           const double *guideXYZ, int guideCount);
 
+/* Sweep whose section ORIENTATION is fixed by a guide wire (OCCT
+ * BRepOffsetAPI_MakePipeShell + SetMode(guide), default NoContact). Distinct from
+ * cc_guided_sweep (guide-SCALED loft): here the guide steers the section frame, not its
+ * size. Native for a straight spine (perpendicular-plane [N,B,T] law), OCCT otherwise. */
+CCShapeId cc_guided_orient_sweep(const double *profileXY, int profileCount,
+                                 const double *pathXYZ, int pathCount,
+                                 const double *guideXYZ, int guideCount);
+
 CCShapeId cc_wrap_emboss(CCShapeId body, int faceId,
                          const double *profileXY, int count, double depth, int boss);
 

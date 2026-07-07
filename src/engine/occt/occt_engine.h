@@ -223,6 +223,9 @@ public:
                                 int aCount, const double* profileB_XY, int bCount) override;
     ShapeResult guided_sweep(const double* profileXY, int profileCount, const double* pathXYZ,
                              int pathCount, const double* guideXYZ, int guideCount) override;
+    ShapeResult guided_orient_sweep(const double* profileXY, int profileCount, const double* pathXYZ,
+                                    int pathCount, const double* guideXYZ,
+                                    int guideCount) override;
     // wrap_emboss is DEFINED in its own TU (occt_wrap_emboss.cpp) so the robust
     // sewn-pad rework (Phase-3) can be owned there without touching occt_construct.cpp.
     ShapeResult wrap_emboss(EngineShape body, int faceId, const double* profileXY, int count,

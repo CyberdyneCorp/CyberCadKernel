@@ -207,14 +207,21 @@ void runNativeOp(const OpCase& s) {
     // one band per (edge × segment), OCCT one face per profile edge that may be split
     // or merged along the spine — a REPRESENTATIONAL difference (the SOLID is
     // geometrically identical, verified by mass/bbox/tessellate). We therefore accept
-    // any consistent tiling for the curved case: both positive, one a multiple of the
-    // other. The straight case is held to the strict k=1 identity.
+    // any consistent tiling for the curved case: both are (2 end caps + k side bands),
+    // and one side tiling REFINES the other (its band count is an integer multiple). This
+    // strips the 2 caps before the multiple test so a native ruled-band tube (e.g. a
+    // guide-oriented sweep that densifies a single-segment spine to weld a rotating
+    // section: 2 caps + 21×4 bands = 86 faces) is correctly recognized as a refinement of
+    // OCCT's swept-BSpline tiling (2 caps + 4 faces = 6) — a REPRESENTATIONAL difference,
+    // the geometric identity being enforced by the strict mass/bbox/watertight checks.
+    // The straight case is held to the strict k=1 identity.
     bool facesOk;
     if (s.planar) {
         facesOk = (oF > 0) && (nF > 0) && (nF == oF);  // exact prism → identical tiling
     } else {
-        const int hi = std::max(oF, nF), lo = std::min(oF, nF);
-        facesOk = (oF > 0) && (nF > 0) && (lo > 0) && (hi % lo == 0);
+        const int oSide = oF - 2, nSide = nF - 2;  // strip the two end caps
+        const int hi = std::max(oSide, nSide), lo = std::min(oSide, nSide);
+        facesOk = (oSide > 0) && (nSide > 0) && (lo > 0) && (hi % lo == 0);
     }
     std::snprintf(detail, sizeof detail, "[native] F o=%d n=%d", oF, nF);
     record(facesOk, (std::string(s.name) + " faces").c_str(), detail);
@@ -318,6 +325,43 @@ CCShapeId buildGuidedSweepDeferred() {
     return cc_guided_sweep(prof, 4, path, 2, guide, 2);
 }
 
+// 3) GUIDE-ORIENTED SWEEP, OFFSET guide (native, EXACT): a 4×2 rectangle swept 10 up
+//    (+Z) with a straight guide offset +X. The guide induces NO section rotation, so the
+//    NoContact plane-trihedron law gives the IDENTITY frame → an axis-aligned 4×2×10
+//    prism. Native collapses to a 2-station prism matching OCCT's 6-face tiling exactly;
+//    volume 80 and bbox EXACT. Proves the native builder + OCCT NoContact oracle agree
+//    on the identity-frame case.
+CCShapeId buildGuidedOrientOffset() {
+    const double prof[] = {-2, -1, 2, -1, 2, 1, -2, 1};
+    const double path[] = {0, 0, 0, 0, 0, 10};
+    const double guide[] = {3, 0, 0, 3, 0, 10};  // straight offset guide → constant N
+    return cc_guided_orient_sweep(prof, 4, path, 2, guide, 2);
+}
+
+// 4) GUIDE-ORIENTED SWEEP, ROTATING guide (native, SPATIAL discriminator): the SAME
+//    rectangle swept 10 up with a guide that spirals θ = 60°·z/H at radius 3. The section
+//    rigidly ROTATES with the guide, so the swept solid's volume is ~unchanged (rigid
+//    frame) but its BBOX GROWS with the rotation — the exact M7a failure mode a
+//    volume-only check is blind to. Native (perpendicular-plane law, densified) must match
+//    the OCCT NoContact guide oracle on BOTH volume AND bbox / bounding-box placement.
+CCShapeId buildGuidedOrientRotating() {
+    const double prof[] = {-2, -1, 2, -1, 2, 1, -2, 1};
+    const double path[] = {0, 0, 0, 0, 0, 10};
+    static std::vector<double> guide;
+    if (guide.empty()) {
+        const int n = 16;
+        const double rho = 3.0, H = 10.0, Theta = (60.0 * kPi / 180.0);
+        for (int k = 0; k < n; ++k) {
+            const double z = H * k / (n - 1), th = Theta * z / H;
+            guide.push_back(rho * std::cos(th));
+            guide.push_back(rho * std::sin(th));
+            guide.push_back(z);
+        }
+    }
+    return cc_guided_orient_sweep(prof, 4, path, 2, guide.data(),
+                                  static_cast<int>(guide.size() / 3));
+}
+
 // D3) LOFT ALONG RAIL (deferred): two square sections swept along a straight rail.
 //     Pipe-shell/guide case — OCCT fallthrough.
 CCShapeId buildLoftAlongRailDeferred() {
@@ -339,6 +383,11 @@ int main() {
         {"sweep straight-path", &buildStraightSweep, /*planar*/ true, /*defl*/ 0.02},
         // 2) Smooth-arc sweep: constant-frame ruled tube → oracle-matched (fp precision), watertight.
         {"sweep smooth-arc-path", &buildSmoothArcSweep, /*planar*/ false, /*defl*/ 0.05},
+        // 3) Guide-oriented sweep, OFFSET guide: identity frame → EXACT axis-aligned prism.
+        {"guided-orient offset", &buildGuidedOrientOffset, /*planar*/ true, /*defl*/ 0.02},
+        // 4) Guide-oriented sweep, ROTATING guide: the SPATIAL (bbox) discriminator —
+        //    native rigid-frame rotation must match the OCCT NoContact guide oracle on bbox.
+        {"guided-orient rotating", &buildGuidedOrientRotating, /*planar*/ false, /*defl*/ 0.01},
     };
 
     for (const OpCase& s : cases) runNativeOp(s);

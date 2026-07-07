@@ -178,6 +178,9 @@ public:
                                 int aCount, const double* profileB_XY, int bCount) override;
     ShapeResult guided_sweep(const double* profileXY, int profileCount, const double* pathXYZ,
                              int pathCount, const double* guideXYZ, int guideCount) override;
+    ShapeResult guided_orient_sweep(const double* profileXY, int profileCount, const double* pathXYZ,
+                                    int pathCount, const double* guideXYZ,
+                                    int guideCount) override;
     ShapeResult wrap_emboss(EngineShape body, int faceId, const double* profileXY, int count,
                             double depth, int boss) override;
     ShapeResult helical_thread(double majorRadiusMM, double pitchMM, double turns, double depthMM,

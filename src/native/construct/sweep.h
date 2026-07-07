@@ -751,6 +751,135 @@ inline topo::Shape build_guided_sweep(const double* profileXY, int profileCount,
                                             /*totalTwist*/ 0.0, scaleAt);
 }
 
+namespace detail {
+
+// The point where the plane through P perpendicular to `T` meets the guide polyline —
+// OCCT's GeomFill_GuideTrihedronPlan correspondence (Pprime is the guide point in the
+// plane normal to the tangent at the spine point P). The guide is parametrized by its
+// projection along T (monotonic for a guide that runs alongside the spine): find the
+// segment whose endpoints bracket `P·T` and lerp. Returns false if no segment brackets
+// the station (the guide does not span this station's perpendicular plane). By
+// construction Pprime−P is exactly ⟂ T (both lie in {X·T = P·T}).
+inline bool guidePointInPerpPlane(const std::vector<math::Point3>& guide, const math::Vec3& T,
+                                  const math::Point3& P, math::Point3& out) {
+  const double target = math::dot(P.asVec(), T);
+  for (std::size_t i = 0; i + 1 < guide.size(); ++i) {
+    const double a = math::dot(guide[i].asVec(), T);
+    const double b = math::dot(guide[i + 1].asVec(), T);
+    const double lo = std::min(a, b), hi = std::max(a, b);
+    if (target < lo - kProfileTol || target > hi + kProfileTol) continue;
+    const double denom = b - a;
+    const double u = std::fabs(denom) > kProfileTol ? (target - a) / denom : 0.0;
+    const double uc = std::clamp(u, 0.0, 1.0);
+    out = math::Point3{guide[i].asVec() + (guide[i + 1].asVec() - guide[i].asVec()) * uc};
+    return true;
+  }
+  return false;
+}
+
+}  // namespace detail
+
+// ─────────────────────────────────────────────────────────────────────────────
+// build_guided_orient_sweep — cc_guided_orient_sweep entry point. The section's
+// ORIENTATION (not its scale) is fixed by a guide wire, reproducing OCCT
+// BRepOffsetAPI_MakePipeShell + SetMode(guideWire) with the DEFAULT KeepContact =
+// BRepFill_NoContact — i.e. GeomFill_GuideTrihedronPlan with rotation==false, whose
+// per-station frame is the RIGID trihedron M = [N, B, T], V = P (verified against OCCT
+// source GeomFill_GuideTrihedronPlan.cxx::D0 and GeomFill_LocationGuide.cxx::D0):
+//   T = spine unit tangent; N = normalize(Pprime − P) with Pprime the guide point in
+//   the plane through P perpendicular to T; B = T × N. No scale, no rotation root-find.
+//
+// NATIVE SCOPE — STRAIGHT SPINE ONLY. On a straight spine T is constant, so every
+// perpendicular plane is parallel and the guide∩plane point (guidePointInPerpPlane) is a
+// pure GEOMETRIC intersection, independent of OCCT's internal guide reparametrization
+// (BRepFill_CompatibleWires::SetPercent) — native and OCCT therefore land on the SAME
+// Pprime and agree SPATIALLY (bbox/Hausdorff), not merely on volume. The straight spine
+// is densified so a rotating guide's per-band section rotation stays small enough for the
+// native ruled-band mesher to weld watertight; a tube whose rotation is too coarse to
+// weld is caught by the engine's robustlyWatertight self-verify → OCCT fallback.
+//
+// Returns NULL (→ OCCT guided_orient_sweep) for: a CURVED spine (per-station T varies and
+// the CompatibleWires guide resample shifts the aim — not spatially reproducible without
+// the guide surface itself), a degenerate profile/path, a guide that does not span a
+// station's perpendicular plane, or a guide passing through the spine (degenerate N).
+// ─────────────────────────────────────────────────────────────────────────────
+inline topo::Shape build_guided_orient_sweep(const double* profileXY, int profileCount,
+                                             const double* pathXYZ, int pathCount,
+                                             const double* guideXYZ, int guideCount) {
+  if (profileXY == nullptr || pathXYZ == nullptr || guideXYZ == nullptr) return {};
+  if (profileCount < 3 || pathCount < 2 || guideCount < 2) return {};
+  const detail::SweepProfile pr = detail::analyzeProfile(profileXY, profileCount);
+  if (!pr.valid) return {};
+
+  const std::vector<math::Point3> raw = detail::cleanPath(pathXYZ, pathCount);
+  if (raw.size() < 2) return {};
+  if (!detail::spineIsStraight(raw)) return {};  // curved spine → OCCT (see scope note)
+  const math::Point3 A = raw.front(), Bend = raw.back();
+  math::Vec3 T = Bend - A;
+  const double L = math::norm(T);
+  if (L < kProfileTol) return {};
+  T = T / L;
+
+  std::vector<math::Point3> guide;
+  guide.reserve(static_cast<std::size_t>(guideCount));
+  for (int i = 0; i < guideCount; ++i)
+    guide.push_back({guideXYZ[i * 3], guideXYZ[i * 3 + 1], guideXYZ[i * 3 + 2]});
+
+  // The guide direction N(f) at spine fraction f: the unit vector from the spine point to
+  // the guide point in the perpendicular plane there. Returns false on a guide gap or a
+  // guide passing through the spine (degenerate N) → whole build defers to OCCT.
+  const auto normalAt = [&](double f, math::Vec3& N) -> bool {
+    const math::Point3 P{A.asVec() + (Bend.asVec() - A.asVec()) * f};
+    math::Point3 Pprime;
+    if (!detail::guidePointInPerpPlane(guide, T, P, Pprime)) return false;
+    N = Pprime - P;
+    const double dn = math::norm(N);
+    if (dn < 1e-6) return false;
+    N = N / dn;
+    return true;
+  };
+
+  // Pick the station density from the guide-induced section rotation: a near-constant N
+  // (offset guide) collapses to a 2-station prism — matching OCCT's minimal 6-face tiling
+  // EXACTLY — while a rotating guide is densified so each band's rotation stays small
+  // enough for the native ruled-band mesher to weld watertight. Measure the total turn of
+  // N over a coarse pre-sample.
+  constexpr int kProbe = 64;
+  double totalTurn = 0.0;
+  math::Vec3 Nprev;
+  if (!normalAt(0.0, Nprev)) return {};
+  for (int k = 1; k <= kProbe; ++k) {
+    math::Vec3 Nk;
+    if (!normalAt(static_cast<double>(k) / kProbe, Nk)) return {};
+    const double d = std::clamp(math::dot(Nprev, Nk), -1.0, 1.0);
+    totalTurn += std::acos(d);
+    Nprev = Nk;
+  }
+  constexpr double kMaxPerBand = 0.05;  // ≈ 2.9° per band — welds watertight (measured)
+  std::size_t nStations = 2;
+  if (totalTurn > 1e-4)
+    nStations = static_cast<std::size_t>(std::ceil(totalTurn / kMaxPerBand)) + 1;
+  nStations = std::min<std::size_t>(std::max<std::size_t>(nStations, 2), 512);
+  const double denom = static_cast<double>(nStations - 1);
+
+  std::vector<std::vector<math::Point3>> rings(nStations);
+  std::vector<math::Point3> centres(nStations);
+  std::vector<math::Vec3> normals(nStations);
+  for (std::size_t s = 0; s < nStations; ++s) {
+    const double f = static_cast<double>(s) / denom;
+    const math::Point3 P{A.asVec() + (Bend.asVec() - A.asVec()) * f};
+    math::Vec3 N;
+    if (!normalAt(f, N)) return {};
+    const math::Vec3 Bx = math::cross(T, N);  // ⟂ both, unit (N⟂T)
+    const detail::SweepFrame frame{P, N, Bx, T};
+    rings[s] = detail::sectionRing(frame, pr, /*scale*/ 1.0, /*twist*/ 0.0);
+    centres[s] = P;
+    normals[s] = math::cross(frame.x, frame.y);  // = T
+  }
+
+  return detail::assembleRingTube(rings, centres, normals);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // build_loft_along_rail — cc_loft_along_rail entry point. Morph section A (at the rail
 // start) into section B (at the rail end) along the rail. The OCCT oracle is

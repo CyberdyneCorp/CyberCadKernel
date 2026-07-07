@@ -897,6 +897,20 @@ ShapeResult NativeEngine::guided_sweep(const double* p, int pc, const double* pa
         return fallback().guided_sweep(p, pc, path, pathc, g, gc);
     return track(wrapNative(std::move(solid)));
 }
+// guided_orient_sweep — the section ORIENTATION is fixed by a guide wire (OCCT
+// MakePipeShell+SetMode(guide), NoContact / GeomFill_GuideTrihedronPlan rigid [N,B,T]
+// law). NATIVE for a straight spine, where the perpendicular-plane∩guide intersection is
+// parametrization-independent so native and OCCT agree SPATIALLY (bbox), not merely on
+// volume — the M7a-hardened acceptance. The tube must weld robustly watertight (a coarse
+// rotating guide that will not weld → fallback); a curved spine / degenerate guide →
+// build_guided_orient_sweep returns NULL → OCCT.
+ShapeResult NativeEngine::guided_orient_sweep(const double* p, int pc, const double* path,
+                                              int pathc, const double* g, int gc) {
+    ntopo::Shape solid = ncst::build_guided_orient_sweep(p, pc, path, pathc, g, gc);
+    if (solid.isNull() || !robustlyWatertight(solid))
+        return fallback().guided_orient_sweep(p, pc, path, pathc, g, gc);
+    return track(wrapNative(std::move(solid)));
+}
 // ── NATIVE wrap-emboss (Phase 4 #7 native-wrap-emboss) with mandatory self-verify ──
 // Native tracks on a native body's CYLINDER lateral face: a raised RECTANGULAR pad
 // (control), a recessed rectangular POCKET (T1 deboss), and an N-vertex POLYGON footprint

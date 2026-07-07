@@ -43,6 +43,7 @@
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepOffsetAPI_MakePipe.hxx>
 #include <BRepOffsetAPI_MakePipeShell.hxx>
+#include <BRepFill_TypeOfContact.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepTools.hxx>
 #include <GeomAPI_PointsToBSpline.hxx>
@@ -1101,6 +1102,93 @@ ShapeResult OcctEngine::guided_sweep(const double* profileXY, int profileCount,
             return make_error("guided_sweep: thru-sections failed");
         }
         return occt::addIfValid(gen.Shape(), "guided_sweep: invalid solid");
+    });
+}
+
+// ── Guide-ORIENTED sweep — the ORACLE for cc_guided_orient_sweep ───────────────
+// Section ORIENTATION (not scale) fixed by a guide wire: BRepOffsetAPI_MakePipeShell
+// with SetMode(guide, CurvilinearEquivalence=false, KeepContact=NoContact) — the
+// default plane-trihedron law GeomFill_GuideTrihedronPlan (rigid per-station frame
+// [N,B,T], N from the guide point in the plane perpendicular to the spine tangent). The
+// profile is placed at the spine start in the frame the guide implies there; Add() with
+// WithCorrection reframes each station to the guide trihedron. This is the independent
+// oracle the native straight-spine builder is verified against on volume AND bbox.
+ShapeResult OcctEngine::guided_orient_sweep(const double* profileXY, int profileCount,
+                                            const double* pathXYZ, int pathCount,
+                                            const double* guideXYZ, int guideCount) {
+    return occt::occtGuard([&]() -> ShapeResult {
+        if (profileXY == nullptr || pathXYZ == nullptr || guideXYZ == nullptr) {
+            return make_error("guided_orient_sweep: null input");
+        }
+        if (profileCount < 3 || pathCount < 2 || guideCount < 2) {
+            return make_error("guided_orient_sweep: too few points");
+        }
+        // Spine wire (the path polyline).
+        BRepBuilderAPI_MakePolygon spineP;
+        for (int i = 0; i < pathCount; ++i)
+            spineP.Add(gp_Pnt(pathXYZ[i * 3], pathXYZ[i * 3 + 1], pathXYZ[i * 3 + 2]));
+        if (!spineP.IsDone()) return make_error("guided_orient_sweep: spine wire failed");
+        const TopoDS_Wire spine = spineP.Wire();
+        // Guide wire (the orientation-steering polyline).
+        BRepBuilderAPI_MakePolygon guideP;
+        for (int i = 0; i < guideCount; ++i)
+            guideP.Add(gp_Pnt(guideXYZ[i * 3], guideXYZ[i * 3 + 1], guideXYZ[i * 3 + 2]));
+        if (!guideP.IsDone()) return make_error("guided_orient_sweep: guide wire failed");
+        const TopoDS_Wire guide = guideP.Wire();
+
+        // Start frame implied by the guide: T = spine tangent at start; N0 = the guide
+        // point in the plane through P0 perpendicular to T, minus P0 (perpendicular-plane
+        // correspondence); B0 = T × N0. The profile is placed at P0 in (N0, B0).
+        const gp_Pnt p0(pathXYZ[0], pathXYZ[1], pathXYZ[2]);
+        gp_Vec T(p0, gp_Pnt(pathXYZ[(pathCount - 1) * 3], pathXYZ[(pathCount - 1) * 3 + 1],
+                            pathXYZ[(pathCount - 1) * 3 + 2]));
+        if (T.Magnitude() < 1.0e-9) return make_error("guided_orient_sweep: degenerate spine");
+        T.Normalize();
+        const double target = p0.XYZ().Dot(T.XYZ());
+        gp_Pnt pprime;
+        bool found = false;
+        for (int i = 0; i + 1 < guideCount && !found; ++i) {
+            const gp_Pnt ga(guideXYZ[i * 3], guideXYZ[i * 3 + 1], guideXYZ[i * 3 + 2]);
+            const gp_Pnt gb(guideXYZ[(i + 1) * 3], guideXYZ[(i + 1) * 3 + 1],
+                            guideXYZ[(i + 1) * 3 + 2]);
+            const double da = ga.XYZ().Dot(T.XYZ()), db = gb.XYZ().Dot(T.XYZ());
+            const double lo = std::min(da, db), hi = std::max(da, db);
+            if (target < lo - 1.0e-9 || target > hi + 1.0e-9) continue;
+            const double denom = db - da;
+            const double u = std::fabs(denom) > 1.0e-12 ? (target - da) / denom : 0.0;
+            const double uc = std::min(1.0, std::max(0.0, u));
+            pprime = gp_Pnt(ga.X() + (gb.X() - ga.X()) * uc, ga.Y() + (gb.Y() - ga.Y()) * uc,
+                            ga.Z() + (gb.Z() - ga.Z()) * uc);
+            found = true;
+        }
+        if (!found) return make_error("guided_orient_sweep: guide misses spine start plane");
+        gp_Vec N0(p0, pprime);
+        if (N0.Magnitude() < 1.0e-6) return make_error("guided_orient_sweep: degenerate guide N");
+        N0.Normalize();
+        const gp_Vec B0 = T.Crossed(N0);
+
+        double cx = 0, cy = 0;
+        for (int i = 0; i < profileCount; ++i) { cx += profileXY[i * 2]; cy += profileXY[i * 2 + 1]; }
+        cx /= profileCount;
+        cy /= profileCount;
+        BRepBuilderAPI_MakePolygon prof;
+        for (int i = 0; i < profileCount; ++i) {
+            const double u = profileXY[i * 2] - cx, v = profileXY[i * 2 + 1] - cy;
+            prof.Add(gp_Pnt(p0.X() + u * N0.X() + v * B0.X(), p0.Y() + u * N0.Y() + v * B0.Y(),
+                            p0.Z() + u * N0.Z() + v * B0.Z()));
+        }
+        prof.Close();
+        if (!prof.IsDone()) return make_error("guided_orient_sweep: profile wire failed");
+
+        BRepOffsetAPI_MakePipeShell mk(spine);
+        mk.SetMode(guide, Standard_False /*CurvilinearEquivalence*/,
+                   BRepFill_NoContact /*guide plane trihedron, no rotation*/);
+        mk.Add(prof.Wire(), Standard_False /*WithContact*/, Standard_True /*WithCorrection*/);
+        if (!mk.IsReady()) return make_error("guided_orient_sweep: pipe shell not ready");
+        mk.Build();
+        if (!mk.IsDone()) return make_error("guided_orient_sweep: pipe shell build failed");
+        if (!mk.MakeSolid()) return make_error("guided_orient_sweep: make-solid failed");
+        return occt::addIfValid(mk.Shape(), "guided_orient_sweep: invalid solid");
     });
 }
 

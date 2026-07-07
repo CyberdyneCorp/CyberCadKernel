@@ -149,6 +149,17 @@ public:
         (void)guideCount;
         return engine_unsupported("guided_sweep");
     }
+    // Section ORIENTATION (not scale) fixed by a guide wire — OCCT
+    // BRepOffsetAPI_MakePipeShell + SetMode(guide) with the default NoContact
+    // (GeomFill_GuideTrihedronPlan, rigid per-station [N,B,T] frame). Distinct from
+    // guided_sweep, which is a guide-SCALED loft; do NOT conflate the two.
+    virtual ShapeResult guided_orient_sweep(const double* profileXY, int profileCount,
+                                            const double* pathXYZ, int pathCount,
+                                            const double* guideXYZ, int guideCount) {
+        (void)profileXY; (void)profileCount; (void)pathXYZ; (void)pathCount; (void)guideXYZ;
+        (void)guideCount;
+        return engine_unsupported("guided_orient_sweep");
+    }
     virtual ShapeResult wrap_emboss(EngineShape body, int faceId, const double* profileXY, int count,
                                     double depth, int boss) {
         (void)body; (void)faceId; (void)profileXY; (void)count; (void)depth; (void)boss;

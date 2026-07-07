@@ -114,8 +114,23 @@ resolution. The curve *pipeline* exists; this is the *robustness* on adversarial
   meaningful. Of the other two regimes: S4-a coincident/overlapping freeform is the only one with a
   clean *native* result (`detectOverlap` lands `OverlapSubRegion`, 0 undecided) but its decisive
   `IsDone=false`/`TheSame` OCCT oracle is only checkable on the sim (not at diagnose); S4-c general
-  near-tangent stays the hard moat core. So the M1-tail's next actionable slice is **marcher
-  self-crossing completeness**, not the partition.
+  near-tangent stays the hard moat core.
+- **M1-tail completeness attempt (M1-c) DECLINED — and CORRECTED the direction above (a theoretical
+  result).** The "marcher self-crossing completeness (both lobes once + single *transverse* origin
+  crossing, `branchPoints==0`)" slice was attempted and proven **geometrically self-contradictory**,
+  so it is not the M1-tail's next slice after all. Two measured findings, no code shipped
+  (`src/native` byte-identical, controls frozen — marching 14/14, S4-f 6/6): (1) **Analytic proof** —
+  for a plane `z=0` ∩ graph `z=g(x,y)`, a self-crossing needs `g=0 ∧ ∇g=0`, and THERE the normals are
+  parallel (`nB ∝ (−gₓ,−g_y,1) = (0,0,1) = nA` ⟹ `‖nA×nB‖=0`) — so **every such self-crossing is a
+  tangent-degenerate S4-d BRANCH POINT, never a `branchPoints==0` transverse crossing**. (2) The
+  canonical Gerono B-spline can't represent the sharp origin saddle (`z(0,0)=+9.7e-4`, rounded
+  upward) — the locus is actually **two DISJOINT loops** (~0.05 gap), not a figure-eight, and the old
+  `selfIntersections==1` was a false-positive proximity flag on a single pinched loop. **Corrected
+  direction:** both-lobe coverage is reachable NOT via a `branchPoints==0` completeness pass but via
+  either (a) the *existing* S4-d `enableBranchPoints` path on an exact/denser fixture (already yields
+  both lobes, arc 6.27, `branchPoints=1`) or (b) a **seeder-dedup** fix so each disjoint spline lobe
+  gets a seed → two `Closed` loops. The M1-tail's real next slice is one of those (seeding / branch-
+  routing), not self-crossing completeness.
 
 ### M2 — General freeform booleans · ~2–4 py · needs M0 + M1
 Lift `recogniseCurvedSolid` to accept **freeform (B-spline/NURBS) operands** (it rejects them

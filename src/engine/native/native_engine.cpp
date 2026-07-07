@@ -391,6 +391,59 @@ CurvedCheck ssiCurvedBooleanVerified(const ntopo::Shape& result, const ntopo::Sh
         const double tol = std::max(1e-2 * expected, 1e-6);  // deflection-bounded curved mesh
         return {true, std::fabs(vr - expected) <= tol};
     }
+
+    // ── S5-f arm: COAXIAL cone(frustum)∩sphere COMMON (single analytic circle). ──
+    // The overlap cross-section at axial s has radius min(r_cone(s), r_sphere(s)); r_cone
+    // crosses r_sphere once at the seam s*. Below s* the cone limits (a frustum segment),
+    // above s* the sphere limits (a spherical segment) — both closed-form. Mirrors the
+    // buildConeSphereCommon geometry. Applicable only for the clean single-crossing config;
+    // anything else returns {} → the generic set-algebra check applies.
+    const auto* sph = csA->kind == CK::Sphere ? &*csA : (csB->kind == CK::Sphere ? &*csB : nullptr);
+    if (cone && sph) {
+        const nm::Vec3 zc = cone->frame.z.vec();
+        const nm::Vec3 d = sph->frame.origin - cone->frame.origin;
+        const double sc = nm::dot(d, zc);
+        if (nm::norm(d - zc * sc) > 1e-6) return {};  // sphere centre off axis → not coaxial
+        const double tanA = std::tan(cone->semiAngle);
+        if (std::fabs(tanA) < 1e-9) return {};
+        const double R0 = cone->radius, Rs = sph->radius;
+        if (!(Rs > 1e-9)) return {};
+        // Seam quadratic (1+tanA²)s² + 2(R0·tanA − sc)s + (sc² + R0² − Rs²) = 0.
+        const double Aq = 1.0 + tanA * tanA;
+        const double Bq = 2.0 * (R0 * tanA - sc);
+        const double Cq = sc * sc + R0 * R0 - Rs * Rs;
+        const double disc = Bq * Bq - 4.0 * Aq * Cq;
+        if (disc <= 1e-12) return {};
+        const double sqd = std::sqrt(disc);
+        const double roots[2] = {(-Bq + sqd) / (2.0 * Aq), (-Bq - sqd) / (2.0 * Aq)};
+        int nin = 0;
+        double sStar = 0.0;
+        for (const double r : roots)
+            if (r > cone->vLo + 1e-6 && r < cone->vHi - 1e-6) { ++nin; sStar = r; }
+        if (nin != 1) return {};
+        auto rCone = [&](double s) { return R0 + s * tanA; };
+        if (!(rCone(sStar) > 1e-9)) return {};
+        // In-cone pole (single-crossing config): the axial pole inside the cone extent.
+        const double sPoleP = sc + Rs, sPoleM = sc - Rs;
+        const bool inP = sPoleP > cone->vLo && sPoleP < cone->vHi && rCone(sPoleP) > 0.0;
+        const bool inM = sPoleM > cone->vLo && sPoleM < cone->vHi && rCone(sPoleM) > 0.0;
+        if (inP == inM) return {};  // not exactly one interior pole → not the clean config
+        const double inDir = inP ? 1.0 : -1.0;
+        const double sPole = sc + Rs * inDir;
+        const double coneNear = (inDir > 0.0) ? cone->vLo : cone->vHi;
+        // Cone-limited span [coneNear, s*]; sphere-limited span [s*, sPole] (ordered).
+        const double a1 = std::min(coneNear, sStar), b1 = std::max(coneNear, sStar);
+        const double a2 = std::min(sStar, sPole), b2 = std::max(sStar, sPole);
+        auto frustum = [&](double ra, double rb, double dh) {
+            return cv::kPi * dh / 3.0 * (ra * ra + ra * rb + rb * rb);
+        };
+        auto sphF = [&](double s) { const double z = s - sc; return Rs * Rs * z - z * z * z / 3.0; };
+        const double expected = frustum(rCone(a1), rCone(b1), b1 - a1) + cv::kPi * (sphF(b2) - sphF(a2));
+        const double vr = watertightVolume(result);
+        if (vr < 0.0) return {true, false};  // not watertight
+        const double tol = std::max(1e-2 * expected, 1e-6);  // deflection-bounded curved mesh
+        return {true, std::fabs(vr - expected) <= tol};
+    }
     return {};
 #else
     (void)result; (void)a; (void)b; (void)op;

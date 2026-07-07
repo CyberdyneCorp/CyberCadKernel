@@ -499,6 +499,27 @@ int main() {
     runPair(pc);
   }
 
+  // ── (6) coaxial cone(frustum) ∩ sphere COMMON / FUSE / CUT (S5-f) — 3 NATIVE passes ─
+  // A frustum r(y)=0.5+0.5y over y∈[0,4] and a sphere Rs=2 whose centre (0,0,0) lies ON the
+  // cone axis (+Y) meet along ONE analytic circle seam at y*≈1.54356 (single-crossing config:
+  // pole (0,+2,0) inside the cone, (0,−2,0) below the frustum). The S5-f assembler composes
+  // the cone-wall split with the spherical-cap fragment welded along the shared seam:
+  //   COMMON = cone band + cone bottom disc + sphere inner cap   (V≈5.25583)
+  //   FUSE   = sphere outer cap + cone outer wall + cone top disc (V≈60.71762, GROW)
+  //   CUT    = cone outer wall + cone top disc + sphere dimple    (V≈27.20729, SHRINK)
+  // All three match BRepAlgoAPI_{Common,Fuse,Cut} on volume/area/watertight → NATIVE passes.
+  {
+    PairCase pc;
+    pc.pairName = "cone=sphere(coax)";
+    pc.nativeA = makeCone(0.5, 0.0, 2.5, 4.0);
+    pc.nativeB = makeSphere(2.0, 0.0);   // radius 2, centre (0,0,0) on the cone axis
+    pc.occtA = occtCone(0.5, 0.0, 2.5, 4.0);
+    pc.occtB = occtSphere(2.0, 0.0);
+    pc.relTol = 2e-2;
+    probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
+    runPair(pc);
+  }
+
   std::printf("== %d passed, %d failed, %d fell-back (native-pass=%d) ==\n",
               g_passed, g_failed, g_fellBack, g_nativePass);
   std::fflush(stdout);

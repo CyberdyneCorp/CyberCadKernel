@@ -602,4 +602,92 @@ CC_TEST(cone_cyl_coaxial_common_watertight_matches_analytic) {
   CC_CHECK(nb::ssi_boolean_solid(cyl, cone, nb::Op::Cut).isNull());
 }
 
+// ── (5) COAXIAL cone(frustum)∩sphere COMMON / FUSE / CUT: REAL native watertight passes
+// (S5-f) ─────────────────────────────────────────────────────────────────────────────
+// The next cone-involving pair after coaxial cone∩cylinder. A cone frustum r(y)=0.5+0.5y
+// over y∈[0,4] (about world +Y) and a sphere Rs=2 whose centre (0,0,0) lies ON the cone axis
+// meet along ONE analytic circle seam at y*≈1.54356 (radius ρ≈1.27178) — the single-crossing
+// config where the sphere sits on the frustum side (one pole (0,+2,0) inside the cone, the
+// other (0,−2,0) below the frustum, outside). The trace is ONE closed seam (nearTangentGaps
+// ==0). The S5-f assembler composes the cone-wall split (band + disc) with the spherical-cap
+// fragment (appendSphereCap) welded along the shared decimated seam:
+//   COMMON = cone band (y∈[0,y*], inside sphere) + cone bottom disc + sphere inner cap
+//            (seam → +y pole). V = V_frustum + V_spherical-segment ≈ 5.25583.
+//   FUSE   = sphere outer cap (outside cone) + cone outer wall (y∈[y*,4]) + cone top disc.
+//            V = V(A)+V(B)−V(COMMON) ≈ 60.71762 (GROW).
+//   CUT    = cone outer wall + cone top disc + sphere inner cap REVERSED (inward dimple).
+//            V = V(A)−V(COMMON) ≈ 27.20729 (SHRINK). Connected frustum-with-a-dimple.
+// Every volume matches the closed form to within the engine's curved-parity bar (1% relative,
+// a tessellation-deflection bound). The COMMON is the analytic oracle the engine self-verify
+// (native_engine.cpp ssiCurvedBooleanVerified S5-f arm) checks — no OCCT, no fabricated value.
+// COMMON is symmetric; CUT is order-sensitive (sphere−cone declines → OCCT).
+CC_TEST(cone_sphere_coaxial_common_fuse_cut_watertight_matches_analytic) {
+  const ntopo::Shape cone = makeCone(0.5, 0.0, 2.5, 4.0);  // r(y)=0.5+0.5y, y∈[0,4], axis +Y
+  const ntopo::Shape sph = makeSphere(0.0, 2.0);           // centre (0,0,0) on the cone axis
+  CC_CHECK(!cone.isNull() && !sph.isNull());
+
+  // The pair is recognised as Cone + Sphere and traces ONE clean closed seam circle.
+  const auto csCone = sd::recogniseCurvedSolid(cone);
+  const auto csSph = sd::recogniseCurvedSolid(sph);
+  CC_CHECK(csCone && csSph);
+  if (csCone && csSph) {
+    CC_CHECK(csCone->kind == sd::CurvedKind::Cone);
+    CC_CHECK(csSph->kind == sd::CurvedKind::Sphere);
+    const ssi::TraceSet tr = ssi::trace_intersection(csCone->adapter(), csSph->adapter());
+    CC_CHECK(tr.nearTangentGaps == 0);  // fully transversal single analytic circle
+    CC_CHECK(tr.curveCount() == 1);     // ONE closed seam circle at y*≈1.54356
+  }
+
+  // Closed-form ground truth: cone frustum segment [0,y*] + spherical segment [y*, +pole].
+  const double yStar = 1.5435595774162696, rho = 0.5 + 0.5 * yStar;  // ≈1.27178
+  const double sphere = 4.0 / 3.0 * sd::kSsiPi * 8.0;                 // sphere volume, Rs=2
+  const double vConeFull = frustumVolume(0.5, 2.5, 4.0);             // whole cone, y∈[0,4]
+  auto sphSeg = [&](double a, double b) {  // π∫[a,b](Rs²−y²)dy about the sphere centre
+    auto F = [&](double y) { return 4.0 * y - y * y * y / 3.0; };
+    return sd::kSsiPi * (F(b) - F(a));
+  };
+  const double vCommonTrue = frustumVolume(0.5, rho, yStar) + sphSeg(yStar, 2.0);
+  CC_CHECK(std::fabs(vCommonTrue - 5.255829) < 1e-5);  // pin the analytic value
+  const double vFuseTrue = vConeFull + sphere - vCommonTrue;  // ≈60.71762
+  const double vCutTrue = vConeFull - vCommonTrue;            // ≈27.20729
+  CC_CHECK(std::fabs(vFuseTrue - 60.717616) < 1e-4);
+  CC_CHECK(std::fabs(vCutTrue - 27.207295) < 1e-4);
+
+  // ── COMMON: watertight native candidate whose volume matches the closed form. ──
+  const ntopo::Shape common = nb::ssi_boolean_solid(cone, sph, nb::Op::Common);
+  CC_CHECK(!common.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  CC_CHECK(vCommon > 0.0);                                        // watertight → engine accepts
+  CC_CHECK(std::fabs(vCommon - vCommonTrue) <= 1e-2 * vCommonTrue);
+  CC_CHECK(vCommon <= std::min(vConeFull, sphere) + 1e-9);        // common ≤ min(A,B)
+  CC_CHECK(!nb::boolean_solid(cone, sph, nb::Op::Common).isNull());
+  // COMMON is symmetric — reversing the operand order builds the same watertight solid.
+  const ntopo::Shape swapped = nb::ssi_boolean_solid(sph, cone, nb::Op::Common);
+  CC_CHECK(!swapped.isNull());
+  const double vSwapped = watertightMeshVolume(swapped);
+  CC_CHECK(vSwapped > 0.0);
+  CC_CHECK(std::fabs(vSwapped - vCommonTrue) <= 1e-2 * vCommonTrue);
+
+  // ── FUSE = A ∪ B: sphere outer cap + cone outer wall + cone disc. A GROW. ──
+  const ntopo::Shape fuse = nb::ssi_boolean_solid(cone, sph, nb::Op::Fuse);
+  CC_CHECK(!fuse.isNull());
+  const double vFuse = watertightMeshVolume(fuse);
+  CC_CHECK(vFuse > 0.0);
+  CC_CHECK(std::fabs(vFuse - vFuseTrue) <= 1e-2 * vFuseTrue);
+  CC_CHECK(vFuse >= std::max(vConeFull, sphere) - 1e-9);          // FUSE grows past either operand
+  CC_CHECK(!nb::boolean_solid(cone, sph, nb::Op::Fuse).isNull());
+
+  // ── CUT = A − B (cone minuend): cone outer wall + cone disc + sphere dimple. A SHRINK. ──
+  const ntopo::Shape cut = nb::ssi_boolean_solid(cone, sph, nb::Op::Cut);
+  CC_CHECK(!cut.isNull());
+  const double vCut = watertightMeshVolume(cut);
+  CC_CHECK(vCut > 0.0);
+  CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
+  CC_CHECK(vCut <= vConeFull + 1e-9);                             // CUT shrinks below the minuend
+  CC_CHECK(!nb::boolean_solid(cone, sph, nb::Op::Cut).isNull());
+  // CUT is order-sensitive: sphere − cone is a DIFFERENT solid; the S5-f CUT builder only
+  // handles the cone minuend, so sphere − cone declines here → OCCT.
+  CC_CHECK(nb::ssi_boolean_solid(sph, cone, nb::Op::Cut).isNull());
+}
+
 int main() { return cctest::run_all(); }

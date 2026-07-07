@@ -195,15 +195,16 @@ robustness tail keeps OCCT linked.** Canonical detail:
   pole/apex that will not verify on both surfaces DEFERS → OCCT — no crossing fabricated. Only
   the sphere-pole + cone-apex chart singularities are crossed; general/freeform parametric
   degeneracies and higher-order/curve cusps remain the tail.
-- ◐ **SSI S5-a/b/c/d/e (curved-boolean slices)** — the SSI-curve-driven
+- ◐ **SSI S5-a/b/c/d/e/f (curved-boolean slices)** — the SSI-curve-driven
   split→classify→weld pipeline (`src/native/boolean/ssi_boolean.{h,cpp}`, consumes the
-  S3 `TraceSet` — and, for S5-d, the S4-d branched re-trace) produces **eleven native
+  S3 `TraceSet` — and, for S5-d, the S4-d branched re-trace) produces **sixteen native
   curved-boolean sub-cases verified vs OCCT `BRepAlgoAPI_{Fuse,Cut,Common}`**: the
   through-drill cylinder∩cylinder COMMON (S5-a) + FUSE + CUT (S5-b), the sphere∩sphere op-set
   now COMPLETE 3/3 native — COMMON + FUSE + CUT (S5-c, equal + unequal radii), and the
   **branched-trace Steinmetz bicylinder op-set now COMPLETE 3/3 native — COMMON + FUSE + CUT
-  (S5-d)**, and the **CONE surface family — coaxial cone∩cylinder op-set now COMPLETE 3/3 native —
-  COMMON + FUSE + CUT (S5-e)** — all watertight, ΔV ≤ 9e-04 (sim `native-pass=15`). **S5-c FUSE/CUT** reuse one
+  (S5-d)**, the **CONE surface family — coaxial cone∩cylinder op-set now COMPLETE 3/3 native —
+  COMMON + FUSE + CUT (S5-e)**, and the **CONE∩SPHERE family — coaxial cone∩sphere op-set now
+  COMPLETE 3/3 native — COMMON + FUSE + CUT (S5-f)** — all watertight, ΔV ≤ 9e-04 (sim `native-pass=18`). **S5-c FUSE/CUT** reuse one
   generalised `appendSphereCap(outer,reversed)`:
   FUSE (A∪B) = the two OUTER (far-pole) caps welded on the shared seam (`V=V(A)+V(B)−lens`);
   CUT (A−B, order-sensitive) = the OUTER cap of A + the INNER cap of B emitted REVERSED (inward
@@ -230,9 +231,27 @@ robustness tail keeps OCCT linked.** Canonical detail:
   `16 R³/3` oracle) AND OCCT `BRepAlgoAPI_{Common,Fuse,Cut}`: COMMON volN = 19.107 vs analytic
   19.111355 vs OCCT 19.111 (ΔV = 2.03e-04, ΔA = 9.89e-05); FUSE volN = 41.618 vs analytic 41.62610
   vs OCCT 41.626 (ΔV = 2.04e-04, ΔA = 1.13e-04, a GROW); CUT volN = 13.349 vs analytic 13.35177 vs
-  OCCT 13.352 (ΔV = 2.03e-04, ΔA = 1.02e-04, a SHRINK). Transversal/apex cone pairs, cone∩cone, and
-  coaxial cone∩sphere COMMON (not built) decline → OCCT (a mis-selected band / mis-oriented reversed
-  fragment fails the self-verify and falls back — never faked). General (non-Steinmetz) branched pairs, other
+  OCCT 13.352 (ΔV = 2.03e-04, ΔA = 1.02e-04, a SHRINK). **S5-f** extends the CONE family to the
+  coaxial cone(frustum)∩sphere op-set (COMMON + FUSE + CUT), all sharing a SINGLE closed S1-analytic
+  circle seam (`intersectSphereConeCoaxial`, the sphere centre ON the cone axis on the frustum side
+  → exactly one interior crossing `s*` that does NOT cross the apex, `nearTangentGaps=0`,
+  `curveCount=1`) resampled to ONE pooled ring by a shared `coneSphereSetup` prologue; the cone side
+  reuses the S5-e cone-wall split (`appendRevolvedBand` + `appendDiskCap`), the sphere side the
+  sphere-lens cap builder (`appendSphereCap`, inner/outer apex + reversed flags). `buildConeSphere
+  Common` welds the cone band inside the sphere + the cone disc + the sphere INNER cap (`V=V_frustum
+  + V_spherical-segment`); `buildConeSphereFuse` (A∪B) keeps the sphere OUTER cap + the cone OUTER
+  wall + the cone disc (`V=V(A)+V(B)−V(A∩B)`, a GROW); `buildConeSphereCut` (A−B, cone minuend)
+  keeps A's outer wall + A's disc(s) + the sphere INNER cap emitted REVERSED (a CONNECTED frustum
+  with a spherical dimple, `V=V(A)−V(A∩B)`, a SHRINK). Verified vs a DUAL oracle — the analytic
+  inclusion-exclusion `V(A∩B)=V_frustum+V_spherical-segment` (engine `ssiCurvedBooleanVerified` /
+  `booleanResultVerified`, same 1% tol) AND OCCT `BRepAlgoAPI_{Common,Fuse,Cut}`: COMMON volN =
+  5.2546 vs OCCT 5.2558 (ΔV = 2.41e-04, ΔA = 1.28e-04); FUSE volN = 60.686 vs OCCT 60.718 (ΔV =
+  5.22e-04, ΔA = 2.61e-04, a GROW); CUT (cone−sphere) volN = 27.202 vs OCCT 27.207 (ΔV = 1.96e-04,
+  ΔA = 1.34e-04, a SHRINK). The sphere-minuend `sphere − cone` CUT, the TWO-circle crossing (sphere
+  through the cone / spanning the apex), apex-crossing / apex-in-extent frustums, and TRANSVERSAL
+  (non-coaxial) cone∩sphere (a quartic space curve) decline → OCCT. Transversal/apex cone pairs and
+  cone∩cone also decline → OCCT (a mis-selected band / mis-oriented reversed fragment fails the
+  self-verify and falls back — never faked). General (non-Steinmetz) branched pairs, other
   curved-curved families, and non-Steinmetz near-tangent pairs still decline to OCCT — honest,
   measured fallbacks.
 - ✅ **Curved blend #6 (constant-radius rolling-ball fillet on a CIRCULAR crease — CONVEX *and*

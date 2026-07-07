@@ -511,6 +511,28 @@ longest; a native exchange is lower priority than the modelling core.
   repair, is the remaining tail), written on top of this
   substrate + the S3 tracer.** Change `add-native-numerics` **archived**. See
   [`docs/STATUS-phase-4.md`](../docs/STATUS-phase-4.md) numeric-foundations result table.
+- ✅ **M6 completeness bar — first slice DONE: a differential-fuzzing harness for the curved
+  booleans (INFRASTRUCTURE, not a new geometry capability).** `tests/sim/native_boolean_fuzz.mm`
+  + `scripts/run-sim-native-boolean-fuzz.sh` DETERMINISTICALLY (seeded splitmix64→xoshiro256**,
+  no clock) generate random-but-VALID operand pairs across the six recognised families
+  (sphere∩sphere, cone∩sphere, cone∩cyl, Steinmetz cyl∩cyl, box∩cyl, drill cyl∩cyl) for
+  fuse/cut/common, run EACH through BOTH the native path (`cc_set_engine(1)`) AND the OCCT
+  `BRepAlgoAPI` oracle, and classify every trial as EXACTLY ONE of AGREED (watertight +
+  volume/area within a FIXED `relTol=2e-2`), HONESTLY-DECLINED (native NULL → OCCT fallback), or
+  DISAGREED — a watertight non-null native result OUTSIDE tol, i.e. the silent-wrong-result
+  condition the bar exists to catch (also fails on a laundered/invalid OCCT oracle). The classifier
+  is load-bearing: any DISAGREED / generator-mismatch / invalid-oracle → `std::_Exit(1)`; the
+  tolerance is NEVER widened to hide a gap. **Two seeds, 512 total trials → 432 AGREED / 80
+  HONESTLY-DECLINED / 0 DISAGREED**, byte-identical on re-run on a booted iOS sim
+  (`FUZZ_SEED=0xC0FFEE1234 N=96`, `0xA5A5DEADBEEF N=128`, both exit 0). The native path is genuinely
+  exercised (432 AGREED), not merely declined. This turns "native-pass=18 on hand-picked fixtures"
+  into "512 random valid inputs, zero silent wrong results" — the discipline `drop-occt` needs. The
+  harness links OCCT on the ORACLE side ONLY (like the sibling parity `.mm` harnesses); `src/native`
+  stays OCCT-free, no production/geometry code changed. **Still asymptotic** — this slice covers only
+  the curved-boolean recogniser families at a FIXED tolerance and a bounded seed batch (a MEASURED,
+  not proven, bound); it does NOT yet fuzz blends, import, or healing. The M6 *bar* remains the
+  continuously-guarded gate on M8. Change `moat-m6-differential-fuzzing` **archived** `2026-07-07`
+  (new `native-verification` spec).
 - â **#5 `native-booleans` â PLANAR-polyhedron slice DONE at the verification bar;
   curved / general still OCCT-fallthrough (not faked).** `cc_boolean` (fuse / cut /
   common) is NATIVE for **PLANAR-faced solids** (polyhedra â axis-aligned boxes, prisms)

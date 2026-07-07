@@ -140,6 +140,23 @@ whole SSI arc was built for.
   first-class HONEST DECLINE for a research-grade stage; the B1–B5 subsystem is bounded per surface
   family and remains the next critical-path target. No OpenSpec change was archived (nothing landed);
   this roadmap entry is the tracker for the measured blocker.
+- **M2 substrate — B1/B2/B3 broken out as parallelizable tracks (start NOW).** The decline is not
+  "M2 is hard" — it is three *nameable, bounded* subsystems the analytic S5 assembler never needed.
+  Each operates on the EXISTING native topology (`shape.h` trimmed-B-spline `FaceSurface` + `PCurve`)
+  plus a landed enabler, and each has its OWN standalone OCCT oracle — so **B2 and B3 can be built
+  and verified concurrently right now, independent of each other and of B1**:
+
+  | Track | Subsystem | Module | Needs (all landed) | Standalone OCCT oracle | Start now? |
+  |---|---|---|---|---|---|
+  | **M2b (B2)** | WLine freeform face-split — partition a trimmed freeform face's uv domain along the M1 seam pcurve into in/out sub-faces | `boolean/` (+ `ssi/`) | M1 WLine (`WLinePoint` carries `(u1,v1)`/`(u2,v2)` per node) ✓, `shape.h` faces | sub-faces tile the original + each meshes watertight via the M0 mesher | **YES — parallel** |
+  | **M2c (B3)** | Freeform point-in-solid membership — ray-cast / winding against the M0-meshed trimmed faces | `boolean/` | M0 mesher ✓, `shape.h` faces | `BRepClass3d_SolidClassifier` (per-point in/out) | **YES — parallel** |
+  | **M2a (B1)** | Freeform operand descriptor + recogniser — the data model B2/B3 plug into (extends `recogniseCurvedSolid`) | `boolean/` | `shape.h` | (integration; validated once B2 + B3 exist) | scaffold now, **join point** |
+
+  Sequencing: **M2b ∥ M2c now** (two isolated tracks, disjoint algorithms, each self-verifiable);
+  **M2a** is the small integration layer, best sized once B2/B3 fix their interfaces. Then
+  **M2 = M2a ∘ M2b ∘ M2c** (recognise → trace [M1] → split [B2] → classify [B3] → weld [M0]) — the
+  assembly is what turns three green subsystems into the first freeform boolean. The live critical
+  path refines to **[B2 ∥ B3] → B1 → M2 → M3**.
 
 ### M3 — General freeform blends + wrap-emboss · ~2–4 py · needs M2
 The curved-curved blends and freeform-base features that sit on booleans: cyl↔cyl-canal /
@@ -249,7 +266,10 @@ slices used). Both are captured below.
 | **M6** completeness / fuzzing harness | test infra + `ssi/` | — | ✅ **Wave-1 slice LANDED** — bar continues (gates M8) |
 | **M7a** guided sweep · hard loft | `construct/` | — | **Wave-1 eligible — NOT yet started** (independent, can start anytime) |
 | **M4** general STEP/AP242 import | `exchange/` | M0 | ▶ **Wave 2 — OPEN NOW** (M0 mesher ready) |
-| **M2** general freeform booleans | `boolean/` | M0 **+** M1 | ▶ **Wave 2 — OPEN, first-slice attempt DECLINED** (blocker B1–B5, see §M2; freeform → OCCT) |
+| **M2b (B2)** freeform face-split | `boolean/` · `ssi/` | M0 ✅ + M1 ✅ | ▶ **OPEN NOW — parallel** (M2 substrate; oracle: sub-faces tile + mesh watertight) |
+| **M2c (B3)** freeform point-in-solid | `boolean/` | M0 ✅ | ▶ **OPEN NOW — parallel** (M2 substrate; oracle: `BRepClass3d_SolidClassifier`) |
+| **M2a (B1)** freeform operand descriptor | `boolean/` | `shape.h` | ▶ **OPEN NOW — scaffold** (M2 substrate; join point for B2 + B3) |
+| **M2** general freeform booleans (assembly) | `boolean/` | **B1 + B2 + B3** | ▶ **Wave 2 — first attempt DECLINED**; unblocks once the substrate above lands (see §M2) |
 | **M3** freeform blends + wrap-emboss | `blend/` · `feature/` | M2 | **Wave 3** — after M2 |
 | **M7b** fine-pitch self-intersecting thread | `construct/` | M2 | **Wave 3** — after M2 |
 | **M8** `drop-occt` — unlink | `engine/occt` (delete) | ALL + M6 bar | **Terminal** |

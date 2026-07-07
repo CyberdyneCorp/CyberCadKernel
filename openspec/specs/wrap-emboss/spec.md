@@ -9,12 +9,16 @@ body, int faceId, const double *profileXY, int count, double depth, int boss)`
 signature and semantics (wrap a 2D profile onto a cylindrical face and add
 material when `boss != 0` or remove material when `boss == 0`). The pad MAY be built
 by EITHER the Phase-3 OCCT cap-and-side + healed-sew builder (the ORACLE and the
-default for the general case) OR, for the supported first-slice input (an emboss of a
-RECTANGULAR profile onto a CYLINDER lateral face), a NATIVE OCCT-free builder selected
-behind the same signature. In all cases no `cc_*` signature or POD struct layout SHALL
-change, the operation SHALL be at least as capable as the previous
-`BRepOffsetAPI_ThruSections` implementation (never regress), and any native result
-that is not a valid watertight solid with the correct volume-change sign SHALL be
+default for the general case) OR, for a supported native track, a NATIVE OCCT-free
+builder selected behind the same signature. The native tracks are: an emboss of a
+RECTANGULAR profile onto a CYLINDER lateral face (`boss != 0`); a rectangular DEBOSS
+pocket on a CYLINDER lateral face (`boss == 0`, `0 < depth < R`); and a
+NON-RECTANGULAR closed simple POLYGON emboss OR deboss on a CYLINDER lateral face.
+Every non-cylindrical (cone / sphere / freeform) base declines natively to OCCT (no
+native builder). In all cases no `cc_*` signature or POD struct layout SHALL change, the
+operation SHALL be at least as capable as the previous `BRepOffsetAPI_ThruSections`
+implementation (never regress), and any native result that is not a valid watertight
+solid with the correct volume-change SIGN and a plausible magnitude SHALL be
 discarded in favour of the OCCT path.
 
 #### Scenario: ABI unchanged
@@ -32,6 +36,16 @@ discarded in favour of the OCCT path.
 - GIVEN a native cylinder body, a rectangular profile on its lateral face, `boss = 1`, and a build with the native engine active
 - WHEN `cc_wrap_emboss` is called with its unchanged signature
 - THEN the native rectangular-pad-on-cylinder builder MAY produce the result (subject to the mandatory watertight + volume-increasing self-verify), OTHERWISE the call SHALL fall through to the OCCT `cc_wrap_emboss` oracle — with no change to the signature, POD structs, or observable semantics
+
+#### Scenario: Native deboss / polygon tracks are selected behind the same signature
+- GIVEN a native cylinder body with `boss = 0` (rectangular deboss), OR a native cylinder body with a non-rectangular closed simple polygon profile (`boss != 0` emboss or `boss == 0` deboss), and a build with the native engine active
+- WHEN `cc_wrap_emboss` is called with its unchanged signature
+- THEN the corresponding native track MAY produce the result (subject to the mandatory watertight + correct-signed-volume self-verify), OTHERWISE the call SHALL fall through to the OCCT `cc_wrap_emboss` oracle — with no change to the signature, POD structs, or observable semantics
+
+#### Scenario: A non-cylindrical (cone / sphere / freeform) base declines natively to OCCT
+- GIVEN a native body whose picked face is a cone, sphere, torus, or other freeform surface, and a build with the native engine active
+- WHEN `cc_wrap_emboss` is called with its unchanged signature
+- THEN the native builder SHALL return a NULL Shape AND the call SHALL fall through to the OCCT `cc_wrap_emboss` oracle — no native cone / sphere / freeform builder exists
 
 ### Requirement: Dense high-curvature profile yields a valid watertight solid
 The robust pad builder SHALL, for a dense high-curvature profile wrapped onto a

@@ -153,9 +153,10 @@ struct Snapshot {
     CCMassProps base{0, 0, 0, 0, 0, 0};  // the base cylinder's mass (for the growth check)
 };
 
-// Build the capped cylinder AND emboss its wall, both under `engine`. A rectangular
-// footprint of arc-length width `aw` × axial height `ah`, centred, raised by `height`.
-Snapshot buildAndEmboss(double Rc, double h, double aw, double ah, double height, int engine) {
+// Build the capped cylinder AND wrap-emboss/deboss its wall, both under `engine`, with an
+// arbitrary closed profile (`prof`, `count` (px,py) pairs) raised/recessed by `height`.
+Snapshot buildAndEmboss(double Rc, double h, const double* prof, int count, double height,
+                        int boss, int engine) {
     cc_set_engine(engine);
     Snapshot s;
     s.activeNative = cc_active_engine() == 1;
@@ -163,23 +164,33 @@ Snapshot buildAndEmboss(double Rc, double h, double aw, double ah, double height
     if (body == 0) return s;
     s.base = cc_mass_properties(body);
     const int face = findCylFace(body);
-    const double prof[8] = {-aw / 2, -ah / 2, aw / 2, -ah / 2, aw / 2, ah / 2, -aw / 2, ah / 2};
-    s.id = cc_wrap_emboss(body, face, prof, 4, height, /*boss=*/1);
+    s.id = cc_wrap_emboss(body, face, prof, count, height, boss);
     if (s.id != 0) s.mass = cc_mass_properties(s.id);
     cc_shape_release(body);
     return s;
 }
 
-// One native wrap-emboss case: build Rc×h cylinder, emboss an aw×ah pad of `height`,
-// compare the native result to the OCCT oracle and to the analytic footprint×height
-// growth.
-void runCase(double Rc, double h, double aw, double ah, double height) {
+// Twice the signed shoelace area of a closed (px,py) profile.
+double shoelaceArea(const double* prof, int count) {
+    double a2 = 0.0;
+    for (int i = 0; i < count; ++i) {
+        const int j = (i + 1) % count;
+        a2 += prof[i * 2] * prof[j * 2 + 1] - prof[j * 2] * prof[i * 2 + 1];
+    }
+    return std::fabs(a2) * 0.5;
+}
+
+// One native wrap-emboss/deboss case: build Rc×h cylinder, apply `prof` (footprint area
+// via shoelace) raised (boss=1) / recessed (boss=0) by `height`, compare the native result
+// to the OCCT oracle AND to the analytic footprint×height volume change.
+void runCase(const char* name, double Rc, double h, const double* prof, int count, double height,
+             int boss) {
     char detail[512];
-    char lbl[80];
-    std::snprintf(lbl, sizeof lbl, "emboss Rc=%.1f h=%.1f %gx%g x%g", Rc, h, aw, ah, height);
+    char lbl[96];
+    std::snprintf(lbl, sizeof lbl, "%s Rc=%.1f h=%.1f x%g", name, Rc, h, height);
     const std::string base = lbl;
 
-    const Snapshot oracle = buildAndEmboss(Rc, h, aw, ah, height, /*engine*/ 0);
+    const Snapshot oracle = buildAndEmboss(Rc, h, prof, count, height, boss, /*engine*/ 0);
     if (oracle.id == 0 || oracle.mass.valid == 0) {
         std::snprintf(detail, sizeof detail, "OCCT oracle failed: %s", cc_last_error());
         record(false, base + " oracle", detail);
@@ -187,7 +198,7 @@ void runCase(double Rc, double h, double aw, double ah, double height) {
         if (oracle.id) cc_shape_release(oracle.id);
         return;
     }
-    const Snapshot cand = buildAndEmboss(Rc, h, aw, ah, height, /*engine*/ 1);
+    const Snapshot cand = buildAndEmboss(Rc, h, prof, count, height, boss, /*engine*/ 1);
     const CCMesh cMesh = cand.id ? cc_tessellate(cand.id, 0.02) : CCMesh{nullptr, 0, nullptr, 0};
     if (cand.id == 0 || cand.mass.valid == 0) {
         std::snprintf(detail, sizeof detail, "native active=%d emboss->0 (%s)",
@@ -198,17 +209,20 @@ void runCase(double Rc, double h, double aw, double ah, double height) {
         return;
     }
 
-    // Volume vs the OCCT oracle AND vs the analytic growth (base + footprint area ×
-    // height; because px is arc-length, the wrapped area is the flat aw×ah). Area vs OCCT.
-    const double grow = aw * ah * height;
-    const double expected = cand.base.volume + grow;
+    // Volume vs the OCCT oracle AND vs the analytic change (base ± footprint area × height;
+    // because px is arc-length, the wrapped area is the flat shoelace area). Area vs OCCT.
+    const double sign = (boss == 1) ? 1.0 : -1.0;
+    const double delta = shoelaceArea(prof, count) * height;
+    const double expected = cand.base.volume + sign * delta;
     const double volRelO = std::fabs(cand.mass.volume - oracle.mass.volume) / oracle.mass.volume;
     const double volRelX = std::fabs(cand.mass.volume - expected) / expected;
     const double areaRel = oracle.mass.area > 0.0
                                ? std::fabs(cand.mass.area - oracle.mass.area) / oracle.mass.area
                                : 1.0;
-    const bool massOk = cand.activeNative && volRelO < 1e-2 && volRelX < 1e-2 && areaRel < 3e-2 &&
-                        cand.mass.volume > cand.base.volume;  // an emboss GROWS the volume
+    const bool signOk = (boss == 1) ? (cand.mass.volume > cand.base.volume)   // emboss GROWS
+                                     : (cand.mass.volume < cand.base.volume);  // deboss SHRINKS
+    const bool massOk =
+        cand.activeNative && volRelO < 1e-2 && volRelX < 1e-2 && areaRel < 3e-2 && signOk;
     std::snprintf(detail, sizeof detail,
                   "vol o=%.6g n=%.6g expect=%.6g relO=%.2e relX=%.2e | area rel=%.2e",
                   oracle.mass.volume, cand.mass.volume, expected, volRelO, volRelX, areaRel);
@@ -232,13 +246,36 @@ void runCase(double Rc, double h, double aw, double ah, double height) {
     cc_shape_release(oracle.id);
 }
 
+// A centred axis-aligned rectangle (arc-length width aw × axial height ah).
+std::vector<double> rectProfile(double aw, double ah) {
+    return {-aw / 2, -ah / 2, aw / 2, -ah / 2, aw / 2, ah / 2, -aw / 2, ah / 2};
+}
+
+// A regular hexagon (centre-to-vertex a), CCW, centred at the origin.
+std::vector<double> hexProfile(double a) {
+    const double s = a * 0.8660254037844386, hh = a * 0.5;
+    return {a, 0, hh, s, -hh, s, -a, 0, -hh, -s, hh, -s};
+}
+
 }  // namespace
 
 int main() {
-    std::printf("== native wrap-emboss (rectangular pad on cylinder) vs OCCT parity ==\n");
-    runCase(10.0, 20.0, 6.0, 8.0, 2.0);   // centred mid-face pad
-    runCase(8.0, 24.0, 4.0, 5.0, 1.5);    // smaller radius, taller cylinder
-    runCase(12.0, 16.0, 10.0, 6.0, 3.0);  // wider arc footprint, taller pad
+    std::printf("== native wrap-emboss/deboss (cylinder) vs OCCT parity ==\n");
+    // CONTROL — raised rectangular pad on a cylinder (unchanged 3 cases → 6 assertions).
+    const std::vector<double> r1 = rectProfile(6.0, 8.0);
+    const std::vector<double> r2 = rectProfile(4.0, 5.0);
+    const std::vector<double> r3 = rectProfile(10.0, 6.0);
+    runCase("emboss-rect", 10.0, 20.0, r1.data(), 4, 2.0, 1);
+    runCase("emboss-rect", 8.0, 24.0, r2.data(), 4, 1.5, 1);
+    runCase("emboss-rect", 12.0, 16.0, r3.data(), 4, 3.0, 1);
+    // T1 — recessed rectangular pocket (boss=0).
+    const std::vector<double> d1 = rectProfile(6.0, 8.0);
+    runCase("deboss-rect", 10.0, 20.0, d1.data(), 4, 2.0, 0);
+    runCase("deboss-rect", 8.0, 24.0, r2.data(), 4, 1.5, 0);
+    // T2 — non-rectangular (hexagon) footprint, raised and recessed.
+    const std::vector<double> hx = hexProfile(5.0);
+    runCase("emboss-hex", 10.0, 20.0, hx.data(), 6, 2.0, 1);
+    runCase("deboss-hex", 10.0, 20.0, hx.data(), 6, 2.0, 0);
     std::printf("== %d passed, %d failed ==\n", g_passed, g_failed);
     std::fflush(stdout);
     std::_Exit(g_failed == 0 ? 0 : 1);

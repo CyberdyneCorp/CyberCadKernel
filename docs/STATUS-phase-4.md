@@ -48,10 +48,12 @@ Date: 2026-07-03 · Branch: `main`.
   deflection and run NATIVE. Still OCCT-fallthrough (not faked): kind-3 SPLINE profile
   edges, off-axis-arc (torus) / spline surface-of-revolution, twisted/guided/rail sweep,
   3+-section / guided / rail loft, and a fine-pitch / self-intersecting thread. Wrap-emboss
-  (Tier E) is NO LONGER fully OCCT: its FIRST NATIVE SLICE (a rectangular pad on a cylinder
-  lateral face) has since landed native + verified vs OCCT — see the native-wrap-emboss
-  result table below (`add-native-wrap-emboss` archived); deboss / non-rectangular /
-  non-cylindrical / >2π stay OCCT. The blend family (#6) likewise gained its CURVED
+  (Tier E) is NO LONGER fully OCCT: its native path now covers a rectangular pad (control),
+  a rectangular DEBOSS pocket (T1), and a NON-RECTANGULAR polygon emboss/deboss (T2) on a
+  cylinder lateral face — verified vs OCCT — see the native-wrap-emboss result table below
+  (`add-native-wrap-emboss` + `add-native-wrap-emboss-breadth` archived); non-cylindrical /
+  freeform base (T3 honest decline), self-intersecting / dense profiles, >2π footprints, and
+  `depth ≥ R` debosses stay OCCT. The blend family (#6) likewise gained its CURVED
   slices — a constant-radius fillet on a circular cylinder↔plane rim → torus canal, G1-tangent,
   now for BOTH the CONVEX cap rim (major `Rc−r`, removes material) AND the CONCAVE boss-on-plate
   base rim (major `Rc+r`, ADDS material, engine self-verify `wantGrow=true`) — see the
@@ -1462,45 +1464,68 @@ freeform neighbours, `Rc < 2·rmax` near-degenerate or `Rc − rmax ≤ 0`, seam
 - `tests/sim/native_curved_fillet_parity.mm` + `scripts/run-sim-native-curved-fillet.sh` — sim
   Gate-2 native-vs-OCCT parity (own `main()`; SKIPped by `run-sim-suite.sh`).
 
-## native-wrap-emboss result table (#7 — first NATIVE wrap-emboss slice)
+## native-wrap-emboss result table (#7 — EMBOSS + DEBOSS + NON-RECTANGULAR on a cylinder)
 
-**Emboss a RECTANGULAR pad onto a CYLINDER lateral face** (`boss=1`), behind the existing
-Phase-3 OCCT `cc_wrap_emboss` ABI (which stays the ORACLE). The native builder
-(`src/native/feature/wrap_emboss.h`, OCCT-FREE) wraps the footprint by the SAME map the
-OCCT oracle uses (`u = px/R`, `v = py + vMid`), builds the raised pad (outer cylindrical
-cap at `R+height` + two circumferential walls + two axial walls) and retiles the base wall
-with the footprint window removed, sharing a common `u`-sample sequence so every seam welds
-watertight via `boolean/assembleSolid`. Dispatched in `NativeEngine::wrap_emboss` for a
-native body; the MANDATORY `wrapEmbossVerified` self-verify (watertight + volume GROWS by
-≈ `footprint area × height`) accepts or discards → OCCT (a declined native body returns an
-honest error — never forwarded, as OCCT would misread the native void).
+**Native tracks behind the existing Phase-3 OCCT `cc_wrap_emboss` ABI** (which stays the
+ORACLE). The native builder (`src/native/feature/wrap_emboss.h`, OCCT-FREE) wraps the
+footprint by the SAME map the OCCT oracle uses (`u = px/R`, `v = py + vMid`) and welds the
+whole solid watertight via `boolean/assembleSolid`:
 
-**Host gate (Gate 1):** `test_native_wrap_emboss` — footprint/rectangle recovery + facet-
-soup watertightness + volume growth + decline of deboss / non-rectangular / non-cylindrical.
+- **Control (unchanged): raised RECTANGULAR pad** (`boss=1`) — outer cylindrical cap at
+  `R+height` + two circumferential + two axial walls, base wall retiled with the footprint
+  window removed, sharing a common `u`-sample sequence at every seam. Byte-stable.
+- **T1 DEBOSS: recessed RECTANGULAR pocket** (`boss=0`, `add-native-wrap-emboss-breadth`) —
+  the mirror of the pad with an inward FLOOR at `R−depth` and pocket-facing wall normals;
+  volume SHRINKS by ≈ `footprint area × depth`. Guard `depth ≥ R` → NULL → OCCT.
+- **T2 NON-RECTANGULAR polygon** (emboss AND deboss) — an N-vertex (`count ≥ 3`) closed
+  SIMPLE polygon: ear-clipped cap mapped to `R±height`, one ruled side wall per (possibly
+  helical) edge, and a bbox-minus-polygon constrained base wall sharing the polygon-boundary
+  vertices. Self-intersecting / degenerate → NULL → OCCT.
+- **T3 FREEFORM base (cone / sphere): HONEST DECLINE.** `cylinderWall` returns NULL for any
+  non-cylinder face — NO native cone/sphere builder exists (no dead code) because the OCCT
+  `cc_wrap_emboss` oracle is itself CYLINDER-ONLY (rejects Sphere/Cone faces), so there is no
+  parity oracle to certify a native freeform path against.
+
+Dispatched in `NativeEngine::wrap_emboss` for a native body; the MANDATORY
+`wrapEmbossVerified` self-verify (watertight + SIGNED volume change — grow for emboss, shrink
+for deboss — by the true SHOELACE footprint area × height/depth) accepts or discards → OCCT
+(a declined native body returns an honest error — never forwarded, as OCCT would misread the
+native void).
+
+**Host gate (Gate 1):** `test_native_wrap_emboss` **7/7** — footprint/rectangle + polygon
+recovery, facet-soup watertightness, signed volume change (grow/shrink), and decline of
+`depth ≥ R` deboss / self-intersecting + degenerate polygon / non-cylindrical (planar-cap) base.
 
 **Native-vs-OCCT parity gate (Gate 2)** — `tests/sim/native_wrap_emboss_parity.mm` +
 `scripts/run-sim-native-wrap-emboss.sh`, booted iOS simulator, arm64, `cc_*` facade under
-`cc_set_engine(0/1)`. **`[NWEMB]` 6 passed / 0 failed** (`activeNative=1`, REAL native).
-Native (n) vs OCCT `cc_wrap_emboss` (o), analytic expected (x = base + footprint×height):
+`cc_set_engine(0/1)`. **`[NWEMB]` 14 passed / 0 failed** (`activeNative=1`, REAL native).
+Native (n) vs OCCT `cc_wrap_emboss` (o), analytic expected (x = base ± footprint×height/depth):
 
 | Case | vol (o / n / expect) · relO / relX | area rel | tessellate |
 |---|---|---|---|
-| Rc=10.0 h=20.0 6×8 pad ×2 | 6388.79 / 6380.46 / 6375.05 · 1.30e-03 / 8.48e-04 | 6.48e-04 | watertight, 600 tris, meshVolRel 0.00e+00 |
-| Rc=8.0 h=24.0 4×5 pad ×1.5 | 4858.3 / 4850.25 / 4851.48 · 1.66e-03 / 2.54e-04 | 7.25e-04 | watertight, 528 tris, meshVolRel 1.88e-16 |
-| Rc=12.0 h=16.0 10×6 pad ×3 | 7440.73 / 7432.7 / 7414.22 · 1.08e-03 / 2.49e-03 | 6.17e-04 | watertight, 672 tris, meshVolRel 0.00e+00 |
+| emboss-rect Rc=10.0 h=20.0 6×8 ×2 | 6388.79 / 6380.46 / 6375.05 · 1.30e-03 / 8.48e-04 | 6.48e-04 | watertight, 600 tris, meshVolRel 0.00e+00 |
+| emboss-rect Rc=8.0 h=24.0 4×5 ×1.5 | 4858.3 / 4850.25 / 4851.48 · 1.66e-03 / 2.54e-04 | 7.25e-04 | watertight, 528 tris, meshVolRel 1.88e-16 |
+| emboss-rect Rc=12.0 h=16.0 10×6 ×3 | 7440.73 / 7432.7 / 7414.22 · 1.08e-03 / 2.49e-03 | 6.17e-04 | watertight, 672 tris, meshVolRel 0.00e+00 |
+| **deboss-rect** Rc=10.0 h=20.0 ×2 | 6196.79 / 6188.69 / 6183.05 · 1.31e-03 / 9.12e-04 | 6.50e-04 | watertight, 600 tris, meshVolRel 0.00e+00 |
+| **deboss-rect** Rc=8.0 h=24.0 ×1.5 | 4798.3 / 4790.35 / 4791.48 · 1.66e-03 / 2.36e-04 | 7.25e-04 | watertight, 528 tris, meshVolRel 1.90e-16 |
+| **emboss-hex** Rc=10.0 h=20.0 ×2 | 6426.08 / 6374.74 / 6408.96 · 7.99e-03 / 5.34e-03 | 1.52e-02 | watertight, 664 tris, meshVolRel 0.00e+00 |
+| **deboss-hex** Rc=10.0 h=20.0 ×2 | 6166.27 / 6134.02 / 6149.15 · 5.23e-03 / 2.46e-03 | 1.48e-02 | watertight, 664 tris, meshVolRel 0.00e+00 |
 
-The native-vs-OCCT gap (≤ 0.17% volume) is the deflection bound of the planar-facet tiling
-against OCCT's exact cylindrical faces, well inside the 1% bar; nothing faked. The Phase-3
-OCCT wrap-emboss #290 oracle is unchanged (`run-sim-phase3-suite.sh` 70/70). STILL OCCT:
-DEBOSS (`boss=0`), NON-rectangular / >4-corner / dense / high-curvature profiles,
-NON-cylindrical (cone/sphere/planar/NURBS) base, footprints wrapping >2π / self-overlapping
-/ off the axial ends, non-positive height.
+The native-vs-OCCT gaps (≤ 0.8% volume, ≤ 1.6% area, the hexagon being the largest — a
+polygon-facet tiling vs OCCT's exact cylindrical faces) sit inside the 1% vol / 3% area bar;
+nothing faked. The Phase-3 OCCT wrap-emboss #290 oracle is unchanged
+(`run-sim-phase3-suite.sh` 70/70). STILL OCCT: NON-cylindrical (cone/sphere/planar/NURBS)
+base (T3 honest decline), self-intersecting / degenerate / dense / high-curvature profiles,
+footprints wrapping >2π / self-overlapping / off the axial ends, `depth ≥ R` debosses,
+non-positive height.
 
 ### Files (#7 native wrap-emboss)
 
 - `src/native/feature/wrap_emboss.h` — `wrap_emboss(shape, faceId, profileXY, count, height,
-  boss, defl)`: cylinder-wall recovery, rectangular-footprint recovery, wrapped pad (outer
-  cap + circumferential + axial walls) + windowed base wall, planar-triangle facet soup (OCCT-free).
+  boss, defl)`: cylinder-wall recovery, rectangular + polygon footprint recovery, wrapped pad
+  (outer cap + circumferential + axial walls) / inward pocket / polygon cap + per-edge side
+  walls + bbox-minus-polygon base wall, planar-triangle facet soup (OCCT-free). Non-cylinder
+  face → NULL (T3 decline).
 - `src/engine/native/native_engine.cpp` — `wrap_emboss` native path + `wrapEmbossVerified`
   self-verify; native-else-honest-error, OCCT body forwards to the Phase-3 oracle.
 - `tests/native/test_native_wrap_emboss.cpp` — host Gate-1 (no OCCT).

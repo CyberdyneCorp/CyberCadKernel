@@ -506,32 +506,33 @@ bool blendResultVerified(const ntopo::Shape& result, const ntopo::Shape& origina
 }
 
 // SELF-VERIFY a native WRAP-EMBOSS result (Phase 4 #7 native-wrap-emboss). MANDATORY
-// guard mirroring the blend guard with wantGrow=true, but the growth is ANALYTIC: an
-// emboss (boss) RAISES a pad, so the result must be a valid watertight solid whose
-// volume EXCEEDS the base by the wrapped footprint area × height. For a rectangular
-// footprint on a cylinder the wrapped footprint area is the arc-length span × axial
-// span, and because the profile's px is ALREADY arc-length that equals the flat profile
-// area |pxMax-pxMin|·|pyMax-pyMin| (independent of R). The result carries TRUE curved
-// (cylindrical) faces, so its watertight mesh volume only approximates the analytic
-// target — deflection-bounded tolerance (1% relative + a small floor), like the curved
-// boolean guards. A NULL or failing candidate is DISCARDED -> OCCT cc_wrap_emboss.
+// guard: the volume change is ANALYTIC. An emboss (boss=1) RAISES a pad so the volume
+// GROWS by ≈ footprint area × height; a deboss (boss=0) RECESSES a pocket so it SHRINKS
+// by ≈ footprint area × depth. The footprint area is the TRUE signed (shoelace) polygon
+// area — exact for the rectangle (== its bbox) and correct for any N-vertex polygon
+// (T2) where the bbox would badly over-state a thin / L-shaped loop. Because the
+// profile's px is ALREADY arc-length, that (u,v) area is the flat profile area,
+// independent of R; the small curvature term (h/2R) stays inside the tolerance. The
+// result carries TRUE curved (cylindrical) faces, so its watertight mesh volume only
+// approximates the analytic target — deflection-bounded tolerance (1% relative + a small
+// floor). A NULL or failing candidate is DISCARDED -> OCCT cc_wrap_emboss.
 bool wrapEmbossVerified(const ntopo::Shape& result, const ntopo::Shape& original,
-                        const double* profileXY, int count, double height) {
+                        const double* profileXY, int count, double height, int boss) {
     const double vr = watertightVolume(result);
     if (vr <= 0.0) return false;  // not watertight or empty → reject
     const double vo = watertightVolume(original);
     if (vo <= 0.0) return true;   // original not measurable → trust watertight+positive
     if (profileXY == nullptr || count < 3 || !(height > 0.0)) return false;
-    double xlo = profileXY[0], xhi = profileXY[0], ylo = profileXY[1], yhi = profileXY[1];
-    for (int i = 1; i < count; ++i) {
-        xlo = std::min(xlo, profileXY[i * 2]);
-        xhi = std::max(xhi, profileXY[i * 2]);
-        ylo = std::min(ylo, profileXY[i * 2 + 1]);
-        yhi = std::max(yhi, profileXY[i * 2 + 1]);
+    double a2 = 0.0;  // twice the signed shoelace area
+    for (int i = 0; i < count; ++i) {
+        const int j = (i + 1) % count;
+        a2 += profileXY[i * 2] * profileXY[j * 2 + 1] - profileXY[j * 2] * profileXY[i * 2 + 1];
     }
-    const double footArea = (xhi - xlo) * (yhi - ylo);
+    const double footArea = std::fabs(a2) * 0.5;
     if (!(footArea > 0.0)) return false;
-    const double expected = vo + footArea * height;
+    const double sign = (boss == 1) ? 1.0 : -1.0;  // emboss grows, deboss shrinks
+    const double expected = vo + sign * footArea * height;
+    if (!(expected > 0.0)) return false;  // a pocket cannot remove more than the body holds
     const double tol = std::max(1e-2 * expected, 1e-6);  // deflection-bounded curved mesh
     return std::fabs(vr - expected) <= tol;
 }
@@ -876,27 +877,29 @@ ShapeResult NativeEngine::guided_sweep(const double* p, int pc, const double* pa
     return track(wrapNative(std::move(solid)));
 }
 // ── NATIVE wrap-emboss (Phase 4 #7 native-wrap-emboss) with mandatory self-verify ──
-// First native slice: a RECTANGULAR pad embossed (boss=1) on a native body's CYLINDER
-// lateral face. The OCCT-free builder (src/native/feature/wrap_emboss.h) wraps the
-// footprint onto the cylinder and rebuilds the whole embossed solid as a deflection-
-// bounded planar-facet soup welded watertight via the boolean assembleSolid (mirroring
-// the curved-fillet slice — the pad-wall∩cylinder seam is expressed by shared footprint
-// vertices, not a fragile boolean). The result is SELF-VERIFIED (watertight + volume
-// GROWS by ≈ footprint area × height) and DISCARDED on failure. A native body the slice
-// declines (deboss, non-rectangular / non-cylindrical, off-end footprint) canNOT be
-// forwarded to OCCT (OCCT would misread the native void) → honest error. An OCCT body
-// forwards to the Phase-3 OCCT cc_wrap_emboss oracle unconditionally.
+// Native tracks on a native body's CYLINDER lateral face: a raised RECTANGULAR pad
+// (control), a recessed rectangular POCKET (T1 deboss), and an N-vertex POLYGON footprint
+// embossed or debossed (T2). The OCCT-free builder (src/native/feature/wrap_emboss.h)
+// wraps the footprint onto the cylinder and rebuilds the whole solid as a deflection-
+// bounded planar-facet soup welded watertight via the boolean assembleSolid (the
+// pad-wall∩cylinder seam is expressed by shared footprint vertices, not a fragile
+// boolean). The result is SELF-VERIFIED (watertight + signed volume: emboss GROWS,
+// deboss SHRINKS by ≈ footprint area × height) and DISCARDED on failure. A native body
+// the slice declines (non-cylindrical / freeform base — T3, off-end or ≥2π footprint,
+// self-intersecting profile, deboss depth ≥ radius) canNOT be forwarded to OCCT (OCCT
+// would misread the native void) → honest error. An OCCT body forwards to the Phase-3
+// OCCT cc_wrap_emboss oracle unconditionally.
 ShapeResult NativeEngine::wrap_emboss(EngineShape body, int faceId, const double* p, int c, double d,
                                       int boss) {
     if (!isNative(body)) return fallback().wrap_emboss(body, faceId, p, c, d, boss);
     const auto* h = static_cast<const NativeShape*>(body.get());
     ntopo::Shape result =
         cybercad::native::feature::wrap_emboss(h->shape, faceId, p, c, d, boss);
-    if (result.isNull() || !wrapEmbossVerified(result, h->shape, p, c, d))
+    if (result.isNull() || !wrapEmbossVerified(result, h->shape, p, c, d, boss))
         return make_error(
             "native wrap_emboss: no verified watertight result for this native body "
-            "(deboss / non-rectangular profile / non-cylindrical face / off-end or "
-            ">2π footprint → OCCT-only)");
+            "(non-cylindrical / freeform base / off-end or >2π footprint / self-"
+            "intersecting profile / deboss depth ≥ radius → OCCT-only)");
     return track(wrapNative(std::move(result)));
 }
 // ── Tier-D (#4b) threads + tapered shank ──────────────────────────────────────

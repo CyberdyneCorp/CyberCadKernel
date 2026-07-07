@@ -314,15 +314,21 @@ robustness tail keeps OCCT linked.** Canonical detail:
   bevel normal cos=1/√2 to BOTH faces, explicitly ≠1. Sim `run-sim-native-curved-chamfer.sh` **9/9**
   (3 fixtures), host `test_native_blend` chamfer cases green.
   Residual → OCCT: non-circular / asymmetric two-distance / concave / cyl↔cyl (curved↔curved) chamfer.
-- ✅ **Wrap-emboss #7 FIRST SLICE (rectangular pad on a cylinder lateral face)** — emboss (`boss=1`)
-  a rectangular footprint onto a CYLINDER wall. The native builder (`src/native/feature/wrap_emboss.h`,
-  OCCT-free) wraps the footprint by the SAME map the OCCT oracle uses (`u = px/R`, `v = py + vMid`),
-  builds the raised pad (wrapped OUTER CAP at `R+height` + two circumferential walls + two axial
-  walls) and retiles the base wall with the footprint window removed, welding the whole embossed
-  solid watertight via `assembleSolid`. Engine self-verify (watertight + volume GROWS by
-  `footprint area × height`); verified vs OCCT `cc_wrap_emboss` (sim `run-sim-native-wrap-emboss.sh`
-  **6/6**, `activeNative=1`, vol rel ≤ 2.5e-3, area rel ≤ 7.3e-4). DEBOSS, non-rectangular / >4-corner
-  profiles, non-cylindrical base, >2π / off-end footprints → OCCT.
+- ✅ **Wrap-emboss #7 — native EMBOSS + DEBOSS + NON-RECTANGULAR POLYGON on a cylinder** — the native
+  builder (`src/native/feature/wrap_emboss.h`, OCCT-free) wraps the footprint by the SAME map the OCCT
+  oracle uses (`u = px/R`, `v = py + vMid`). FIRST SLICE (control, unchanged): a raised RECTANGULAR pad
+  (`boss=1`) — wrapped OUTER CAP at `R+height` + two circumferential + two axial walls, base wall retiled
+  with the footprint window removed, welded watertight via `assembleSolid`. BREADTH change
+  `add-native-wrap-emboss-breadth` (archived `2026-07-07`) added **T1 DEBOSS** (recessed rectangular
+  pocket, `boss=0`, inward `R-depth` floor + pocket-facing walls, volume SHRINKS by `footprint area × depth`;
+  `depth ≥ R` → NULL) and **T2 NON-RECTANGULAR** (an N-vertex closed simple polygon embossed OR debossed,
+  ear-clipped cap + one ruled side wall per edge + bbox-minus-polygon base wall; self-intersecting /
+  degenerate → NULL). Engine self-verify (watertight + signed volume by the true SHOELACE footprint area).
+  Verified vs OCCT `cc_wrap_emboss` (sim `run-sim-native-wrap-emboss.sh` **14/14**, `activeNative=1`,
+  vol rel ≤ 8e-3, area rel ≤ 1.6e-2). **T3 FREEFORM base (cone / sphere) is an HONEST DECLINE → OCCT**:
+  no native cone/sphere builder — the OCCT `cc_wrap_emboss` oracle is itself cylinder-only, so there is no
+  parity oracle. Residual → OCCT: non-cylindrical bases, self-intersecting / dense profiles, `>2π` / off-end
+  footprints, `depth ≥ R` debosses.
 - ✅ **Shape healing FIRST NATIVE SLICE (tolerant sew + vertex/tolerance unification + degenerate
   removal + orientation fix)** — an INTERNAL, OCCT-free healer (`src/native/heal/`, `healShell`) that
   stitches a coincident-within-tolerance face soup into a connected, consistently-oriented,
@@ -357,11 +363,11 @@ robustness tail keeps OCCT linked.** Canonical detail:
 - ☐ General curved **booleans** & **blends** beyond the first slices (sit on SSI): NON-LINEAR-law /
   CONCAVE-variable / non-circular-crease / cyl↔cyl-canal fillets, non-circular / asymmetric two-distance /
   concave / cyl↔cyl curved chamfer; general curved
-  **wrap-emboss** (deboss, non-rectangular profiles, non-cylindrical base, >2π footprints). _(The
-  constant-radius circular cyl↔cap fillet #6 (convex + concave), the VARIABLE-radius (linear-law)
+  **wrap-emboss** (non-cylindrical / freeform base, self-intersecting / dense profiles, >2π footprints).
+  _(The constant-radius circular cyl↔cap fillet #6 (convex + concave), the VARIABLE-radius (linear-law)
   convex circular cyl↔cap fillet, the convex-circular cyl↔cap CONE-FRUSTUM chamfer #6b, and the
-  rectangular pad-on-cylinder emboss #7 first slices are now
-  native — see above.)_
+  wrap-emboss #7 native tracks — rectangular pad-on-cylinder emboss + DEBOSS + NON-RECTANGULAR polygon
+  emboss/deboss — are now native; freeform-base emboss honestly declines to OCCT. See above.)_
 - ☐ Non-planar/guided/rail sweep robustness; general loft; fine-pitch threads.
 - ☐ **Shape healing residual** (beyond-tolerance gap bridging, missing-pcurve reconstruction,
   self-intersecting-wire repair, arbitrary broken industrial B-rep — the coincident-within-tolerance /

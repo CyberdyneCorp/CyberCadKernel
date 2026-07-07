@@ -80,6 +80,14 @@ std::vector<double> rect(double aw, double ah) {
   return {-aw / 2, -ah / 2, aw / 2, -ah / 2, aw / 2, ah / 2, -aw / 2, ah / 2};
 }
 
+// A regular hexagon profile (centre-to-vertex a) centred at (0,0), CCW. Shoelace area
+// = 3√3/2 · a².
+std::vector<double> hexagon(double a) {
+  const double s = a * 0.8660254037844386;  // a·sin60
+  const double h = a * 0.5;                  // a·cos60
+  return {a, 0, h, s, -h, s, -a, 0, -h, -s, h, -s};
+}
+
 }  // namespace
 
 CC_TEST(wrap_emboss_rectangular_pad_watertight_volume_grown) {
@@ -125,6 +133,64 @@ CC_TEST(wrap_emboss_area_independent_of_radius) {
   }
 }
 
+CC_TEST(wrap_emboss_deboss_rectangular_pocket_watertight_volume_reduced) {
+  // T1 — a recessed rectangular pocket (boss=0): watertight, volume SHRUNK by ≈ footprint
+  // area × depth (48 × 2 = 96) to the deflection bound. The MIRROR of the raised pad.
+  const double Rc = 10.0, h = 20.0, depth = 2.0;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  bool wt0 = false;
+  const double v0 = vol(cyl, wt0);
+  const int fid = cylFaceId(cyl);
+  const std::vector<double> prof = rect(6.0, 8.0);
+  topo::Shape e = feat::wrap_emboss(cyl, fid, prof.data(), 4, depth, 0, 0.01);
+  bool wt = false;
+  const double v = vol(e, wt);
+  CC_CHECK(!e.isNull());
+  CC_CHECK(wt);        // pocket floor + inward walls + windowed base wall weld watertight
+  CC_CHECK(v < v0);    // a deboss (cut) SHRINKS the volume
+  const double expected = v0 - 6.0 * 8.0 * depth;
+  CC_CHECK(std::fabs(v - expected) <= 1e-2 * expected);
+}
+
+CC_TEST(wrap_emboss_hexagon_pad_watertight_volume_grown) {
+  // T2 — a raised regular-hexagon pad (a=5): watertight, volume GROWN by ≈ shoelace area
+  // (3√3/2·25 = 64.9519) × height. Exercises the non-rectangular polygon footprint.
+  const double Rc = 10.0, h = 20.0, height = 2.0;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  bool wt0 = false;
+  const double v0 = vol(cyl, wt0);
+  const int fid = cylFaceId(cyl);
+  const std::vector<double> hexp = hexagon(5.0);
+  topo::Shape e = feat::wrap_emboss(cyl, fid, hexp.data(), 6, height, 1, 0.01);
+  bool wt = false;
+  const double v = vol(e, wt);
+  CC_CHECK(!e.isNull());
+  CC_CHECK(wt);
+  CC_CHECK(v > v0);
+  const double area = 3.0 * std::sqrt(3.0) / 2.0 * 25.0;  // 64.9519
+  const double expected = v0 + area * height;
+  CC_CHECK(std::fabs(v - expected) <= 1e-2 * expected);
+}
+
+CC_TEST(wrap_emboss_hexagon_pocket_watertight_volume_reduced) {
+  // T2 + T1 — a recessed regular-hexagon pocket (boss=0): watertight, volume SHRUNK.
+  const double Rc = 10.0, h = 20.0, depth = 2.0;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  bool wt0 = false;
+  const double v0 = vol(cyl, wt0);
+  const int fid = cylFaceId(cyl);
+  const std::vector<double> hexp = hexagon(5.0);
+  topo::Shape e = feat::wrap_emboss(cyl, fid, hexp.data(), 6, depth, 0, 0.01);
+  bool wt = false;
+  const double v = vol(e, wt);
+  CC_CHECK(!e.isNull());
+  CC_CHECK(wt);
+  CC_CHECK(v < v0);
+  const double area = 3.0 * std::sqrt(3.0) / 2.0 * 25.0;
+  const double expected = v0 - area * depth;
+  CC_CHECK(std::fabs(v - expected) <= 1e-2 * expected);
+}
+
 CC_TEST(wrap_emboss_scope_defers) {
   const double Rc = 10.0, h = 20.0;
   topo::Shape cyl = cappedCylinder(Rc, h);
@@ -132,22 +198,24 @@ CC_TEST(wrap_emboss_scope_defers) {
   const int cap = capFaceId(cyl);
   const std::vector<double> prof = rect(6.0, 8.0);
 
-  // Deboss (boss=0) → NULL (this slice only raises a pad).
-  CC_CHECK(feat::wrap_emboss(cyl, fid, prof.data(), 4, 2.0, 0, 0.01).isNull());
-  // A planar cap face is not a cylinder lateral face → NULL.
+  // A planar cap face is not a cylinder lateral face → NULL (T3 freeform base declines).
   CC_CHECK(feat::wrap_emboss(cyl, cap, prof.data(), 4, 2.0, 1, 0.01).isNull());
-  // A 3-corner (triangle) profile is not a rectangle → NULL.
-  const std::vector<double> tri = {-3, -4, 3, -4, 0, 4};
-  CC_CHECK(feat::wrap_emboss(cyl, fid, tri.data(), 3, 2.0, 1, 0.01).isNull());
-  // A slanted 4-corner loop (not axis-aligned in (px,py)) → NULL.
-  const std::vector<double> slant = {-3, -4, 3, -2, 3, 4, -3, 2};
-  CC_CHECK(feat::wrap_emboss(cyl, fid, slant.data(), 4, 2.0, 1, 0.01).isNull());
   // A footprint whose axial span (30) runs off the wall (h=20) → NULL.
   const std::vector<double> tall = rect(6.0, 30.0);
   CC_CHECK(feat::wrap_emboss(cyl, fid, tall.data(), 4, 2.0, 1, 0.01).isNull());
   // An arc span ≥ full turn (width 80, Rc=10 → 8 rad > 2π) → NULL.
   const std::vector<double> wide = rect(80.0, 8.0);
   CC_CHECK(feat::wrap_emboss(cyl, fid, wide.data(), 4, 2.0, 1, 0.01).isNull());
+  // A deboss depth ≥ the radius (12 > 10) → NULL.
+  CC_CHECK(feat::wrap_emboss(cyl, fid, prof.data(), 4, 12.0, 0, 0.01).isNull());
+  // A self-intersecting (pentagram) 5-corner loop → NULL. Five outer points traversed in
+  // star order so non-adjacent edges cross; not a bbox rectangle, so it reaches the
+  // polygon path's simple-loop guard.
+  const std::vector<double> star = {0, 5, 2.939, -4.045, -4.755, 1.545, 4.755, 1.545, -2.939, -4.045};
+  CC_CHECK(feat::wrap_emboss(cyl, fid, star.data(), 5, 2.0, 1, 0.01).isNull());
+  // A degenerate 2-point profile → NULL.
+  const std::vector<double> two = {-3, -4, 3, 4};
+  CC_CHECK(feat::wrap_emboss(cyl, fid, two.data(), 2, 2.0, 1, 0.01).isNull());
   // Non-positive height → NULL.
   CC_CHECK(feat::wrap_emboss(cyl, fid, prof.data(), 4, 0.0, 1, 0.01).isNull());
   CC_CHECK(feat::wrap_emboss(cyl, fid, prof.data(), 4, -2.0, 1, 0.01).isNull());

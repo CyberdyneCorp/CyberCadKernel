@@ -865,9 +865,14 @@ longest; a native exchange is lower priority than the modelling core.
   app-facing behaviour already works). UPDATE 2026-07-05: the FIRST NATIVE SLICE has
   since LANDED -- emboss a RECTANGULAR pad onto a CYLINDER lateral face is now native +
   verified vs OCCT (see the `#7 native-wrap-emboss` entry below; `add-native-wrap-emboss`
-  archived `2026-07-05`). The rest of wrap-emboss (deboss, non-rectangular profiles,
-  non-cylindrical bases, >2pi footprints) stays OCCT-fallthrough. The plan below is
-  retained for those remaining general slices. Native wrap-emboss needs three pieces:
+  archived `2026-07-05`). UPDATE 2026-07-07: the BREADTH change `add-native-wrap-emboss-breadth`
+  (archived `2026-07-07`) widened the native path with T1 DEBOSS (recessed rectangular
+  pocket on a cylinder, `boss=0`) and T2 NON-RECTANGULAR polygon emboss AND deboss on a
+  cylinder. Residual that STILL stays OCCT-fallthrough: non-cylindrical (cone / sphere /
+  freeform) bases (T3 honest decline — no native builder, since the OCCT oracle is itself
+  cylinder-only), self-intersecting / dense / high-curvature profiles, `>2pi` / off-end
+  footprints, and `depth >= R` debosses. The plan below is retained for those remaining
+  general slices. Native wrap-emboss needs three pieces:
   (1) native project-a-2D-pattern-onto-a-surface into the target face UV domain,
   (2) native offset-along-normal by the emboss depth, and (3) a boolean merge of the
   raised/recessed region with the base solid. Step (2) is now **unblocked by #6** â the
@@ -1083,8 +1088,21 @@ longest; a native exchange is lower priority than the modelling core.
   would ADD material), cyl<->cyl (curved<->curved) chamfer, freeform neighbours, `Rc <= d` (cap circle
   collapses) or wall shorter than `d`, multi-edge. Change `add-native-curved-chamfer` archived
   `2026-07-06`.
-- **#7 `native-wrap-emboss` -- FIRST NATIVE slice DONE at all gates: emboss a RECTANGULAR
-  pad onto a CYLINDER lateral face, verified vs OCCT `cc_wrap_emboss`.** The Phase-3
+- **#7 `native-wrap-emboss` -- NATIVE now covers EMBOSS + DEBOSS + NON-RECTANGULAR POLYGON
+  on a CYLINDER, verified vs OCCT `cc_wrap_emboss`.** The control (raised RECTANGULAR pad
+  on a cylinder) is unchanged; the breadth change `add-native-wrap-emboss-breadth` (archived
+  `2026-07-07`) added T1 DEBOSS (recessed rectangular pocket, `boss=0`, volume SHRINKS by
+  `footprint area * depth`, boolean-cut mirror of the pad with an inward `R-depth` floor and
+  pocket-facing wall normals; guard `depth >= R` -> NULL) and T2 NON-RECTANGULAR: an N-vertex
+  (`count>=3`) closed SIMPLE polygon footprint (ear-clipped cap, one ruled side wall per edge,
+  bbox-minus-polygon base wall) embossed OR debossed (T1xT2 crossed deboss-polygon also native).
+  Self-intersecting / degenerate polygons -> NULL -> OCCT. T3 FREEFORM base (cone / sphere) is an
+  HONEST DECLINE — NO native cone/sphere builder exists because the OCCT `cc_wrap_emboss` oracle
+  is itself CYLINDER-ONLY (rejects Sphere/Cone faces), so there is no parity oracle to certify
+  against; `cylinderWall` returns NULL for any non-cylinder face (no dead never-accepted path).
+  Sim `run-sim-native-wrap-emboss.sh` **14/14** (6/6 rect-control byte-stable + deboss-rect x2 +
+  emboss/deboss-hex), vol rel <= 8e-3, area rel <= 1.6e-2, all watertight, mesh-vol == B-rep.
+  Host `test_native_wrap_emboss` 7/7. FIRST-SLICE detail (unchanged control) follows. The Phase-3
   `cc_wrap_emboss` (#290) stays the ORACLE; this adds a NATIVE path behind the same ABI.
   Built OCCT-FREE in `src/native/feature/wrap_emboss.h`: for `boss=1` (emboss) on a native
   solid whose picked face is a Cylinder wall, it wraps a closed 4-corner rectangular
@@ -1112,10 +1130,12 @@ longest; a native exchange is lower priority than the modelling core.
   vol rel <= 2.5e-3, area rel <= 7.3e-4, watertight, mesh-vol == B-rep, across
   `Rc in {10,8,12}`. Native-vs-OCCT gap is deflection-bounded (planar-facet tiling vs
   OCCT's exact cylindrical faces), well inside the 1% bar; nothing faked. STILL OCCT
-  (NULL / honest error): DEBOSS (`boss=0`), NON-rectangular / >4-corner / dense /
-  high-curvature profiles, NON-cylindrical (cone/sphere/planar/NURBS) base, footprints
-  that wrap >2pi / self-overlap / run off the axial ends, non-positive height. Change
-  `add-native-wrap-emboss` archived `2026-07-05`.
+  (NULL / honest error), AFTER the breadth change: NON-cylindrical (cone / sphere / planar /
+  NURBS) base (T3 honest decline — no native builder; OCCT oracle is cylinder-only),
+  self-intersecting / degenerate / dense / high-curvature profiles, footprints that wrap
+  `>2pi` / self-overlap / run off the axial ends, `depth >= R` debosses, non-positive height.
+  Changes `add-native-wrap-emboss` archived `2026-07-05`, `add-native-wrap-emboss-breadth`
+  (T1 deboss + T2 non-rectangular) archived `2026-07-07`.
 - â **#7 `native-exchange` â native STEP EXPORT slice DONE at BOTH gates (host +
   sim OCCT re-read round-trip); STEP import + IGES stay OCCT (honest end state, out
   of scope).** `cc_step_export` is NATIVE

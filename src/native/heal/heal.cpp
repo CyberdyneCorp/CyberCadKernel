@@ -7,6 +7,7 @@
 #include "native/heal/heal.h"
 
 #include "native/heal/assemble_shell.h"
+#include "native/heal/cap_hole.h"
 #include "native/heal/degenerate.h"
 #include "native/heal/face_soup.h"
 #include "native/heal/gap_bridge.h"
@@ -54,8 +55,11 @@ HealResult healShell(const topo::Shape& shape, const HealOptions& opts) {
   m.nDroppedDegenerate = dropped;
   if (clean.size() < 4) return unhealed(shape, UnhealedReason::OpenShell, 0.0, m);
 
-  // (c)+(d) vertex unify + tolerant sew (share vertex + edge nodes).
-  SewResult sr = sew(clean, tol);
+  // (c)+(d) vertex unify + tolerant sew (share vertex + edge nodes). `work` is the
+  // working soup the sew reads; the opt-in bridging / capping passes below rewrite it
+  // and re-sew (with both opt-in flags off it stays == `clean` and never changes).
+  std::vector<FaceLoop> work = clean;
+  SewResult sr = sew(work, tol);
   m.nMergedVerts = sr.mergedVerts;
   m.nMergedEdges = sr.mergedEdges;
   if (sr.faces.size() < 4) return unhealed(shape, UnhealedReason::OpenShell, sr.maxResidualGap, m);
@@ -72,17 +76,37 @@ HealResult healShell(const topo::Shape& shape, const HealOptions& opts) {
   // below. With budget == 0 this block is a no-op (dead-guarded) and the path is
   // byte-identical to the landed slice.
   if (sr.boundaryEdges > 0 && opts.gapBridgeBudget > 0.0) {
-    const BridgeResult br = bridgeGaps(clean, tol, opts.gapBridgeBudget);
+    const BridgeResult br = bridgeGaps(work, tol, opts.gapBridgeBudget);
     if (br.applied) {
       m.nBridgedGaps = br.nBridged;
       m.maxBridgedGap = br.maxBridged;
-      sr = sew(br.soup, tol);  // re-sew the bridged soup; boundary edges recomputed
+      work = br.soup;
+      sr = sew(work, tol);  // re-sew the bridged soup; boundary edges recomputed
       m.nMergedVerts = sr.mergedVerts;
       m.nMergedEdges = sr.mergedEdges;
     }
   }
 
-  // Still open after the (optional) bridging → report honestly, do not fake closure.
+  // Opt-in bounded planar-hole capping (M5 tail): when a caller enables it, a shell
+  // that sews cleanly but is simply MISSING one face leaves a single ring of boundary
+  // edges. If that boundary is exactly one simple cycle, coplanar within `tol`, and a
+  // simple polygon, synthesize ONE cap face on the hole's existing shared nodes and
+  // re-sew (cap_hole.h). Any hole outside the bound leaves `declined` and the surviving
+  // boundary edges are reported honestly below. With capPlanarHoles == false this block
+  // is a no-op (dead-guarded) and the path is byte-identical to the landed slices.
+  if (sr.boundaryEdges > 0 && opts.capPlanarHoles) {
+    const CapResult cap = capPlanarHole(sr, tol);
+    if (!cap.declined && cap.cap) {
+      m.nCappedFaces = 1;
+      m.maxCapPlanarityDev = cap.planarityDev;
+      work.push_back(*cap.cap);
+      sr = sew(work, tol);  // re-sew with the cap appended; boundary edges recomputed
+      m.nMergedVerts = sr.mergedVerts;
+      m.nMergedEdges = sr.mergedEdges;
+    }
+  }
+
+  // Still open after the (optional) bridging / capping → report honestly, do not fake closure.
   if (sr.boundaryEdges > 0) {
     const UnhealedReason why =
         sr.maxResidualGap > tol

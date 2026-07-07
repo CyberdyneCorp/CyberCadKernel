@@ -63,6 +63,8 @@ struct HealMetrics {
   int nFlipped = 0;             ///< faces re-oriented by the flood-fill
   int nBridgedGaps = 0;         ///< boundary corners closed by the opt-in bridging pass
   double maxBridgedGap = 0.0;   ///< largest near-miss gap bridged (≤ the effective bound)
+  int nCappedFaces = 0;         ///< planar holes closed by the opt-in cap pass (≤ 1 this slice)
+  double maxCapPlanarityDev = 0.0;  ///< largest coplanarity deviation of a capped loop (≤ tolerance)
   double maxResidualGap = 0.0;  ///< largest surviving boundary gap (0 ⇒ closed)
 };
 
@@ -90,6 +92,18 @@ struct HealOptions {
   /// regardless of how large this is set. `0.0` (default) DISABLES bridging, making
   /// `healShell` byte-identical to the landed slice.
   double gapBridgeBudget = 0.0;
+
+  /// Opt-in synthesis of ONE cap face for a single simple planar hole. When `false`
+  /// (default) the cap pass is a NO-OP and `healShell` behaves identically to the
+  /// landed sew / unify / orientation + gap-bridging slices — a missing face still
+  /// returns `Unhealed{OpenShell}`. When `true`, a shell that sews cleanly but is
+  /// missing exactly one face MAY be closed by synthesizing one planar cap, but ONLY
+  /// when the surviving boundary edges form a single simple cycle that is coplanar
+  /// within `tolerance` and non-self-intersecting; the cap is then subject to the
+  /// UNCHANGED mandatory self-verify. The tolerance is NEVER weakened to force a cap,
+  /// and any hole outside the bound (≥ 2 holes, non-planar, self-intersecting,
+  /// branching) stays `Unhealed{OpenShell}` with the input unchanged. See cap_hole.h.
+  bool capPlanarHoles = false;
 };
 
 }  // namespace cybercad::native::heal

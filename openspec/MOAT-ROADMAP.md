@@ -190,8 +190,23 @@ bridging, arbitrary broken industrial B-rep**. Gates trustworthy foreign import 
   healer BYTE-IDENTICAL); NEVER widens the weld tolerance. Verified native-vs-OCCT
   (`run-sim-native-heal` 6/6): a bridged seam heals V=1.000 (4 corners) matching OCCT `Sewing`
   (V=1.00167); an out-of-budget gap declines honestly (`GapBeyondBudget`); the 4 landed controls
-  frozen. REMAINING (asymptotic tail): pcurve reconstruction, self-intersecting-wire repair,
-  arbitrary broken industrial B-rep.
+  frozen.
+- **Status — tail slice LANDED (opt-in single planar-hole cap).** Beyond the sew/unify/orientation +
+  gap-bridging healer, a shell that sews cleanly but is simply MISSING one face — which the healer
+  DECLINES as `OpenShell` — now closes to a watertight solid. `cap_hole.h` (new, header-only,
+  OCCT-free) reconstructs the surviving boundary edges from the sewn shared nodes, and when they form
+  EXACTLY ONE simple cycle that is coplanar within `tolerance` and a simple polygon, synthesizes ONE
+  cap face on those existing shared nodes and re-sews; the UNCHANGED mandatory self-verify then proves
+  watertight + positive volume. Opt-in (`capPlanarHoles=false` default OFF, existing healer
+  BYTE-IDENTICAL); NEVER weakens the weld tolerance; no new `UnhealedReason`. Verified both gates:
+  host analytic (capped cube V=1.0, no OCCT; two-hole and non-planar holes decline; default-off no-op)
+  and native-vs-OCCT (`run-sim-native-heal` 8/8) — the cap matches an OCCT reference cap
+  (`BRepBuilderAPI_MakeFace(gp_Pln, freeBoundaryWire)` + `ShapeFix`) at V=1.0, and a two-hole shell
+  declines matching OCCT leaving it open. EMPIRICAL NOTE: OCCT's `MakeFace(gp_Pln, wire)` tolerates a
+  mildly-non-planar wire (keeps 3D vertices) and caps it, so native declining a non-planar hole is
+  native being MORE conservative and DEFERRING to OCCT — not a shared decline. REMAINING (asymptotic
+  tail): pcurve reconstruction, self-intersecting-wire repair, ≥ 2-hole / non-planar / curved
+  missing-face synthesis, arbitrary broken industrial B-rep.
 
 ### M6 — Robustness completeness bar (S4-f + coverage) · ongoing · gates drop-occt
 The measured-recall / completeness discipline (SSI S4-f landed a first slice): below any fixed

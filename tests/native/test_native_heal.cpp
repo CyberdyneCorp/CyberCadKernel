@@ -21,7 +21,9 @@
 #include "native/tessellate/native_tessellate.h"
 #include "native/topology/native_topology.h"
 
+#include <algorithm>
 #include <cmath>
+#include <functional>
 #include <vector>
 
 namespace topo = cybercad::native::topology;
@@ -160,6 +162,35 @@ std::vector<topo::Shape> cubeTopSeam(double g) {
   f.push_back(quadFace(k.c[0], k.c[4], k.c[7], k.c[3], m::Dir3{-1, 0, 0}));          // −X
   f.push_back(quadFace(k.c[1], k.c[2], k.c[6], k.c[5], m::Dir3{1, 0, 0}));           // +X
   return f;
+}
+
+// The six unit-cube faces keyed by cubeFaceSoup order, so a fixture can drop specific
+// faces to expose a chosen boundary hole. Order: 0=−Z 1=+Z 2=−Y 3=+Y 4=−X 5=+X.
+std::vector<topo::Shape> cubeFaceSoupDropping(double jitter, std::vector<int> drop) {
+  std::vector<topo::Shape> f = cubeFaceSoup(jitter);
+  std::sort(drop.begin(), drop.end(), std::greater<int>());
+  for (int idx : drop) f.erase(f.begin() + idx);
+  return f;
+}
+
+// A unit cube MISSING its +Z face, with the top corner c[6]=(1,1,1) lifted to
+// (1,1,1+lift). The two faces that carry c[6] are the axis-aligned +X (x=1) and +Y
+// (y=1) planes, so lifting purely in z keeps BOTH of them planar and keeps c[6] shared
+// by two faces (paired within tolerance — no orphaned corner, so residual stays 0).
+// The only hole is the top: a SINGLE boundary loop 4-5-6-7 that is now NON-PLANAR
+// (corner 6 off the z=1 plane). This isolates the cap's planarity layer: the loop is a
+// single simple cycle with residual 0, so the decisive decline is coplanarity, not a
+// beyond-tolerance gap.
+std::vector<topo::Shape> cubeMissingTopNonPlanar(double lift) {
+  const Corners k = cubeCorners();
+  const m::Point3 c6L{k.c[6].x, k.c[6].y, k.c[6].z + lift};
+  std::vector<topo::Shape> f;
+  f.push_back(quadFace(k.c[0], k.c[3], k.c[2], k.c[1], m::Dir3{0, 0, -1}));  // −Z
+  f.push_back(quadFace(k.c[0], k.c[1], k.c[5], k.c[4], m::Dir3{0, -1, 0}));  // −Y
+  f.push_back(quadFace(k.c[3], k.c[7], c6L, k.c[2], m::Dir3{0, 1, 0}));      // +Y (y=1, planar)
+  f.push_back(quadFace(k.c[0], k.c[4], k.c[7], k.c[3], m::Dir3{-1, 0, 0}));  // −X
+  f.push_back(quadFace(k.c[1], k.c[2], c6L, k.c[5], m::Dir3{1, 0, 0}));      // +X (x=1, planar)
+  return f;                                                                  // +Z missing → non-planar top loop
 }
 
 const heal::HealOptions kOpts{1e-4};
@@ -335,6 +366,61 @@ CC_TEST(heal_bridge_feature_cap_refuses) {
   CC_CHECK(!r.healed());                                  // refused despite budget > g
   CC_CHECK(r.metrics.nBridgedGaps == 0);                  // the cap, not the budget, governs
   CC_CHECK(r.shape.isSameGeometry(input));                // input UNCHANGED
+}
+
+// ── (I) PLANAR-HOLE CAP — a single missing planar face is capped watertight ──────
+// The +Z face is removed → one simple square boundary loop, coplanar at z=1. With
+// capPlanarHoles enabled the pass synthesizes one cap face on the hole's shared nodes
+// and re-sews to a watertight unit cube (analytic V = 1.0, no OCCT).
+CC_TEST(heal_cap_single_planar_hole_heals) {
+  auto f = cubeFaceSoupDropping(1e-6, {1});  // drop +Z → single planar hole
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r = heal::healShell(input, heal::HealOptions{1e-4, 0.0, true});
+  CC_CHECK(r.healed());
+  CC_CHECK(r.metrics.watertight);
+  CC_CHECK(r.metrics.valid);
+  CC_CHECK_EQ(r.metrics.nCappedFaces, 1);                     // exactly one cap synthesized
+  CC_CHECK(r.metrics.maxCapPlanarityDev <= kOpts.tolerance);  // coplanar within tol
+  CC_CHECK(r.metrics.maxResidualGap == 0.0);                  // fully closed after capping
+  CC_CHECK(watertightVolumeNear(r.shape, 1.0, 1e-6));         // exact unit cube
+}
+
+// ── (I2) DEFAULT-OFF — the same missing-face soup declines (landed slice preserved) ─
+CC_TEST(heal_cap_default_off_declines) {
+  auto f = cubeFaceSoupDropping(1e-6, {1});  // drop +Z
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r = heal::healShell(input, kOpts);  // capPlanarHoles == false
+  CC_CHECK(!r.healed());
+  CC_CHECK(r.reason == heal::UnhealedReason::OpenShell);
+  CC_CHECK_EQ(r.metrics.nCappedFaces, 0);
+  CC_CHECK(r.shape.isSameGeometry(input));  // input UNCHANGED
+}
+
+// ── (I3) TWO HOLES — two opposite missing faces (two disjoint loops) decline ──────
+// This slice caps exactly ONE simple hole; two disjoint boundary loops are declined.
+CC_TEST(heal_cap_two_holes_declines) {
+  auto f = cubeFaceSoupDropping(1e-6, {0, 1});  // drop −Z and +Z → two disjoint loops
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r = heal::healShell(input, heal::HealOptions{1e-4, 0.0, true});
+  CC_CHECK(!r.healed());
+  CC_CHECK(r.reason == heal::UnhealedReason::OpenShell);
+  CC_CHECK_EQ(r.metrics.nCappedFaces, 0);   // caps exactly one simple hole
+  CC_CHECK(r.shape.isSameGeometry(input));  // input UNCHANGED
+}
+
+// ── (I4) NON-PLANAR HOLE — a single non-planar boundary loop declines ────────────
+// The +Z face is missing and top corner 6 is lifted out of the z=1 plane, so the
+// single boundary loop 4-5-6-7 is a simple cycle (residual 0) but NON-PLANAR. The
+// planarity layer refuses the cap; the shell stays OpenShell, input unchanged.
+CC_TEST(heal_cap_non_planar_hole_declines) {
+  auto f = cubeMissingTopNonPlanar(0.5);  // top loop lifted 0.5 out of plane ≫ tol
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r = heal::healShell(input, heal::HealOptions{1e-4, 0.0, true});
+  CC_CHECK(!r.healed());
+  CC_CHECK(r.reason == heal::UnhealedReason::OpenShell);  // planarity layer refuses (residual 0)
+  CC_CHECK(r.metrics.maxResidualGap == 0.0);              // single cycle, no orphaned corner
+  CC_CHECK_EQ(r.metrics.nCappedFaces, 0);
+  CC_CHECK(r.shape.isSameGeometry(input));  // input UNCHANGED
 }
 
 CC_RUN_ALL()

@@ -97,6 +97,25 @@ static std::vector<Quad> cubeTopSeamQuads(double g) {
   return q;
 }
 
+// A unit cube MISSING its +Z face (index 1 in cubeQuads order) → a single planar
+// square hole at z=1 (the missing-face fixture the cap slice closes).
+static std::vector<Quad> cubeMissingTop(double jitter) {
+  std::vector<Quad> q = cubeQuads(jitter);
+  q.erase(q.begin() + 1);  // drop +Z
+  return q;
+}
+
+// A unit cube MISSING two OPPOSITE faces (−Z and +Z) → an open tube with TWO disjoint
+// planar boundary loops. Native caps exactly ONE simple hole, so this declines
+// Unhealed{OpenShell}; OCCT sewing/ShapeFix never invents a missing face, so it ALSO
+// leaves the shell open — honest parity of decline (≥ 2 holes stay OCCT's moat).
+static std::vector<Quad> cubeMissingTwoOpposite(double jitter) {
+  std::vector<Quad> q = cubeQuads(jitter);
+  q.erase(q.begin() + 1);  // drop +Z (index 1)
+  q.erase(q.begin() + 0);  // then drop −Z (index 0)
+  return q;
+}
+
 // ── Native soup builder ────────────────────────────────────────────────────────
 static topo::Shape nativeQuadFace(const Quad& q, bool reversed) {
   const m::Vec3 ref = std::fabs(q.n.z()) < 0.9 ? m::Vec3{0,0,1} : m::Vec3{1,0,0};
@@ -144,6 +163,36 @@ static TopoDS_Shape occtSoup(const std::vector<Quad>& quads) {
                        gp_Dir(q.n.x(), q.n.y(), q.n.z()));
     BRepBuilderAPI_MakeFace mf(plane, poly.Wire());
     if (mf.IsDone()) bb.Add(comp, mf.Face());
+  }
+  return comp;
+}
+
+// The OCCT REFERENCE CAP: the open-shell faces PLUS one cap face synthesized by
+// BRepBuilderAPI_MakeFace(gp_Pln, freeBoundaryWire) over the four given boundary
+// corners, on the plane through cap[0] with normal capN. sewAndFix then welds the
+// completed soup (BRepBuilderAPI_Sewing + ShapeFix_Shell/Solid) — the OCCT analogue of
+// the native cap. For a NON-PLANAR boundary the MakeFace on gp_Pln fails / yields a bad
+// face and the sew leaves the shell open (the decline oracle).
+static TopoDS_Shape occtSoupWithPlanarCap(const std::vector<Quad>& openQuads,
+                                          const m::Point3 cap[4], const m::Dir3& capN) {
+  BRep_Builder bb; TopoDS_Compound comp; bb.MakeCompound(comp);
+  for (const Quad& q : openQuads) {
+    BRepBuilderAPI_MakePolygon poly;
+    for (int i = 0; i < 4; ++i) poly.Add(gp_Pnt(q.p[i].x, q.p[i].y, q.p[i].z));
+    poly.Close();
+    if (!poly.IsDone()) continue;
+    const gp_Pln plane(gp_Pnt(q.p[0].x, q.p[0].y, q.p[0].z), gp_Dir(q.n.x(), q.n.y(), q.n.z()));
+    BRepBuilderAPI_MakeFace mf(plane, poly.Wire());
+    if (mf.IsDone()) bb.Add(comp, mf.Face());
+  }
+  BRepBuilderAPI_MakePolygon capPoly;
+  for (int i = 0; i < 4; ++i) capPoly.Add(gp_Pnt(cap[i].x, cap[i].y, cap[i].z));
+  capPoly.Close();
+  if (capPoly.IsDone()) {
+    const gp_Pln capPlane(gp_Pnt(cap[0].x, cap[0].y, cap[0].z),
+                          gp_Dir(capN.x(), capN.y(), capN.z()));
+    BRepBuilderAPI_MakeFace capMf(capPlane, capPoly.Wire());
+    if (capMf.IsDone()) bb.Add(comp, capMf.Face());
   }
   return comp;
 }
@@ -243,6 +292,51 @@ int main() {
     const bool ok = !nr.healed() && nr.reason == heal::UnhealedReason::GapBeyondBudget &&
                     nr.metrics.maxResidualGap > budget && !orr.validSolid;
     check("bridge-out-of-budget decline matches OCCT", ok, buf);
+  }
+
+  // ── M5 TAIL: SINGLE PLANAR-HOLE CAP (opt-in) ─────────────────────────────────
+  // In-scope: a unit cube missing its +Z face. Native (capPlanarHoles = true)
+  // synthesizes ONE cap on the free boundary; the OCCT reference cap is
+  // BRepBuilderAPI_MakeFace(gp_Pln, topWire) added to the 5 open faces + ShapeFix.
+  // Both land a watertight closed 6-face solid with volume ≈ 1.
+  {
+    const m::Point3 topCap[4] = {{0,0,1},{1,0,1},{1,1,1},{0,1,1}};  // free boundary at z=1
+    const heal::HealResult nr =
+        heal::healShell(nativeSoup(cubeMissingTop(1e-6)), heal::HealOptions{tol, 0.0, true});
+    const cyber::occt::SewFixResult orr =
+        cyber::occt::sewAndFix(occtSoupWithPlanarCap(cubeMissingTop(1e-6), topCap, m::Dir3{0,0,1}), tol);
+    const double nv = nr.healed() ? nativeVolume(nr.shape) : 0.0;
+    char buf[200];
+    std::snprintf(buf, sizeof buf,
+                  "(native V=%.5f watertight=%d capped=%d | OCCT V=%.5f valid=%d)", nv,
+                  (int)nr.metrics.watertight, nr.metrics.nCappedFaces, orr.volume,
+                  (int)orr.validSolid);
+    const bool ok = nr.healed() && nr.metrics.watertight && nr.metrics.nCappedFaces == 1 &&
+                    orr.validSolid && std::fabs(nv - 1.0) < 1e-3 &&
+                    std::fabs(std::fabs(orr.volume) - 1.0) < 1e-3 &&
+                    std::fabs(nv - std::fabs(orr.volume)) < 1e-3;
+    check("cap-single-planar-hole matches OCCT cap", ok, buf);
+  }
+
+  // Out-of-scope: TWO opposite missing faces (two disjoint boundary loops). Native
+  // caps exactly one simple hole → Unhealed{OpenShell}, capped=0; OCCT sewing/ShapeFix
+  // cannot invent the missing faces and leaves the shell open → parity of decline. (A
+  // single mildly-non-planar hole is instead covered by the host planarity gate: OCCT's
+  // MakeFace tolerates a near-planar wire and caps it, so native declining there is
+  // native being MORE conservative and deferring — not a shared decline.)
+  {
+    const heal::HealResult nr =
+        heal::healShell(nativeSoup(cubeMissingTwoOpposite(1e-6)), heal::HealOptions{tol, 0.0, true});
+    const cyber::occt::SewFixResult orr =
+        cyber::occt::sewAndFix(occtSoup(cubeMissingTwoOpposite(1e-6)), tol);
+    char buf[200];
+    std::snprintf(buf, sizeof buf,
+                  "(native UNHEALED reason=%d capped=%d residual=%.4g | OCCT valid=%d watertight=%d)",
+                  (int)nr.reason, nr.metrics.nCappedFaces, nr.metrics.maxResidualGap,
+                  (int)orr.validSolid, (int)orr.watertight);
+    const bool ok = !nr.healed() && nr.reason == heal::UnhealedReason::OpenShell &&
+                    nr.metrics.nCappedFaces == 0 && !orr.watertight;
+    check("cap-two-hole decline matches OCCT", ok, buf);
   }
 
   std::printf("== %d passed, %d failed ==\n", g_pass, g_fail);

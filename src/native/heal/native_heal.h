@@ -24,13 +24,25 @@
 //                                  widened; a gap past the effective bound stays
 //                                  Unhealed{GapBeyondBudget} with the measured
 //                                  residual. Default budget 0 ⇒ this pass is a no-op.
+//   6. SINGLE PLANAR-HOLE CAP    — OPT-IN (HealOptions.capPlanarHoles == true): a shell
+//                                  that sews cleanly but is MISSING one face leaves a
+//                                  ring of boundary edges. When that boundary is EXACTLY
+//                                  ONE simple cycle, coplanar within tolerance, and a
+//                                  simple polygon, synthesize ONE cap face on the hole's
+//                                  existing shared nodes and re-sew. ≥ 2 holes, a
+//                                  non-planar / curved hole, a self-intersecting or
+//                                  branching boundary, or a cap that fails self-verify
+//                                  stay Unhealed{OpenShell} / {SelfVerifyFailed}, input
+//                                  unchanged. Default false ⇒ this pass is a no-op.
 //
 // ── HONEST SCOPE (asymptotic completeness, like SSI S4-f — NOT a guarantee) ──
 // This slice heals the coincident-within-tolerance / degenerate / orientation defect
 // family EXACTLY (spatial-hash + closed-form geometry, no re-approximation). It does
 // NOT heal arbitrary broken industrial B-rep. When a defect is OUT OF SCOPE —
 //   * a gap genuinely BEYOND tolerance (a real hole),
-//   * a genuinely OPEN shell that cannot close within tolerance,
+//   * a genuinely OPEN shell that cannot close within tolerance (EXCEPT the opt-in
+//     single simple planar hole — pass 6 above; ≥ 2 holes / non-planar / self-
+//     intersecting boundaries still defer),
 //   * a MISSING PCURVE needing re-projection,
 //   * a SELF-INTERSECTING wire,
 //   * freeform-surface re-approximation —
@@ -61,6 +73,7 @@
 // Sub-operation headers (header-only) — included so a caller can drive an
 // individual step or inspect the intermediate types.
 #include "native/heal/assemble_shell.h"
+#include "native/heal/cap_hole.h"
 #include "native/heal/degenerate.h"
 #include "native/heal/face_soup.h"
 #include "native/heal/gap_bridge.h"

@@ -179,7 +179,7 @@ whole SSI arc was built for.
   |---|---|---|---|---|---|
   | **M2b (B2)** | WLine freeform face-split — partition a trimmed freeform face's uv domain along the M1 seam pcurve into in/out sub-faces | `boolean/` (+ `ssi/`) | M1 WLine (`WLinePoint` carries `(u1,v1)`/`(u2,v2)` per node) ✓, `shape.h` faces | sub-faces tile the original + each meshes watertight via the M0 mesher | **YES — parallel** |
   | **M2c (B3)** | Freeform point-in-solid membership — ray-cast / winding against the M0-meshed trimmed faces | `boolean/` | M0 mesher ✓, `shape.h` faces | `BRepClass3d_SolidClassifier` (per-point in/out) | **YES — parallel** |
-  | **M2a (B1)** | Freeform operand descriptor + recogniser — the data model B2/B3 plug into (extends `recogniseCurvedSolid`) | `boolean/` | `shape.h` | (integration; validated once B2 + B3 exist) | scaffold now, **join point** |
+  | **M2a (B1)** | Freeform operand descriptor + recogniser — the data model B2/B3 plug into (additive sibling of `recogniseCurvedSolid`) | `boolean/` | `shape.h` | host gate: admit + round-trip + decline battery (assembly vs OCCT once a B4 weld verb exists) | ✅ **LANDED** — `freeform_operand.h` |
 
   Sequencing: **M2b ∥ M2c now** (two isolated tracks, disjoint algorithms, each self-verifiable);
   **M2a** is the small integration layer, best sized once B2/B3 fix their interfaces. Then
@@ -208,6 +208,41 @@ whole SSI arc was built for.
     (measured 273 open edges: the periodic BSpline seam edge does not weld), so the classifier declines
     to `Unknown` rather than fabricate. This is the asymptotic curved-bridged tail, not a classifier
     defect (the curved case is proven crisp-correct against analytic truth in Gate A).
+
+  **M2a (B1) — descriptor + gate LANDED; end-to-end assembly HONEST-DECLINED (this change).**
+  `src/native/boolean/freeform_operand.h` (header-only, OCCT-free, backend-band): the
+  `FreeformOperand`/`OperandFace`/`FaceRole` value descriptor + `recogniseFreeformSolid(Shape,
+  OperandDecline*) → optional<FreeformOperand>`, a strictly ADDITIVE SIBLING to the analytic
+  `recogniseCurvedSolid` (which — with `classifyPoint`, M0, M1, B2, B3 — is byte-identical vs the
+  landed tree; no `cc_*` ABI change; 0 OCCT includes under `src/native/**`). The gate admits ONE
+  reachable operand — a non-null single-shell `Solid` with ≥1 genuinely-trimmed BSpline/Bezier wall
+  + only admissible analytic caps (plane/cylinder/sphere/cone), closed as a 2-manifold (every
+  undirected edge, keyed by endpoint-vertex identity, used by exactly two face incidences) — and
+  exposes exactly the M2 verbs' handles: the freeform `Face` (→ B2 `splitFace`), the operand `Shape`
+  (→ M0 `SolidMesher::mesh`), the world `Aabb` (→ B3 `classifyPointInMesh`). Every other operand
+  returns `nullopt` with a measured `OperandDecline` (NotSolid / MultiShell / FaceSurfaceMissing /
+  UnsupportedSurfaceKind / BareFreeformFace / HoledFreeformFace / NoFreeformFace / NotWatertight) —
+  a first-class honest decline, no weakened tolerance.
+  - **Gate A (HOST ANALYTIC, no OCCT)** — `tests/native/test_native_freeform_operand.cpp`
+    (14/14 pass). On the M0 keystone `bumpCappedCylinder` (cylinder side + planar bottom + Bézier
+    bump cap): ADMITTED; 3 faces role-tagged (1 freeform + 2 analytic); the freeform surface/kind
+    round-trips bit-identically; `outwardN` materially outward on every face; `bbox` tight
+    (x,y ∈ [−R,R], z ∈ [0,h], diagonal usable); `watertight` true. Full decline battery green
+    (each blocker measured). Exposed handles proven: the `Shape` meshes watertight under M0; the
+    descriptor `Aabb` scales B3 (interior→In, exterior→Out).
+  - **Assembly HONEST DECLINE (measured blocker).** The stretch — the minimal end-to-end
+    freeform↔analytic CUT/COMMON composing only the four landed verbs (recognise → M1 trace → B2
+    split → B3 classify → M0 weld) — is **not robustly reachable**, so B1 lands ALONE (an accepted,
+    expected outcome). Two independent, measured blockers: **(i)** the sole freeform wall of the
+    reachable freeform-SOLID class carries a smooth CLOSED (circular) trim, but B2 `splitFace`'s
+    first slice requires a convex straight-edged outer loop (≥3 boundary segments) — it returns
+    `NoOuterLoop` (measured in the gate). **(ii)** even a polygon-trimmed freeform wall does not
+    close the boolean: a half-space cutting a closed solid also crosses its ANALYTIC cap/side faces
+    (needing an analytic-face splitter) and synthesizes a NEW cross-section cap on the cutting plane
+    — neither an analytic-face split nor a cap synthesizer is among the four landed M2 verbs (B2 is
+    freeform-only). No stub/dead `freeform_boolean_solid` was written; the engine keeps its OCCT
+    fall-through. Closing the gap needs a B2 convex→smooth-trim generalisation **and** a B4 analytic-
+    face split + cross-section cap synthesis (the M2 weld/assembly verb), tracked next.
 
 ### M3 — General freeform blends + wrap-emboss · ~2–4 py · needs M2
 The curved-curved blends and freeform-base features that sit on booleans: cyl↔cyl-canal /
@@ -360,8 +395,8 @@ slices used). Both are captured below.
 | **M4** general STEP/AP242 import | `exchange/` | M0 | ✅ **Wave-2 LANDED** — non-rational + `RATIONAL_B_SPLINE_SURFACE` admission native (parity 83/83); rational-*curve* trims, PMI, deep assemblies remain OCCT |
 | **M2b (B2)** freeform face-split | `boolean/` · `ssi/` | M0 ✅ + M1 ✅ | ✅ **Wave-2 slice LANDED** — `boolean/face_split.h` `splitFace` (tiles vs OCCT 12/12); non-convex/multi-crossing tail declines |
 | **M2c (B3)** freeform point-in-solid | `boolean/` | M0 ✅ | ✅ **Wave-2 slice LANDED** — `boolean/freeform_membership.h` `classifyPointInMesh` (crispDISAGREE=0 vs `BRepClass3d`); near-tangent band → On/Unknown |
-| **M2a (B1)** freeform operand descriptor | `boolean/` | `shape.h` | ▶ **OPEN NOW — the next step** (last M2 substrate piece; join point for B2 + B3) |
-| **M2** general freeform booleans (assembly) | `boolean/` | **B1 + B2 ✅ + B3 ✅** | ▶ **reachable once B1 lands** — recognise[B1] → trace[M1] → split[B2] → classify[B3] → weld[M0] |
+| **M2a (B1)** freeform operand descriptor | `boolean/` | `shape.h` | ✅ **Wave-2 slice LANDED** — `boolean/freeform_operand.h` `recogniseFreeformSolid` (host gate 14/14; admit + round-trip + 8-way decline battery); **completes the M2 substrate**. End-to-end assembly honest-declined (B2 needs smooth-trim split + a B4 analytic-face-split/cap-synth verb) |
+| **M2** general freeform booleans (assembly) | `boolean/` | **B1 ✅ + B2 ✅ + B3 ✅** | ⚠ **substrate COMPLETE (B1/B2/B3 all landed); end-to-end assembly HONEST-DECLINED** — the minimal recognise[B1] → trace[M1] → split[B2] → classify[B3] → weld[M0] does NOT robustly close: the reachable freeform wall carries a smooth CLOSED trim (B2 `splitFace` → `NoOuterLoop`), and a half-space also crosses the operand's ANALYTIC caps/sides + needs a new cross-section cap. Needs a **B4** verb (B2 convex→smooth-trim split + analytic-face split + cap synthesis). No stub shipped; OCCT stays the fall-through |
 | **M3** freeform blends + wrap-emboss | `blend/` · `feature/` | M2 | **Wave 3** — after M2 |
 | **M7b** fine-pitch self-intersecting thread | `construct/` | M2 | **Wave 3** — after M2 |
 | **M8** `drop-occt` — unlink | `engine/occt` (delete) | ALL + M6 bar | **Terminal** |

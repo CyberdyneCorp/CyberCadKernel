@@ -281,6 +281,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_boolean
         test_native_curved_boolean
         test_native_freeform_membership
+        test_native_freeform_operand
         test_native_ssi
         test_native_ssi_s4_classification
         test_native_heal
@@ -375,6 +376,12 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_curved_boolean.cpp")
     set(test_native_freeform_membership_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_freeform_membership.cpp")
+    # MOAT M2 / B1 freeform operand descriptor + recogniseFreeformSolid gate — host
+    # GATE (a), the OCCT-free admission/round-trip/decline proof. Header-only B1; the
+    # test also exercises the exposed M0/B2/B3 handles. No numsci link (it never calls
+    # the S3 tracer), so it lives in the always-on native suite.
+    set(test_native_freeform_operand_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_freeform_operand.cpp")
     set(test_native_ssi_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi.cpp")
     set(test_native_ssi_s4_classification_SRC

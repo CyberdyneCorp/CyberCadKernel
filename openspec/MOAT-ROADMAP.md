@@ -73,13 +73,14 @@ patches. **Unblocks M1, M2, M3, and foreign-B-spline STEP import (M4).**
   existing surface kind's mesh is BYTE-IDENTICAL (triangle count / watertight / area / volume
   diffed against `main`), and the full host suite (29/29) + NUMSCI-ON pass. Whitespace: no
   tolerance weakened, no `cc_*` ABI change, tessellator otherwise pristine.
-- *Deferred (needs the OCCT-linked simulator):* STEP READER ADMISSION of a foreign
+- **Deferred admission NOW LANDED (via M4).** The STEP READER ADMISSION of a foreign
   `B_SPLINE_SURFACE_WITH_KNOTS` face — a faithful curved-edge B-spline-surface pcurve arm in
-  `step_reader.cpp::pcurveFor` + a `S_face(pcurve(t)) = C_edge(t)` faithful-reconstruction guard
-  (decline → OCCT on any unfaithful edge). This is gated by the sim-side `BRepMesh` parity
-  oracle (watertight + area/volume vs OCCT) and by the STEP round-trip suites, none runnable in
-  an OCCT-OFF host worktree; it is intentionally NOT changed here so the reader keeps its honest
-  current behaviour until that gate can validate admission. The mesher it depends on is ready.
+  `step_reader.cpp` + a `S_face(pcurve(t)) = C_edge(t)` faithful-reconstruction guard (decline →
+  OCCT on any unfaithful edge) — shipped in **M4** and its rational sibling in **M4-rational**,
+  verified vs OCCT `STEPControl_Reader` + `BRepMesh` on the simulator (STEP import parity 83/83).
+  The guard tolerance coincides with the mesher's weld snap radius (`kSnapEps = 1e-6`), so passing
+  the guard *guarantees* a watertight seam. So the M0 keystone is now complete end-to-end (mesher +
+  admission); the only import residual is a rational-*curve* trim boundary (still OCCT, see M4).
 
 ### M1 — General freeform surface–surface intersection robustness (SSI S4 general) · ~2–5 py
 Extend the SSI marcher (S1–S5 + S4-a…e already native) to the **general/freeform** degeneracy
@@ -309,18 +310,30 @@ slices used). Both are captured below.
 > M4 (general import) can now start in parallel** — alongside the still-running asymptotic
 > tracks (M1 breadth, M5, M6) and M7a's remaining residuals (guided sweep, non-planar-cap loft).
 
+> **Wave-2 + M2-substrate batch LANDED (all verified native-vs-OCCT, integrated).** Seven further
+> slices banked: **M4** foreign trimmed `B_SPLINE_SURFACE_WITH_KNOTS` admission (STEP parity 79/79 —
+> completes the M0 keystone's deferred half) + **M4-rational** `RATIONAL_B_SPLINE_SURFACE` admission
+> (83/83); **M7a** N-section loft (39/39, guided-orient sweep honest-declined with a measured self-
+> verify-trap); **M5-tail** opt-in planar-hole cap (heal 8/8); **M6-breadth** STEP round-trip
+> differential fuzzer (0 DISAGREED, *surfaced* OCCT reader inaccuracy on shallow frustums, native
+> vindicated by closed-form). **M2 substrate:** **B2** freeform face-split (12/12) + **B3** point-in-
+> freeform-solid membership (crispDISAGREE=0) — the two hard subsystems the M2 decline named. The
+> single freeform-boolean **M2** was an honest DECLINE that mapped its blockers; two of its three
+> substrate pieces (B2, B3) are now native, leaving only **B1** (the small operand-descriptor join
+> point) before the M2 assembly (recognise[B1] → trace[M1] → split[B2] → classify[B3] → weld[M0]).
+
 | Stage | Module (disjoint unit) | Needs | Status / when it can run |
 |---|---|---|---|
 | **M0** freeform mesher/trimmer | `tessellate/` | — | ✅ **Wave-1 slice LANDED** — mesher ready; unblocks M2/M4 |
 | **M1** SSI S4 general robustness | `ssi/marching` | — | ✅ **Wave-1 slice LANDED** — breadth continues (asymptotic) |
 | **M5** shape-healing robustness | `heal/` | — | ✅ **Wave-1 slice LANDED** — tail continues (asymptotic) |
-| **M6** completeness / fuzzing harness | test infra + `ssi/` | — | ✅ **Wave-1 slice LANDED** — bar continues (gates M8) |
-| **M7a** guided sweep · hard loft | `construct/` | — | ✅ **Wave-1 slice LANDED** — N-section loft ABI (`cc_solid_loft_sections`); guided sweep + non-planar-cap loft remain |
-| **M4** general STEP/AP242 import | `exchange/` | M0 | ▶ **Wave 2 — OPEN NOW** (M0 mesher ready) |
-| **M2b (B2)** freeform face-split | `boolean/` · `ssi/` | M0 ✅ + M1 ✅ | ▶ **OPEN NOW — parallel** (M2 substrate; oracle: sub-faces tile + mesh watertight) |
-| **M2c (B3)** freeform point-in-solid | `boolean/` | M0 ✅ | ✅ **Wave-2 first slice LANDED** — `boolean/freeform_membership.h` `classifyPointInMesh` (ray-cast odd/even, OCCT-free, header-only). Gates below. Curved-bridged tail (asymptotic) continues |
-| **M2a (B1)** freeform operand descriptor | `boolean/` | `shape.h` | ▶ **OPEN NOW — scaffold** (M2 substrate; join point for B2 + B3) |
-| **M2** general freeform booleans (assembly) | `boolean/` | **B1 + B2 + B3** | ▶ **Wave 2 — first attempt DECLINED**; unblocks once the substrate above lands (see §M2) |
+| **M6** completeness / fuzzing harness | test infra + `ssi/` | — | ✅ **Wave-1 + breadth LANDED** — curved-boolean fuzzer + STEP round-trip fuzzer (0 DISAGREED); bar continues (gates M8) |
+| **M7a** guided sweep · hard loft | `construct/` | — | ✅ **Wave-1 slice LANDED** — N-section loft ABI (`cc_solid_loft_sections`); guided sweep (measured trap) + non-planar-cap loft remain OCCT |
+| **M4** general STEP/AP242 import | `exchange/` | M0 | ✅ **Wave-2 LANDED** — non-rational + `RATIONAL_B_SPLINE_SURFACE` admission native (parity 83/83); rational-*curve* trims, PMI, deep assemblies remain OCCT |
+| **M2b (B2)** freeform face-split | `boolean/` · `ssi/` | M0 ✅ + M1 ✅ | ✅ **Wave-2 slice LANDED** — `boolean/face_split.h` `splitFace` (tiles vs OCCT 12/12); non-convex/multi-crossing tail declines |
+| **M2c (B3)** freeform point-in-solid | `boolean/` | M0 ✅ | ✅ **Wave-2 slice LANDED** — `boolean/freeform_membership.h` `classifyPointInMesh` (crispDISAGREE=0 vs `BRepClass3d`); near-tangent band → On/Unknown |
+| **M2a (B1)** freeform operand descriptor | `boolean/` | `shape.h` | ▶ **OPEN NOW — the next step** (last M2 substrate piece; join point for B2 + B3) |
+| **M2** general freeform booleans (assembly) | `boolean/` | **B1 + B2 ✅ + B3 ✅** | ▶ **reachable once B1 lands** — recognise[B1] → trace[M1] → split[B2] → classify[B3] → weld[M0] |
 | **M3** freeform blends + wrap-emboss | `blend/` · `feature/` | M2 | **Wave 3** — after M2 |
 | **M7b** fine-pitch self-intersecting thread | `construct/` | M2 | **Wave 3** — after M2 |
 | **M8** `drop-occt` — unlink | `engine/occt` (delete) | ALL + M6 bar | **Terminal** |

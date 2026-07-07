@@ -285,22 +285,31 @@ double occtStepVolume(const std::string& path) {
     return std::fabs(g.Mass());
 }
 
-// ── (D) TOROIDAL_SURFACE — honest DECLINE, OCCT fallback still imports ───────────
-// A torus solid (BRepPrimAPI_MakeTorus) carries TOROIDAL_SURFACE, which the native
-// reader has NO native FaceSurface kind to map onto (no Torus kind; adding one needs
-// the tessellator). So the NATIVE reader must DECLINE (return null), and cc_step_import
-// must still import it via the OCCT fallback matching the OCCT-only re-import.
-void runTorusDecline() {
+void compareSphere(const std::string& name, const Props& a, const Props& b);  // defined below
+
+// ── (D) TOROIDAL_SURFACE — native WATERTIGHT torus (T1) ─────────────────────────
+// OCCT writes a whole torus (BRepPrimAPI_MakeTorus) as ONE TOROIDAL_SURFACE ADVANCED_FACE
+// bounded by a FULLY-SEAMED EDGE_LOOP (the equator v-seam + the tube u-seam, each forward
+// AND reversed — no real trim). The reader now maps that bare DOUBLY-periodic surface to a
+// native Kind::Torus face with a null outer wire; the tessellator meshes its natural
+// (u,v)∈[0,2π]² rectangle, welding BOTH seams (no poles) → a WATERTIGHT Torus solid.
+// It must import NATIVELY (raw parsed=1, watertight, 1 solid) and match the OCCT re-import on
+// volume/area/centroid (V=2π²Rr²). Like the bare sphere it carries 0 boundary edges natively
+// (a representation difference from OCCT's seam B-rep) — compareSphere encodes that contract.
+void runTorusNative() {
     const std::string path = "/tmp/cck_nimport_torus_foreign.step";
     TopoDS_Shape torus = BRepPrimAPI_MakeTorus(10.0, 3.0).Shape();
-    if (!occtWriteStep(torus, path)) { record(false, "foreign", "torus author", "OCCT write failed"); return; }
+    if (!occtWriteStep(torus, path)) { record(false, "native", "torus author", "OCCT write failed"); return; }
     const NativeProbe pr = probeNative(path);
-    char d[256];
-    std::snprintf(d, sizeof d, "native parsed=%d (expected 0 — no native Torus kind)", pr.parsed);
-    record(!pr.parsed, "foreign", "torus decline", d);  // MUST decline
     const Props nat = importUnder(1, path);
     const Props oracle = importUnder(0, path);
-    compare("fallback", "torus", nat, oracle, 5e-3, 5e-3);
+    char d[320];
+    std::snprintf(d, sizeof d,
+                  "native raw parsed=%d watertight=%d solids=%d nativeVol=%.6g occtVol=%.6g",
+                  pr.parsed, pr.parsed && pr.allWatertight, pr.solids, nat.vol, oracle.vol);
+    const bool volOk = oracle.vol > 0 && std::fabs(nat.vol - oracle.vol) / oracle.vol < 5e-3;
+    record(pr.parsed && pr.allWatertight && pr.solids == 1 && volOk, "native", "torus", d);
+    compareSphere("torus", nat, oracle);  // bare periodic-surface parity (vol/area/centroid + 0 edges)
 }
 
 // ── (E) ELLIPSE edge — foreign slant-cut cylinder ───────────────────────────────
@@ -999,7 +1008,7 @@ int main() {
 
     // ── WIDENED SLICE (T1/T2/T3) — foreign-authored fixtures vs OCCT re-import +
     //    a native B-spline-face round-trip, each probing the NATIVE reader directly.
-    runTorusDecline();       // T1b: TOROIDAL_SURFACE stays an honest DECLINE → OCCT
+    runTorusNative();        // T1b: TOROIDAL_SURFACE → native WATERTIGHT Kind::Torus solid
     runEllipseCut();         // T1a: ELLIPSE edge (foreign slant-cut cylinder) — honest probe
     runMultiSolid();         // T2 : flat 2-solid file → native Compound of solids
     runSplineFaceRoundTrip();// T3 : native B_SPLINE_SURFACE-face solid round-trip (exact)

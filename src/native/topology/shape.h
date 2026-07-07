@@ -207,12 +207,13 @@ struct PCurve {
 /// A surface attached to a face. Analytic surfaces reuse the math elementary
 /// types; free-form surfaces store their defining grid.
 struct FaceSurface {
-  enum class Kind : std::uint8_t { Plane, Cylinder, Cone, Sphere, BSpline, Bezier } kind =
+  enum class Kind : std::uint8_t { Plane, Cylinder, Cone, Sphere, BSpline, Bezier, Torus } kind =
       Kind::Plane;
 
   math::Ax3 frame{};        ///< placement for analytic surfaces
-  double radius = 0.0;      ///< Cylinder/Sphere radius, Cone reference radius
+  double radius = 0.0;      ///< Cylinder/Sphere radius, Cone reference radius, Torus MAJOR radius
   double semiAngle = 0.0;   ///< Cone half-angle
+  double minorRadius = 0.0; ///< Torus MINOR (tube) radius; 0 for every other kind
 
   // Free-form definition (row-major, U outer). Empty for analytic kinds.
   int degreeU = 0;

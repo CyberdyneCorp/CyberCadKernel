@@ -919,9 +919,30 @@ class Mapper {
     if (r->keyword == "CYLINDRICAL_SURFACE") return placedSurface(*r, K::Cylinder, 1);
     if (r->keyword == "SPHERICAL_SURFACE") return placedSurface(*r, K::Sphere, 1);
     if (r->keyword == "CONICAL_SURFACE") return placedSurface(*r, K::Cone, 2);
+    if (r->keyword == "TOROIDAL_SURFACE") return toroidalSurface(*r);
     if (r->keyword == "B_SPLINE_SURFACE_WITH_KNOTS") return bsplineSurface(*r);
     if (r->keyword == "SURFACE_OF_REVOLUTION") return surfaceOfRevolution(*r);
     return std::nullopt;  // any other surface keyword is out of scope
+  }
+
+  // TOROIDAL_SURFACE('',#placement,majorR,minorR) → a native Kind::Torus. The frame's
+  // Z is the revolution axis; radius carries the MAJOR (axis→tube-centre) radius and
+  // minorRadius the tube radius, matching math::Torus. A ring torus (R > r) is the only
+  // form OCCT emits from a solid; a spindle/degenerate torus (R ≤ r ≤ 0) is declined.
+  std::optional<topo::FaceSurface> toroidalSurface(const Record& r) {
+    if (r.args.size() != 4 || !r.args[1].isRef() || !r.args[2].isNumber() || !r.args[3].isNumber())
+      return std::nullopt;
+    const auto f = axis2placement(r.args[1].ref);
+    if (!f) return std::nullopt;
+    const double major = r.args[2].asReal();
+    const double minor = r.args[3].asReal();
+    if (!(minor > 1e-12) || !(major > minor)) return std::nullopt;  // ring torus only
+    topo::FaceSurface s;
+    s.kind = topo::FaceSurface::Kind::Torus;
+    s.frame = *f;
+    s.radius = major;
+    s.minorRadius = minor;
+    return s;
   }
 
   // AXIS1_PLACEMENT('',#location,#axis?) → (location, axis direction). Unlike an
@@ -1041,10 +1062,15 @@ class Mapper {
     return s;
   }
 
-  // Revolve a CIRCLE/arc generatrix about the axis (L, A). A native SPHERE results only
-  // when the circle's CENTRE lies ON the axis AND its plane CONTAINS the axis (the
-  // circle is a meridian great-circle). Any off-axis centre → a torus (no native
-  // Kind::Torus); any other plane orientation → a torus/degenerate. Both DECLINE → OCCT.
+  // Revolve a CIRCLE/arc generatrix about the axis (L, A) onto an EXACT native SPHERE or
+  // TORUS, or nullopt to DECLINE. Two faithful cases:
+  //   * CENTRE ON the axis, plane CONTAINING the axis → SPHERE (a meridian great-circle).
+  //   * CENTRE OFF the axis, plane CONTAINING the axis → TORUS (the tube circle lies in a
+  //     meridian half-plane; revolving it sweeps a ring torus, major R = dist(centre,axis),
+  //     minor r = circle radius). This is exactly what OCCT itself recognises and emits as a
+  //     TOROIDAL_SURFACE for a `revol` of an off-axis circle.
+  // Any circle whose plane does NOT contain the axis revolves to a non-standard surface with
+  // no faithful native kind → DECLINE → OCCT. Each branch runs a faithful-reduction guard.
   std::optional<topo::FaceSurface> revolvedCircle(const topo::EdgeCurve& circle,
                                                   const math::Point3& L, const math::Dir3& A) {
     const double R = circle.radius;
@@ -1052,15 +1078,28 @@ class Mapper {
     const math::Vec3 Av = A.vec();
     const math::Point3 C = circle.frame.origin;
     const math::Point3 footC = L + Av * math::dot(C - L, Av);
-    if (math::distance(C, footC) > 1e-7 * std::max(1.0, R)) return std::nullopt;  // off-axis → torus
+    const double axisDist = math::distance(C, footC);
     if (std::fabs(math::dot(circle.frame.z.vec(), Av)) > 1e-7) return std::nullopt;  // plane ∦ axis
 
+    if (axisDist <= 1e-7 * std::max(1.0, R)) {  // centre ON axis → SPHERE
+      topo::FaceSurface s;
+      s.kind = topo::FaceSurface::Kind::Sphere;
+      // Z = axis; X ref = the circle-plane normal, which is ⟂ A (checked above).
+      s.frame = math::Ax3::fromAxisAndRef(C, A, circle.frame.z);
+      s.radius = R;
+      if (!circleOnSurface(circle, s)) return std::nullopt;  // faithful-reduction guard
+      return s;
+    }
+
+    // Centre OFF axis, plane contains axis → ring TORUS (declines the spindle case R>=dist).
+    if (!(axisDist > R)) return std::nullopt;  // self-intersecting / degenerate → DECLINE
     topo::FaceSurface s;
-    s.kind = topo::FaceSurface::Kind::Sphere;
-    // Z = axis; X ref = the circle-plane normal, which is ⟂ A (checked above).
-    s.frame = math::Ax3::fromAxisAndRef(C, A, circle.frame.z);
-    s.radius = R;
-    if (!circleOnSurface(circle, s)) return std::nullopt;  // faithful-reduction guard
+    s.kind = topo::FaceSurface::Kind::Torus;
+    // Z = axis; X ref = the radial direction from the axis foot toward the tube centre.
+    s.frame = math::Ax3::fromAxisAndRef(footC, A, math::Dir3{C - footC});
+    s.radius = axisDist;   // MAJOR radius = axis → tube-centre distance
+    s.minorRadius = R;     // MINOR radius = tube (generatrix circle) radius
+    if (!torusOnSurface(circle, s)) return std::nullopt;  // faithful-reduction guard
     return s;
   }
 
@@ -1363,6 +1402,30 @@ class Mapper {
     return edges;
   }
 
+  // True when EVERY EDGE_CURVE of this EDGE_LOOP is used BOTH forward and reversed —
+  // i.e. the loop is made up ENTIRELY of seams (no real trim rim survives the seam
+  // drop). This is how OCCT bounds a FULL doubly-periodic surface: a whole torus's
+  // outer bound is two seam circles (the equator v-seam and the tube u-seam), each an
+  // EDGE_CURVE referenced forward AND reversed. Such a bound carries no real trimming,
+  // so — like a VERTEX_LOOP full sphere — it is represented as an empty (childless) wire
+  // and advancedFace turns a genuine full torus into a BARE periodic surface that the
+  // tessellator meshes watertight over its natural (u,v)∈[0,2π]² bounds (both seams weld).
+  // A partial/trimmed torus keeps real rim edges, fails this test, and is declined.
+  bool isFullySeamedLoop(long edgeLoopId) {
+    const Record* r = recOfKind(edgeLoopId, "EDGE_LOOP");
+    if (!r || r->args.size() != 2 || !r->args[1].isList() || r->args[1].list.empty()) return false;
+    std::unordered_map<long, int> senseMask;  // ecId → bit0=fwd, bit1=rev
+    for (const Arg& oe : r->args[1].list) {
+      if (!oe.isRef()) return false;
+      const Record* o = recOfKind(oe.ref, "ORIENTED_EDGE");
+      if (!o || o->args.size() != 5 || !o->args[3].isRef() || !o->args[4].isEnum()) return false;
+      senseMask[o->args[3].ref] |= (o->args[4].text == "T") ? 1 : 2;
+    }
+    for (const auto& [ecId, mask] : senseMask)
+      if (mask != 3) return false;  // a rim used only one way → real trim → not fully seamed
+    return true;
+  }
+
   // FACE_OUTER_BOUND / FACE_BOUND('',#edgeLoop,orientation) → a wire of edges.
   topo::Shape faceBound(long id) {
     const Record* r = rec(id);
@@ -1382,6 +1445,12 @@ class Mapper {
       if (loop->args.size() != 2 || !loop->args[1].isRef()) { decline(); return {}; }
       return topo::ShapeBuilder::makeWire({});
     }
+
+    // A fully-seamed EDGE_LOOP (every edge a forward+reversed seam pair) bounds a FULL
+    // doubly-periodic surface (a whole torus). Like a VERTEX_LOOP, it carries no real
+    // trim, so represent it as a childless wire; advancedFace turns a genuine full torus
+    // into a BARE periodic surface meshed watertight over its natural bounds.
+    if (isFullySeamedLoop(r->args[1].ref)) return topo::ShapeBuilder::makeWire({});
 
     std::vector<topo::Shape> edges = edgeLoop(r->args[1].ref);
     if (fail_ || edges.empty()) { decline(); return {}; }
@@ -1419,24 +1488,33 @@ class Mapper {
     const topo::Orientation orient =
         r->args[3].text == "T" ? topo::Orientation::Forward : topo::Orientation::Reversed;
 
-    // A childless bound comes from a VERTEX_LOOP face-bound (a FULL untrimmed periodic
-    // surface). It closes watertight ONLY for a genuine full sphere: the tessellator
-    // meshes the natural (u∈[0,2π], v∈[-π/2,π/2]) rectangle for Kind::Sphere and welds
-    // the longitude seam plus both collapsed poles. Build such a face as a BARE
-    // periodic surface (null outer wire). Any OTHER surface, or a sphere face that
-    // ALSO carries real trim edges (a partial zone), cannot close this way → keep the
-    // honest OCCT deferral (the engine's watertight self-verify is the final arbiter).
+    // A childless bound comes from a VERTEX_LOOP (full sphere) or a fully-seamed EDGE_LOOP
+    // (full torus) face-bound — a FULL untrimmed periodic surface. It closes watertight for:
+    //   * a genuine full SPHERE: the tessellator meshes the natural (u∈[0,2π], v∈[-π/2,π/2])
+    //     rectangle and welds the longitude seam plus both collapsed poles;
+    //   * a genuine full TORUS: it meshes the natural (u,v)∈[0,2π]² rectangle and welds BOTH
+    //     seams (S(0,v)=S(2π,v), S(u,0)=S(u,2π)) — no poles, even cleaner than the sphere.
+    // Build such a face as a BARE periodic surface (null outer wire). Any OTHER surface, or a
+    // sphere/torus face that ALSO carries real trim edges (a partial zone), cannot close this
+    // way → keep the honest OCCT deferral (the engine's watertight self-verify is the arbiter).
     bool anyEmpty = false, allEmpty = true;
     for (const topo::Shape& w : wires) {
       if (w.tshape()->children().empty()) anyEmpty = true;
       else allEmpty = false;
     }
     if (anyEmpty) {
-      if (srf->kind == topo::FaceSurface::Kind::Sphere && allEmpty)
+      const topo::FaceSurface::Kind k = srf->kind;
+      if (allEmpty &&
+          (k == topo::FaceSurface::Kind::Sphere || k == topo::FaceSurface::Kind::Torus))
         return topo::ShapeBuilder::makeFace(*srf, topo::Shape{}, {}, orient);
       decline();
       return {};
     }
+
+    // A TORUS that reaches here carries real trim edges (a partial torus). There is no
+    // native trimmed-torus mesh path (only the full bare-periodic form above), so DECLINE →
+    // OCCT rather than force an approximate/broken face.
+    if (srf->kind == topo::FaceSurface::Kind::Torus) { decline(); return {}; }
 
     if (outerIdx < 0) outerIdx = 0;
 
@@ -1727,6 +1805,7 @@ class Mapper {
       case K::Cylinder: return math::Cylinder{s.frame, s.radius}.value(u, v);
       case K::Cone:     return math::Cone{s.frame, s.radius, s.semiAngle}.value(u, v);
       case K::Sphere:   return math::Sphere{s.frame, s.radius}.value(u, v);
+      case K::Torus:    return math::Torus{s.frame, s.radius, s.minorRadius}.value(u, v);
       default:          return s.frame.origin;
     }
   }
@@ -1756,6 +1835,16 @@ class Mapper {
     }
     return true;
   }
+  // Four quadrant points of the tube (generatrix) circle fix it against the candidate torus.
+  static bool torusOnSurface(const topo::EdgeCurve& c, const topo::FaceSurface& s) {
+    const double scale = std::max(std::max(c.radius, s.radius), s.minorRadius);
+    for (const double t : {0.0, 1.57079632679489662, 3.14159265358979324, 4.71238898038468986}) {
+      const math::Point3 p = c.frame.origin + c.frame.x.vec() * (c.radius * std::cos(t)) +
+                             c.frame.y.vec() * (c.radius * std::sin(t));
+      if (!pointOnSurface(s, p, scale)) return false;
+    }
+    return true;
+  }
 
   // Project a world point onto a surface's (u,v), inverting the elementary
   // parametrization (elementary.h). Analytic-exact for plane/cylinder/cone/sphere;
@@ -1778,6 +1867,12 @@ class Mapper {
       case K::Sphere: {
         const double rc = std::sqrt(lx * lx + ly * ly);
         return {std::atan2(ly, lx), std::atan2(lz, rc)};
+      }
+      case K::Torus: {
+        // u = major angle about Z; v = minor angle around the tube. The tube-centre
+        // circle sits at radius R in the X–Y plane, so v is the angle of (radial−R, z).
+        const double rc = std::sqrt(lx * lx + ly * ly);
+        return {std::atan2(ly, lx), std::atan2(lz, rc - s.radius)};
       }
       case K::BSpline:
         return projectBSplineUV(s, p);

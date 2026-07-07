@@ -128,219 +128,127 @@ green at the OCCT default.
 
 ### Requirement: Native STEP AP203 import of a writer-emitted manifold-solid-brep
 
-The native exchange library SHALL provide `step_import_native(path)` that reads an
-ISO-10303-21 (STEP Part 21) file — **independently of its `FILE_SCHEMA` header** (AP203,
-AP214 `AUTOMOTIVE_DESIGN`, or AP242 are all accepted; the reader gates on entities + the mm
-length-unit context, not the schema string, and **skips** AP242 PMI / annotation entities and
-additive plane-angle / solid-angle / PMI unit contexts) — and reconstructs a native
-`topology::Shape`: a `Solid` when the file has exactly one root `MANIFOLD_SOLID_BREP`; a **flat**
-`Compound` of `Solid`s when it has more than one co-equal root `MANIFOLD_SOLID_BREP` with **no**
-product-placement transform tree; or a **placed** `Compound` of `Solid`s when the file is a
-**single-level assembly** — each component `MANIFOLD_SOLID_BREP` reconstructed at its
-component-local coordinates then placed by the composed transform the file's transform tree
-carries, where the composed per-component placement is classified as one of **rigid** (rotation +
-translation), **uniform scale** (`R·kI`, one positive factor `k>0`; the placed solid's volume
-scales by `k³`), or **mirror** (an orthonormal reflection, det ≈ −k³ < 0, optionally uniformly
-scaled) — a **non-uniform / shear** placement (a linear part whose `MᵀM` is not a scalar multiple
-of the identity) SHALL DECLINE. For a **mirror** placement the reader SHALL compensate the
-reflection's handedness flip by complementing the component solid's face orientation (the existing
-`topology::Orientation` algebra) so the tessellator's tangent-derived world normal
-(`cross(place(∂u), place(∂v))`, which reverses under a reflection) points OUTWARD and the placed
-solid self-verifies watertight with positive volume — the tessellator SHALL NOT be modified and no
-normal SHALL be fabricated. The faces SHALL carry surfaces of kind `PLANE`,
+The native exchange library SHALL provide `step_import_native(path)` that reads an ISO-10303-21 (STEP
+Part 21) file — **independently of its `FILE_SCHEMA` header** (AP203, AP214 `AUTOMOTIVE_DESIGN`, or AP242
+are all accepted; the reader gates on entities + the mm length-unit context, not the schema string, and
+**skips** AP242 PMI / annotation entities and additive plane-angle / solid-angle / PMI unit contexts) —
+and reconstructs a native `topology::Shape`: a `Solid` (one root `MANIFOLD_SOLID_BREP`), a **flat**
+`Compound` (several co-equal roots, no transform tree), or a **placed** `Compound` (a single-level
+assembly composed by a rigid / uniform-scale / mirror transform, else DECLINE, with mirror
+orientation-compensation so each placed solid self-verifies watertight; the tessellator SHALL NOT be
+modified and no normal SHALL be fabricated). The faces SHALL carry surfaces of kind `PLANE`,
 `CYLINDRICAL_SURFACE`, `CONICAL_SURFACE`, `SPHERICAL_SURFACE`, `B_SPLINE_SURFACE_WITH_KNOTS`
-(non-rational), or a **`SURFACE_OF_REVOLUTION` that reduces to a native analytic quadric** — a
-straight generatrix **parallel** to its axis (→ cylinder), a straight generatrix **oblique** to and
-**meeting** its axis (→ cone), a straight generatrix **perpendicular** to its axis (→ plane), or an
-**on-axis circle / arc** whose plane contains the axis (→ sphere) — and the edges curves of kind
-`LINE`, `CIRCLE`, `ELLIPSE`, `B_SPLINE_CURVE_WITH_KNOTS` (non-rational), or a **`TRIMMED_CURVE`** whose
-basis is one of those kinds. A `SPHERICAL_SURFACE` (or on-axis-circle-`SURFACE_OF_REVOLUTION`) face that
-OCCT emits as a **SINGLE periodic FACE with a longitude SEAM and TWO DEGENERATE POLE edges** — a full
-sphere — SHALL be reconstructed as a native `Sphere` **bare periodic surface** (a face whose outer wire
-is NULL) by dropping the seam pair AND the two degenerate pole edges, so the tessellator meshes it
-watertight over the sphere's natural parametric bounds; a spherical face that still carries a REAL
-latitude-trim edge after the seam+pole drop keeps the ordinary trimmed-wire path. Specifically:
+(non-rational), a **`TOROIDAL_SURFACE`** (→ native `Kind::Torus`, when T1 lands), or a
+**`SURFACE_OF_REVOLUTION`** that maps to a native surface — a straight generatrix **parallel** (→
+cylinder), **oblique-meeting** (→ cone), or **perpendicular** (→ plane); an **on-axis circle / arc** (→
+sphere); an **off-axis circle / arc** (→ **torus**, `Kind::Torus`, when T1 lands); or an **ellipse /
+B-spline** profile (→ a **rational `Kind::BSpline`** revolved surface, when T2 lands) — and the edge
+curves of kind `LINE`, `CIRCLE`, `ELLIPSE`, `B_SPLINE_CURVE_WITH_KNOTS` (non-rational), or a
+**`TRIMMED_CURVE`** whose basis is one of those. A full periodic **sphere** face OCCT emits as a single
+seam+double-pole face SHALL be reconstructed as a native `Sphere` **bare periodic surface** (NULL outer
+wire) as before. A full periodic **torus** face (doubly periodic, NO pole) SHALL be reconstructed
+watertight per the diagnosed OCCT bound (a seam EDGE_LOOP trimmed face, or a doubly-periodic bare-surface
+face analogous to the sphere path extended to two seams) — and if it cannot close watertight within the
+additive budget, the torus SHALL DECLINE. Specifically:
 
-- **A `TRIMMED_CURVE`** `('',#basis,(trim_1),(trim_2),sense_agreement,master_representation)` SHALL
-  be mapped by resolving its **basis** curve (recursively — a `LINE` / `CIRCLE` / `ELLIPSE` /
-  `B_SPLINE_CURVE_WITH_KNOTS`, including a basis reached through the existing `SURFACE_CURVE` /
-  `SEAM_CURVE` / `INTERSECTION_CURVE` wrapper) as the native `EdgeCurve`, and caching its two
-  `PARAMETER_VALUE` trims (if present) keyed by the `TRIMMED_CURVE`'s `#id`. When the basis is a
-  **`B_SPLINE_CURVE_WITH_KNOTS`** and both parameter trims are present, the native `Edge`'s
-  `[first,last]` range SHALL be taken from those trims (min/max, clamped to the clamped knot span; a
-  wide / degenerate span reduces to the full curve) — the covered knot sub-domain the endpoint
-  vertices cannot recover. When the basis is **analytic** (`LINE` / `CIRCLE` / `ELLIPSE`) the reader
-  SHALL keep the existing vertex-derived range (the endpoint vertices fix the range exactly and the
-  parameter trims are redundant). A `TRIMMED_CURVE` whose basis is out of slice (rational /
-  unsupported curve) or absent / malformed SHALL DECLINE. No new topology is added — the native
-  `Edge` already stores an arbitrary trimmed `[first,last]` range.
-- **A DEGENERATE POLE edge** — an `EDGE_CURVE` (or a `VERTEX_LOOP` bound) whose 3D curve collapses to a
-  SINGLE point over its whole parameter range (both endpoint `VERTEX_POINT`s coincide within a
-  scale-relative tolerance AND the curve sweeps zero arc length / lies on the revolution axis) — is the
-  pole singularity of a periodic surface, NOT a real trimming edge, and SHALL be DROPPED from the
-  `EDGE_LOOP` alongside the periodic seam. A legitimate full-circle rim edge (`v0 == v1` with a
-  NON-zero circular sweep — a cylinder / cone cap rim) SHALL NOT be dropped.
+- **A `TRIMMED_CURVE`** SHALL be unwrapped to its basis curve (recursively; B-spline basis takes its
+  `[first,last]` from the `PARAMETER_VALUE` trims clamped to the clamped knot span, analytic basis keeps
+  the vertex-derived range) exactly as the landed trimmed-curve slice does (unchanged).
+- **A `TOROIDAL_SURFACE`** `('',#axis2placement, major_radius, minor_radius)` SHALL be mapped by resolving
+  the `AXIS2_PLACEMENT_3D` frame and the two trailing reals and building a native `FaceSurface` of kind
+  `Torus` (`radius` = major, `minorRadius` = minor) — reconstructed watertight (T1) or DECLINED if the
+  additive torus path does not close.
 - **A `SURFACE_OF_REVOLUTION`** `('',#profile,#axis1)` SHALL be mapped by resolving the axis
-  (`AXIS1_PLACEMENT('',#origin,#axis)` — origin + one direction, `$` axis defaulting to +Z) and the
-  **profile** curve (via the same curve dispatcher, including a `TRIMMED_CURVE` profile), then
-  classifying the profile + axis by MEASUREMENT (never by trusting a keyword) and mapping it to an
-  EXACT native analytic quadric in FOUR cases, each built with the existing analytic `FaceSurface`
-  machinery so the reduced surface is identical to the analytic-keyword-equivalent surface AND
-  VERIFIED to pass through the profile within a scale-relative tolerance before it is emitted:
-  - a straight `LINE` generatrix **parallel** to the axis → a native **`Cylinder`** (radius = the
-    perpendicular distance from the line to the axis, frame on the axis);
-  - a straight `LINE` generatrix **oblique** to the axis whose support is **coplanar with and
-    intersects** the axis → a native **`Cone`** (apex at the intersection, `semiAngle` = the line-axis
-    angle folded into `(0, π/2)`, reference radius = the perpendicular distance at the frame origin, a
-    regular on-axis point NOT the apex, per the native `S(u,v)=O+(R+v·sinα)(cos u·X+sin u·Y)+v·cosα·Z`
-    convention);
-  - a straight `LINE` generatrix **perpendicular** to the axis → a native **`Plane`** (a flat annulus
-    through the line, normal = the axis direction, frame at the foot on the axis);
-  - a `CIRCLE` / arc generatrix whose **centre lies ON the axis** AND whose **plane contains the axis
-    direction** (revolved about a diameter) → a native **`Sphere`** (centre = the circle centre,
-    radius = the circle radius). A full-turn on-axis-circle revolution whose reconstructed face is a
-    complete periodic double-pole sphere SHALL be closed watertight via the bare-periodic-surface path
-    above.
+  (`AXIS1_PLACEMENT` — origin + one direction, `$` axis → +Z) and the **profile** curve, then classifying
+  the profile + axis by MEASUREMENT (never by a keyword) and mapping it to the EXACT native surface it
+  sweeps, VERIFIED to pass through the profile within a scale-relative tolerance before emission:
+  - a straight `LINE` **parallel** → native `Cylinder`; **oblique meeting** the axis → native `Cone`;
+    **perpendicular** → native `Plane` (all landed, unchanged);
+  - a `CIRCLE` / arc **centred ON the axis** with its plane **containing the axis** → native `Sphere`
+    (landed, unchanged);
+  - a `CIRCLE` / arc **centred OFF the axis** whose plane admits a ring torus → a native **`Torus`**
+    (`radius` = the perpendicular distance from the circle centre to the axis = major; `minorRadius` = the
+    circle radius = minor; frame origin on the axis, Z = the axis), VERIFIED the generatrix circle lies on
+    the torus tube (**T1**);
+  - an **`ELLIPSE`** or **`B_SPLINE_CURVE_WITH_KNOTS`** profile → a native **rational `Kind::BSpline`**
+    surface: the revolution's rational-quadratic full circle in `u` tensored with the profile's own
+    rational-or-nonrational representation in `v` (poles `P_ij` placed on the revolution circle at each
+    profile pole, weights `w_ij = w^u_i · w^v_j`), VERIFIED sampled profile points lie on the reconstructed
+    surface (**T2**).
 
-  In **every** other case the reader SHALL DECLINE (NULL → OCCT): a `CIRCLE` / arc whose **centre is
-  OFF the axis** (a **torus** — there is no native `FaceSurface::Kind::Torus`), a `CIRCLE` whose plane
-  does not contain the axis (non-spherical / degenerate), an **`ELLIPSE`** or
-  **`B_SPLINE_CURVE_WITH_KNOTS`** generatrix (a general revolved surface — the reader authors no
-  revolved-B-spline surface), a **skew** oblique `LINE` whose support does NOT meet the axis (a
-  **hyperboloid of one sheet** — no native kind), a `LINE` **on** the axis (degenerate), a **degenerate
-  axis**, and any reduced cone / plane / sphere face that fails the faithful-reduction guard — kept a
-  DECLINE consistent with the `TOROIDAL_SURFACE` decline.
+  In **every** other case, AND whenever the mapped torus face (T1) or revolved B-spline face (T2) does not
+  reconstruct watertight, the reader SHALL DECLINE (NULL → OCCT): a `CIRCLE` whose plane does not admit a
+  ring torus (degenerate), a **skew** oblique `LINE` (a hyperboloid of one sheet — no native kind), a
+  `LINE` **on** the axis (degenerate), a **degenerate axis**, a profile whose revolution is not faithfully
+  representable, and any mapped face that fails the faithful-reduction guard or the watertight self-verify.
 
-The reader SHALL (a) tokenize the DATA section into a `map<#id, Record>` handling integer refs `#M`,
-reals including typed forms (`1.`, `1.E2`, `-3.5E-07`), strings (`'...'` with embedded `''`), enums
-(`.T.` / `.PLANE.`), lists `( ... )`, `$` (null), `*` (derived), and combined-instance
-`( SUB(...) SUB(...) )` records; (b) resolve leaf geometry — `CARTESIAN_POINT` → `math::Point3` in
-**millimetres**, `DIRECTION` → `math::Dir3`, `AXIS2_PLACEMENT_3D` → `math::Ax3`, `AXIS1_PLACEMENT` →
-axis (origin + direction), the in-scope curves (including a `TRIMMED_CURVE`'s basis) → `EdgeCurve`,
-the in-scope surfaces (including a quadric-reducing `SURFACE_OF_REVOLUTION` → cylinder / cone / plane /
-sphere) → `FaceSurface`; (c) build topology following refs — `VERTEX_POINT` → vertex, `EDGE_CURVE` →
-one shared edge per `#id` (its `[first,last]` from the trims when the 3D curve is a `TRIMMED_CURVE`
-over a B-spline basis), `ORIENTED_EDGE` → the oriented shared edge, `EDGE_LOOP` → wire,
-`FACE_OUTER_BOUND` / `FACE_BOUND` + `ADVANCED_FACE` sense → face, `CLOSED_SHELL` /
-`MANIFOLD_SOLID_BREP` → shell/solid (all roots when there are several) — **dropping the writer's
-periodic-wall SEAM edge AND the two degenerate POLE edges of a full periodic sphere face** (a full
-sphere face whose loop reduced to seam + poles only → a native `Sphere` bare periodic surface meshed
-over its natural bounds); and (d) **when a product-placement transform tree is present**, compose it
-exactly as the archived assembly slices do (rigid / uniform-scale / mirror, else DECLINE), applying the
-mirror orientation compensation where needed, then `Shape::located(Location{T})` per component solid. A
-`TOROIDAL_SURFACE` face, a `SURFACE_OF_REVOLUTION` the reader cannot reduce to a native quadric
-(cylinder / cone / plane / sphere), and a partial / pole-capped spherical zone that cannot close
-watertight, SHALL DECLINE, and an assembly structure the reader cannot compose to a supported placement
-for every geometric root SHALL DECLINE. This reader SHALL remain OCCT-free and host-buildable and SHALL
-reference no OCCT / `IEngine` / `EngineShape` type. It SHALL NOT modify the STEP writer or the
-tessellator, SHALL NOT import PMI / annotation entities as geometry, and SHALL NOT fabricate a curve, a
-surface, a trim, a placement, or a solid the file does not describe.
+The reader SHALL remain OCCT-free and host-buildable and SHALL reference no OCCT / `IEngine` /
+`EngineShape` type. It SHALL make the tessellator change ADDITIVE-ONLY (a new `Kind::Torus` mesh branch
+that does not perturb any existing mesh path — proven byte-identical), SHALL prefer to leave the STEP
+writer unchanged (OCCT-authored fixtures), SHALL NOT import PMI / annotation entities as geometry, and
+SHALL NOT fabricate a curve, a surface, a trim, a placement, or a solid the file does not describe, nor
+weaken any tolerance.
 
 #### Scenario: A native-written box imports back to the same solid (host round-trip)
 - GIVEN a native-built axis-aligned box `Solid` serialized by `step_export_native` to an ISO-10303-21 buffer, on the host with no OCCT
 - WHEN `step_import_native` reads the buffer back and the result is tessellated
 - THEN the reader SHALL return a `Solid` that is valid + watertight AND whose volume, bounding box, and face / edge / vertex counts / topology match the original box EXACTLY (the reader inverts the writer)
 
-#### Scenario: A full periodic double-pole SPHERICAL_SURFACE face imports as a watertight native sphere (host)
-- GIVEN an in-scope ISO-10303-21 buffer with a SINGLE `SPHERICAL_SURFACE` `ADVANCED_FACE` whose `EDGE_LOOP` is the longitude SEAM meridian (one `EDGE_CURVE` referenced forward AND reversed) plus TWO DEGENERATE POLE edges (each collapsing a whole `u`-edge to the pole vertex at `v = ±π/2`), read on the host with no OCCT
-- WHEN `step_import_native` reconstructs the face
-- THEN it SHALL drop the seam pair AND the two degenerate pole edges, build the native `Sphere` face as a BARE periodic surface (NULL outer wire), AND the assembled solid SHALL be valid + watertight with volume `4/3·π·R³` and bbox `[−R,R]³`, IDENTICAL to the `SPHERICAL_SURFACE`-keyword multi-lune / on-axis-circle-revolution sphere — never a fabricated or non-watertight face
-
-#### Scenario: A rigid / uniform-scale / mirror assembly still imports as a placed compound (host)
-- GIVEN an in-scope ISO-10303-21 buffer describing a single-level assembly of components placed by rigid, uniform-scale, or mirror `ITEM_DEFINED_TRANSFORMATION` transforms, read on the host with no OCCT
-- WHEN `step_import_native` composes the transform tree
-- THEN it SHALL return a `Compound` of the placed `Solid`s exactly as the archived scaled/mirrored-assembly slice does (the placed-assembly paths are unchanged by this change)
-
-#### Scenario: A TRIMMED_CURVE edge is accepted and unwrapped onto the native trimmed edge (host)
-- GIVEN an in-scope ISO-10303-21 buffer where one `EDGE_CURVE`'s 3D curve is a `TRIMMED_CURVE` over a `LINE` / `CIRCLE` / `ELLIPSE` / `B_SPLINE_CURVE_WITH_KNOTS` basis, read on the host with no OCCT
-- WHEN `step_import_native` resolves the edge
-- THEN it SHALL unwrap the `TRIMMED_CURVE` to the basis curve as the native `EdgeCurve`, setting the native `Edge`'s `[first,last]` from the `PARAMETER_VALUE` trims (clamped to the clamped knot span) when the basis is a B-spline, or from the endpoint vertices when the basis is analytic, AND the assembled solid SHALL be valid + watertight (the trimmed-curve slice is unchanged by this change)
-
-#### Scenario: A SURFACE_OF_REVOLUTION of a line parallel to its axis reduces to an exact native cylinder (host)
-- GIVEN an in-scope ISO-10303-21 buffer with a `SURFACE_OF_REVOLUTION` face whose profile is a straight `LINE` generatrix parallel to the revolution axis, read on the host with no OCCT
+#### Scenario: A TOROIDAL_SURFACE face maps to a native torus or declines honestly (host)
+- GIVEN an in-scope ISO-10303-21 buffer with a face over a `TOROIDAL_SURFACE('',#axis2,major,minor)`, read on the host with no OCCT
 - WHEN `step_import_native` resolves the surface
-- THEN it SHALL reduce it to the EXACT native analytic `Cylinder` (radius = the perpendicular distance from the line to the axis, frame on the axis), AND the assembled solid SHALL be valid + watertight and identical to the `CYLINDRICAL_SURFACE`-keyword-equivalent solid (the landed cylinder reduction is unchanged)
+- THEN it SHALL build a native `FaceSurface` of kind `Torus` (`radius` = major, `minorRadius` = minor) AND — when the additive torus mesh path + face reconstruction close watertight (T1 lands) — the assembled solid SHALL be valid + watertight with the torus volume `2·π²·R·r²` and matching bbox; OTHERWISE it SHALL return a NULL Shape (DECLINE) so the engine falls through to OCCT — never a fabricated or non-watertight torus
 
-#### Scenario: A SURFACE_OF_REVOLUTION of an oblique line meeting the axis reduces to an exact native cone (host)
-- GIVEN an in-scope ISO-10303-21 buffer with a `SURFACE_OF_REVOLUTION` face whose profile is a straight `LINE` generatrix OBLIQUE to the axis, whose support is coplanar with and intersects the axis (a truncated-cone / frustum wall), read on the host with no OCCT
+#### Scenario: A SURFACE_OF_REVOLUTION of an off-axis circle maps to a native torus or declines honestly (host)
+- GIVEN an in-scope ISO-10303-21 buffer with a `SURFACE_OF_REVOLUTION` face whose profile is a `CIRCLE` / arc whose centre is OFF the axis and whose plane admits a ring torus, read on the host with no OCCT
 - WHEN `step_import_native` resolves the surface
-- THEN it SHALL reduce it to the EXACT native analytic `Cone` (apex at the line-axis intersection, `semiAngle` = the line-axis angle, reference radius = the perpendicular distance at the frame origin — a regular on-axis point, NOT the apex), VERIFIED to pass through the profile, AND the assembled frustum solid SHALL be valid + watertight and identical to the `CONICAL_SURFACE`-keyword-equivalent solid
+- THEN it SHALL build a native `Torus` (`radius` = the perpendicular distance from the circle centre to the axis, `minorRadius` = the circle radius), VERIFIED the generatrix circle lies on the torus tube, AND — when T1 lands — the assembled solid SHALL be valid + watertight and identical to the `TOROIDAL_SURFACE`-keyword-equivalent solid; OTHERWISE it SHALL DECLINE (NULL) so the engine falls through to OCCT
 
-#### Scenario: A SURFACE_OF_REVOLUTION of a line perpendicular to the axis reduces to an exact native plane (host)
-- GIVEN an in-scope ISO-10303-21 buffer with a `SURFACE_OF_REVOLUTION` face whose profile is a straight `LINE` generatrix PERPENDICULAR to the revolution axis (a flat annular cap), read on the host with no OCCT
+#### Scenario: A SURFACE_OF_REVOLUTION of an ellipse / B-spline profile maps to a native rational B-spline or declines honestly (host)
+- GIVEN an in-scope ISO-10303-21 buffer with a `SURFACE_OF_REVOLUTION` face whose profile is an `ELLIPSE` or a `B_SPLINE_CURVE_WITH_KNOTS`, read on the host with no OCCT
 - WHEN `step_import_native` resolves the surface
-- THEN it SHALL reduce it to the EXACT native analytic `Plane` (a flat annulus through the line, normal = the axis direction, frame at the foot on the axis), VERIFIED that both line endpoints share one axial coordinate, AND the reconstructed face SHALL be valid + watertight and identical to the `PLANE`-keyword-equivalent face
+- THEN it SHALL build the EXACT revolved rational tensor-product B-spline (`Kind::BSpline`, the rational-quadratic full circle in `u` ⊗ the profile in `v`), VERIFIED sampled profile points lie on the surface, AND — when the surface is faithfully representable and self-verifies watertight (T2 lands) — the assembled solid SHALL be valid + watertight and match the OCCT re-import within tolerance; OTHERWISE it SHALL DECLINE (NULL) so the engine falls through to OCCT — never a mangled or approximate surface
 
-#### Scenario: A SURFACE_OF_REVOLUTION of an on-axis circle reduces to an exact native sphere (host)
-- GIVEN an in-scope ISO-10303-21 buffer with a `SURFACE_OF_REVOLUTION` face whose profile is a `CIRCLE` / semicircular arc whose centre lies ON the axis and whose plane contains the axis direction (revolved about a diameter), read on the host with no OCCT
-- WHEN `step_import_native` resolves the surface
-- THEN it SHALL reduce it to the EXACT native analytic `Sphere` (centre = the circle centre, radius = the circle radius), VERIFIED that the centre is on the axis and the circle plane contains the axis, AND — when the reconstructed face is a full periodic double-pole sphere — it SHALL close it watertight via the bare-periodic-surface path so the assembled solid is valid + watertight and identical to the `SPHERICAL_SURFACE`-keyword-equivalent solid
-
-#### Scenario: A SURFACE_OF_REVOLUTION with no faithful native quadric declines honestly (host)
-- GIVEN an in-scope ISO-10303-21 buffer with a `SURFACE_OF_REVOLUTION` face whose profile is a `CIRCLE` / arc whose centre is OFF the axis (a torus), an `ELLIPSE` or `B_SPLINE_CURVE_WITH_KNOTS` generatrix (a general revolved surface), a SKEW oblique `LINE` whose support does NOT meet the axis (a hyperboloid of one sheet), or a `LINE` on the axis (degenerate), read on the host with no OCCT
-- WHEN `step_import_native` resolves the surface
-- THEN it SHALL return a NULL Shape (DECLINE) without constructing any solid — the reader authors no torus (there is no native `FaceSurface::Kind::Torus`), no revolved-B-spline surface, and no hyperboloid — so the engine can fall through to OCCT; the decline is kept consistent with the landed `TOROIDAL_SURFACE` decline and never a forced or approximate face
+#### Scenario: The on-axis circle / line quadric reductions and prior slices are unchanged (host)
+- GIVEN in-scope ISO-10303-21 buffers exercising a `LINE` parallel / oblique-meeting / perpendicular and an on-axis `CIRCLE` `SURFACE_OF_REVOLUTION`, plus the trimmed-curve, full-sphere bare-periodic, quadric, bspline-face, and rigid / uniform-scale / mirror assembly cases, read on the host with no OCCT
+- WHEN `step_import_native` resolves each
+- THEN the cylinder / cone / plane / sphere reductions and every prior import path SHALL behave EXACTLY as before (the new torus + general-revolution arms are additive; adding `Kind::Torus` and the `minorRadius` field leaves every existing kind byte-identical)
 
 ### Requirement: Native STEP import runs healShell and returns NULL for out-of-scope or unhealable files
 
-`step_import_native` SHALL rely on the shared-node reconstruction and SHALL return the assembled
-`Solid` / flat `Compound` / **placed `Compound`** for the engine to self-verify. A placed component
-solid SHALL be reconstructed at its local coordinates then placed by `Shape::located()`: a **rigid**
-or **uniform-scale (`k>0`)** placement is conformal and preserves the watertight 2-manifold; a
-**mirror** placement SHALL have the component's face orientation complemented so the reflected solid
-meshes with outward normals and self-verifies watertight with positive volume. A `TRIMMED_CURVE` edge
-SHALL be reconstructed onto the native trimmed `Edge` (basis `EdgeCurve` + trim-driven `[first,last]`
-for a B-spline basis, vertex-derived range otherwise), a **quadric-reducing**
-`SURFACE_OF_REVOLUTION` face onto its exact native analytic surface — `Cylinder` (line ∥ axis),
-`Cone` (line oblique, meeting the axis), `Plane` (line ⟂ axis), or `Sphere` (on-axis circle / arc) —
-each VERIFIED to pass through the profile, and a **full periodic double-pole SPHERE** face (a
-`SPHERICAL_SURFACE` keyword or an on-axis-circle `SURFACE_OF_REVOLUTION` whose loop reduced to the seam
-+ the two degenerate poles only) onto a native `Sphere` **bare periodic surface** meshed watertight
-over its natural bounds — all subject to the same watertight self-verify. The reader
-SHALL return a **NULL Shape (DECLINE)** — and never a partial or invented solid — when ANY of: (i) the
-assembled shell is a genuinely open / non-manifold B-rep, or a placed member fails the self-verify (an
-apex-reaching cone with a degenerate collapsed seam, OR a partial / pole-capped spherical zone that
-cannot close watertight, is a member that fails the self-verify → DECLINE);
-(ii) the file has **zero** root `MANIFOLD_SOLID_BREP`, OR carries a product-placement transform tree
-the reader **cannot compose** to a supported placement for every geometric component (a **non-uniform /
-shear** transform, a root reached by no placement, or a **deep multi-level nested** /
-**external-reference** product structure); (iii) a referenced entity has an unsupported keyword or a
-surface kind outside
-{`PLANE`,`CYLINDRICAL_SURFACE`,`CONICAL_SURFACE`,`SPHERICAL_SURFACE`,`B_SPLINE_SURFACE_WITH_KNOTS`, a
-**quadric-reducing** `SURFACE_OF_REVOLUTION` (a line parallel / oblique-meeting / perpendicular, or an
-on-axis circle)} — explicitly INCLUDING `TOROIDAL_SURFACE`, a `SURFACE_OF_REVOLUTION` of an
-**off-axis circle** (torus), an **ellipse / B-spline** profile (general revolved surface), a **skew**
-oblique line (hyperboloid), or a line **on** the axis (degenerate), a **directly-authored arbitrary
-rational (weighted)** B-spline surface, and a general swept / bounded / offset surface
-(`SURFACE_OF_LINEAR_EXTRUSION`, `RECTANGULAR_TRIMMED_SURFACE`, `OFFSET_SURFACE`, `CURVE_BOUNDED_SURFACE`),
-in ANY component — or a curve kind outside {`LINE`,`CIRCLE`,`ELLIPSE`,`B_SPLINE_CURVE_WITH_KNOTS`, a
-`TRIMMED_CURVE` over one of those}, a `TRIMMED_CURVE` over an out-of-slice basis, or a rational
-(weighted) B-spline wrap; (iv) a non-millimetre LENGTH-unit context (no silent rescale; additive
-plane-angle / solid-angle / PMI unit contexts are skipped and do NOT count as non-mm); or (v) a
-malformed / dangling record. AP242 PMI / annotation entities SHALL be **skipped** (never a decline
-trigger, never imported). The tolerance SHALL NEVER be widened to force a pass; the honest residual
-SHALL be reported, not hidden — a full sphere that cannot be built robustly watertight KEEPS the honest
-OCCT deferral rather than emitting a non-watertight or approximate sphere.
+`step_import_native` SHALL rely on the shared-node reconstruction and SHALL return the assembled `Solid` /
+flat `Compound` / **placed `Compound`** for the engine to self-verify. A `TOROIDAL_SURFACE` face and an
+off-axis-circle `SURFACE_OF_REVOLUTION` SHALL be reconstructed onto a native `Kind::Torus` face (**T1**),
+and an ellipse / B-spline `SURFACE_OF_REVOLUTION` onto a native rational `Kind::BSpline` face (**T2**),
+each VERIFIED to pass through the profile and subject to the same watertight self-verify. The reader SHALL
+return a **NULL Shape (DECLINE)** — and never a partial or invented solid — when ANY of: (i) the assembled
+shell is a genuinely open / non-manifold B-rep, or a placed member fails the self-verify, or **a mapped
+torus / revolved-B-spline face does not reconstruct watertight** (the additive torus mesh path or the
+periodic revolved B-spline leaves a gap); (ii) the file has **zero** root `MANIFOLD_SOLID_BREP`, or carries
+a transform tree the reader cannot compose; (iii) a referenced entity has a surface kind outside
+{`PLANE`,`CYLINDRICAL_SURFACE`,`CONICAL_SURFACE`,`SPHERICAL_SURFACE`,`B_SPLINE_SURFACE_WITH_KNOTS`,
+`TOROIDAL_SURFACE`, a mappable `SURFACE_OF_REVOLUTION`} — explicitly INCLUDING a **skew** oblique-line
+revolution (hyperboloid), a directly-authored **arbitrary rational (weighted)** B-spline surface, and a
+general swept / bounded / offset surface — or a curve kind outside
+{`LINE`,`CIRCLE`,`ELLIPSE`,`B_SPLINE_CURVE_WITH_KNOTS`, a `TRIMMED_CURVE` over one of those}; (iv) a
+non-millimetre LENGTH-unit context; or (v) a malformed / dangling record. AP242 PMI / annotation entities
+SHALL be **skipped**. The tolerance SHALL NEVER be widened to force a pass, and no existing tessellation
+path SHALL be perturbed; the honest residual SHALL be reported, not hidden.
 
 #### Scenario: A file whose B-rep cannot form a watertight solid returns NULL (host)
 - GIVEN an ISO-10303-21 buffer describing an in-scope entity graph whose faces leave a boundary gap so the assembled shell is a genuinely open shell, read on the host with no OCCT
 - WHEN `step_import_native` assembles the B-rep and the engine self-verifies it
 - THEN the result SHALL NOT self-verify watertight AND the import SHALL DECLINE (NULL) with the tolerance NOT widened — never a fabricated closed solid
 
-#### Scenario: A partial / pole-capped spherical zone that cannot close keeps the honest OCCT deferral (host)
-- GIVEN an ISO-10303-21 buffer with a spherical `ADVANCED_FACE` that is NOT a full sphere — a partial spherical zone or a pole-capped hemisphere whose `EDGE_LOOP` still carries a REAL latitude-trim edge after the seam+pole drop, and whose reconstructed face does not self-verify watertight — read on the host with no OCCT
-- WHEN `step_import_native` reconstructs the face and the engine self-verifies it
-- THEN the reader SHALL NOT force the bare-periodic-surface full-sphere path AND the import SHALL DECLINE (NULL) so the engine falls through to OCCT — a correct still-deferred outcome, never a non-watertight or invented sphere, with no tolerance widened
+#### Scenario: A mapped torus or revolved-B-spline face that leaves a gap declines to OCCT (host)
+- GIVEN an in-scope ISO-10303-21 buffer whose `TOROIDAL_SURFACE` / off-axis-circle-revolution torus face, or whose ellipse / B-spline revolution face, reconstructs with a seam or pole gap that does not self-verify watertight, read on the host with no OCCT
+- WHEN `step_import_native` assembles the solid and the engine self-verifies it
+- THEN the import SHALL DECLINE (NULL) — keeping the honest OCCT fallback for that track — never a leaky or fabricated face, and the tolerance SHALL NOT be widened
 
-#### Scenario: A TOROIDAL_SURFACE or a non-quadric SURFACE_OF_REVOLUTION or out-of-slice surface returns NULL (host)
-- GIVEN an ISO-10303-21 buffer with a face over a `TOROIDAL_SURFACE`, a `SURFACE_OF_REVOLUTION` that does not reduce to a native quadric (an off-axis circle → torus, an ellipse / B-spline profile → general revolved surface, a skew oblique line → hyperboloid, or an on-axis line → degenerate), a directly-authored arbitrary rational B-spline surface, or a general swept / bounded / offset surface — as a lone solid OR as one component of an assembly — read on the host with no OCCT
+#### Scenario: A hyperboloid / arbitrary-rational / swept surface still returns NULL (host)
+- GIVEN an ISO-10303-21 buffer with a face over a skew-oblique-line `SURFACE_OF_REVOLUTION` (hyperboloid), a directly-authored arbitrary rational B-spline surface, or a general swept / bounded / offset surface, read on the host with no OCCT
 - WHEN `step_import_native` maps the entity table
-- THEN it SHALL return a NULL Shape (DECLINE) without constructing any solid (the whole file declines — no partial import), so the engine can fall through to OCCT — no torus / hyperboloid / rational / swept surface is faked (the tessellator is not modified)
-
-#### Scenario: An AP242 PMI entity still never triggers a decline (host)
-- GIVEN an ISO-10303-21 AP242 buffer carrying an in-slice solid PLUS PMI / annotation entities and additive plane-angle / PMI unit contexts, read on the host with no OCCT
-- WHEN `step_import_native` runs its unit-context gate and its assembly-trigger scan
-- THEN the PMI / annotation entities SHALL be SKIPPED (they SHALL NOT fail the mm length gate and SHALL NOT force the assembly path) AND the solid SHALL import; the file SHALL NOT decline merely because AP242 PMI entities are present (unchanged by this change)
+- THEN it SHALL return a NULL Shape (DECLINE) without constructing any solid, so the engine can fall through to OCCT — no hyperboloid / rational / swept surface is faked (the tessellator is not perturbed)
 
 ### Requirement: Native STEP import is native-else-fallback, self-verified, guarded by OCCT
 
@@ -705,4 +613,50 @@ boolean, construct, tessellation) SHALL stay green at the OCCT default with no r
 - GIVEN this change applied on an OCCT build with the engine left at its default
 - WHEN `scripts/run-sim-suite.sh`, host CTest, and the GPU / Phase-3 suites are run
 - THEN all SHALL stay green with no behavioural change, and the STEP export slice, the revolution cylinder / cone / plane / sphere-reduction import slices, the multi-solid + assembly + AP242 + trimmed-curve slices, shape healing, SSI S1–S5, native blends + #6/#7, curved-boolean native-pass=13, marching, boolean, construct, and tessellation SHALL NOT regress
+
+### Requirement: Native STEP import TORUS and general-revolution mapping verified vs OCCT with tessellation zero-regression proof
+
+The torus (T1) and general-revolution (T2) widening SHALL be verified by (a) **host** unit / decline
+cases (OCCT-free): a `TOROIDAL_SURFACE` face and an off-axis-circle `SURFACE_OF_REVOLUTION` map to a native
+`Kind::Torus` (major = the axis distance, minor = the circle radius), VERIFIED the circle lies on the
+torus, watertight IF T1 lands else an honest DECLINE; an ellipse / B-spline `SURFACE_OF_REVOLUTION` maps to
+a native rational `Kind::BSpline`, VERIFIED the profile lies on the surface, watertight IF T2 lands else an
+honest DECLINE; and the on-axis-circle → sphere, line → cylinder/cone/plane, trimmed-curve, quadric,
+bspline-face, and rigid / uniform-scale / mirror assembly cases STILL pass byte-identical. And (b) a
+**simulator sim-vs-OCCT** gate (OCCT linked) through the `cc_*` facade under `cc_set_engine(1)`: a FOREIGN
+OCCT-authored TORUS solid (off-axis-circle revolution / `TOROIDAL_SURFACE`) imports natively as a torus and
+matches the OCCT re-import (count / volume / watertight / bbox) IF T1 lands, else DECLINES natively and
+imports via OCCT identical to `cc_set_engine(0)`; a FOREIGN OCCT-authored general-revolution (ellipse
+profile) solid imports natively as a rational B-spline and matches the OCCT re-import IF T2 lands, else
+DECLINES to OCCT identical to `cc_set_engine(0)`. And (c) a **tessellation ZERO-REGRESSION proof**: the
+full tessellation-sensitive sim set (`scripts/run-sim-suite.sh`, curved-fillet, curved-chamfer,
+curved-boolean, wrap-emboss, phase3) SHALL stay green with IDENTICAL triangle counts, watertight status,
+and volumes for every existing sphere / cylinder / cone / plane / B-spline face — proving the additive
+`Kind::Torus` mesh path perturbs NOTHING. If ANY existing mesh changes, T1's mesh path SHALL be reverted
+and the torus SHALL keep the OCCT decline. The parity test SHALL restore the OCCT default in teardown and
+SHALL carry its own `main()` (on the `run-sim-suite.sh` SKIP list) so the suite assertion count is
+unchanged. Every existing suite (host CTest, GPU / Phase-3) and every prior native capability (STEP export,
+the flat multi-solid + ELLIPSE + bspline-face + assembly + AP242 + trimmed-curve + revolution-quadric +
+full-sphere import slices, shape healing, SSI S1–S5, native blends + #6/#7, marching, boolean, construct,
+tessellation) SHALL stay green at the OCCT default with no regression.
+
+#### Scenario: A foreign OCCT-authored torus solid imports natively or declines to OCCT (sim)
+- GIVEN an OCCT-authored TORUS solid whose face is a `TOROIDAL_SURFACE` or an off-axis-circle `SURFACE_OF_REVOLUTION`, on a booted iOS simulator with the native engine active (`cc_set_engine(1)`)
+- WHEN `cc_step_import(path)` imports it natively AND OCCT `STEPControl_Reader` imports the same file
+- THEN — if T1 landed — the native import SHALL return a valid + watertight solid whose COUNT, volume, watertightness, and bounding box match the OCCT re-import within tolerance; OTHERWISE `step_import_native` SHALL return NULL and OCCT SHALL import the file identical to `cc_set_engine(0)`, proving the honest torus fallback
+
+#### Scenario: A foreign OCCT-authored general-revolution solid imports natively or declines to OCCT (sim)
+- GIVEN an OCCT-authored solid whose face is an ellipse-profile (or B-spline-profile) `SURFACE_OF_REVOLUTION`, on a booted iOS simulator with the native engine active (`cc_set_engine(1)`)
+- WHEN `cc_step_import(path)` imports it natively AND OCCT `STEPControl_Reader` imports the same file
+- THEN — if T2 landed — the native import SHALL return a valid + watertight solid whose COUNT, volume, watertightness, and bounding box match the OCCT re-import within tolerance; OTHERWISE `step_import_native` SHALL return NULL and OCCT SHALL import the file identical to `cc_set_engine(0)`, proving the honest general-revolution fallback
+
+#### Scenario: The additive torus mesh path leaves every existing tessellation byte-identical (sim)
+- GIVEN this change applied on an OCCT build, with the full tessellation-sensitive sim set (`run-sim-suite`, curved-fillet, curved-chamfer, curved-boolean, wrap-emboss, phase3) run on a booted iOS simulator
+- WHEN every existing sphere / cylinder / cone / plane / B-spline face is meshed and compared against the pre-change baseline
+- THEN the triangle counts, watertight status, and volumes SHALL be IDENTICAL to the baseline (the `Kind::Torus` mesh branch is additive and perturbs no existing path); if ANY differs, the torus mesh path SHALL be reverted and the torus SHALL keep the OCCT decline
+
+#### Scenario: Existing suites and prior native capabilities stay green (no regression)
+- GIVEN this change applied on an OCCT build with the engine left at its default
+- WHEN `scripts/run-sim-suite.sh`, host CTest, and the GPU / Phase-3 suites are run
+- THEN all SHALL stay green with no behavioural change, and STEP export, the flat multi-solid + ELLIPSE + bspline-face + assembly + AP242 + trimmed-curve + revolution-quadric + full-sphere import slices, shape healing, SSI S1–S5, native blends + #6/#7, marching, boolean, construct, and tessellation SHALL NOT regress
 

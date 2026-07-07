@@ -1673,11 +1673,12 @@ tessellator, and the `cc_*` ABI are PRISTINE; `src/native/**` stays OCCT-free.
   watertight self-verify (`watertight=0 nativeVol=0`), so the whole solid FALLS BACK to OCCT
   (`ellipse_cut vol nat=942.478 oracle=942.478` is the OCCT fallback matching the oracle). Claimed
   ONLY as "the reader recognises + maps the ELLIPSE curve entity", NOT as native ellipse-solid import.
-- **T1b — TOROIDAL_SURFACE → NOT LANDED (documented DECLINE → OCCT).** No native
+- **T1b — TOROIDAL_SURFACE → DECLINE → OCCT at this slice.** No native
   `FaceSurface::Kind::Torus` (kinds are Plane/Cylinder/Cone/Sphere/BSpline/Bezier) and the
   tessellator must not be modified, so `surface()` returns `std::nullopt` for `TOROIDAL_SURFACE`
   → NULL → OCCT (`torus native parsed=0`, `fallback torus vol rel=0.00e+00`). Documented honest
-  decline, not a native import.
+  decline, not a native import. **SUPERSEDED — a FULL torus later LANDED NATIVE watertight via an
+  additive `Kind::Torus`; see the `add-native-step-torus` slice at the end of this section.**
 
 **Residual → OCCT after the widen (before the assemblies slice below):** `TOROIDAL_SURFACE`, ellipse-on-quadric solids,
 nested/transformed assemblies, AP242 / PMI, `SURFACE_OF_REVOLUTION`, `TRIMMED_CURVE`,
@@ -1935,6 +1936,63 @@ watertight, PMI/GD&T **semantics**, **non-uniform-scale / shear** transforms, de
 Form-B `MAPPED_ITEM`, `TOROIDAL_SURFACE`, ellipse-on-quadric solids, a `TRIMMED_CURVE` over an
 out-of-slice basis, foreign arbitrary-rational/weighted B-splines, `BEZIER`, general
 swept/bounded/offset surfaces, non-mm units, all IGES. #8 `drop-occt` stays blocked.
+
+### Native STEP IMPORT WIDENED (`add-native-step-torus`) — a FULL torus imports NATIVELY watertight; general revolution stays an honest DECLINE
+
+The last `SURFACE_OF_REVOLUTION` surface gap splits into two tracks, each behind an HONEST per-track
+gate (change `add-native-step-torus`, archived `2026-07-07`).
+
+- **T1 (TORUS) → LANDED, native watertight.** A NEW additive `FaceSurface::Kind::Torus` (appended to
+  the enum; a new `minorRadius` field defaulting to `0.0`, so every existing kind is byte-unchanged)
+  now carries a torus. A direct **`TOROIDAL_SURFACE`** face, and the **off-axis-circle
+  `SURFACE_OF_REVOLUTION`** that OCCT itself emits as a `TOROIDAL_SURFACE`, both import as a native
+  `Kind::Torus` solid. Diagnosis showed OCCT bounds a full torus with a **FULLY-SEAMED `EDGE_LOOP`**
+  (the equator v-seam + the tube u-seam, each used forward AND reversed — no pole, no real trim), so
+  T1 landed through the ALREADY-PROVEN sphere bare-periodic path: the reader detects the all-seam loop
+  and builds a `Kind::Torus` face with a NULL outer wire; the tessellator meshes its natural
+  (`u,v∈[0,2π]²`) rectangle through the UNCHANGED structured-grid path, welding BOTH seams. Host
+  `toroidal_surface_full_torus_imports_watertight` (V=2π²Rr², watertight, ONE Torus face); sim
+  `[NIMPORT] native torus` parsed=1 watertight=1 solids=1 nativeVol=1771.77 occtVol=1776.53 (rel
+  **2.68e-3**), 0 boundary edges (bare doubly-periodic surface, a representation difference from OCCT's
+  seam B-rep — parity asserts volume/area/centroid/face-count + a curved-tessellation-bounded bbox, NOT
+  edge-count).
+- **T1 HONEST-OUT — a PARTIAL / trimmed torus DECLINES.** The bare-surface route closes watertight only
+  for a FULL torus (a fully-seamed loop). A `TOROIDAL_SURFACE` face carrying a real trim rim has no
+  native trimmed-torus mesh path, so it keeps the OCCT deferral (host
+  `toroidal_surface_partial_torus_declines`).
+- **T2 (GENERAL / ELLIPSE revolution) → HONEST DECLINE → OCCT (unchanged).** An ellipse / B-spline
+  generatrix revolution keeps the `default → nullopt` decline → OCCT (it imports fine there). The exact
+  surface is a rational tensor-product B-spline; that reconstruction + its watertight self-verify +
+  a capped-solid fixture is a larger, higher-blast-radius change deferred rather than rushed — the
+  per-track gate resolves to DECLINE. Sim `[NIMPORT] foreign revolution decline` native parsed=0; OCCT
+  fallback exact (`revolution_torus mass rel=0.00e+00`).
+
+**The tessellator was NOT touched beyond a +9-line additive arm.** The ONLY change under
+`src/native/tessellate/` is `surface_eval.h` — a new `case K::Torus` in `localValue` / `localD1` and a
+`bounds → {0,2π,0,2π}` arm. **`face_mesher.h` and `trim.h` are NOT in the diff** (more conservative
+than the planned doubly-periodic seam-weld branch — the sphere bare-periodic path was reused instead).
+The Torus arm is never evaluated for any existing kind, so existing tessellation is byte-identical by
+construction AND empirically: sphere/cyl/cone/plane revolution faces import byte-identically
+(`revolution→sphere` vol 902.31 == `sphere_keyword` 902.31; cyl/plane 1568.8; cone 522.934),
+curved-fillet tris=3912 unchanged, and every tessellation-sensitive suite matches baseline
+(curved-fillet 23, curved-chamfer 9, ssi-curved-boolean 21 native-pass=13, wrap-emboss 6,
+run-sim-suite 221, phase3 70).
+
+Both gates green: host CTest **29/29** NUMSCI OFF / **36/36** NUMSCI ON, `test_native_step_reader`
+**36 cases** (2 new); sim **`[NIMPORT]` 69/69** (torus = native pass, general-revolution = honest OCCT
+decline). Additive-only — `shape.h`, `surface_eval.h`, `step_reader.{cpp,h}` + two test files;
+`step_writer.cpp`, `face_mesher.h`, `trim.h`, `src/engine/**`, and the `cc_*` ABI PRISTINE;
+`src/native/**` stays OCCT-free. No regression across the prior import slices, curved-boolean, blends,
+marching, phase3.
+
+**Residual → OCCT after this slice (honest, narrowed):** a **PARTIAL / trimmed torus**, an
+**ellipse / B-spline** general revolved surface + a **skew-line hyperboloid**, a PARTIAL / pole-capped
+spherical zone that cannot close watertight, PMI/GD&T **semantics**, **non-uniform-scale / shear**
+transforms, deep-nested assemblies, Form-B `MAPPED_ITEM`, ellipse-on-quadric solids, a `TRIMMED_CURVE`
+over an out-of-slice basis, foreign arbitrary-rational/weighted B-splines, `BEZIER`, general
+swept/bounded/offset surfaces, non-mm units, all IGES. #8 `drop-occt` stays blocked (a general
+STEP/AP242 reader + IGES + a general-curved kernel still block it). The full `TOROIDAL_SURFACE` /
+off-axis-circle revolution torus and the full sphere are now NATIVE and OFF this list.
 
 ### Files (#7)
 

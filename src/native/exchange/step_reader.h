@@ -11,7 +11,7 @@
 //     ( SUB(...) SUB(...) ) unit/context form.
 //   * A two-pass AP203 mapper → native B-rep: leaf geometry (CARTESIAN_POINT →
 //     Point3, AXIS2_PLACEMENT_3D → Ax3, LINE/CIRCLE/B_SPLINE_CURVE → EdgeCurve,
-//     PLANE/CYLINDRICAL/CONICAL/SPHERICAL/B_SPLINE_SURFACE → FaceSurface) then
+//     PLANE/CYLINDRICAL/CONICAL/SPHERICAL/TOROIDAL/B_SPLINE_SURFACE → FaceSurface) then
 //     topology (VERTEX_POINT → makeVertex, EDGE_CURVE → makeEdgeWithVertices,
 //     ORIENTED_EDGE → oriented edge, EDGE_LOOP → wire, ADVANCED_FACE → face,
 //     CLOSED_SHELL → shell, MANIFOLD_SOLID_BREP → solid), reusing the
@@ -21,8 +21,14 @@
 //     pole vertex, NO edges — e.g. a whole SPHERICAL_SURFACE or on-axis-circle
 //     SURFACE_OF_REVOLUTION sphere) maps to a native Kind::Sphere face with a NULL
 //     outer wire, meshed watertight over its natural (u∈[0,2π], v∈[−π/2,π/2])
-//     bounds (seam + both poles welded); a VERTEX_LOOP on any non-sphere surface,
-//     or a sphere with surviving real trim edges, keeps the honest OCCT deferral.
+//     bounds (seam + both poles welded). A full TORUS (a TOROIDAL_SURFACE face, or an
+//     off-axis-circle SURFACE_OF_REVOLUTION) is DOUBLY periodic with NO pole: OCCT bounds
+//     it with a FULLY-SEAMED EDGE_LOOP (the equator v-seam + the tube u-seam, each used
+//     forward AND reversed). That carries no real trim, so — like the sphere VERTEX_LOOP —
+//     it maps to a native Kind::Torus face with a NULL outer wire, meshed watertight over
+//     its natural (u,v)∈[0,2π]² bounds (BOTH seams welded, no poles). A VERTEX_LOOP on any
+//     non-sphere surface, or a sphere/torus with surviving real trim edges (a partial
+//     zone), keeps the honest OCCT deferral.
 //
 // The reconstructed solid is a face-graph that shares vertex+edge NODES by #id
 // exactly as the writer shared them, so it re-tessellates WATERTIGHT by the same
@@ -44,7 +50,10 @@
 // geometry): any unsupported entity/surface keyword, rational/weighted B-spline, a
 // NON-uniform-scale / shear component transform, a Form-B MAPPED_ITEM or lone
 // assembly-usage with no composable placement, non-mm unit context, malformed record,
-// or a reconstruction that does not self-verify watertight.
+// or a reconstruction that does not self-verify watertight. A GENERAL revolution
+// (ELLIPSE / B_SPLINE_CURVE generatrix → a spheroid / general revolved surface) and a
+// PARTIAL torus (a TOROIDAL_SURFACE / off-axis revolution carrying real trim edges) have
+// no faithful native mesh path and DECLINE → OCCT (they already import fine there).
 //
 // OCCT-FREE. Declaration here; body in step_reader.cpp. clang++ -std=c++20.
 //

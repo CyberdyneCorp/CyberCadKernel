@@ -26,6 +26,7 @@
 
 #include <cctype>
 #include <cmath>
+#include <sstream>
 #include <string>
 
 namespace topo = cybercad::native::topology;
@@ -1036,6 +1037,76 @@ int sphereFaceCount(const topo::Shape& sh) {
   return n;
 }
 
+int torusFaceCount(const topo::Shape& sh) {
+  int n = 0;
+  for (topo::Explorer e(sh, topo::ShapeType::Face); e.more(); e.next()) {
+    const auto sr = topo::surfaceOf(e.current());
+    if (sr && sr->surface && sr->surface->kind == topo::FaceSurface::Kind::Torus) ++n;
+  }
+  return n;
+}
+
+// Author an OCCT-style FULL torus solid: ONE ADVANCED_FACE on a TOROIDAL_SURFACE
+// (major R, minor r) whose single bound is a FULLY-SEAMED EDGE_LOOP — the equator
+// v-seam circle (radius R+r) and the tube u-seam circle (radius r), EACH referenced
+// forward AND reversed, exactly how OCCT emits a whole torus. The reader must map this
+// to a native Kind::Torus BARE periodic face and mesh it watertight over its natural
+// (u,v)∈[0,2π]² bounds. `major`/`minor` are formatted into the surface record.
+std::string toroidalSolid(double major, double minor) {
+  auto num = [](double x) {
+    std::ostringstream o;
+    o.precision(12);
+    o << x;
+    std::string t = o.str();
+    if (t.find('.') == std::string::npos && t.find('e') == std::string::npos) t += ".";
+    return t;
+  };
+  const std::string R = num(major), r = num(minor), Rr = num(major + minor);
+  std::string s;
+  s += "ISO-10303-21;\nHEADER;\n";
+  s += "FILE_DESCRIPTION(('full torus'),'2;1');\n";
+  s += "FILE_NAME('t.step','',(''),(''),'t','t','');\n";
+  s += "FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));\nENDSEC;\nDATA;\n";
+  s += "#31 = TOROIDAL_SURFACE('',#32," + R + "," + r + ");\n";
+  s += "#32 = AXIS2_PLACEMENT_3D('',#33,#34,#35);\n";
+  s += "#33 = CARTESIAN_POINT('',(0.,0.,0.));\n";
+  s += "#34 = DIRECTION('',(0.,0.,1.));\n";
+  s += "#35 = DIRECTION('',(1.,0.,0.));\n";
+  s += "#23 = CARTESIAN_POINT('',(" + Rr + ",0.,0.));\n";
+  s += "#22 = VERTEX_POINT('',#23);\n";
+  // Equator (v-seam) circle radius R+r about the axis.
+  s += "#26 = AXIS2_PLACEMENT_3D('',#33,#34,#35);\n";
+  s += "#25 = CIRCLE('',#26," + Rr + ");\n";
+  s += "#21 = EDGE_CURVE('',#22,#22,#25,.T.);\n";
+  // Tube (u-seam) circle radius r in a meridian plane at the +X tube centre.
+  s += "#54 = CARTESIAN_POINT('',(" + R + ",0.,0.));\n";
+  s += "#55 = DIRECTION('',(0.,-1.,0.));\n";
+  s += "#56 = DIRECTION('',(1.,0.,0.));\n";
+  s += "#53 = AXIS2_PLACEMENT_3D('',#54,#55,#56);\n";
+  s += "#52 = CIRCLE('',#53," + r + ");\n";
+  s += "#50 = EDGE_CURVE('',#22,#22,#52,.T.);\n";
+  // Each seam circle used forward AND reversed → a fully-seamed loop (no real trim).
+  s += "#20 = ORIENTED_EDGE('',*,*,#21,.F.);\n";
+  s += "#49 = ORIENTED_EDGE('',*,*,#50,.F.);\n";
+  s += "#71 = ORIENTED_EDGE('',*,*,#21,.T.);\n";
+  s += "#72 = ORIENTED_EDGE('',*,*,#50,.T.);\n";
+  s += "#19 = EDGE_LOOP('',(#20,#49,#71,#72));\n";
+  s += "#18 = FACE_BOUND('',#19,.T.);\n";
+  s += "#17 = ADVANCED_FACE('',(#18),#31,.T.);\n";
+  s += "#45 = CLOSED_SHELL('',(#17));\n";
+  s += "#46 = MANIFOLD_SOLID_BREP('t',#45);\n";
+  s += "#115 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );\n";
+  s += "#116 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );\n";
+  s += "#117 = ( NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT() );\n";
+  s += "#118 = UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),#115,'','');\n";
+  s += "#119 = ( GEOMETRIC_REPRESENTATION_CONTEXT(3) "
+       "GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#118)) "
+       "GLOBAL_UNIT_ASSIGNED_CONTEXT((#115,#116,#117)) REPRESENTATION_CONTEXT('','') );\n";
+  s += "#120 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#46),#119);\n";
+  s += "ENDSEC;\nEND-ISO-10303-21;\n";
+  return s;
+}
+
 }  // namespace
 
 // ── T (SPHERE, VERTEX_LOOP) — a full OCCT sphere face imports natively watertight ──────
@@ -1112,11 +1183,56 @@ CC_TEST(vertex_loop_bound_on_non_sphere_declines) {
   CC_CHECK(ex::readStepString(step).isNull());
 }
 
+// ── T1 (TORUS) — a full OCCT torus (TOROIDAL_SURFACE) imports natively watertight ──────
+// OCCT writes a whole torus as ONE TOROIDAL_SURFACE ADVANCED_FACE bounded by a fully-seamed
+// EDGE_LOOP (the equator v-seam + the tube u-seam, each forward AND reversed). The reader
+// maps that bare doubly-periodic surface to a native Kind::Torus face with a null outer wire;
+// the tessellator meshes its natural (u,v)∈[0,2π]² rectangle, welding BOTH seams (no poles)
+// → a watertight Torus solid. Volume = 2·π²·R·r² within the deflection bound.
+CC_TEST(toroidal_surface_full_torus_imports_watertight) {
+  const double R = 10.0, r = 3.0;
+  const topo::Shape s = ex::readStepString(toroidalSolid(R, r));
+  CC_CHECK(!s.isNull());                              // now imports natively (declined before)
+  if (s.isNull()) return;
+  CC_CHECK(s.type() == topo::ShapeType::Solid);
+  CC_CHECK(torusFaceCount(s) == 1);                   // ONE bare periodic Torus face
+  CC_CHECK(watertight(s));                            // both seams weld closed, no poles
+
+  const double v = volumeOf(s);
+  const double vAnalytic = 2.0 * 3.14159265358979323846 * 3.14159265358979323846 * R * r * r;
+  CC_CHECK(v > 0.0);
+  CC_CHECK(std::fabs(v - vAnalytic) / vAnalytic < 1e-2);  // converges to 2π²Rr²
+
+  const Box b = worldBox(s);
+  const double outer = R + r;
+  for (int k = 0; k < 2; ++k) {                       // x,y span the full outer ring
+    CC_CHECK(b.hi[k] <= outer + 1e-6 && b.lo[k] >= -outer - 1e-6);
+    CC_CHECK(b.hi[k] > outer - 0.2 && b.lo[k] < -(outer - 0.2));
+  }
+  CC_CHECK(b.hi[2] <= r + 1e-6 && b.lo[2] >= -r - 1e-6);  // z within ±r (the tube)
+}
+
+// ── T1 (HONEST-OUT) — a PARTIAL torus (real trim edges) DECLINES → OCCT ─────────────────
+// The bare-surface route closes watertight ONLY for a FULL torus (a fully-seamed loop).
+// A TOROIDAL_SURFACE face that carries a REAL trim rim (a partial-angle torus segment) has
+// no native trimmed-torus mesh path, so it must keep the honest OCCT deferral → NULL.
+CC_TEST(toroidal_surface_partial_torus_declines) {
+  // Reuse the full-torus authoring but replace the fully-seamed loop with a single real
+  // rim edge (one closed circle, used ONCE) → not fully seamed → partial torus → decline.
+  std::string step = toroidalSolid(10.0, 3.0);
+  const std::string full = "#19 = EDGE_LOOP('',(#20,#49,#71,#72));\n";
+  const std::string partial = "#19 = EDGE_LOOP('',(#71));\n";  // one forward rim only
+  const auto pos = step.find(full);
+  CC_CHECK(pos != std::string::npos);
+  step.replace(pos, full.size(), partial);
+  CC_CHECK(ex::readStepString(step).isNull());        // honest decline → OCCT
+}
+
 // ── T2 (DECLINE) — a non-line generatrix revolves to a torus/general surface → NULL ────
 // SURFACE_OF_REVOLUTION of a CIRCLE generatrix is a torus (off-axis) / sphere (on-axis) /
-// general revolved surface. There is NO faithful native FaceSurface kind for the torus /
-// general case (no Kind::Torus), so the reader must DECLINE the whole file → NULL → OCCT,
-// exactly like the landed TOROIDAL_SURFACE decline. Never a forced mapping.
+// general revolved surface. The off-axis-circle case now CLASSIFIES as a native Kind::Torus,
+// but the synthetic fixture below reuses a CYLINDER's boundary (real rim edges, not a
+// fully-seamed torus loop) → the partial-torus guard DECLINES the whole file → NULL → OCCT.
 CC_TEST(surface_of_revolution_circle_generatrix_declines) {
   const std::string base = ex::writeStepString(cylinder(), "cyl");
   const std::string rev = revolveSurfaces(

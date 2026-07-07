@@ -132,6 +132,9 @@ inline math::Cone asCone(const topo::FaceSurface& s) noexcept {
 inline math::Sphere asSphere(const topo::FaceSurface& s) noexcept {
   return math::Sphere{s.frame, s.radius};
 }
+inline math::Torus asTorus(const topo::FaceSurface& s) noexcept {
+  return math::Torus{s.frame, s.radius, s.minorRadius};
+}
 
 // Free-form (B-spline) surface grid view onto the payload poles.
 inline math::SurfaceGrid gridOf(const topo::FaceSurface& s) noexcept {
@@ -149,6 +152,7 @@ inline math::Point3 SurfaceEvaluator::localValue(double u, double v) const noexc
     case K::Cylinder: return detail::asCylinder(s_).value(u, v);
     case K::Cone:     return detail::asCone(s_).value(u, v);
     case K::Sphere:   return detail::asSphere(s_).value(u, v);
+    case K::Torus:    return detail::asTorus(s_).value(u, v);
     case K::Bezier:
       return s_.weights.empty()
                  ? math::bezierSurfacePoint({s_.poles.data(), s_.poles.size()}, s_.nPolesU,
@@ -187,6 +191,10 @@ inline SurfaceEvaluator::LocalD1 SurfaceEvaluator::localD1(double u, double v) c
     }
     case K::Sphere: {
       auto s = detail::asSphere(s_);
+      return {s.value(u, v), s.dU(u, v), s.dV(u, v)};
+    }
+    case K::Torus: {
+      auto s = detail::asTorus(s_);
       return {s.value(u, v), s.dU(u, v), s.dV(u, v)};
     }
     case K::Bezier: {
@@ -235,6 +243,7 @@ inline UVBounds SurfaceEvaluator::bounds() const noexcept {
     case K::Cylinder: return {0.0, kTwoPi, 0.0, 1.0};   // v overridden by trim range
     case K::Cone:     return {0.0, kTwoPi, 0.0, 1.0};
     case K::Sphere:   return {0.0, kTwoPi, -kTwoPi / 4.0, kTwoPi / 4.0};  // v∈[-π/2,π/2]
+    case K::Torus:    return {0.0, kTwoPi, 0.0, kTwoPi};  // doubly periodic, no pole
     case K::Bezier:   return {0.0, 1.0, 0.0, 1.0};
     case K::BSpline:  {
       UVBounds b;

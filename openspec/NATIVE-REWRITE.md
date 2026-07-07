@@ -12,7 +12,11 @@ one. Difficulty is flagged per capability below.
 **Where this stands now (honest ceiling).** The tractable native slice of every
 capability #1â#7 is DONE at the verification bar â including the native STEP EXPORT
 slice AND the first native STEP IMPORT slice (#7). Phase 4 is therefore **COMPLETE AT ITS ACHIEVABLE NATIVE CEILING, not
-fully drop-OCCT**: #8 `drop-occt` is BLOCKED because two hard dependencies remain
+fully drop-OCCT**. The COMPLETE remaining path to drop OCCT — every research-grade moat
+stage (M0 freeform mesher/trimmer keystone → M2/M3 freeform booleans/blends → M4 general
+import → M5 healing → M6 completeness bar → M8 unlink), dependency-ordered and each verified
+native-vs-OCCT with OCCT retained as the oracle until proven — is
+[MOAT-ROADMAP.md](MOAT-ROADMAP.md). In brief: #8 `drop-occt` is BLOCKED because two hard dependencies remain
 research-grade multi-year efforts â (1) a general robust curved boolean / blend
 kernel (arbitrary surface-surface intersection + shape healing) and (2) native
 a FULL native STEP IMPORT (the native reader covers the elementary/B-spline

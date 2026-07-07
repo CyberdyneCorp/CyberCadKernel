@@ -429,11 +429,15 @@ the numeric oracle; native code is host-buildable (OCCT-free).
   — no FE patch test yet; wiring CalculiX++'s `CadMesher` (import / heal / triangulate /
   tet_mesh / quality / `map_to_model`) is a follow-up. Shipping a closed app that links
   TetGen needs a TetGen commercial license.
-- ☐ **Drop OCCT** — **NOT reachable at the native ceiling; BLOCKED.** Change
-  **`drop-occt`** would retire the OCCT adapter, but it requires EVERY `cc_*` path to be
-  native. Two hard dependencies remain research-grade multi-year efforts: (1) a general
-  robust curved boolean / blend kernel (arbitrary surface-surface intersection + shape
-  healing) and (2) general native STEP IMPORT (a first AP203 import slice landed; IGES DESCOPED, STEP-only). Until
+- ☐ **Drop OCCT** — **NOT reachable at the native ceiling; BLOCKED.** The COMPLETE
+  remaining path — every research-grade moat stage (M0 freeform mesher/trimmer keystone →
+  M2/M3 freeform booleans/blends → M4 general import → M5 healing → M6 completeness bar →
+  M8 unlink), dependency-ordered, each verified native-vs-OCCT with OCCT kept as the oracle
+  until proven — is **[MOAT-ROADMAP.md](MOAT-ROADMAP.md)**. Change **`drop-occt`** would
+  retire the OCCT adapter, but it requires EVERY `cc_*` path to be native. Two hard
+  dependencies remain research-grade multi-year efforts: (1) a general robust curved boolean
+  / blend kernel (arbitrary surface-surface intersection + shape healing) and (2) general
+  native STEP IMPORT (a first AP203 import slice landed; IGES DESCOPED, STEP-only). Until
   both exist, OCCT stays linked and **Phase 4 stands COMPLETE AT ITS ACHIEVABLE NATIVE
   CEILING, not fully drop-OCCT.**
 

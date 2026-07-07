@@ -213,6 +213,8 @@ public:
                            int topCount, double depth) override;
     ShapeResult solid_loft_wires(const double* aXYZ, int aCount, const double* bXYZ,
                                  int bCount) override;
+    ShapeResult solid_loft_sections(const double* sectionsXYZ, const int* counts,
+                                    int sectionCount) override;
     ShapeResult solid_sweep(const double* profileXY, int profileCount, const double* pathXYZ,
                             int pathCount) override;
     ShapeResult twisted_sweep(const double* profileXY, int profileCount, const double* pathXYZ,

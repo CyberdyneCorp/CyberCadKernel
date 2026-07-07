@@ -357,6 +357,15 @@ CCShapeId cc_solid_loft_wires(const double* aXYZ, int aCount, const double* bXYZ
         CCShapeId{0});
 }
 
+CCShapeId cc_solid_loft_sections(const double* sectionsXYZ, const int* counts, int sectionCount) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            auto r = active_engine()->solid_loft_sections(sectionsXYZ, counts, sectionCount);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
+}
+
 CCShapeId cc_solid_sweep(const double* profileXY, int profileCount, const double* pathXYZ,
                          int pathCount) {
     return cyber::guard(

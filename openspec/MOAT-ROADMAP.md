@@ -214,10 +214,23 @@ fuzzing vs OCCT).
   import, and healing; loop-until-dry critics; the standing zero-silent-wrong-results bar.
 
 ### M7 — Tier-4 construction robustness · ~1–3 py · independent
-The construction breadth still deferred: **guided/rail sweep** (orientation oracle),
-**general/mismatched-hard loft** (beyond the landed vertex-correspondence slice),
-**fine-pitch self-intersecting threads** (intersecting-helicoid trimming — needs M1/M2).
-Independent of the freeform-boolean chain except fine-pitch (needs M2).
+**M7a first slice LANDED (verified native-vs-OCCT at both gates):** the N-section (≥3)
+planar ruled loft is now reachable through a new ADDITIVE facade entry
+`cc_solid_loft_sections`, exposing the already-proven OCCT-free `build_loft_sections`
+(equal- and mismatched-count sections) with a real OCCT `ThruSections` oracle, engine
+self-verify → OCCT fallback, and an honest self-verify decline for candidates whose mesh is
+not robustly watertight (e.g. an asymmetric expand-then-contract spool that T-junctions the
+tessellator's shared-ring seam — volume exact, mesh not; discarded → OCCT rather than
+weaken the tessellator). Gate 1 (host, no OCCT): `test_native_loft` 21/21. Gate 2 (sim vs
+`ThruSections`): `native_loft_parity` 39/39. Additive-only (`cc_kernel.h` no deletions),
+`src/native/**` 0 OCCT includes, tessellator untouched.
+
+Still deferred (honest decline, this change did NOT land them): **orientation guided/rail
+sweep** (`cc_guided_orient_sweep`) — needs a NEW OCCT `MakePipeShell(guideWire)` oracle + a
+guide-aimed native frame (the ABI-additive path is open, next M7 slice); **non-planar-cap
+loft** (needs a filling surface, no closed-form volume); **fine-pitch self-intersecting
+threads** (intersecting-helicoid trimming — needs M1/M2). Independent of the
+freeform-boolean chain except fine-pitch (needs M2).
 - *Oracle:* `BRepOffsetAPI_MakePipeShell` / `ThruSections` / thread fixtures (volume/watertight).
 
 ### M8 — `drop-occt` — unlink OCCT · gated on M0–M7 + M6 bar
@@ -253,10 +266,11 @@ slices used). Both are captured below.
 > each banked a first verified slice: **M0** (keystone) trimmed free-form interior mesher,
 > **M1** freeform S4-d open-arm branch point (marching 12/12), **M5** opt-in gap bridging
 > (heal 6/6), **M6** curved-boolean differential fuzzer (512 trials, 0 DISAGREED). **M7a**
-> (construct sweep/loft) was Wave-1-eligible but not yet started. **This opens Wave 2**: with
-> M0's mesher ready and M0+M1 both past a first slice, **M2 (freeform booleans) and M4 (general
-> import) can now start in parallel** — alongside the still-running asymptotic tracks (M1 breadth,
-> M5, M6) and the untouched M7a.
+> (construct sweep/loft) has now banked its first verified slice too: the N-section planar
+> ruled loft wired to `cc_solid_loft_sections` (Gate 1 21/21, Gate 2 39/39). **This opens Wave
+> 2**: with M0's mesher ready and M0+M1 both past a first slice, **M2 (freeform booleans) and
+> M4 (general import) can now start in parallel** — alongside the still-running asymptotic
+> tracks (M1 breadth, M5, M6) and M7a's remaining residuals (guided sweep, non-planar-cap loft).
 
 | Stage | Module (disjoint unit) | Needs | Status / when it can run |
 |---|---|---|---|
@@ -264,7 +278,7 @@ slices used). Both are captured below.
 | **M1** SSI S4 general robustness | `ssi/marching` | — | ✅ **Wave-1 slice LANDED** — breadth continues (asymptotic) |
 | **M5** shape-healing robustness | `heal/` | — | ✅ **Wave-1 slice LANDED** — tail continues (asymptotic) |
 | **M6** completeness / fuzzing harness | test infra + `ssi/` | — | ✅ **Wave-1 slice LANDED** — bar continues (gates M8) |
-| **M7a** guided sweep · hard loft | `construct/` | — | **Wave-1 eligible — NOT yet started** (independent, can start anytime) |
+| **M7a** guided sweep · hard loft | `construct/` | — | ✅ **Wave-1 slice LANDED** — N-section loft ABI (`cc_solid_loft_sections`); guided sweep + non-planar-cap loft remain |
 | **M4** general STEP/AP242 import | `exchange/` | M0 | ▶ **Wave 2 — OPEN NOW** (M0 mesher ready) |
 | **M2b (B2)** freeform face-split | `boolean/` · `ssi/` | M0 ✅ + M1 ✅ | ▶ **OPEN NOW — parallel** (M2 substrate; oracle: sub-faces tile + mesh watertight) |
 | **M2c (B3)** freeform point-in-solid | `boolean/` | M0 ✅ | ▶ **OPEN NOW — parallel** (M2 substrate; oracle: `BRepClass3d_SolidClassifier`) |
@@ -275,8 +289,8 @@ slices used). Both are captured below.
 | **M8** `drop-occt` — unlink | `engine/occt` (delete) | ALL + M6 bar | **Terminal** |
 
 ```
-WAVE 1 — first slices ✅ LANDED (M0·M1·M5·M6), M7a eligible but not yet started
-  M0 tessellate ✅  │  M1 ssi/marching ✅  │  M5 heal ✅  │  M6 fuzz-harness ✅  │  M7a construct (open)
+WAVE 1 — first slices ✅ LANDED (M0·M1·M5·M6·M7a)
+  M0 tessellate ✅  │  M1 ssi/marching ✅  │  M5 heal ✅  │  M6 fuzz-harness ✅  │  M7a construct ✅ (loft-sections)
         │  └──────────────┐                        (asymptotic tracks continue)        │
         ├──► WAVE 2 ▶ OPEN NOW                                                          │ (M7a independent)
         │    M4 exchange (needs M0 ✅)                                                  │

@@ -803,6 +803,41 @@ ShapeResult OcctEngine::solid_loft_wires(const double* aXYZ, int aCount, const d
     });
 }
 
+// N-section ruled loft (≥3 sections; the generalisation of solid_loft_wires). Each
+// section is a closed polygon from its slice of the flat (x,y,z) buffer; every
+// section is added to one BRepOffsetAPI_ThruSections (solid, ruled) in order → the
+// same construction the 2-section loft uses, just through more wires. This is the
+// OCCT oracle the native N-section builder (loft.h build_loft_sections) verifies
+// against; on a native decline the facade forwards the SAME arguments here.
+ShapeResult OcctEngine::solid_loft_sections(const double* sectionsXYZ, const int* counts,
+                                            int sectionCount) {
+    return occt::occtGuard([&]() -> ShapeResult {
+        if (sectionsXYZ == nullptr || counts == nullptr || sectionCount < 2) {
+            return make_error("solid_loft_sections: degenerate input");
+        }
+        BRepOffsetAPI_ThruSections gen(Standard_True /*solid*/, Standard_True /*ruled*/);
+        std::size_t off = 0;  // running offset into the flat (x,y,z) buffer, in doubles
+        for (int k = 0; k < sectionCount; ++k) {
+            const int cnt = counts[k];
+            if (cnt < 3) return make_error("solid_loft_sections: section with < 3 points");
+            BRepBuilderAPI_MakePolygon poly;
+            for (int i = 0; i < cnt; ++i) {
+                poly.Add(gp_Pnt(sectionsXYZ[off + i * 3], sectionsXYZ[off + i * 3 + 1],
+                                sectionsXYZ[off + i * 3 + 2]));
+            }
+            poly.Close();
+            if (!poly.IsDone()) return make_error("solid_loft_sections: section wire failed");
+            gen.AddWire(poly.Wire());
+            off += static_cast<std::size_t>(cnt) * 3;
+        }
+        gen.Build();
+        if (!gen.IsDone()) {
+            return make_error("solid_loft_sections: thru-sections failed");
+        }
+        return occt::addIfValid(gen.Shape(), "solid_loft_sections: invalid solid");
+    });
+}
+
 ShapeResult OcctEngine::loft_along_rail(const double* railXYZ, int railCount,
                                         const double* profileA_XY, int aCount,
                                         const double* profileB_XY, int bCount) {

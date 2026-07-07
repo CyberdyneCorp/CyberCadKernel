@@ -118,6 +118,11 @@ public:
         (void)aXYZ; (void)aCount; (void)bXYZ; (void)bCount;
         return engine_unsupported("solid_loft_wires");
     }
+    virtual ShapeResult solid_loft_sections(const double* sectionsXYZ, const int* counts,
+                                            int sectionCount) {
+        (void)sectionsXYZ; (void)counts; (void)sectionCount;
+        return engine_unsupported("solid_loft_sections");
+    }
     virtual ShapeResult solid_sweep(const double* profileXY, int profileCount, const double* pathXYZ,
                                     int pathCount) {
         (void)profileXY; (void)profileCount; (void)pathXYZ; (void)pathCount;

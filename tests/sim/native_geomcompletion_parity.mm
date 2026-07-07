@@ -37,11 +37,11 @@
 //              sections, equal vertex counts) skinned into one bilinear ruled band per
 //              edge + two caps → EXACT native solid. PLUS a straight-rail loft
 //              cc_loft_along_rail (two sections placed perpendicular to a straight rail
-//              → the same ruled loft), also NATIVE. (NOTE: a true ≥3-SECTION loft has no
-//              cc_* facade entry today — the native N-section builder loft.h
-//              build_loft_sections is unwired — so the loft area's reachable native path
-//              through the facade is the 2-section ruled loft; the frustum + rail cases
-//              stand in for it. Reported honestly below.)
+//              → the same ruled loft), also NATIVE. (NOTE: the true ≥3-SECTION loft is
+//              now wired via cc_solid_loft_sections → the native N-section builder loft.h
+//              build_loft_sections; its native-vs-OCCT parity is covered by
+//              native_loft_parity.mm's loft3/loft4 cases. Here the frustum + rail cases
+//              stand in for the loft area.)
 //
 //   [sweep]    smooth-planar sweep — cc_solid_sweep of a square along a gentle coplanar
 //              arc polyline (constant-frame ruled tube, matches MakePipe's planar

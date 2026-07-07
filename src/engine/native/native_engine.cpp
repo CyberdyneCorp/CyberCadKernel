@@ -839,6 +839,20 @@ ShapeResult NativeEngine::solid_loft_wires(const double* a, int ac, const double
         return fallback().solid_loft_wires(a, ac, b, bc);
     return track(wrapNative(std::move(solid)));
 }
+// N-SECTION (≥3) ruled loft — the generalisation of solid_loft_wires. NATIVE for a
+// chain of PLANAR sections (equal OR mismatched vertex counts): (N−1) ruled bands +
+// two end caps, internal sections shared as vertex rings (loft.h build_loft_sections).
+// The stacked skin is a non-trivial tiling, so the result is SELF-VERIFIED robustly
+// watertight with a positive enclosed volume before being kept native; a non-planar /
+// point-collapsed section, a self-folding chain, or any candidate that fails the gate
+// → forward the SAME args to OCCT solid_loft_sections (honest coexistence, never a
+// faked or leaky solid).
+ShapeResult NativeEngine::solid_loft_sections(const double* s, const int* c, int sc) {
+    ntopo::Shape solid = ncst::build_loft_sections(s, c, sc);
+    if (solid.isNull() || !robustlyWatertight(solid) || !(watertightVolume(solid) > 0.0))
+        return fallback().solid_loft_sections(s, c, sc);
+    return track(wrapNative(std::move(solid)));
+}
 // ── Tier-C (#4b) NATIVE sweep. NATIVE for a STRAIGHT spine → an EXACT directional
 // prism, AND for a SMOOTH CURVED spine → an RMF-transported ruled-band tube
 // (deflection-bounded, watertight at working deflections), both cross-checked vs

@@ -1,10 +1,32 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// native_loft_parity.mm — native-vs-OCCT parity for the 2-section RULED loft
-// (Phase 4 #4b, Tier B `native-construction`). Gate 2 of the two-gate model in
-// openspec/NATIVE-REWRITE.md: on the iOS simulator (OCCT linked), the native
-// cc_solid_loft / cc_solid_loft_wires result is compared against the OCCT oracle
-// (BRepOffsetAPI_ThruSections, ruled) at sampled inputs through the SAME cc_* facade.
+// native_loft_parity.mm — native-vs-OCCT parity for the RULED loft (Phase 4 #4b,
+// Tier B `native-construction`, plus the M7a ≥3-SECTION breadth). Gate 2 of the
+// two-gate model in openspec/NATIVE-REWRITE.md: on the iOS simulator (OCCT linked),
+// the native cc_solid_loft / cc_solid_loft_wires / cc_solid_loft_sections result is
+// compared against the OCCT oracle (BRepOffsetAPI_ThruSections, ruled) at sampled
+// inputs through the SAME cc_* facade.
+//
+// ── M7a ≥3-SECTION cases (cc_solid_loft_sections; the native N-section builder
+//    loft.h build_loft_sections, now WIRED through the facade) ────────────────────
+//   N1. SQUARE SPOOL 10→4→10 — the first-slice fixture: a symmetric narrow-waist
+//       bobbin (10×10 @z=0, 4×4 @z=6, 10×10 @z=12) → two coaxial square frustums,
+//       EXACT prismatoid volume 624, 10 faces, watertight. PLANAR → EXACT parity.
+//   N2. TRIANGLE STACK — same triangle @z=0,2,5 → two prism bands, vol 30, 8 faces.
+//   N3. STACKED BOX — four 4×4 squares @z=0,3,6,9 → a 4×4×9 box, vol 144, 14 faces.
+//   N4. OCTAGON SPOOL — r=3→5→3 coaxial octagons → two octagon frustums, 18 faces.
+//   Deferred: a NON-PLANAR internal section → native NULL → OCCT (tagged [fallback]).
+//
+// NATIVE-TESSELLATOR SEAM NOTE (measured, honest): the ≥3-section native path is
+// exact for MONOTONE tapers and SYMMETRIC-ended non-monotone spools (both bands
+// tessellate to a matching shared-ring seam). An ASYMMETRIC expand-then-contract
+// spool (e.g. 4×4→6×6→2×2, where the middle ring is a local extremum and the two
+// adjacent bands taper at different ratios) makes the native face-mesher split the
+// two faces meeting at the shared ring with mismatched interior sampling → a
+// T-junction → a non-watertight mesh at EVERY deflection (the solid's VOLUME is
+// still exact; only the mesh seam fails). Rather than weaken the tessellator (out of
+// scope), the native builder's self-verify discards such a candidate → OCCT. The
+// fixtures here are deliberately in the watertight family.
 //
 //   cc_set_engine(0)  → OCCT engine (the oracle / default)
 //   cc_set_engine(1)  → NativeEngine (native ruled loft — loft.h; falls through to
@@ -248,6 +270,15 @@ void runFallbackOp(const char* name, Builder build, const char* why) {
     const double volRel = (bothValid && oM.volume > 0.0)
                               ? std::fabs(nM.volume - oM.volume) / oM.volume
                               : 1.0;
+    // The delegated result must equal the OCCT oracle to fp precision — the native
+    // engine handed the SAME args to OCCT and returned its solid (a genuine decline,
+    // not a faked shape). (Watertightness of the returned solid is not re-checked here
+    // via the index-based mesh test: OCCT emits PER-FACE unwelded triangulations whose
+    // shared-edge vertices carry distinct indices, so an index-based edge-pairing check
+    // reports a false open edge on a perfectly closed OCCT solid. The native cases above
+    // — welded meshes — are where the watertight-by-index invariant is asserted; the
+    // engine's own self-verify, host-proven, is what discards a non-watertight native
+    // candidate here → OCCT.)
     const bool ok = (activeIsNative == 1) && bothValid && (oM.volume > 0.0) && volRel < 1e-9;
     std::snprintf(detail, sizeof detail,
                   "[fallback] %s — native active=%d vol o=%.6g n=%.6g rel=%.2e (delegated to OCCT)",
@@ -311,6 +342,92 @@ CCShapeId buildMismatchedCountsDeferred() {
     return cc_solid_loft(bot, 4, top, 3, 5.0);
 }
 
+// ── N-SECTION (≥3) builders — cc_solid_loft_sections vs OCCT ThruSections ──────────
+
+// N1) SQUARE SPOOL 10→4→10 (the M7a first-slice fixture; a symmetric narrow-waist
+// bobbin): 10×10 @z=0, 4×4 @z=6, 10×10 @z=12, all centred. Two coaxial square
+// frustums; exact prismatoid volume 2·[6/3·(100+16+√1600)] = 2·312 = 624. 10 faces
+// (2 bands × 4 sides + 2 end caps). Planar → EXACT parity vs OCCT, watertight
+// end-to-end. (A symmetric-ended or monotone taper meshes watertight; an ASYMMETRIC
+// expand-then-contract spool — e.g. 4→6→2 — currently T-junctions the native
+// tessellator's shared-ring seam and is therefore left to OCCT; see the header note.)
+CCShapeId buildLoft3SquareSpool() {
+    static const double s[] = {
+        -5, -5, 0,  5, -5, 0,  5, 5, 0,  -5, 5, 0,        // 10×10 @z=0
+        -2, -2, 6,  2, -2, 6,  2, 2, 6,  -2, 2, 6,        // 4×4 @z=6
+        -5, -5, 12, 5, -5, 12, 5, 5, 12, -5, 5, 12};     // 10×10 @z=12
+    static const int counts[] = {4, 4, 4};
+    return cc_solid_loft_sections(s, counts, 3);
+}
+
+// N2) TRIANGLE STACK: same triangle (0,0)(4,0)(2,3) @z=0,2,5. Two triangular-prism
+// bands. Area 6 → volume 6·5 = 30. 8 faces (2×3 + 2 caps). Planar → EXACT.
+CCShapeId buildLoft3TriangleStack() {
+    static const double s[] = {
+        0, 0, 0, 4, 0, 0, 2, 3, 0,   // z=0
+        0, 0, 2, 4, 0, 2, 2, 3, 2,   // z=2
+        0, 0, 5, 4, 0, 5, 2, 3, 5};  // z=5
+    static const int counts[] = {3, 3, 3};
+    return cc_solid_loft_sections(s, counts, 3);
+}
+
+// N3) STACKED BOX: four identical 4×4 squares @z=0,3,6,9 → a straight 4×4×9 box.
+// Volume 144. 14 faces (3 bands × 4 sides + 2 caps). Planar → EXACT.
+CCShapeId buildLoft4StackedBox() {
+    static const double s[] = {
+        0, 0, 0, 4, 0, 0, 4, 4, 0, 0, 4, 0,      // z=0
+        0, 0, 3, 4, 0, 3, 4, 4, 3, 0, 4, 3,      // z=3
+        0, 0, 6, 4, 0, 6, 4, 4, 6, 0, 4, 6,      // z=6
+        0, 0, 9, 4, 0, 9, 4, 4, 9, 0, 4, 9};     // z=9
+    static const int counts[] = {4, 4, 4, 4};
+    return cc_solid_loft_sections(s, counts, 4);
+}
+
+// N4) OCTAGON SPOOL narrow→wide→narrow: circumradius 3 @z=0, 5 @z=6, 3 @z=12, all
+// sharing the π/8 rotation so corners pair 1:1. Two coaxial octagon frustums (planar
+// trapezoidal side faces) → EXACT vs OCCT. 18 faces (2×8 + 2 caps).
+CCShapeId buildLoft3OctagonSpool() {
+    static double s[3 * 8 * 3];
+    const double rad[3] = {3.0, 5.0, 3.0};
+    const double z[3] = {0.0, 6.0, 12.0};
+    int o = 0;
+    for (int k = 0; k < 3; ++k)
+        for (int i = 0; i < 8; ++i) {
+            const double a = kPi / 8.0 + 2.0 * kPi * i / 8.0;
+            s[o++] = rad[k] * std::cos(a);
+            s[o++] = rad[k] * std::sin(a);
+            s[o++] = z[k];
+        }
+    static const int counts[] = {8, 8, 8};
+    return cc_solid_loft_sections(s, counts, 3);
+}
+
+// DEFERRED (N-section): an ASYMMETRIC expand-then-contract spool (4×4→6×6→2×2). The
+// native ruled solid is built and volume-exact (213.333), but the native tessellator
+// T-junctions the shared middle ring (the two adjacent bands taper at different ratios)
+// so the mesh is non-watertight at every deflection → the engine self-verify DISCARDS
+// it → OCCT ThruSections. The delegated result must equal the OCCT oracle (vol 213.333).
+CCShapeId buildLoft3AsymSpoolDeferred() {
+    static const double s[] = {
+        -2, -2, 0,  2, -2, 0,  2, 2, 0,  -2, 2, 0,        // 4×4 @z=0
+        -3, -3, 5,  3, -3, 5,  3, 3, 5,  -3, 3, 5,        // 6×6 @z=5
+        -1, -1, 10, 1, -1, 10, 1, 1, 10, -1, 1, 10};     // 2×2 @z=10
+    static const int counts[] = {4, 4, 4};
+    return cc_solid_loft_sections(s, counts, 3);
+}
+
+// DEFERRED (N-section): a NON-PLANAR middle section → native declines → OCCT. The
+// middle square has one corner lifted in z, so the in-plane alignment is not well
+// posed; the native builder returns NULL and the facade forwards to OCCT ThruSections.
+CCShapeId buildLoft3NonPlanarMiddleDeferred() {
+    static const double s[] = {
+        0, 0, 0, 4, 0, 0, 4, 4, 0, 0, 4, 0,      // planar @z=0
+        0, 0, 3, 4, 0, 3, 4, 4, 5, 0, 4, 3,      // skew (corner lifted) @z≈3
+        0, 0, 6, 4, 0, 6, 4, 4, 6, 0, 4, 6};     // planar @z=6
+    static const int counts[] = {4, 4, 4};
+    return cc_solid_loft_sections(s, counts, 3);
+}
+
 }  // namespace
 
 int main() {
@@ -333,10 +450,34 @@ int main() {
 
     for (const OpCase& s : cases) runNativeOp(s);
 
+    // ── N-SECTION (≥3) ruled loft via cc_solid_loft_sections (the M7a first slice) ──
+    std::printf("── native-vs-OCCT ≥3-SECTION RULED loft parity (cc_solid_loft_sections)\n");
+    const std::vector<OpCase> sectionCases = {
+        // N1) The first-slice fixture: 10→4→10 symmetric spool → two frustums, vol 624.
+        {"loft3 square-spool", &buildLoft3SquareSpool, /*planar*/ true, /*defl*/ 0.01},
+        // N2) Triangle stack: two triangular-prism bands, vol 30.
+        {"loft3 triangle-stack", &buildLoft3TriangleStack, /*planar*/ true, /*defl*/ 0.05},
+        // N3) Stacked 4×4 box over 3 bands, vol 144.
+        {"loft4 stacked-box", &buildLoft4StackedBox, /*planar*/ true, /*defl*/ 0.05},
+        // N4) Octagon spool narrow→wide→narrow: two coaxial octagon frustums.
+        {"loft3 octagon-spool", &buildLoft3OctagonSpool, /*planar*/ true, /*defl*/ 0.02},
+    };
+    for (const OpCase& s : sectionCases) runNativeOp(s);
+
     // Intentionally-deferred sub-case: the T1 correspondence builds a candidate but its
     // resampled cap can't close watertight → engine self-verify forwards to OCCT.
     runFallbackOp("loft mismatched-4to3", &buildMismatchedCountsDeferred,
                   "resampled cap not robustly watertight → self-verify declines to OCCT");
+
+    // Intentionally-deferred N-section sub-cases (each MUST delegate to OCCT and return
+    // the oracle solid to fp precision):
+    //  - an asymmetric expand-then-contract spool whose native mesh T-junctions the
+    //    shared ring seam, so the engine's watertight self-verify discards it → OCCT;
+    //  - a non-planar internal section (native builder returns NULL → OCCT).
+    runFallbackOp("loft3 asym-spool", &buildLoft3AsymSpoolDeferred,
+                  "asymmetric expand-then-contract seam not watertight → self-verify declines");
+    runFallbackOp("loft3 non-planar-middle", &buildLoft3NonPlanarMiddleDeferred,
+                  "non-planar internal section → native declines to OCCT");
 
     cc_set_engine(0);
 

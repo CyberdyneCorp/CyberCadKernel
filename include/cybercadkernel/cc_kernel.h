@@ -194,6 +194,19 @@ CCShapeId cc_solid_loft(const double *bottomXY, int bottomCount,
 CCShapeId cc_solid_loft_wires(const double *aXYZ, int aCount,
                               const double *bXYZ, int bCount);
 
+/* Ruled loft through 2..N ORDERED planar section wires (the ≥3-section
+ * generalisation of cc_solid_loft_wires). `sectionsXYZ` holds the sections back to
+ * back as flat (x,y,z) triples; `counts[k]` is the vertex count of section k (each
+ * ≥3); `sectionCount` (≥2) is the number of sections. Consecutive sections are
+ * skinned by RULED bands (one bilinear side face per corresponding edge pair) with
+ * the first + last section capped → a closed watertight solid; internal sections
+ * are shared vertex rings (not capped). Sections may differ in vertex count (they
+ * are made compatible by an arc-length-preserving resample). Returns 0 on
+ * degenerate input (< 2 sections, any section < 3 points, a non-planar or
+ * point-collapsed section). Mirrors BRepOffsetAPI_ThruSections (ruled). */
+CCShapeId cc_solid_loft_sections(const double *sectionsXYZ, const int *counts,
+                                 int sectionCount);
+
 /* Sweep a CLOSED profile (x,y pairs, ≥3 points) along a 3D polyline path
  * (x,y,z triples, ≥2 points). The profile is centred on its CENTROID and placed
  * PERPENDICULAR to the path tangent at the START: in the start frame the profile's

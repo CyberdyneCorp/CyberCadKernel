@@ -319,7 +319,7 @@ fuzzing vs OCCT).
   `tests/sim/native_boolean_fuzz.mm` + `scripts/run-sim-native-boolean-fuzz.sh`; `src/native`
   untouched (pure test infra). The FIRST measured completeness signal beyond the hand-picked
   native-pass=18 fixtures.
-- **Breadth — THREE native domains now under the fuzzing bar.** (2nd) STEP round-trip
+- **Breadth — FOUR native domains now under the fuzzing bar.** (2nd) STEP round-trip
   `tests/sim/native_step_import_fuzz.mm` (0 DISAGREED; *surfaced* an OCCT reader inaccuracy on
   shallow frustums, native vindicated by closed-form). (3rd, this slice) **construction
   loft/sweep** `tests/sim/native_construct_fuzz.mm` + `scripts/run-sim-native-construct-fuzz.sh`:
@@ -334,8 +334,30 @@ fuzzing vs OCCT).
   analytic prismatoid/prism-volume arbiter is present as a ready strengthening (untriggered —
   ORACLE-INACCURATE=0). Determinism re-verified (same seed twice → byte-identical batch).
   `src/native` untouched; on run-sim-suite.sh SKIP list (own main()).
-- REMAINING (asymptotic, gates M8): extend the generator across blends and healing;
-  loop-until-dry critics; the standing zero-silent-wrong-results bar.
+- **Breadth — 4th native domain: BLENDS (fillet/chamfer).** `tests/sim/native_blend_fuzz.mm`
+  + `scripts/run-sim-native-blend-fuzz.sh`: a DETERMINISTIC seeded generator (splitmix64→
+  xoshiro256**, seeded ONLY by FUZZ_SEED) drives random VALID inputs from six native-claimed
+  families — planar-dihedral chamfer + fillet (box edge), constant- AND variable-linear-radius
+  curved fillet, and symmetric + asymmetric cone-frustum chamfer of a convex cylinder↔cap
+  circular rim — through BOTH the OCCT-FREE native blend builder called DIRECTLY (`blend::
+  chamfer_edges`/`fillet_edges`/`curved_fillet_edge`/`variable_fillet_edge`/`curved_chamfer_
+  edge[_asym]`, measured by the native tessellator) AND the OCCT oracle (`BRepFilletAPI_
+  MakeFillet`/`MakeChamfer`, measured by `BRepGProp`), plus a sparse out-of-scope `Rc<2r`
+  fillet to exercise the native NULL→OCCT DECLINE branch. Each AGREE family carries a CLOSED-
+  FORM removed-volume analytic arbiter (torus-canal Pappus fillet; cone-frustum
+  π·d1·d2·(Rc−d2/3); box-edge prism/groove) so a native result matching exact math while OCCT
+  is the outlier is logged ORACLE-INACCURATE (native vindicated), never a bar failure. Four
+  seeds (0x5744EE9911 N=96 → 91/5/0; 0xC0FFEE1234 N=160 → 154/4/0; 0xDEADBEEF99 N=160 →
+  147/10/0; 0x77A9F1E3B5 N=160 → 156/3/0): **0 DISAGREED** on every seed, planar chamfer
+  native==OCCT exact, curved families deflection-bounded under a FIXED never-widened tol
+  (vol=2e-2 area=3e-2; max observed bias ~1.7e-2/2.6e-2); native-vs-exact-math ≤~1.6e-3 every
+  family. The variable-linear curved fillet surfaced OCCT evolved-surface drift while native
+  held ~2e-4 vs exact math → logged ORACLE-INACCURATE. Concave stepped-shaft fillet +
+  offset/shell are an honest domain-level decline for this first blend slice. `src/native`
+  untouched; on run-sim-suite.sh SKIP list (own main(), std::_Exit).
+- REMAINING (asymptotic, gates M8): extend the generator across the remaining blend families
+  (concave stepped-shaft, offset/shell) and healing; loop-until-dry critics; the standing
+  zero-silent-wrong-results bar.
 
 ### M7 — Tier-4 construction robustness · ~1–3 py · independent
 **M7a first slice LANDED (verified native-vs-OCCT at both gates):** the N-section (≥3)
@@ -413,7 +435,7 @@ slices used). Both are captured below.
 | **M0** freeform mesher/trimmer | `tessellate/` | — | ✅ **Wave-1 slice LANDED** — mesher ready; unblocks M2/M4 |
 | **M1** SSI S4 general robustness | `ssi/marching` | — | ✅ **Wave-1 slice LANDED** — breadth continues (asymptotic) |
 | **M5** shape-healing robustness | `heal/` | — | ✅ **Wave-1 slice LANDED** — tail continues (asymptotic) |
-| **M6** completeness / fuzzing harness | test infra + `ssi/` | — | ✅ **Wave-1 + breadth×3 LANDED** — curved-boolean + STEP round-trip + construction loft/sweep fuzzers (0 DISAGREED, 3 native domains); blends/healing remain (gates M8) |
+| **M6** completeness / fuzzing harness | test infra + `ssi/` | — | ✅ **Wave-1 + breadth×4 LANDED** — curved-boolean + STEP round-trip + construction loft/sweep + blend fillet/chamfer fuzzers (0 DISAGREED, 4 native domains); concave-shaft blends + healing remain (gates M8) |
 | **M7a** guided sweep · hard loft | `construct/` | — | ✅ **Wave-1 slice LANDED** — N-section loft ABI (`cc_solid_loft_sections`); guided sweep (measured trap) + non-planar-cap loft remain OCCT |
 | **M4** general STEP/AP242 import | `exchange/` | M0 | ✅ **Wave-2 LANDED** — non-rational + `RATIONAL_B_SPLINE_SURFACE` admission native (parity 83/83); rational-*curve* trims, PMI, deep assemblies remain OCCT |
 | **M2b (B2)** freeform face-split | `boolean/` · `ssi/` | M0 ✅ + M1 ✅ | ✅ **Wave-2 slice LANDED** — `boolean/face_split.h` `splitFace` (tiles vs OCCT 12/12); non-convex/multi-crossing tail declines |
@@ -457,7 +479,7 @@ calendar next.
 | | Person-years |
 |---|---|
 | **Delivered + verified vs OCCT (this project)** | ≈ **3.5–4.5 py** — planar/analytic breadth, SSI S1–S5 + S4-a…e, five curved-boolean families 3/3, curved fillet/chamfer (const/variable/asym), STEP export + broad import (all quadric+torus+general revolution, trimmed, assemblies, AP242-skip), shape-healing + STEP-import first slices, mismatched loft, deboss/polygon wrap-emboss |
-| **Moat slices landed (this campaign)** | **M0** keystone mesher **+ M4 / M4-rational** foreign B-spline STEP admission (keystone complete end-to-end) · **M1** freeform S4-d open-arm branch · **M2 substrate: B2** freeform face-split **+ B3** freeform point-in-solid membership · **M5** gap bridging **+ M5-tail** planar-hole cap · **M6** curved-boolean fuzzer **+ M6-breadth** STEP round-trip fuzzer (0 DISAGREED) · **M7a** N-section loft — each verified native-vs-OCCT, additive, `src/native` OCCT-free. Honest declines that sharpened the map: M2 first-attempt (→ substrate B1/B2/B3), guided-orient sweep (measured self-verify trap) |
+| **Moat slices landed (this campaign)** | **M0** keystone mesher **+ M4 / M4-rational** foreign B-spline STEP admission (keystone complete end-to-end) · **M1** freeform S4-d open-arm branch · **M2 substrate: B2** freeform face-split **+ B3** freeform point-in-solid membership · **M5** gap bridging **+ M5-tail** planar-hole cap · **M6** curved-boolean fuzzer **+ M6-breadth×3** STEP round-trip + construction loft/sweep + blend fillet/chamfer fuzzers (0 DISAGREED, 4 native domains) · **M7a** N-section loft — each verified native-vs-OCCT, additive, `src/native` OCCT-free. Honest declines that sharpened the map: M2 first-attempt (→ substrate B1/B2/B3), guided-orient sweep (measured self-verify trap) |
 | **Remaining to drop OCCT (M2 breadth + M3 + tails + M8)** | ≈ **3–8 py** — dominated by **M2/M3 breadth** (freeform booleans/blends, bounded *per family*, the parallelizable bulk) once B1 closes the substrate, plus the **M5 + M6** asymptotic gates; M4-tail (PMI/assemblies) + M7 residuals are small. See the projection below |
 | ~~IGES~~ | descoped (STEP-only) — saved ~1.5–3 py |
 

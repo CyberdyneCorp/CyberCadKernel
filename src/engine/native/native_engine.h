@@ -243,6 +243,12 @@ public:
     // An OCCT body forwards to the fallback (the HLRBRep_Algo oracle).
     Result<DrawingData> hlr_project(EngineShape body, const double viewDir[3], const double up[3],
                                     HlrOptionsData opts) override;
+    // NATIVE: planar SECTION CURVES for the analytic core (plane/cylinder/cone/
+    // sphere faces). The oblique cylinder cut / coincident-tangent plane / non-
+    // closing section / freeform face are honestly DECLINED with an error — never a
+    // wrong or open section. An OCCT body forwards to the fallback (BRepAlgoAPI_Section).
+    Result<SectionData> section_plane(EngineShape body, const double origin[3],
+                                      const double normal[3]) override;
     Result<std::vector<double>> principal_moments(EngineShape body) override;
     Result<std::vector<double>> face_axis(EngineShape body, int faceId) override;
     Result<std::vector<double>> ref_plane_from_face(EngineShape body, int faceId) override;

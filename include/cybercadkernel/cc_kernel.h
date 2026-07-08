@@ -166,6 +166,31 @@ typedef struct {
     double surfaceOffset;
 } CCHlrOptions;
 
+/* ── Phase-additive: planar SECTION CURVES (MOAT M-GS GS2) ─────────────────────
+ * The curves a cut plane carves from a solid (NOT the cut solid). */
+
+/* One closed section loop on the cut plane: an ordered polyline of `pointCount`
+ * (x,y,z) triples — the last point is NOT a duplicate of the first (the loop is
+ * implicitly closed). `shape` tags the analytic form (0 = polygon, 1 = circle,
+ * 2 = ellipse); `length` is the closed-form perimeter and `area` the closed-form
+ * region the loop encloses on the cut plane. */
+typedef struct {
+    double *pointsXYZ;   int pointCount;
+    int    shape;        /* 0 polygon, 1 circle, 2 ellipse */
+    double length;
+    double area;
+} CCSectionLoop;
+
+/* Result of cc_section_plane: `loopCount` closed section loops owned by the caller
+ * and released with cc_section_free, plus the total section-edge length and the
+ * capped planar section area (sum of loop areas). On an honest decline / empty
+ * section `loops` is null, `loopCount` 0, and cc_last_error is set. */
+typedef struct {
+    CCSectionLoop *loops;   int loopCount;
+    double totalLength;
+    double totalArea;
+} CCSection;
+
 #ifndef CC_KERNEL_NO_PROTOTYPES
 
 /* ── Legacy mesh extrude ─────────────────────────────────────────────────── */
@@ -596,6 +621,23 @@ void cc_quality_report_free(CCQualityReport report);
 CCDrawing cc_hlr_project(CCShapeId body, const double viewDir[3], const double up[3],
                          CCHlrOptions opts);
 void cc_drawing_free(CCDrawing drawing);
+
+/* ── Phase-additive: planar section curves (MOAT GS2) ───────────────────────── */
+
+/* Planar SECTION CURVES of a solid: intersect `body` with the cut plane through
+ * `origin[3]` with unit `normal[3]`, returning the closed section LOOPS (NOT the
+ * cut solid) that lie on the plane and on the body's faces — the app's
+ * SectionGeometry / MeshSection / SectionCap path. ADDITIVE: no existing cc_*
+ * signature changes.
+ *
+ * Scope (this slice): analytic plane / cylinder / cone / sphere faces. An OBLIQUE
+ * cut of a cylindrical face, a plane COINCIDENT or TANGENT to a face, a section
+ * that does not CLOSE, and FREEFORM faces are honestly DECLINED — cc_section_plane
+ * returns an empty CCSection with cc_last_error set, NEVER a wrong or open section.
+ * Under the native engine this is the OCCT-free section service; the OCCT engine
+ * mirrors BRepAlgoAPI_Section. */
+CCSection cc_section_plane(CCShapeId body, const double origin[3], const double normal[3]);
+void cc_section_free(CCSection section);
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 

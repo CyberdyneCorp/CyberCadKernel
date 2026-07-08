@@ -70,6 +70,22 @@ struct DrawingData {
     std::vector<DrawingSegmentData> hidden;
 };
 
+// One closed planar section loop (MOAT GS2). points are world x,y,z triples on the
+// cut plane; shape 0 polygon / 1 circle / 2 ellipse; length + area are closed-form.
+struct SectionLoopData {
+    std::vector<double> pointsXYZ;
+    int shape = 0;
+    double length = 0.0;
+    double area = 0.0;
+};
+
+// Result of a planar-section pass: the closed section loops + totals.
+struct SectionData {
+    std::vector<SectionLoopData> loops;
+    double totalLength = 0.0;
+    double totalArea = 0.0;
+};
+
 // Options for hlr_project (mirrors CCHlrOptions). deflection <= 0 => engine
 // default occluder tessellation; samplesPerEdge <= 0 / surfaceOffset <= 0 =>
 // native-core defaults.
@@ -368,6 +384,19 @@ public:
                                             const double up[3], HlrOptionsData opts) {
         (void)body; (void)viewDir; (void)up; (void)opts;
         return engine_unsupported("hlr_project");
+    }
+
+    // ── drafting: planar SECTION CURVES (MOAT GS2, ADDITIVE) ────────────────────
+    // Intersect `body` with the cut plane through `origin` with unit `normal` and
+    // return the closed section loops (NOT the cut solid). NativeEngine implements
+    // the analytic plane/cylinder/cone/sphere core and honestly DECLINES the
+    // oblique cylinder cut / coincident-tangent plane / non-closing / freeform
+    // cases; the OCCT adapter is the BRepAlgoAPI_Section oracle. Stub / non-
+    // overriding engines inherit unsupported.
+    virtual Result<SectionData> section_plane(EngineShape body, const double origin[3],
+                                              const double normal[3]) {
+        (void)body; (void)origin; (void)normal;
+        return engine_unsupported("section_plane");
     }
 
     // ── query ─────────────────────────────────────────────────────────────────

@@ -293,6 +293,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_stl
         test_native_quality
         test_native_drafting
+        test_native_section
         test_native_step
         test_native_engine)
 
@@ -458,6 +459,13 @@ if(CYBERCAD_BUILD_TESTS)
     # mesh; no numsci link, so it lives in the always-on native suite.
     set(test_native_drafting_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_drafting.cpp")
+    # MOAT M-GS GS2 planar SECTION CURVES — host GATE (a), the OCCT-free closed-form
+    # proof (box rectangle / cylinder cross-section circle πR² / cylinder axial
+    # rectangle 2R·H / sphere & cone circles + honest declines: oblique cylinder cut,
+    # coincident plane). Header-only section module over M1-SSI + topology consumed
+    # read-only; no numsci link, so it lives in the always-on native suite.
+    set(test_native_section_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_section.cpp")
     set(test_native_step_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step.cpp")
 

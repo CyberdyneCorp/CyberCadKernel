@@ -31,6 +31,7 @@
 #include "native/boolean/native_boolean.h"
 #include "native/construct/native_construct.h"
 #include "native/drafting/native_drafting.h"
+#include "native/section/native_section.h"
 #include "native/exchange/native_exchange.h"
 #include "native/feature/wrap_emboss.h"
 #include "native/heal/native_heal.h"
@@ -58,6 +59,7 @@ namespace ntopo = cybercad::native::topology;
 namespace nan = cybercad::native::analysis;
 namespace ntess = cybercad::native::tessellate;
 namespace ndraft = cybercad::native::drafting;
+namespace nsec = cybercad::native::section;
 namespace nmath = cybercad::native::math;
 
 // ── Native shape holder type-erased behind the registry's EngineShape ──────────
@@ -1570,6 +1572,55 @@ Result<DrawingData> NativeEngine::hlr_project(EngineShape body, const double vie
     out.hidden.reserve(hlr.hidden.size());
     for (const ndraft::Segment2D& s : hlr.hidden)
         out.hidden.push_back(DrawingSegmentData{s.ax, s.ay, s.bx, s.by});
+    return out;
+}
+
+// ── drafting: planar SECTION CURVES over the analytic core ──────────────────────
+// Intersect every face of the native B-rep with the cut plane via the OCCT-free
+// section service (M1-SSI + topology consumed read-only) and return the closed
+// section loops. Honest DECLINE (mapped to an Error the facade surfaces) for the
+// oblique cylinder cut / coincident-tangent plane / non-closing / freeform cases —
+// never a wrong or open section. A mesh body carries no B-rep, so it is declined.
+Result<SectionData> NativeEngine::section_plane(EngineShape body, const double origin[3],
+                                                const double normal[3]) {
+    if (!isNative(body)) return fallback().section_plane(body, origin, normal);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh)
+        return make_error("section_plane: a native mesh body carries no B-rep topology (declined)");
+    const nmath::Vec3 nrm{normal[0], normal[1], normal[2]};
+    if (nmath::norm(nrm) < nmath::kLinearTolerance)
+        return make_error("section_plane: degenerate cut-plane normal (declined)");
+
+    // Build the cut-plane frame with a well-defined in-plane X (⟂ the normal).
+    const nmath::Dir3 n{nrm};
+    const double axc = std::fabs(n.x()), ayc = std::fabs(n.y()), azc = std::fabs(n.z());
+    const nmath::Vec3 pick = (axc <= ayc && axc <= azc) ? nmath::Vec3{1, 0, 0}
+                             : (ayc <= azc)             ? nmath::Vec3{0, 1, 0}
+                                                        : nmath::Vec3{0, 0, 1};
+    const nmath::Plane cutPlane{nmath::Ax3::fromAxisAndRef(
+        nmath::Point3{origin[0], origin[1], origin[2]}, n, nmath::Dir3{nmath::cross(n.vec(), pick)})};
+
+    const nsec::SectionResult r = nsec::sectionByPlane(holder->shape, cutPlane);
+    if (r.status != nsec::SectionStatus::Ok)
+        return make_error(std::string("section_plane: ") + r.reason);
+
+    SectionData out;
+    out.loops.reserve(r.loops.size());
+    for (const nsec::SectionLoop& lp : r.loops) {
+        SectionLoopData d;
+        d.pointsXYZ.reserve(lp.points.size() * 3);
+        for (const nmath::Point3& p : lp.points) {
+            d.pointsXYZ.push_back(p.x);
+            d.pointsXYZ.push_back(p.y);
+            d.pointsXYZ.push_back(p.z);
+        }
+        d.shape = static_cast<int>(lp.shape);
+        d.length = lp.length();
+        d.area = lp.area(cutPlane.pos.x, cutPlane.pos.y, cutPlane.pos.origin);
+        out.loops.push_back(std::move(d));
+    }
+    out.totalLength = r.totalLength();
+    out.totalArea = r.totalArea();
     return out;
 }
 

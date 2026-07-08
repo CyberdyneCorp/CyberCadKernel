@@ -882,6 +882,73 @@ void cc_drawing_free(CCDrawing drawing) {
     std::free(drawing.hidden);
 }
 
+// ── drafting: planar section curves (MOAT GS2, ADDITIVE) ────────────────────────
+
+namespace {
+CCSection empty_section() {
+    CCSection s;
+    s.loops = nullptr;
+    s.loopCount = 0;
+    s.totalLength = 0.0;
+    s.totalArea = 0.0;
+    return s;
+}
+}  // namespace
+
+CCSection cc_section_plane(CCShapeId body, const double origin[3], const double normal[3]) {
+    return cyber::guard(
+        [&]() -> CCSection {
+            if (!origin || !normal) {
+                set_last_error("cc_section_plane: null origin/normal");
+                return empty_section();
+            }
+            auto r = active_engine()->section_plane(resolve(body), origin, normal);
+            if (!r) {
+                set_last_error(r.error().message);
+                return empty_section();
+            }
+            const cyber::SectionData& d = r.value();
+            CCSection out = empty_section();
+            out.totalLength = d.totalLength;
+            out.totalArea = d.totalArea;
+            out.loopCount = static_cast<int>(d.loops.size());
+            if (!d.loops.empty()) {
+                out.loops = static_cast<CCSectionLoop*>(
+                    std::malloc(d.loops.size() * sizeof(CCSectionLoop)));
+                if (!out.loops) {
+                    set_last_error("cc_section_plane: out of memory");
+                    return empty_section();
+                }
+                for (std::size_t i = 0; i < d.loops.size(); ++i) {
+                    const cyber::SectionLoopData& src = d.loops[i];
+                    CCSectionLoop& dst = out.loops[i];
+                    dst.shape = src.shape;
+                    dst.length = src.length;
+                    dst.area = src.area;
+                    dst.pointCount = static_cast<int>(src.pointsXYZ.size() / 3);
+                    dst.pointsXYZ = nullptr;
+                    if (!src.pointsXYZ.empty()) {
+                        dst.pointsXYZ = static_cast<double*>(
+                            std::malloc(src.pointsXYZ.size() * sizeof(double)));
+                        if (dst.pointsXYZ)
+                            std::copy(src.pointsXYZ.begin(), src.pointsXYZ.end(), dst.pointsXYZ);
+                        else
+                            dst.pointCount = 0;
+                    }
+                }
+            }
+            return out;
+        },
+        empty_section());
+}
+
+void cc_section_free(CCSection section) {
+    if (section.loops) {
+        for (int i = 0; i < section.loopCount; ++i) std::free(section.loops[i].pointsXYZ);
+        std::free(section.loops);
+    }
+}
+
 int cc_offset_face_boundary(CCShapeId body, int faceId, double distance, double** outXYZ) {
     return cyber::guard(
         [&]() -> int {

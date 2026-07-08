@@ -50,7 +50,7 @@ All `file:line` are in `src/engine/native/native_engine.cpp` unless noted.
 | engine method | `cc_*` op | file:line | class | stage / py | app sites | decisive rationale (source-grounded) |
 |---|---|---|---|---|---|---|
 | **CONSTRUCT** ||||||
-| extrude_mesh | cc_extrude | 966 | **B** | M-TX-trivial / ~0.1py | 10 | **unconditional** `return fallback().extrude_mesh` (no native attempt); native `solid_extrude`+`tessellate` already exist → trivial rewire |
+| extrude_mesh | cc_extrude | 967 | **A** | M-TX done | 10 | rewired: attempts native `build_prism`+`tessellate` FIRST (0.1 defl), forwards only on null/degenerate |
 | solid_extrude | cc_solid_extrude | 647 | **A** | done | 11 | forwards only on null/degenerate (652) |
 | solid_revolve | cc_solid_revolve | 657 | **A** | done | 6 | null/degenerate only (662) |
 | solid_extrude_holes | cc_solid_extrude_holes | 1126 | **A** | done | 3 | null only (1129) |
@@ -110,13 +110,13 @@ All `file:line` are in `src/engine/native/native_engine.cpp` unless noted.
 | tangent_chain | cc_tangent_chain | 1947 | **A** | done M-REF | 5 | native C1 walk (line/circle/ellipse); freeform edge → decline → OCCT |
 | outer_rim_chain | cc_outer_rim_chain | 1951 | **A** | done M-REF | 6 | native planar-cap outer wire; empty = no cap |
 | offset_face_boundary | cc_offset_face_boundary | 1955 | **A** | done M-REF | 5 | native polygon miter offset (inward-sharp case); arc/non-planar/growing-convex → decline → OCCT |
-| **TRANSFORM** (hard `CC_NATIVE_BODY_UNSUPPORTED` today; NO named roadmap stage — flagged) ||||||
-| translate_shape | cc_translate_shape | 1981 | **B** | **M-TX (unroadmapped)** | 4 | hard decline (1982) |
-| rotate_shape_about | cc_rotate_shape_about | 1971 | **B** | M-TX | 5 | hard decline (1973) |
-| mirror_shape | cc_mirror_shape | 1976 | **B** | M-TX | 4 | hard decline (1978) |
-| scale_shape | cc_scale_shape | 1962 | **B** | M-TX | 5 | hard decline (1963) |
-| scale_shape_about | cc_scale_shape_about | 1966 | **B** | M-TX | 4 | hard decline (1968) |
-| place_on_frame | cc_place_on_frame | 1985 | **B** | M-TX | 5 | hard decline (1988) |
+| **TRANSFORM** (M-TX: NOW native for a native body via `Shape::located(math::Transform)`; OCCT body forwards) ||||||
+| translate_shape | cc_translate_shape | 2091 | **A** | M-TX done | 4 | native `located()` placement; OCCT body forwards |
+| rotate_shape_about | cc_rotate_shape_about | 2058 | **A** | M-TX done | 5 | native rotation about axis; zero-axis declines |
+| mirror_shape | cc_mirror_shape | 2069 | **A** | M-TX done | 4 | native reflection (det<0, valid watertight); zero-normal declines |
+| scale_shape | cc_scale_shape | 2036 | **A** | M-TX done | 5 | native uniform scale; f≤0 honest decline |
+| scale_shape_about | cc_scale_shape_about | 2044 | **A** | M-TX done | 4 | native uniform scale about centre; f≤0 declines |
+| place_on_frame | cc_place_on_frame | 2100 | **A** | M-TX done | 5 | native rigid frame placement; degenerate frame declines |
 | **EXCHANGE** ||||||
 | step_export | cc_step_export | 2017 | **A** | resid small | 12 | native writer scope (plane/cyl/cone/sphere/bspline); out-of-scope → OCCT (2017) |
 | step_import | cc_step_import | 2035 | **A** | resid M4 tail | 10 | native AP203 + B-spline admission (rational + trims + nested); malformed / PMI-semantics / `MAPPED_ITEM` → OCCT (2035) |
@@ -131,11 +131,11 @@ writers / TetGen). **Facade-pure fp64 (no engine call):** `cc_ref_plane_from_poi
 `cc_ref_plane_offset`, `cc_ref_axis_from_points`. **Infra (not geometry):** `set_parallel` /
 `set_gpu_tessellation` forward to fallback policy (625-628) → become native no-ops at unlink.
 
-**Site tally:** 63 classified engine fall-through sites → **A: 40**, **B: 21**, **C: 2**.
-The 21 **B** sites reduce to **20 unique ops** hard-declining on native bodies via
-`CC_NATIVE_BODY_UNSUPPORTED` (22 macro invocations at `native_engine.cpp:1333…2062`,
-`thread_apply` uses it twice, `iges_export` is the one C-class invocation) plus the 3
-degenerate-slice construct ops (`extrude_mesh`, `twisted_sweep`, `loft_along_rail`).
+**Site tally:** 63 classified engine fall-through sites → **A: 47**, **B: 14**, **C: 2**
+(M-TX landed: the 6 transform ops + `extrude_mesh` moved B→A). The remaining **B** sites
+hard-decline on native bodies via `CC_NATIVE_BODY_UNSUPPORTED` (M-REF reference/topology
+reads, M-DM `replace_face`, M3 OCCT-only fillets) plus the degenerate-slice construct ops
+(`twisted_sweep`, `loft_along_rail`); `iges_export` is the one C-class invocation.
 
 ---
 
@@ -143,8 +143,8 @@ degenerate-slice construct ops (`extrude_mesh`, `twisted_sweep`, `loft_along_rai
 
 | bucket | ops | stage | app sites | remaining py |
 |---|---|---|---|---|
-| **M-TX native transforms** (UNROADMAPPED — flag as its own bounded item) | translate_shape, rotate_shape_about, mirror_shape, scale_shape, scale_shape_about, place_on_frame, extrude_mesh | **M-TX (new)** | 27 + 10 | **~0.5–1** |
-| ~~**M-REF reference / topology**~~ **DONE (native, two gates green)** | face_axis, ref_plane_from_face, ref_axis_from_edge, ref_axis_from_face, tangent_chain, outer_rim_chain, offset_face_boundary | **M-REF (landed)** | 22 | **0** |
+| **M-TX native transforms** — ✅ LANDED (native `Shape::located(math::Transform)`; two-gate proven) | translate_shape, rotate_shape_about, mirror_shape, scale_shape, scale_shape_about, place_on_frame, extrude_mesh | **M-TX (done)** | 27 + 10 | **0 (done)** |
+| **M-REF reference / topology** — ✅ LANDED (native, two gates green) | face_axis, ref_plane_from_face, ref_axis_from_edge, ref_axis_from_face, tangent_chain, outer_rim_chain, offset_face_boundary | **M-REF (done)** | 22 | **0 (done)** |
 | **M-DM direct modeling** | replace_face (DM3) — DM2 replace_face_to_plane now native (98a2011) | **M-DM** | 6 | **~1–2** |
 | **M3 OCCT-only + curved-blend breadth** | fillet_face, full_round_fillet, full_round_fillet_faces, fillet_edges_g2 + curved/freeform residuals of the A-class blends (fillet/chamfer/shell/offset_face) | **M3** (in M2/M3 breadth bucket) | 14 direct | **~3–8** (shared M2/M3) |
 | **M2 freeform-boolean breadth + thread_apply** | boolean_op freeform/mixed residual, thread_apply | **M2** (same bucket) | 0 direct | (in the ~3–8) |

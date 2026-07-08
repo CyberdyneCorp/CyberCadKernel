@@ -12,6 +12,7 @@
 // Assertions are analytic (exact volumes/areas of known solids) within the
 // deflection-derived convergence bound the native tessellator guarantees.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -1112,6 +1113,152 @@ CC_TEST(native_step_pmi_scan_census_and_byte_identical_import) {
     std::remove(plainPath);
     std::remove(pmiPath);
     cc_shape_release(box);
+}
+
+// ── M-TX: NATIVE affine transforms on a native body (Gate a — host, analytic) ──
+// A 10×10×10 box built natively (cc_solid_extrude) is transformed by each op and
+// measured OCCT-FREE against the SAME closed-form invariants the OCCT runtime suite
+// asserts in tests/sim/checks_booltransform.cpp: volume = |det L|·vol, bbox/centroid
+// are the exact affine image, mass_properties.valid ⇒ the result is a watertight
+// positive-|vol| solid, and every op's degenerate-input guard declines. These used
+// to hard-error (CC_NATIVE_BODY_UNSUPPORTED) on a native body.
+namespace {
+constexpr double kBox10[8] = {0, 0, 10, 0, 10, 10, 0, 10};
+CCShapeId nativeBox10() { return cc_solid_extrude(kBox10, 4, 10.0); }
+bool bboxIs(CCShapeId id, double x0, double y0, double z0, double x1, double y1, double z1,
+            double t = 1e-6) {
+    double b[6] = {0};
+    if (cc_bounding_box(id, b) != 1) return false;
+    return std::fabs(b[0] - x0) < t && std::fabs(b[1] - y0) < t && std::fabs(b[2] - z0) < t &&
+           std::fabs(b[3] - x1) < t && std::fabs(b[4] - y1) < t && std::fabs(b[5] - z1) < t;
+}
+}  // namespace
+
+CC_TEST(native_translate_shape) {
+    EngineGuard g;
+    cc_set_engine(1);
+    CCShapeId box = nativeBox10();
+    CC_CHECK(box != 0);
+    CCShapeId t = cc_translate_shape(box, 5, 5, 5);
+    CC_CHECK(t != 0);
+    const CCMassProps mp = cc_mass_properties(t);
+    CC_CHECK(mp.valid != 0 && std::fabs(mp.volume - 1000.0) < 1e-4);
+    CC_CHECK(std::fabs(mp.cx - 10) < 1e-3 && std::fabs(mp.cy - 10) < 1e-3 &&
+             std::fabs(mp.cz - 10) < 1e-3);
+    CC_CHECK(bboxIs(t, 5, 5, 5, 15, 15, 15));
+    CC_CHECK_EQ(cc_translate_shape(999999, 1, 2, 3), 0);  // guard: unknown id
+    cc_shape_release(t);
+    cc_shape_release(box);
+}
+
+CC_TEST(native_rotate_shape_about) {
+    EngineGuard g;
+    cc_set_engine(1);
+    CCShapeId box = nativeBox10();
+    const double kHalfPi = 1.57079632679489661923;
+    // 90° about +Z through origin: (x,y)->(-y,x) ⇒ bbox [-10,0,0 .. 0,10,10].
+    CCShapeId r = cc_rotate_shape_about(box, 0, 0, 0, 0, 0, 1, kHalfPi);
+    CC_CHECK(r != 0);
+    const CCMassProps mp = cc_mass_properties(r);
+    CC_CHECK(mp.valid != 0 && std::fabs(mp.volume - 1000.0) < 1e-4);  // rigid preserves vol
+    CC_CHECK(bboxIs(r, -10, 0, 0, 0, 10, 10, 1e-4));
+    CC_CHECK_EQ(cc_rotate_shape_about(box, 0, 0, 0, 0, 0, 0, kHalfPi), 0);  // guard: zero axis
+    cc_shape_release(r);
+    cc_shape_release(box);
+}
+
+CC_TEST(native_mirror_shape) {
+    EngineGuard g;
+    cc_set_engine(1);
+    CCShapeId box = nativeBox10();
+    // Mirror across x=0: reflection preserves |vol| and reflects x∈[0,10]→[-10,0]. The
+    // result must stay a VALID watertight positive-|vol| solid (mp.valid ⇒ watertight
+    // mesh with positive volume — the mirror handedness flip is proven parity-side in
+    // native_transform_fuzz.mm; the ABI reports |volume|).
+    CCShapeId m = cc_mirror_shape(box, 0, 0, 0, 1, 0, 0);
+    CC_CHECK(m != 0);
+    const CCMassProps mp = cc_mass_properties(m);
+    CC_CHECK(mp.valid != 0 && std::fabs(mp.volume - 1000.0) < 1e-4);
+    CC_CHECK(bboxIs(m, -10, 0, 0, 0, 10, 10));
+    CC_CHECK_EQ(cc_mirror_shape(box, 0, 0, 0, 0, 0, 0), 0);  // guard: zero normal
+    cc_shape_release(m);
+    cc_shape_release(box);
+}
+
+CC_TEST(native_scale_shape) {
+    EngineGuard g;
+    cc_set_engine(1);
+    CCShapeId box = nativeBox10();
+    CCShapeId sc = cc_scale_shape(box, 2.0);
+    CC_CHECK(sc != 0);
+    const CCMassProps mp = cc_mass_properties(sc);
+    CC_CHECK(mp.valid != 0 && std::fabs(mp.volume - 8000.0) < 1e-2);  // 1000·2³
+    CC_CHECK(bboxIs(sc, 0, 0, 0, 20, 20, 20));
+    // Honest decline of a zero/degenerate (non-invertible) scale, and non-positive.
+    CC_CHECK_EQ(cc_scale_shape(box, 0.0), 0);
+    CC_CHECK_EQ(cc_scale_shape(box, -1.0), 0);
+    cc_shape_release(sc);
+    cc_shape_release(box);
+}
+
+CC_TEST(native_scale_shape_about) {
+    EngineGuard g;
+    cc_set_engine(1);
+    CCShapeId box = nativeBox10();
+    CCShapeId sc = cc_scale_shape_about(box, 5, 5, 5, 2.0);
+    CC_CHECK(sc != 0);
+    const CCMassProps mp = cc_mass_properties(sc);
+    CC_CHECK(mp.valid != 0 && std::fabs(mp.volume - 8000.0) < 1e-2);
+    CC_CHECK(std::fabs(mp.cx - 5) < 1e-3 && std::fabs(mp.cy - 5) < 1e-3 &&
+             std::fabs(mp.cz - 5) < 1e-3);  // scale centre is a fixed point
+    CC_CHECK(bboxIs(sc, -5, -5, -5, 15, 15, 15));
+    CC_CHECK_EQ(cc_scale_shape_about(box, 5, 5, 5, 0.0), 0);  // degenerate scale honest decline
+    cc_shape_release(sc);
+    cc_shape_release(box);
+}
+
+CC_TEST(native_place_on_frame) {
+    EngineGuard g;
+    cc_set_engine(1);
+    CCShapeId box = nativeBox10();
+    // Frame o=(10,0,0), u=+Y, v=+Z ⇒ n=u×v=+X. Local (x,y,z) → (10+z, x, y), so the
+    // box maps to X∈[10,20], Y∈[0,10], Z∈[0,10] with volume preserved.
+    CCShapeId p = cc_place_on_frame(box, 10, 0, 0, 0, 1, 0, 0, 0, 1);
+    CC_CHECK(p != 0);
+    const CCMassProps mp = cc_mass_properties(p);
+    CC_CHECK(mp.valid != 0 && std::fabs(mp.volume - 1000.0) < 1e-4);
+    CC_CHECK(bboxIs(p, 10, 0, 0, 20, 10, 10, 1e-4));
+    CC_CHECK_EQ(cc_place_on_frame(box, 0, 0, 0, 0, 1, 0, 0, 1, 0), 0);  // guard: u ∥ v
+    cc_shape_release(p);
+    cc_shape_release(box);
+}
+
+// ── M-TX: cc_extrude (legacy mesh) rewired to ATTEMPT NATIVE FIRST ─────────────
+// The native prism is the same build_prism solid_extrude uses (bbox-identical to the
+// OCCT adapter's prism), so cc_extrude of a handled profile now builds natively; a
+// degenerate profile falls through (stub on host → empty mesh), never faking.
+CC_TEST(native_extrude_mesh_bbox) {
+    EngineGuard g;
+    cc_set_engine(1);
+    CCMesh m = cc_extrude(kBox10, 4, 10.0);
+    CC_CHECK(m.vertexCount > 0);
+    CC_CHECK(m.triangleCount >= 12);  // a box is at least 12 triangles
+    double lo[3] = {1e30, 1e30, 1e30}, hi[3] = {-1e30, -1e30, -1e30};
+    for (int i = 0; i < m.vertexCount; ++i)
+        for (int k = 0; k < 3; ++k) {
+            const double c = m.vertices[i * 3 + k];
+            lo[k] = std::min(lo[k], c);
+            hi[k] = std::max(hi[k], c);
+        }
+    CC_CHECK(std::fabs(lo[0]) < 1e-6 && std::fabs(lo[1]) < 1e-6 && std::fabs(lo[2]) < 1e-6);
+    CC_CHECK(std::fabs(hi[0] - 10) < 1e-6 && std::fabs(hi[1] - 10) < 1e-6 &&
+             std::fabs(hi[2] - 10) < 1e-6);
+    cc_mesh_free(m);
+
+    // <3 points: native build_prism declines → fallback (stub on host) → empty mesh.
+    CCMesh d = cc_extrude(kBox10, 2, 10.0);
+    CC_CHECK_EQ(d.vertexCount, 0);
+    cc_mesh_free(d);
 }
 
 CC_RUN_ALL()

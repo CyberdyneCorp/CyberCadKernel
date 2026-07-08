@@ -609,6 +609,24 @@ tests. Substages:
   hard blocker for OCCT-free 2D drawings. **Gates a fully-OCCT-free *app* with drawings, not the
   kernel's solid-modeling primitives.**
 
+### M-TX — Native affine transforms for native bodies · ✅ LANDED
+The rigid/affine transform layer behind the app's translate / rotate / mirror / scale / place
+tools — `cc_translate_shape`, `cc_rotate_shape_about`, `cc_mirror_shape`, `cc_scale_shape`,
+`cc_scale_shape_about`, `cc_place_on_frame` — used to hard-error (`CC_NATIVE_BODY_UNSUPPORTED`)
+on a NATIVE body; the legacy mesh extrude `cc_extrude` forwarded unconditionally to OCCT.
+- **✅ NATIVE (landed).** These six ops now apply a `math::Transform` to a native body via the
+  proven `topology::Shape::located(math::Transform)` + `SolidMesher` placement path (the same
+  path `native_transform_fuzz.mm` certifies vs OCCT `BRepBuilderAPI_Transform` + closed-form).
+  A MIRROR flips handedness (signed-vol sign) while staying a valid watertight positive-|vol|
+  solid; a zero/degenerate scale (and zero axis / normal / degenerate frame) declines honestly;
+  a NON-native body forwards to OCCT unchanged. `cc_extrude` now attempts the native prism first.
+- *Two-gate proven.* Gate (a) host-analytic ABI invariants (`tests/test_native_engine.cpp`, 7 new
+  cases, OCCT-free); gate (b) SIM native-vs-OCCT ABI parity driving `cc_*` under BOTH engines
+  (`tests/sim/native_transform_parity.mm`, box + cylinder, 88/88) plus the pre-existing
+  transform-chain fuzzer. `src/native/**` untouched (OCCT-free); `cc_*` ABI unchanged.
+- *Bounded, cheap.* The largest app-facing OCCT fall-through by call-site count (27 transform +
+  10 extrude sites) closed with no new geometry algorithms — pure placement composition.
+
 ### M8 — `drop-occt` — unlink OCCT · gated on M0–M7 + **M-DM** + **M-GS** + M6 bar
 > **Itemized unlink checklist:** [DROP-OCCT-READINESS.md](DROP-OCCT-READINESS.md) — every OCCT fall-through site classified A (now-native) / B (must-go-native, ~6.5–15 py) / C (IGES decline), with the concrete unlink sequence and readiness verdict.
 

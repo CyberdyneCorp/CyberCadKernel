@@ -39,6 +39,7 @@
 #include "native/exchange/native_exchange.h"
 #include "native/feature/wrap_emboss.h"
 #include "native/heal/native_heal.h"
+#include "native/math/transform.h"  // M-TX: affine placement for native transforms
 #include "native/tessellate/native_tessellate.h"
 #include "native/topology/accessors.h"
 #include "native/reference/reference.h"  // M-REF: datum + topology-reference reads
@@ -966,8 +967,21 @@ Result<std::vector<double>> NativeEngine::measure_distance(EngineShape body, int
 
 // ── construct fallthrough ───────────────────────────────────────────────────────
 
+// Legacy mesh extrude (cc_extrude): ATTEMPT NATIVE FIRST, fall through to OCCT on an
+// honest decline. The native prism is the SAME build_prism solid_extrude uses (the
+// OCCT adapter's extrude_mesh likewise builds a prism then tessellates at 0.1), so a
+// case the native builder handles produces the identical geometry — meshed at the
+// SAME 0.1 deflection here for a bbox/extents-identical result. A degenerate profile
+// or a case the native builder defers returns a NULL solid → forward the SAME
+// arguments to the fallback (honest coexistence — OCCT still catches the rest, no
+// faking, no forwarding of a native void).
 Result<MeshData> NativeEngine::extrude_mesh(const double* p, int n, double d) {
-    return fallback().extrude_mesh(p, n, d);
+    ntopo::Shape solid = cybercad::native::construct::build_prism(p, n, d);
+    if (solid.isNull()) return fallback().extrude_mesh(p, n, d);
+    ntess::MeshParams params;
+    params.deflection = 0.1;  // match the OCCT adapter's legacy 0.1 tessellation
+    ntess::SolidMesher mesher(params);
+    return toMeshData(mesher.mesh(solid));
 }
 // ── Tier-B (#4b) NATIVE ruled loft, incl. the T1 MISMATCHED-count breadth. NATIVE
 // for equal-count sections AND for mismatched counts (the loop is resampled at the
@@ -2045,36 +2059,121 @@ Result<std::vector<double>> NativeEngine::offset_face_boundary(EngineShape body,
     return *pts;
 }
 
-// ── transform fallthrough ─────────────────────────────────────────────────────────
+// ── NATIVE affine transforms (M-TX) ─────────────────────────────────────────────
+// translate / rotate / uniform-scale / mirror / place_on_frame on a NATIVE body are
+// served natively by APPLYING a math::Transform to the body (they used to hard-error
+// on a native body). The machinery is the placement path certified by
+// tests/sim/native_transform_fuzz.mm (native topology::Shape::located(math::Transform)
+// + SolidMesher, differentially fuzzed vs OCCT BRepBuilderAPI_Transform(gp_Trsf) +
+// BRepGProp AND a closed-form similarity image). A NON-native (OCCT) body forwards to
+// the OCCT adapter exactly as before; a native body is NEVER forwarded to OCCT (its
+// unwrap would misread the void).
+
+namespace {
+// Apply an affine math::Transform to a native body, returning a fresh native handle
+// or nullptr on an honest decline (the caller then returns a clean error — never
+// OCCT). B-rep bodies use Shape::located()+SolidMesher (the fuzzed path); a mesh
+// (imported STL) body transforms its vertices/normals directly. A NON-INVERTIBLE
+// (singular / zero-scale) linear part collapses the solid → decline. A mirror (det<0)
+// is kept: the placement flips the signed enclosed-volume sign yet stays a valid
+// watertight positive-|vol| solid — the located() convention the fuzzer certifies.
+// B-rep results self-verify robustly watertight with positive |vol| before being kept
+// (a similarity/rigid/mirror placement of a watertight solid stays watertight, so this
+// holds for any legitimate body; a surprise declines honestly rather than shipping a
+// leaky solid).
+EngineShape applyNativeTransform(const NativeShape& holder, const nmath::Transform& xf) {
+    if (!xf.inverse().has_value()) return nullptr;  // singular / degenerate → decline
+    if (holder.isMesh) {
+        ntess::Mesh m = holder.mesh;  // deep copy; transform in place
+        for (auto& v : m.vertices) v = xf.applyToPoint(v);
+        if (m.hasNormals())
+            for (auto& n : m.normals) n = xf.applyToDir(n);
+        return wrapNativeMesh(std::move(m));
+    }
+    ntopo::Shape located = holder.shape.located(ntopo::Location{xf});
+    if (located.isNull()) return nullptr;
+    if (!robustlyWatertight(located) || !(watertightVolume(located) > 0.0)) return nullptr;
+    return wrapNative(std::move(located));
+}
+}  // namespace
 
 ShapeResult NativeEngine::scale_shape(EngineShape body, double f) {
-    CC_NATIVE_BODY_UNSUPPORTED("scale_shape", body);
-    return fallback().scale_shape(body, f);
+    if (!isNative(body)) return fallback().scale_shape(body, f);
+    if (!(f > 0.0)) return make_error("scale_shape: non-positive factor");
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    EngineShape out = applyNativeTransform(*holder, nmath::Transform::scaleOf(nmath::Point3{0, 0, 0}, f));
+    if (!out) return make_error("scale_shape: native placement declined (degenerate)");
+    return track(std::move(out));
 }
 ShapeResult NativeEngine::scale_shape_about(EngineShape body, double cx, double cy, double cz,
                                             double f) {
-    CC_NATIVE_BODY_UNSUPPORTED("scale_shape_about", body);
-    return fallback().scale_shape_about(body, cx, cy, cz, f);
+    if (!isNative(body)) return fallback().scale_shape_about(body, cx, cy, cz, f);
+    if (!(f > 0.0)) return make_error("scale_shape_about: non-positive factor");
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    EngineShape out =
+        applyNativeTransform(*holder, nmath::Transform::scaleOf(nmath::Point3{cx, cy, cz}, f));
+    if (!out) return make_error("scale_shape_about: native placement declined (degenerate)");
+    return track(std::move(out));
 }
 ShapeResult NativeEngine::rotate_shape_about(EngineShape body, double cx, double cy, double cz,
                                              double ax, double ay, double az, double a) {
-    CC_NATIVE_BODY_UNSUPPORTED("rotate_shape_about", body);
-    return fallback().rotate_shape_about(body, cx, cy, cz, ax, ay, az, a);
+    if (!isNative(body)) return fallback().rotate_shape_about(body, cx, cy, cz, ax, ay, az, a);
+    if (ax * ax + ay * ay + az * az < 1.0e-12) return make_error("rotate_shape_about: zero axis");
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    const nmath::Dir3 axis(ax, ay, az);  // Dir3 ctor normalizes the axis
+    EngineShape out = applyNativeTransform(
+        *holder, nmath::Transform::rotationOf(nmath::Point3{cx, cy, cz}, axis, a));
+    if (!out) return make_error("rotate_shape_about: native placement declined");
+    return track(std::move(out));
 }
 ShapeResult NativeEngine::mirror_shape(EngineShape body, double px, double py, double pz, double nx,
                                        double ny, double nz) {
-    CC_NATIVE_BODY_UNSUPPORTED("mirror_shape", body);
-    return fallback().mirror_shape(body, px, py, pz, nx, ny, nz);
+    if (!isNative(body)) return fallback().mirror_shape(body, px, py, pz, nx, ny, nz);
+    const double nn = nx * nx + ny * ny + nz * nz;
+    if (nn < 1.0e-12) return make_error("mirror_shape: zero plane normal");
+    // Reflection across the plane through (px,py,pz) with UNIT normal u:
+    //   L = I − 2 u uᵀ (det = −1),  t = 2 (p·u) u   (matches OCCT gp_Trsf::SetMirror).
+    const double inv = 1.0 / std::sqrt(nn);
+    const double ux = nx * inv, uy = ny * inv, uz = nz * inv;
+    const nmath::Mat3 L(1 - 2 * ux * ux, -2 * ux * uy, -2 * ux * uz, -2 * uy * ux,
+                        1 - 2 * uy * uy, -2 * uy * uz, -2 * uz * ux, -2 * uz * uy,
+                        1 - 2 * uz * uz);
+    const double pd = px * ux + py * uy + pz * uz;
+    const nmath::Vec3 t{2 * pd * ux, 2 * pd * uy, 2 * pd * uz};
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    EngineShape out = applyNativeTransform(*holder, nmath::Transform{L, t});
+    if (!out) return make_error("mirror_shape: native placement declined");
+    return track(std::move(out));
 }
 ShapeResult NativeEngine::translate_shape(EngineShape body, double tx, double ty, double tz) {
-    CC_NATIVE_BODY_UNSUPPORTED("translate_shape", body);
-    return fallback().translate_shape(body, tx, ty, tz);
+    if (!isNative(body)) return fallback().translate_shape(body, tx, ty, tz);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    EngineShape out =
+        applyNativeTransform(*holder, nmath::Transform::translationOf(nmath::Vec3{tx, ty, tz}));
+    if (!out) return make_error("translate_shape: native placement declined");
+    return track(std::move(out));
 }
 ShapeResult NativeEngine::place_on_frame(EngineShape body, double ox, double oy, double oz,
                                          double ux, double uy, double uz, double vx, double vy,
                                          double vz) {
-    CC_NATIVE_BODY_UNSUPPORTED("place_on_frame", body);
-    return fallback().place_on_frame(body, ox, oy, oz, ux, uy, uz, vx, vy, vz);
+    if (!isNative(body))
+        return fallback().place_on_frame(body, ox, oy, oz, ux, uy, uz, vx, vy, vz);
+    const nmath::Vec3 u{ux, uy, uz}, v{vx, vy, vz};
+    const nmath::Vec3 n = nmath::cross(u, v);
+    if (nmath::norm(u) < 1.0e-9 || nmath::norm(v) < 1.0e-9 || nmath::norm(n) < 1.0e-9)
+        return make_error("place_on_frame: degenerate frame");
+    // Rigid motion relocating the global XOY frame onto the destination frame
+    // (origin, x-dir = u, main/z-dir = u×v, y-dir = z×x) — a pure rotation+translation,
+    // sketch dimensions preserved. Matches OCCT gp_Ax3(o, dir(n), dir(u)) +
+    // SetDisplacement(gp_Ax3(), dst). L's columns are the destination axes.
+    const nmath::Dir3 ex(u), ez(n);
+    const nmath::Dir3 ey(nmath::cross(ez.vec(), ex.vec()));
+    const nmath::Mat3 L(ex.x(), ey.x(), ez.x(), ex.y(), ey.y(), ez.y(), ex.z(), ey.z(), ez.z());
+    const nmath::Vec3 t{ox, oy, oz};
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    EngineShape out = applyNativeTransform(*holder, nmath::Transform{L, t});
+    if (!out) return make_error("place_on_frame: native placement declined");
+    return track(std::move(out));
 }
 
 // ── exchange: NATIVE STEP export for a native-representable body, else OCCT ──────

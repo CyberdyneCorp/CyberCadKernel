@@ -389,12 +389,35 @@ self-intersecting threads** (intersecting-helicoid trimming — needs M1/M2). In
 freeform-boolean chain except fine-pitch (needs M2).
 - *Oracle:* `BRepOffsetAPI_MakePipeShell` / `ThruSections` / thread fixtures (volume/watertight).
 
-### M8 — `drop-occt` — unlink OCCT · gated on M0–M7 + M6 bar
+### M-DM — Direct modeling / synchronous editing · ~1.5–3 py · needs M2 + M3 + M5
+**Added because the CyberCad app depends on it and no other stage covered it.** The app drives
+direct-modeling operations through the `cc_*` ABI that are OCCT-only in the kernel today:
+`cc_split_plane`, `cc_replace_face`, `cc_replace_face_to_plane`, plus the project tool. These are
+*local B-rep re-solving* operations (the heart of synchronous/direct modeling), distinct from the
+feature-tree construction the other stages cover. Substages:
+- **DM1 — `cc_split_plane`** (split a solid by a plane into pieces). **Largely reachable NOW** — it
+  reuses the landed M2 `half_space_cut` (B4) verb on each side + BSP for analytic solids. ~0.5–1 py.
+- **DM2 — `cc_replace_face_to_plane`** (flatten/retarget a face to a plane, re-solving adjacent faces
+  — extend neighbours to the new plane, retrim, heal). Bounded. ~0.5–1.5 py.
+- **DM3 — `cc_replace_face` (general push-pull / move-face)** — replace a face with an arbitrary
+  target surface and locally re-solve the B-rep (extend/retrim adjacent faces, weld, heal). The hard
+  core; needs M2 (booleans), M3 (offset/blend), and M5 (healing). ~1–2 py.
+- **DM4 — project tool** (`cc_project`-style projection of a body/sketch onto a face/plane). ~0.5–1 py.
+- *Oracle:* `BRepFeat` / `BRepAlgoAPI` / `ShapeUpgrade` on the re-solved solid (volume/watertight/
+  topology); DM1 also has a closed-form partition oracle (the two pieces sum to the whole).
+- *Bounded* (well-understood synchronous-modeling engineering), not asymptotic. **Gates a
+  fully-OCCT-free *app*, though not the kernel's geometry primitives.**
+
+### M8 — `drop-occt` — unlink OCCT · gated on M0–M7 + **M-DM** + M6 bar
 Delete `src/engine/occt`, drop the OCCT link, remove/stub `cc_iges_*`. **Only** once every
-stage above is native at the acceptance bar AND the M6 completeness bar holds (differential
-fuzzing shows zero silent wrong results — every non-native input honestly declines with a
-clear error rather than a fabricated shape). This is the terminal step; it does not begin
-until the fallback is provably unnecessary for the supported domain.
+stage above (including **M-DM** for the app's direct-modeling surface) is native at the acceptance
+bar AND the M6 completeness bar holds (differential fuzzing shows zero silent wrong results — every
+non-native input honestly declines with a clear error rather than a fabricated shape). This is the
+terminal step; it does not begin until the fallback is provably unnecessary for the supported domain.
+**IGES note (app-relevant):** `cc_iges_import/export` is **descoped** from native but the app *uses*
+it — so a fully-OCCT-free *app* additionally requires an IGES decision: drop IGES from the app, keep a
+thin OCCT-linked IGES shim (app not 100 % OCCT-free), or reimplement IGES natively (~1.5–3 py, out of
+current scope).
 
 ## Sequencing
 
@@ -490,8 +513,10 @@ calendar next.
 |---|---|
 | **Delivered + verified vs OCCT (this project)** | ≈ **3.5–4.5 py** — planar/analytic breadth, SSI S1–S5 + S4-a…e, five curved-boolean families 3/3, curved fillet/chamfer (const/variable/asym), STEP export + broad import (all quadric+torus+general revolution, trimmed, assemblies, AP242-skip), shape-healing + STEP-import first slices, mismatched loft, deboss/polygon wrap-emboss |
 | **Moat slices landed (this campaign)** | **M0** keystone mesher **+ M4 / M4-rational** foreign B-spline STEP admission (keystone complete end-to-end) · **M1** freeform S4-d open-arm branch · **M2 substrate: B2** freeform face-split **+ B3** freeform point-in-solid membership · **M5** gap bridging **+ M5-tail** planar-hole cap · **M6** curved-boolean fuzzer **+ M6-breadth×3** STEP round-trip + construction loft/sweep + blend fillet/chamfer fuzzers (0 DISAGREED, 4 native domains) · **M7a** N-section loft — each verified native-vs-OCCT, additive, `src/native` OCCT-free. Honest declines that sharpened the map: M2 first-attempt (→ substrate B1/B2/B3), guided-orient sweep (measured self-verify trap) |
-| **Remaining to drop OCCT (M2 breadth + M3 + tails + M8)** | ≈ **3–8 py** — dominated by **M2/M3 breadth** (freeform booleans/blends, bounded *per family*, the parallelizable bulk) once B1 closes the substrate, plus the **M5 + M6** asymptotic gates; M4-tail (PMI/assemblies) + M7 residuals are small. See the projection below |
-| ~~IGES~~ | descoped (STEP-only) — saved ~1.5–3 py |
+| **Remaining — kernel geometry moat (M2/M3 breadth + tails + M8)** | ≈ **3–8 py** — **M2/M3 breadth** (freeform booleans/blends, bounded *per family*, the parallelizable bulk) + the **M5 + M6** asymptotic gates. M4 import is now essentially complete (B-spline surfaces + curves + rational + trims + nested assemblies + PMI census); M7 residuals small |
+| **+ M-DM direct modeling (app-required, newly added)** | ≈ **1.5–3 py** — `cc_split_plane` (near-term, reuses the landed M2 half-space verb) + `cc_replace_face(_to_plane)` + project (push-pull / local B-rep re-solve; needs M2 + M3 + M5). NOT covered by any prior stage |
+| **➤ App fully OCCT-free — recomputed (this is what "the app uses our library without OCCT" costs)** | **Adopt native kernel (native + kernel's OCCT fallback — NOT OCCT-free):** ≈ **0.25–0.5 py** (swap the app's OCCT `KernelBridge.mm` for the CyberCadKernel lib). **Scoped OCCT-free** (app declares its supported domain, natively covers must-have booleans/blends/direct-modeling + declines exotic freeform, IGES dropped or thin OCCT shim): ≈ **5–11 py**. **Full-native OCCT-free** (every input OCCT handles today — arbitrary freeform booleans/blends, robust arbitrary-broken healing, native IGES): ≈ **11–21 py + the asymptotic M5/M6 tails** (never fully "closes") |
+| IGES (app uses `cc_iges_import/export`) | native reimplement ≈ **1.5–3 py**, OR drop from the app / keep a thin OCCT-linked shim (**0 native**, app not 100 % OCCT-free) — an **app decision**, not a kernel one |
 
 ## The remaining path to `drop-occt` (M8) — projection once the M2 substrate closes
 

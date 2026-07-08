@@ -123,4 +123,56 @@ CC_TEST(self_verify_never_emits_a_leak_across_deflections) {
   }
 }
 
+// ── M0 weld robustness: shared-curved-edge SINGLE-SAMPLING removes the deflection
+// oscillation. With each shared CURVED edge (the freeform boolean seam AND the
+// bowl-lid quad edges) pinned to ONE canonical per-edge discretization that both
+// incident faces consume, the operand AND both boolean keep-sides mesh WATERTIGHT
+// at EVERY deflection across the {0.03 … 0.002} sweep — the result is no longer a
+// NULL decline at "misaligned" deflections but a watertight solid at the closed-form
+// volume. This is the permanent regression witness for the weld-robustness fix: it
+// FAILS on the pre-fix mesher (which oscillated watertight ↔ NotWatertight-decline).
+CC_TEST(weld_robust_across_full_deflection_sweep) {
+  const auto solid = ffx::buildOperand();
+  const fmath::Plane P = ffx::cutPlane();
+  // The full sweep the M0 weld-robustness gate mandates (coarse → fine).
+  const double defls[] = {0.03, 0.02, 0.01, 0.008, 0.004, 0.002};
+  // A deflection-scaled volume band (chord approximation of a convex bowl over-
+  // estimates the enclosed volume by ~O(deflection)); UNWEAKENED — it TIGHTENS as
+  // the mesh refines, and every point is well inside it (measured worst ≈ 2.4% at
+  // the coarsest 0.03, band 4.2%).
+  auto relBand = [](double d) { return 0.006 + 1.2 * d; };
+
+  for (const double d : defls) {
+    // (a) the full operand meshes watertight at the closed-form full volume.
+    bool wtOp = false;
+    const double vOp = meshVolume(solid, d, wtOp);
+    CC_CHECK(wtOp);
+    CC_CHECK(std::fabs(vOp - ffx::fullVolume()) <= relBand(d) * ffx::fullVolume());
+
+    // (b) the CUT (keep x≤0) welds watertight at the closed-form CUT volume — at EVERY d.
+    bo::HalfSpaceCutDecline wc = bo::HalfSpaceCutDecline::Ok;
+    const auto cut = bo::freeformHalfSpaceCut(solid, P, bo::KeepSide::Below, d, &wc);
+    CC_CHECK(wc == bo::HalfSpaceCutDecline::Ok);
+    CC_CHECK(!cut.isNull());
+    if (!cut.isNull()) {
+      bool wt = false;
+      const double v = meshVolume(cut, d, wt);
+      CC_CHECK(wt);
+      CC_CHECK(std::fabs(v - ffx::cutVolume()) <= relBand(d) * ffx::cutVolume());
+    }
+
+    // (c) the COMMON (keep x≥0) welds watertight at the closed-form COMMON volume — at EVERY d.
+    bo::HalfSpaceCutDecline wk = bo::HalfSpaceCutDecline::Ok;
+    const auto common = bo::freeformHalfSpaceCut(solid, P, bo::KeepSide::Above, d, &wk);
+    CC_CHECK(wk == bo::HalfSpaceCutDecline::Ok);
+    CC_CHECK(!common.isNull());
+    if (!common.isNull()) {
+      bool wt = false;
+      const double v = meshVolume(common, d, wt);
+      CC_CHECK(wt);
+      CC_CHECK(std::fabs(v - bfx::commonVolume()) <= relBand(d) * bfx::commonVolume());
+    }
+  }
+}
+
 CC_RUN_ALL()

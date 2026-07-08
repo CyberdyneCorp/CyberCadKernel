@@ -156,6 +156,27 @@ inline double edgeCurvature(const topo::EdgeCurve& c, double t, double first,
   return math::norm((a - 2.0 * m + b) / (h * h));
 }
 
+// Worst curvature magnitude probed across the edge's range (5-point sample) — the
+// basis both for segment sizing and for the "straight in 3D" test. Factored so the
+// canonical curved-edge sharing (EdgeCache) can reuse the SAME straight/curved
+// decision `edgeSegments` uses, keeping the two in lock-step.
+inline double worstEdgeCurvature(const topo::EdgeCurve& c, double first, double last) noexcept {
+  double worst = 0.0;
+  for (int i = 0; i <= 4; ++i) {
+    const double t = first + (last - first) * (i * 0.25);
+    worst = std::max(worst, edgeCurvature(c, t, first, last));
+  }
+  return worst;
+}
+
+// True iff the edge is straight in 3D (‖C″‖ ≈ 0 across its range) — the same
+// threshold edgeSegments uses to collapse a line to minSegs. A genuinely-curved
+// edge (circle, blend, boolean seam) returns false.
+inline bool edgeStraight3d(const topo::EdgeCurve& c, double first, double last) noexcept {
+  if (std::fabs(last - first) <= 0.0) return true;
+  return worstEdgeCurvature(c, first, last) <= 1e-12;
+}
+
 // Number of segments to hold the chord (sagitta) error of the edge's 3D curve
 // under `deflection`: Δ ≤ √(8·defl/‖C″‖); n = ceil(span/Δ), clamped to [min,max].
 // A line (‖C″‖≈0) collapses to `minSegs`; a circle/blend subdivides.
@@ -164,11 +185,7 @@ inline int edgeSegments(const topo::EdgeCurve& c, double first, double last, dou
   const double span = std::fabs(last - first);
   if (span <= 0.0) return minSegs;
   // Probe curvature at a few points across the range and take the worst.
-  double worst = 0.0;
-  for (int i = 0; i <= 4; ++i) {
-    const double t = first + (last - first) * (i * 0.25);
-    worst = std::max(worst, edgeCurvature(c, t, first, last));
-  }
+  const double worst = worstEdgeCurvature(c, first, last);
   if (worst <= 1e-12) return minSegs;  // straight in 3D
   const double step = std::sqrt(8.0 * deflection / worst);
   if (!(step > 0.0)) return maxSegs;
@@ -257,10 +274,33 @@ class EdgeCache {
   // Shared discretization for `edge` (keyed by TShape identity). Curved edges get
   // enough segments to meet the deflection bound; straight edges get minSegs (or
   // the requireMinSegs override, when an adjacent face demanded more).
+  //
+  // Canonical curved-edge SINGLE-SAMPLING (MOAT M0 weld robustness). A genuinely
+  // CURVED edge reached here via a SEPARATE topological node (not the TShape fast
+  // path) — e.g. a freeform boolean seam that the cap and the trimmed freeform
+  // sub-face each carry as their OWN edge node over the SAME 3-D curve — adopts ONE
+  // canonical EdgeDiscretization keyed by its (order-independent, quantized)
+  // endpoint pair PLUS a quantized 3-D midpoint discriminator. Both incident faces
+  // then read BIT-IDENTICAL sample points, so the per-face boundary anchors coincide
+  // and the seam welds watertight at ANY deflection (not only where two independent
+  // samplings coincidentally align). The TShape fast path and the straight-edge
+  // endpoint sharing are untouched: an edge shared through ONE node (every primitive)
+  // and every straight edge keep their exact behaviour, so existing meshes are
+  // byte-identical (the midpoint discriminator also prevents two DIFFERENT arcs
+  // between the same endpoints from ever collapsing to one key).
   const EdgeDiscretization& discretize(const topo::Shape& edge) {
     const topo::TShape* key = edge.tshape().get();
     if (auto it = cache_.find(key); it != cache_.end()) return it->second;
     EdgeDiscretization d = build(edge);
+    EndpointKey ek;
+    math::Point3 mid;
+    if (curvedSeparateNode(edge, d, ek, mid)) {
+      std::vector<CanonicalCurve>& bucket = curvedByEndpoints_[ek];
+      for (const CanonicalCurve& cc : bucket)
+        if (math::distance(mid, cc.mid) <= kCurveMidTol)      // same arc → adopt canonical
+          return cache_.emplace(key, cc.disc).first->second;
+      bucket.push_back(CanonicalCurve{mid, d});               // first builder wins → canonical
+    }
     return cache_.emplace(key, std::move(d)).first->second;
   }
 
@@ -287,6 +327,41 @@ class EdgeCache {
   static long long quant(double v) noexcept {
     const double q = 1e6;  // 1e-6 spatial quantum (well below any real feature)
     return static_cast<long long>(v >= 0 ? v * q + 0.5 : v * q - 0.5);
+  }
+
+  // ── Canonical curved-edge record: the shared discretization + the 3-D midpoint
+  // that disambiguates two DIFFERENT arcs sharing the same endpoints ────────────
+  // Bucketed by the (order-independent, quantized) endpoint key, then matched by the
+  // midpoint at parameter 0.5 using a real-distance tolerance — NOT a quantized
+  // midpoint equality. A quantized midpoint has the same cell-boundary fragility the
+  // weld does: a midpoint that lands on a quantum boundary (e.g. 0.0453125 at a 1e-6
+  // quantum) would split the two representations of the SAME arc into different keys
+  // and defeat the sharing. The distance test is boundary-free: two representations
+  // of one arc agree to ~1 ULP (≪ tol) and merge; two genuinely different arcs
+  // between the same endpoints differ macroscopically at the midpoint (≫ tol) and
+  // never merge. The midpoint is taken at the exact mid-parameter (not a sampled
+  // index) so it is independent of which direction/node the edge is traversed in.
+  struct CanonicalCurve {
+    math::Point3 mid;
+    EdgeDiscretization disc;
+  };
+  static constexpr double kCurveMidTol = 1e-6;  ///< same-arc midpoint agreement (≫ ULP, ≪ any real arc gap)
+
+  // Fill `ekOut`/`midOut` and return true iff `edge` is a GENUINELY-CURVED edge that
+  // reached discretize() via a separate node (the TShape fast path already missed).
+  // A Line curve, or any curve straight in 3-D (‖C″‖≈0 — a collinear degree-1
+  // polyline), returns false and keeps the unchanged straight/endpoint-shared path.
+  bool curvedSeparateNode(const topo::Shape& edge, const EdgeDiscretization& d,
+                          EndpointKey& ekOut, math::Point3& midOut) const {
+    if (d.points.size() < 2) return false;
+    const auto cr = topo::curveOf(edge);
+    if (!cr || !cr->curve) return false;
+    if (cr->curve->kind == topo::EdgeCurve::Kind::Line) return false;
+    if (detail::edgeStraight3d(*cr->curve, cr->first, cr->last)) return false;
+    if (!endpointKey(edge, ekOut)) return false;
+    midOut = detail::placePoint(cr->location,
+                                detail::edgeCurveLocal(*cr->curve, 0.5 * (cr->first + cr->last)));
+    return true;
   }
   bool endpointKey(const topo::Shape& edge, EndpointKey& out) const {
     const auto cr = topo::curveOf(edge);
@@ -333,6 +408,7 @@ class EdgeCache {
 
   std::unordered_map<const topo::TShape*, EdgeDiscretization> cache_;
   std::unordered_map<EndpointKey, int, EndpointKeyHash> segsByEndpoints_;
+  std::unordered_map<EndpointKey, std::vector<CanonicalCurve>, EndpointKeyHash> curvedByEndpoints_;
   double deflection_;
   int minSegs_;
   int maxSegs_;

@@ -211,48 +211,15 @@ int main() {
   std::printf("== MOAT M2b/B4 first freeform boolean (half-space CUT): native-vs-OCCT parity ==\n");
   std::fflush(stdout);
 
-  const double defl = 0.01;      // matches the host GATE (a) deflection band
   const double relTol = 0.02;    // curved-tessellation volume/area band (never widened)
-  const double spatialTol = 1.5 * defl;  // bbox / Hausdorff spatial band
 
-  // ── native: build the operand and run the FIRST freeform half-space cut ──────
+  // ── native operand (built once) ──────────────────────────────────────────────
   const nt::Shape operand = ffx::buildOperand();
-  bo::HalfSpaceCutDecline why = bo::HalfSpaceCutDecline::Ok;
-  const nt::Shape cut = bo::freeformHalfSpaceCut(operand, ffx::cutPlane(), bo::KeepSide::Below, defl, &why);
-  {
-    char buf[80];
-    std::snprintf(buf, sizeof(buf), "decline=%s", bo::declineName(why));
-    report("native-cut", "composed", why == bo::HalfSpaceCutDecline::Ok && !cut.isNull(), buf);
-  }
-  if (cut.isNull()) {
-    std::printf("== %d passed, %d failed ==\n", g_pass, g_fail);
-    std::fflush(stdout);
-    std::_Exit(1);
-  }
-
-  // ── native: mesh the cut result (M0, unchanged) and measure ─────────────────
-  ntess::MeshParams mp; mp.deflection = defl;
-  const ntess::Mesh m = ntess::SolidMesher(mp).mesh(cut);
-  report("native-cut", "meshes", !m.triangles.empty(), "M0 solid mesh");
-
-  const bool wt = ntess::isWatertight(m);
-  report("native-cut", "watertight", wt, "closed 2-manifold");
-  {
-    const long chi = eulerChar(m);
-    char buf[48];
-    std::snprintf(buf, sizeof(buf), "euler=%ld (solid=2)", chi);
-    report("native-cut", "topology-solid", chi == 2, buf);
-  }
-
-  const double vNat = std::fabs(ntess::enclosedVolume(m));
-  const double aNat = ntess::surfaceArea(m);
-  const BBox bNat = meshBBox(m);
 
   // ── OCCT oracle: reconstruct the operand and cut it by the same half-space ──
+  // (deflection-independent: BRepAlgoAPI_Cut + exact GProp volume/area/bbox.)
   const TopoDS_Shape occtOperand = buildOcctOperand();
   report("occt-operand", "solid-built", occtSolidCount(occtOperand) == 1, "sewn 6-face solid");
-
-  // Cut off the x>0 half with a large box spanning x∈[0,+big] (keep x≤0 = native Below).
   TopoDS_Solid box = BRepPrimAPI_MakeBox(gp_Pnt(0, -10, -10), gp_Pnt(10, 10, 10)).Solid();
   BRepAlgoAPI_Cut cutter(occtOperand, box);
   cutter.Build();
@@ -263,60 +230,89 @@ int main() {
   const double vOcct = occtVolume(occtCut);
   const double aOcct = occtArea(occtCut);
   const double vClosed = ffx::cutVolume();
-
-  // ── VOLUME parity (+ closed-form cross-check) ────────────────────────────────
-  {
-    const double rel = std::fabs(vNat - vOcct) / vOcct;
-    char buf[112];
-    std::snprintf(buf, sizeof(buf), "nat=%.6f occt=%.6f closed=%.6f rel=%.3e", vNat, vOcct, vClosed, rel);
-    report("volume", "native-vs-occt", rel <= relTol, buf);
-  }
   {
     const double relO = std::fabs(vOcct - vClosed) / vClosed;
     char buf[80];
     std::snprintf(buf, sizeof(buf), "occt=%.6f closed=%.6f rel=%.3e", vOcct, vClosed, relO);
     report("volume", "occt-vs-closed", relO <= relTol, buf);
   }
+  Bnd_Box occtBB;  // AddOptimal → TIGHT box for the free-form Bézier face (not the pole hull)
+  BRepBndLib::AddOptimal(occtCut, occtBB, Standard_True, Standard_False);
 
-  // ── AREA parity ──────────────────────────────────────────────────────────────
-  {
-    const double rel = std::fabs(aNat - aOcct) / aOcct;
-    char buf[96];
-    std::snprintf(buf, sizeof(buf), "nat=%.6f occt=%.6f rel=%.3e", aNat, aOcct, rel);
-    report("area", "native-vs-occt", rel <= relTol, buf);
-  }
+  // ── native-vs-OCCT parity at ONE deflection ─────────────────────────────────
+  // The shared-curved-edge SINGLE-SAMPLING (M0 weld robustness) makes the native cut
+  // weld watertight at ANY deflection, so parity is asserted at MULTIPLE deflections
+  // (0.01 AND a finer 0.004 that the pre-fix mesher DECLINED as NotWatertight). The
+  // native cut SHAPE is deflection-independent; only the M0 mesh / self-verify refine.
+  auto parityAt = [&](double defl) {
+    char tag[24];
+    std::snprintf(tag, sizeof(tag), "d=%.3f", defl);
+    const double spatialTol = 1.5 * defl;  // bbox / Hausdorff spatial band
 
-  // ── BBOX parity (per-axis) ───────────────────────────────────────────────────
-  {
-    // AddOptimal gives the TIGHT box for the free-form Bézier face; plain Add returns
-    // the loose control-point pole hull (x∈[-0.5,0.5]) which is not the trimmed extent.
-    Bnd_Box bb; BRepBndLib::AddOptimal(occtCut, bb, Standard_True, Standard_False);
-    double xo[3], xh[3];
-    bb.Get(xo[0], xo[1], xo[2], xh[0], xh[1], xh[2]);
-    double worst = 0.0;
-    for (int i = 0; i < 3; ++i) {
-      worst = std::max(worst, std::fabs(bNat.lo[i] - xo[i]));
-      worst = std::max(worst, std::fabs(bNat.hi[i] - xh[i]));
+    bo::HalfSpaceCutDecline why = bo::HalfSpaceCutDecline::Ok;
+    const nt::Shape cut =
+        bo::freeformHalfSpaceCut(operand, ffx::cutPlane(), bo::KeepSide::Below, defl, &why);
+    {
+      char buf[96];
+      std::snprintf(buf, sizeof(buf), "%s decline=%s", tag, bo::declineName(why));
+      report("native-cut", "composed", why == bo::HalfSpaceCutDecline::Ok && !cut.isNull(), buf);
     }
-    char buf[128];
-    std::snprintf(buf, sizeof(buf),
-                  "natX[%.3f,%.3f] occtX[%.3f,%.3f] worst=%.3e tol=%.3e",
-                  bNat.lo[0], bNat.hi[0], xo[0], xh[0], worst, spatialTol);
-    report("bbox", "native-vs-occt", worst <= spatialTol, buf);
-  }
+    if (cut.isNull()) return;
 
-  // ── HAUSDORFF (one-sided native vertices → OCCT cut solid) ───────────────────
-  {
-    double worst = 0.0;
-    for (const nm::Point3& v : m.vertices) {
-      TopoDS_Vertex ov = BRepBuilderAPI_MakeVertex(P(v)).Vertex();
-      BRepExtrema_DistShapeShape d(ov, occtCut);
-      if (d.IsDone() && d.NbSolution() > 0) worst = std::max(worst, static_cast<double>(d.Value()));
+    ntess::MeshParams mp; mp.deflection = defl;
+    const ntess::Mesh m = ntess::SolidMesher(mp).mesh(cut);
+    report("native-cut", "meshes", !m.triangles.empty(), tag);
+    report("native-cut", "watertight", ntess::isWatertight(m), tag);
+    {
+      const long chi = eulerChar(m);
+      char buf[48];
+      std::snprintf(buf, sizeof(buf), "%s euler=%ld (solid=2)", tag, chi);
+      report("native-cut", "topology-solid", chi == 2, buf);
     }
-    char buf[80];
-    std::snprintf(buf, sizeof(buf), "maxDist=%.3e tol=%.3e", worst, spatialTol);
-    report("hausdorff", "native->occt", worst <= spatialTol, buf);
-  }
+
+    const double vNat = std::fabs(ntess::enclosedVolume(m));
+    const double aNat = ntess::surfaceArea(m);
+    const BBox bNat = meshBBox(m);
+
+    {
+      const double rel = std::fabs(vNat - vOcct) / vOcct;
+      char buf[120];
+      std::snprintf(buf, sizeof(buf), "%s nat=%.6f occt=%.6f rel=%.3e", tag, vNat, vOcct, rel);
+      report("volume", "native-vs-occt", rel <= relTol, buf);
+    }
+    {
+      const double rel = std::fabs(aNat - aOcct) / aOcct;
+      char buf[104];
+      std::snprintf(buf, sizeof(buf), "%s nat=%.6f occt=%.6f rel=%.3e", tag, aNat, aOcct, rel);
+      report("area", "native-vs-occt", rel <= relTol, buf);
+    }
+    {
+      double xo[3], xh[3];
+      occtBB.Get(xo[0], xo[1], xo[2], xh[0], xh[1], xh[2]);
+      double worst = 0.0;
+      for (int i = 0; i < 3; ++i) {
+        worst = std::max(worst, std::fabs(bNat.lo[i] - xo[i]));
+        worst = std::max(worst, std::fabs(bNat.hi[i] - xh[i]));
+      }
+      char buf[128];
+      std::snprintf(buf, sizeof(buf), "%s worst=%.3e tol=%.3e", tag, worst, spatialTol);
+      report("bbox", "native-vs-occt", worst <= spatialTol, buf);
+    }
+    {
+      double worst = 0.0;
+      for (const nm::Point3& v : m.vertices) {
+        TopoDS_Vertex ov = BRepBuilderAPI_MakeVertex(P(v)).Vertex();
+        BRepExtrema_DistShapeShape d(ov, occtCut);
+        if (d.IsDone() && d.NbSolution() > 0) worst = std::max(worst, static_cast<double>(d.Value()));
+      }
+      char buf[96];
+      std::snprintf(buf, sizeof(buf), "%s maxDist=%.3e tol=%.3e", tag, worst, spatialTol);
+      report("hausdorff", "native->occt", worst <= spatialTol, buf);
+    }
+  };
+
+  parityAt(0.01);   // the host GATE (a) working point
+  parityAt(0.004);  // a finer deflection the PRE-FIX mesher declined (NotWatertight)
 
   std::printf("== %d passed, %d failed ==\n", g_pass, g_fail);
   std::fflush(stdout);

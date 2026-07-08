@@ -357,6 +357,23 @@ class FaceMesher {
       const int n = static_cast<int>(d.fracs.size()) - 1;  // segment count (endpoint-shared)
       const math::Vec3 dir = ce.b - ce.a;
       for (int i = 0; i <= n; ++i) {
+        // The two ENDPOINT anchors are the EXACT canonical endpoints (the shared
+        // bounding vertices), NOT the interpolated ce.a + dir·(i/n). At i=n that
+        // interpolation is ce.a + (ce.b − ce.a), which rounds ~1 ULP off ce.b (e.g.
+        // −0.5 + 0.585 ≠ 0.085 exactly). A shared CORNER where a curved seam edge
+        // terminates against straight edges is anchored by BOTH the curved edge (its
+        // d.points endpoint = the vertex) and these straight edges; if a straight
+        // edge contributes the rounded endpoint it competes for the same weld/hash
+        // slot (first-add-wins) with the exact vertex, so which value the corner
+        // takes depends on wire/edge order — the two incident faces can then place
+        // copies ~1 ULP apart, and when the corner lands on a weld-cell boundary the
+        // copies split and the seam opens. Pinning i=0→ce.a and i=n→ce.b makes every
+        // incident straight edge place the BIT-IDENTICAL vertex, matching the curved
+        // seam's endpoint, so the corner welds at any deflection. Interior samples
+        // keep the canonical ce.a + dir·(i/n) so two opposite-order straight edges
+        // still produce bit-identical anchor SETS.
+        if (i == 0) { anchors.add(ce.a); continue; }
+        if (i == n) { anchors.add(ce.b); continue; }
         const double g = static_cast<double>(i) / static_cast<double>(n);
         anchors.add(math::Point3{ce.a.x + dir.x * g, ce.a.y + dir.y * g, ce.a.z + dir.z * g});
       }

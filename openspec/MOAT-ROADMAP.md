@@ -511,18 +511,30 @@ tests. Substages:
   **Verified both gates:** GATE A host closed-form and GATE B sim vs OCCT
   `GeomLProp_SLProps`/`GeomLProp_CLProps`. **Honest declines:** parametric singularity
   (`EG−F² ≤ ε·max(E,G)²`), cone apex, and degenerate edge tangent (`‖C′‖≤ε`) return a clean decline.
-- **GS5 — Inertia / principal moments** — the native mass-properties path (volume/area/centroid) is
-  native, but **`principal_moments` is `CC_NATIVE_BODY_UNSUPPORTED` → OCCT** (surfaced by the M6
-  mass-properties fuzzer). The app's `Inertia`/`MassReadout` features have no native inertia tensor.
-  A mesh-based inertia tensor (signed-tetra second moments over the M0 triangulation, then eigen) is
-  straightforward + reuses landed machinery. ~0.3–0.6 py. *Oracle:* OCCT `GProp_PrincipalProps`.
-- **GS6 — B-rep validity checking** — the app's `occt-usage` spec depends on OCCT `BRepCheck_Analyzer`
-  (validity/closed-ness/self-intersection/orientation checks) to validate imports + operation results.
-  The native kernel has the watertight+volume *self-verify* (per-operation) but no **general standalone
-  validity checker**. A native `cc_check_solid` (closed 2-manifold, consistent orientation, no
-  self-intersection, finite/degenerate-free) reuses the tessellator + topology + GS3 distance. ~0.5–1 py.
-  *Oracle:* `BRepCheck_Analyzer.IsValid` on valid + deliberately-broken fixtures. Gates trustworthy
-  import (with M5) and any healing UX.
+- **GS5 — Inertia / principal moments** — a mesh-based inertia tensor (signed-tetra second moments
+  over the M0 triangulation about the centroid, then symmetric-3×3 cyclic-Jacobi eigen).
+  **✅ NATIVE (landed).** Header-only, OCCT-free `src/native/analysis/inertia.h::principalInertia`;
+  `NativeEngine::principal_moments` rewired from the `CC_NATIVE_BODY_UNSUPPORTED → OCCT` stub to the
+  native path, **guarded by a watertight precondition** (open / non-watertight body → honest decline →
+  OCCT, never a wrong tensor). **Verified both gates:** GATE A host closed-form — box `(V/12){b²+c²…}`
+  exact (relmax 1.2e-15), cylinder ≤3e-3, sphere `2/5 V r²` O(1/n²)→1.8e-3; GATE B sim vs OCCT
+  `GProp_PrincipalProps` (box relmax 1.24e-15, cylinder 2.0e-4, sphere 1.8e-3, principal axes matched).
+  **Honest decline:** open-body inertia is non-certifiable (returns `std::nullopt` / declines to OCCT).
+  Re-ran the M6 mass-properties differential fuzzer: 0 DISAGREED, zero silent wrong masses.
+- **GS6 — B-rep validity checking** — a native `cc_check_solid` (closed 2-manifold, consistent outward
+  orientation, no self-intersection, no degenerate/zero-area face or zero-length edge, finite coords),
+  reusing the tessellator + topology + GS3 distance for the self-intersection test.
+  **✅ NATIVE (landed).** Header-only, OCCT-free `src/native/analysis/validity.h::checkSolidMesh` +
+  `ValidityReport`, behind the additive `int cc_check_solid(body, CCValidityReport*)` /
+  `CCValidityReport` / `CCValidityCheck` (ABI additive-only; `cc_principal_moments` unchanged) with
+  `NativeEngine::check_solid`, an `IEngine` default, and `OcctEngine::check_solid` (BRepCheck oracle).
+  **Verified both gates:** GATE A host fixtures of KNOWN state — valid box/cyl/sphere → valid;
+  non-closed shell → `closed=0`; flipped face → `oriented=0`; zero-area/zero-length → `nondegenerate=0`;
+  interpenetrating polyhedron → `noSelfIntersection=0`; each `first_failure` names the specific
+  invalidity; GATE B sim vs OCCT `BRepCheck_Analyzer::IsValid` on the SAME valid AND deliberately-broken
+  fixtures — matched on every one. **Honest decline:** the self-intersection check returns UNDECIDABLE
+  (report `decided=0`, never a false `valid`) where no-self-intersection is not robustly certifiable
+  (e.g. a general freeform patch). Gates trustworthy import (with M5) and any healing UX.
 - *Oracle:* `HLRBRep_Algo` / `BRepAlgoAPI_Section` / `BRepExtrema_DistShapeShape` / `BRepLProp` on
   visible-segment sets / section-curve length+topology / min-distance / curvature values.
 - *Bounded.* GS2/GS3/GS4 reuse landed native machinery; **GS1 (HLR) is the substantial one** and the
@@ -634,7 +646,7 @@ calendar next.
 | | Person-years |
 |---|---|
 | **Delivered + verified vs OCCT (this project)** | ≈ **3.5–4.5 py** — planar/analytic breadth, SSI S1–S5 + S4-a…e, five curved-boolean families 3/3, curved fillet/chamfer (const/variable/asym), STEP export + broad import (all quadric+torus+general revolution, trimmed, assemblies, AP242-skip), shape-healing + STEP-import first slices, mismatched loft, deboss/polygon wrap-emboss |
-| **Moat slices landed (this campaign)** | **M0** keystone mesher **+ M4/M4-rational/M4-tail-2/M4-tail-4** foreign B-spline STEP admission — surfaces + rational + curves + rectangular-trims + N-level nested assemblies + PMI census (**M4 import complete**) · **M0-weld** shared-curved-edge canonical placement (**freeform boolean now deflection-robust**) · **M1** freeform S4-d open-arm branch · **M2** substrate B1/B2/B3 + B4 -> **first freeform<->analytic boolean CUT+COMMON at BOTH gates** (sim vs BRepAlgoAPI_Cut, Hausdorff 1.6e-7) · **M5** gap-bridge + planar-cap · **M6** **SIX** fuzz domains (curved-boolean, STEP round-trip, construction, blend, wrap-emboss, mass-properties), all 0 DISAGREED · **M7a** N-section loft **+ M7-tail** guided-orient sweep (overturned M7a's decline) · **M-DM DM1** cc_split_plane · **M-GS GS3+GS4** measurement + curvature (both gates) **+ GS1** polyhedral HLR (both gates, cc_hlr_project) — each verified native-vs-OCCT, additive, src/native OCCT-free. Honest declines that sharpened the map: M2 first-attempt, guided-orient sweep (later overturned), M1-tail self-crossing (analytic proof), shared-sub-assembly, HLR curved silhouettes |
+| **Moat slices landed (this campaign)** | **M0** keystone mesher **+ M4/M4-rational/M4-tail-2/M4-tail-4** foreign B-spline STEP admission — surfaces + rational + curves + rectangular-trims + N-level nested assemblies + PMI census (**M4 import complete**) · **M0-weld** shared-curved-edge canonical placement (**freeform boolean now deflection-robust**) · **M1** freeform S4-d open-arm branch · **M2** substrate B1/B2/B3 + B4 -> **first freeform<->analytic boolean CUT+COMMON at BOTH gates** (sim vs BRepAlgoAPI_Cut, Hausdorff 1.6e-7) · **M5** gap-bridge + planar-cap · **M6** **SIX** fuzz domains (curved-boolean, STEP round-trip, construction, blend, wrap-emboss, mass-properties), all 0 DISAGREED · **M7a** N-section loft **+ M7-tail** guided-orient sweep (overturned M7a's decline) · **M-DM DM1** cc_split_plane · **M-GS GS3+GS4** measurement + curvature (both gates) **+ GS1** polyhedral HLR (both gates, cc_hlr_project) **+ GS5+GS6** native inertia tensor / principal moments (vs GProp_PrincipalProps) + B-rep validity checker cc_check_solid (vs BRepCheck_Analyzer::IsValid on valid + deliberately-broken fixtures, both gates) — each verified native-vs-OCCT, additive, src/native OCCT-free. Honest declines that sharpened the map: M2 first-attempt, guided-orient sweep (later overturned), M1-tail self-crossing (analytic proof), shared-sub-assembly, HLR curved silhouettes |
 | **Remaining — kernel geometry moat (M2/M3 breadth + tails + M8)** | ≈ **3–8 py** — **M2/M3 breadth** (freeform booleans/blends, bounded *per family*, the parallelizable bulk) + the **M5 + M6** asymptotic gates. M4 import is now essentially complete (B-spline surfaces + curves + rational + trims + nested assemblies + PMI census); M7 residuals small |
 | **+ M-DM direct modeling (app-required, newly added)** | ≈ **1.5–3 py** — `cc_split_plane` (near-term, reuses the landed M2 half-space verb) + `cc_replace_face(_to_plane)` + project (push-pull / local B-rep re-solve; needs M2 + M3 + M5). NOT covered by any prior stage |
 | **+ M-GS drafting/analysis geometry services (app-required, newly added)** | ≈ **2.5–5 py** — **GS1 HLR** (hidden-line removal for 2D drawings — the substantial one, hard blocker for OCCT-free drawings) + GS2 section curves + GS3 exact measurement + GS4 curvature. GS2/3/4 reuse landed native machinery; NOT covered by any prior stage |

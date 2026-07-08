@@ -250,6 +250,7 @@ public:
     Result<SectionData> section_plane(EngineShape body, const double origin[3],
                                       const double normal[3]) override;
     Result<std::vector<double>> principal_moments(EngineShape body) override;
+    Result<ValidityData> check_solid(EngineShape body) override;  // MOAT M-GS GS6
     Result<std::vector<double>> face_axis(EngineShape body, int faceId) override;
     Result<std::vector<double>> ref_plane_from_face(EngineShape body, int faceId) override;
     Result<std::vector<double>> ref_axis_from_edge(EngineShape body, int edgeId) override;

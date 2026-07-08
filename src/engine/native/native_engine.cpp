@@ -24,6 +24,8 @@
 #include "engine/native/native_heal_hook.h"
 #include "native/analysis/angle.h"
 #include "native/analysis/curvature.h"
+#include "native/analysis/inertia.h"    // GS5: signed-tetra inertia over M0
+#include "native/analysis/validity.h"   // GS6: mesh-level B-rep validity report
 #ifdef CYBERCAD_HAS_NUMSCI
 #include "native/analysis/distance.h"  // seed-and-refine minimizer (numsci-gated)
 #endif
@@ -1624,10 +1626,62 @@ Result<SectionData> NativeEngine::section_plane(EngineShape body, const double o
     return out;
 }
 
+// GS5 native inertia: principal moments of inertia (unit-density volume inertia)
+// from the M0 boundary triangulation via signed-tetra second moments about the
+// centroid + a symmetric-3×3 eigen. SELF-VERIFY: the mesh must be WATERTIGHT
+// (principalInertia's precondition) — an open/non-closed body has no defined
+// enclosed inertia and DECLINES with an error rather than a wrong tensor. Matches
+// OCCT GProp_PrincipalProps on the sim gate (exact for planar solids, deflection-
+// scaled for curved). An OCCT body forwards to the GProp oracle.
 Result<std::vector<double>> NativeEngine::principal_moments(EngineShape body) {
-    CC_NATIVE_BODY_UNSUPPORTED("principal_moments", body);
-    return fallback().principal_moments(body);
+    if (!isNative(body)) return fallback().principal_moments(body);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    // A B-rep body meshes at the property deflection first; an imported STL soup is
+    // measured directly (inertia is defined only if that soup is watertight).
+    ntess::Mesh brepMesh;
+    if (!holder->isMesh) {
+        ntess::MeshParams params;
+        params.deflection = kPropertyDeflection;
+        brepMesh = ntess::SolidMesher(params).mesh(holder->shape);
+    }
+    const ntess::Mesh& mesh = holder->isMesh ? holder->mesh : brepMesh;
+    auto inertia = nan::principalInertia(mesh);
+    if (!inertia)
+        return make_error(
+            "principal_moments: declined (mesh not watertight / zero volume — no "
+            "defined inertia)");
+    return std::vector<double>{inertia->moments[0], inertia->moments[1], inertia->moments[2]};
 }
+
+// GS6 native validity: a structural-validity report over the M0 boundary mesh
+// (closed 2-manifold, consistent outward orientation, no degenerate/self-
+// intersecting faces, finite coords). SELF-VERIFY / HONEST DECLINE: a coplanar-
+// overlap self-intersection the transversal predicate cannot decide leaves
+// `certified=false` and `valid=false` — the checker NEVER emits a false "valid".
+// Matches BRepCheck_Analyzer::IsValid on the sim gate. An OCCT body forwards to
+// the BRepCheck oracle.
+Result<ValidityData> NativeEngine::check_solid(EngineShape body) {
+    if (!isNative(body)) return fallback().check_solid(body);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    ntess::Mesh brepMesh;
+    if (!holder->isMesh) {
+        ntess::MeshParams params;
+        params.deflection = kPropertyDeflection;
+        brepMesh = ntess::SolidMesher(params).mesh(holder->shape);
+    }
+    const ntess::Mesh& mesh = holder->isMesh ? holder->mesh : brepMesh;
+    const nan::ValidityReport rep = nan::checkSolidMesh(mesh);
+    ValidityData out;
+    out.closed = rep.closed;
+    out.oriented = rep.oriented;
+    out.nondegenerate = rep.nondegenerate;
+    out.finite = rep.finite;
+    out.noSelfIntersection = rep.noSelfIntersection;
+    out.certified = rep.selfIntersectionCertified;
+    out.valid = rep.valid();
+    return out;
+}
+
 Result<std::vector<double>> NativeEngine::face_axis(EngineShape body, int f) {
     CC_NATIVE_BODY_UNSUPPORTED("face_axis", body);
     return fallback().face_axis(body, f);

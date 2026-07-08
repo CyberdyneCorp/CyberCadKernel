@@ -295,6 +295,8 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_drafting
         test_native_section
         test_native_step
+        test_native_inertia
+        test_native_validity
         test_native_engine)
 
     # The numeric-facade test links NumPP/SciPP, so it is added ONLY when the
@@ -468,6 +470,20 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_section.cpp")
     set(test_native_step_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step.cpp")
+    # MOAT M-GS GS5 native INERTIA — host GATE (a), the OCCT-free closed-form proof
+    # of the signed-tetra second-moment + eigen inertia (box exact to machine eps;
+    # cylinder/sphere converge to the closed form as deflection→0) plus the native
+    # cc_principal_moments facade wiring + the watertight-precondition honest decline.
+    # Header-only analysis math over hand-built meshes; no numsci link.
+    set(test_native_inertia_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_inertia.cpp")
+    # MOAT M-GS GS6 native VALIDITY — host GATE (a), the known-state fixture proof of
+    # cc_check_solid: a valid box PASSES; deliberately-broken fixtures (open shell,
+    # flipped face, degenerate collapse, self-intersecting boxes) each FAIL via the
+    # specific check, with the coplanar-overlap honest decline. Header-only mesh
+    # checker + the cc_check_solid facade wiring; no numsci link.
+    set(test_native_validity_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_validity.cpp")
 
     foreach(test ${CYBERCAD_TESTS})
         if(DEFINED ${test}_SRC)

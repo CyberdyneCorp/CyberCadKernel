@@ -32,6 +32,7 @@ using cyber::ProfileSeg;
 using cyber::Result;
 using cyber::set_last_error;
 using cyber::ShapeRegistry;
+using cyber::ValidityData;
 using cyber::ShapeResult;
 
 // Process-wide shape registry backing every CCShapeId. Intentionally leaked:
@@ -683,6 +684,49 @@ int cc_principal_moments(CCShapeId body, double* out3) {
         [&]() -> int {
             auto r = active_engine()->principal_moments(resolve(body));
             return finish_fixed(r, out3, 3);
+        },
+        0);
+}
+
+// First-failing (or undecidable) check, in the same precedence the native
+// ValidityReport::reason() uses — the honest "why is this not valid" code.
+static int cc_first_failure(const ValidityData& v) {
+    if (!v.finite) return CC_VALID_NONFINITE;
+    if (!v.closed) return CC_VALID_NOT_CLOSED;
+    if (!v.oriented) return CC_VALID_BAD_ORIENTATION;
+    if (!v.nondegenerate) return CC_VALID_DEGENERATE;
+    if (!v.certified) return CC_VALID_SELF_INTERSECT_UNDECIDABLE;
+    if (!v.noSelfIntersection) return CC_VALID_SELF_INTERSECT;
+    return CC_VALID_OK;
+}
+
+int cc_check_solid(CCShapeId body, CCValidityReport* out) {
+    return cyber::guard(
+        [&]() -> int {
+            CCValidityReport zero{};
+            if (out) *out = zero;
+            auto r = active_engine()->check_solid(resolve(body));
+            if (!r) {
+                set_last_error(r.error().message);
+                return 0;  // unknown body / no engine — out already zeroed
+            }
+            const ValidityData& v = r.value();
+            CCValidityReport rep{};
+            rep.decided = v.certified ? 1 : 0;  // undecidable self-X => not decided
+            rep.valid = (v.valid && v.certified) ? 1 : 0;
+            rep.finite = v.finite ? 1 : 0;
+            rep.closed_manifold = v.closed ? 1 : 0;
+            rep.consistent_orientation = v.oriented ? 1 : 0;
+            rep.no_degenerate = v.nondegenerate ? 1 : 0;
+            rep.no_self_intersection = v.noSelfIntersection ? 1 : 0;
+            rep.first_failure = cc_first_failure(v);
+            if (out) *out = rep;
+            if (!rep.decided) {  // HONEST DECLINE: never a definite verdict here
+                set_last_error("cc_check_solid: self-intersection undecidable (coplanar "
+                               "overlap) — verdict declined");
+                return 0;
+            }
+            return 1;
         },
         0);
 }

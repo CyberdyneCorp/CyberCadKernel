@@ -37,6 +37,22 @@ struct MassData {
     bool valid = false;
 };
 
+// MOAT M-GS GS6 solid-validity report (converted to CCValidityReport by the
+// facade). Each flag is an independent necessary condition; `valid` is their
+// conjunction AND requires `certified` (an unreachable check — e.g. certifying
+// no-self-intersection on a coplanar overlap — sets certified=false and leaves
+// valid=false rather than assert a false "valid"). NativeEngine fills the whole
+// breakdown from the M0 mesh; the OCCT adapter is the BRepCheck_Analyzer oracle.
+struct ValidityData {
+    bool valid = false;
+    bool closed = false;
+    bool oriented = false;
+    bool nondegenerate = false;
+    bool finite = false;
+    bool noSelfIntersection = false;
+    bool certified = true;
+};
+
 // AP242 PMI census (converted to CCPmiSummary by the facade). Per-class counts of
 // the recognised PMI annotation entities in a STEP file — a read-only, engine-
 // independent parse (no geometry import). See native::exchange::PmiSummary.
@@ -407,6 +423,15 @@ public:
     virtual Result<std::vector<double>> principal_moments(EngineShape body) {
         (void)body;
         return engine_unsupported("principal_moments");  // expects 3 values
+    }
+    // ── solid validity (MOAT M-GS GS6; additive) ────────────────────────────────
+    // Structural-validity report of a solid. NativeEngine checks its own bodies at
+    // the mesh level (closed 2-manifold, consistent orientation, no degenerate/
+    // self-intersecting faces, finite coords) with an honest decline where a check
+    // is unreachable; the OCCT adapter is the BRepCheck_Analyzer::IsValid oracle.
+    virtual Result<ValidityData> check_solid(EngineShape body) {
+        (void)body;
+        return engine_unsupported("check_solid");
     }
     virtual Result<std::vector<double>> bounding_box(EngineShape body) {
         (void)body;

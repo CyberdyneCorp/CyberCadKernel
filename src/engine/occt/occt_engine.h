@@ -306,6 +306,7 @@ public:
     // ── query (occt_query.cpp) ────────────────────────────────────────────────
     Result<MassData> mass_properties(EngineShape body) override;
     Result<std::vector<double>> principal_moments(EngineShape body) override;
+    Result<ValidityData> check_solid(EngineShape body) override;  // MOAT M-GS GS6
     Result<std::vector<double>> bounding_box(EngineShape body) override;
     Result<std::vector<double>> face_axis(EngineShape body, int faceId) override;
     Result<std::vector<int>> subshape_ids(EngineShape body, int kind) override;

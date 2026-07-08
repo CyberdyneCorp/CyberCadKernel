@@ -57,6 +57,39 @@ typedef struct {
     int valid;
 } CCMassProps;
 
+/* First-failing (or undecidable) check code in a CCValidityReport::first_failure.
+ * 0 = none (the solid is valid). */
+enum CCValidityCheck {
+    CC_VALID_OK = 0,
+    CC_VALID_NONFINITE = 1,               /* a coordinate is NaN/Inf */
+    CC_VALID_NOT_CLOSED = 2,              /* open / non-manifold boundary */
+    CC_VALID_BAD_ORIENTATION = 3,         /* inconsistent face orientation */
+    CC_VALID_DEGENERATE = 4,              /* zero-area face / zero-length edge */
+    CC_VALID_SELF_INTERSECT = 5,          /* self-intersecting faces */
+    CC_VALID_SELF_INTERSECT_UNDECIDABLE = 6  /* honest decline (coplanar overlap) */
+};
+
+/* Structural-validity report of a solid (MOAT M-GS GS6, ADDITIVE). Each per-check
+ * flag is an independent necessary condition. `decided` is 1 when the engine
+ * produced a definite verdict; it is 0 on an HONEST DECLINE — a check the engine
+ * cannot robustly reach (e.g. certifying no-self-intersection on a coplanar
+ * overlap), in which case cc_check_solid returns 0 and `valid` is NEVER 1.
+ * `valid` (meaningful only when decided) is the conjunction of every check;
+ * `first_failure` is a CCValidityCheck code naming the first failing/undecidable
+ * check (0 when valid). The NativeEngine fills the whole per-check breakdown from
+ * the M0 mesh; the OCCT adapter reports the BRepCheck_Analyzer::IsValid overall
+ * verdict (breakdown fields mirror it). */
+typedef struct {
+    int valid;                    /* overall structural validity (only when decided) */
+    int decided;                  /* 1 = definite verdict; 0 = honest decline */
+    int finite;                   /* all coordinates finite */
+    int closed_manifold;          /* closed 2-manifold boundary */
+    int consistent_orientation;   /* consistent outward face orientation */
+    int no_degenerate;            /* no zero-area face / zero-length edge */
+    int no_self_intersection;     /* no self-intersecting faces */
+    int first_failure;            /* CCValidityCheck of first failing/undecidable check */
+} CCValidityReport;
+
 /* One OCCT edge as a single discretized 3-D polyline, tagged with the edge id
  * (the same 1-based id cc_subshape_ids/cc_fillet_edges use). A whole arc is ONE
  * polyline, so the UI can pick/highlight it as one edge rather than mesh
@@ -431,6 +464,14 @@ CCMesh cc_tessellate(CCShapeId body, double deflection);
 CCMassProps cc_mass_properties(CCShapeId body);
 /* Principal moments of inertia (unit-density volume inertia). out3 = [I1,I2,I3]. 1 on success. */
 int cc_principal_moments(CCShapeId body, double *out3);
+
+/* Structural-validity report of a solid (MOAT M-GS GS6). Fills *out with the
+ * per-check breakdown. Returns 1 when a DEFINITE verdict was produced
+ * (out->decided == 1; out->valid is the overall verdict); returns 0 on an HONEST
+ * DECLINE (out->decided == 0, an undecidable check, cc_last_error set) or an
+ * unknown body / no B-rep engine (out zeroed) — NEVER reports valid==1 for a body
+ * it cannot verify. */
+int cc_check_solid(CCShapeId body, CCValidityReport *out);
 
 /* Exact axis-aligned bounding box of the B-rep (not the tessellation). Fills
  * out6 = [minX,minY,minZ, maxX,maxY,maxZ]. Returns 1 on success, 0 otherwise. */

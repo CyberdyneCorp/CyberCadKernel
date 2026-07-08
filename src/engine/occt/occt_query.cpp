@@ -32,6 +32,7 @@
 // ── OCCT query headers (this TU only) ─────────────────────────────────────────
 #include <Bnd_Box.hxx>
 #include <BRepBndLib.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
@@ -174,6 +175,31 @@ Result<std::vector<double>> OcctEngine::principal_moments(EngineShape body) {
         Standard_Real i1 = 0, i2 = 0, i3 = 0;
         pp.Moments(i1, i2, i3);  // principal moments (unit density -> volume inertia)
         return std::vector<double>{i1, i2, i3};
+    });
+}
+
+// ── Solid validity (MOAT M-GS GS6) ────────────────────────────────────────────
+// The BRepCheck_Analyzer::IsValid ORACLE. This adapter reports the OVERALL verdict
+// (the quantity the native mesh-level checker is verified against on the sim gate);
+// the per-check breakdown fields mirror that verdict (OCCT always certifies), while
+// the NativeEngine fills the richer per-check decomposition validated at the host
+// gate. finite is always true for a built OCCT B-rep.
+Result<ValidityData> OcctEngine::check_solid(EngineShape body) {
+    return occt::occtGuard([&]() -> Result<ValidityData> {
+        const TopoDS_Shape* shape = occt::unwrap(body);
+        if (shape == nullptr) {
+            return make_error("check_solid: unknown body");
+        }
+        const bool ok = !shape->IsNull() && BRepCheck_Analyzer(*shape).IsValid();
+        ValidityData out;
+        out.valid = ok;
+        out.closed = ok;
+        out.oriented = ok;
+        out.nondegenerate = ok;
+        out.finite = !shape->IsNull();
+        out.noSelfIntersection = ok;
+        out.certified = true;
+        return out;
     });
 }
 

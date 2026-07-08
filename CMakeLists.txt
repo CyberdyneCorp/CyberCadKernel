@@ -359,6 +359,16 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_freeform_boolean_breadth)
         set(test_native_freeform_boolean_breadth_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_freeform_boolean_breadth.cpp")
+        # MOAT M2-FUSE — host GATE (a), the FIRST two-operand freeform boolean: a
+        # bowl-lidded freeform prism A FUSED/CUT/COMMON with a FINITE all-planar box B for
+        # the single-curved-cut pose. Composes recognise[B1] → inter-solid seam → split
+        # both operands → B3-confirm → weld → self-verify, matching the closed-form union /
+        # cut / common volumes. Its inter-solid seam is the real S3 trace, so this host
+        # suite builds only under CYBERCAD_HAS_NUMSCI. Additive header-only verbs
+        # (inter_solid_seam.h + two_operand.h); no lib change, no cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_two_operand_freeform_boolean)
+        set(test_native_two_operand_freeform_boolean_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_two_operand_freeform_boolean.cpp")
         # MOAT M-GS GS3/GS4 analysis services (src/native/analysis) — host GATE (a),
         # the OCCT-free closed-form/brute-force proof of minimum distance, angle and
         # surface/edge curvature (+ honest declines). The freeform seed-and-refine

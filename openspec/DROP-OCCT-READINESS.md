@@ -132,11 +132,12 @@ writers / TetGen). **Facade-pure fp64 (no engine call):** `cc_ref_plane_from_poi
 `cc_ref_plane_offset`, `cc_ref_axis_from_points`. **Infra (not geometry):** `set_parallel` /
 `set_gpu_tessellation` forward to fallback policy (625-628) → become native no-ops at unlink.
 
-**Site tally:** 63 classified engine fall-through sites → **A: 47**, **B: 14**, **C: 2**
-(M-TX landed: the 6 transform ops + `extrude_mesh` moved B→A). The remaining **B** sites
-hard-decline on native bodies via `CC_NATIVE_BODY_UNSUPPORTED` (M-REF reference/topology
-reads, M-DM `replace_face`, M3 OCCT-only fillets) plus the degenerate-slice construct ops
-(`twisted_sweep`, `loft_along_rail`); `iges_export` is the one C-class invocation.
+**Site tally:** classified engine fall-through sites → **B: 7**, **C: 2**, the rest **A**
+(this wave: M-TX's 6 transform ops + `extrude_mesh`, M-REF's 7 reference/topology reads, and
+M-DM `replace_face` (DM3 offset) all moved B→A — 15 sites cleared). The remaining **7 B** sites
+are: the M3 OCCT-only fillets (`fillet_face`, `full_round_fillet`, `full_round_fillet_faces`,
+`fillet_edges_g2`), the degenerate-slice construct ops (`twisted_sweep`, `loft_along_rail`),
+and `thread_apply`; `iges_export`/`iges_import` are the two C-class invocations.
 
 ---
 
@@ -146,17 +147,18 @@ reads, M-DM `replace_face`, M3 OCCT-only fillets) plus the degenerate-slice cons
 |---|---|---|---|---|
 | **M-TX native transforms** — ✅ LANDED (native `Shape::located(math::Transform)`; two-gate proven) | translate_shape, rotate_shape_about, mirror_shape, scale_shape, scale_shape_about, place_on_frame, extrude_mesh | **M-TX (done)** | 27 + 10 | **0 (done)** |
 | **M-REF reference / topology** — ✅ LANDED (native, two gates green) | face_axis, ref_plane_from_face, ref_axis_from_edge, ref_axis_from_face, tangent_chain, outer_rim_chain, offset_face_boundary | **M-REF (done)** | 22 | **0 (done)** |
-| **M-DM direct modeling** | replace_face (DM3) — DM2 replace_face_to_plane now native (98a2011) | **M-DM** | 6 | **~1–2** |
+| **M-DM direct modeling** — ✅ core LANDED (DM1/DM2/DM3 offset + DM4 project native) | replace_face offset (DM3) + project_point_on_face (DM4) native; only tilted/non-planar retarget breadth residual (gates M2/M3) | **M-DM (done, resid breadth)** | 6 | **~0.5 (residual)** |
 | **M3 OCCT-only + curved-blend breadth** | fillet_face, full_round_fillet, full_round_fillet_faces, fillet_edges_g2 + curved/freeform residuals of the A-class blends (fillet/chamfer/shell/offset_face) | **M3** (in M2/M3 breadth bucket) | 14 direct | **~3–8** (shared M2/M3) |
 | **M2 freeform-boolean breadth + thread_apply** | boolean_op freeform/mixed residual, thread_apply | **M2** (same bucket) | 0 direct | (in the ~3–8) |
 | **M7 / M7b construct tails** | twisted_sweep (real twist), loft_along_rail (curved rail), fine-pitch thread residuals | **M7 / M7b** | 12 | **~1–2** |
 | **M-GS GS1 curved-HLR** | hlr_project cone/torus/freeform silhouettes | **M-GS GS1** | 0 direct | (substantial GS residual; gates OCCT-free 2D drawings, not solid primitives) |
 
-**MUST-GO-NATIVE remaining-py total: ≈ 6.5–15 py (midpoint ≈ 10 py)**, dominated by the
-**M2/M3 freeform breadth bucket (~3–8 py)**. The cheapest, highest-leverage slice is
-**M-TX + M-REF (~1–2 py combined, 49 app call-sites)** — both are bounded (compose a
-Location/affine into native topology; read native edge-sharing topology) and neither is on the
-existing roadmap, yet together they are the largest *app-facing* hard-decline blocker.
+**MUST-GO-NATIVE remaining-py total: ≈ 4.5–11 py (midpoint ≈ 7 py)**, now almost entirely the
+**M2/M3 freeform breadth bucket (~3–8 py)** plus the small **M7/M7b construct tails (~1–2 py)**.
+The cheap, high-leverage app-facing group is DONE: **M-TX + M-REF + M-DM core (~2–3 py, ~55 app
+call-sites)** all landed this wave with two gates green — the largest *app-facing* hard-decline
+blocker is cleared. What remains is dominated by the asymptotic freeform kernel moat, not
+app-surface ops.
 
 ---
 

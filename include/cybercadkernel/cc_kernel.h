@@ -119,6 +119,23 @@ typedef struct {
     int    valid;
 } CCQualityReport;
 
+/* AP242 PMI census (ADDITIVE, READ-ONLY). Per-class counts of the recognised PMI /
+ * GD&T / draughting annotation entities in a STEP file. This is a COUNT/CLASSIFY
+ * slice, NOT a GD&T semantic model: tolerance magnitudes / zones / modifiers /
+ * datum reference frames are NOT reported and never invented. `unknown` counts
+ * PMI-adjacent entities outside the recognised table (never faked into a class);
+ * `total` is the sum of all classes. Filled by cc_step_pmi_scan. */
+typedef struct {
+    int dimensions;
+    int tolerances;
+    int datums;
+    int datum_targets;
+    int notes;
+    int annotation_geometry;
+    int unknown;
+    int total;
+} CCPmiSummary;
+
 #ifndef CC_KERNEL_NO_PROTOTYPES
 
 /* ── Legacy mesh extrude ─────────────────────────────────────────────────── */
@@ -423,6 +440,13 @@ void cc_face_meshes_free(CCFaceMesh *faces, int count);
 /* STEP exchange. cc_step_export returns 1 on success. */
 int cc_step_export(CCShapeId body, const char *path);
 CCShapeId cc_step_import(const char *path);
+
+/* Read-only AP242 PMI scan of a STEP file (ADDITIVE). Recognises / classifies /
+ * counts the PMI annotation entities and fills *out with the per-class census.
+ * Returns 1 on success, 0 on failure (see cc_last_error) — e.g. a null path/out or
+ * an unreadable file. Does NOT import geometry and does NOT alter cc_step_import:
+ * the solid a STEP file imports is byte-identical whether or not this is called. */
+int cc_step_pmi_scan(const char *path, CCPmiSummary *out);
 
 /* IGES exchange (millimetres, B-rep mode). cc_iges_export returns 1 on success. */
 int cc_iges_export(CCShapeId body, const char *path);

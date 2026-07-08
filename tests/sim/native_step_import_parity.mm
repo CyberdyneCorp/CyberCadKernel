@@ -55,6 +55,13 @@
 // REPRESENTATION_RELATIONSHIP chain (child SR placed into a sub-assembly SR placed into
 // the root SR), which is what the nested chain-walk composes. Used ONLY by runNestedAssembly.
 #include <STEPCAFControl_Writer.hxx>
+// XDE READER + DimTol tool — the OCCT oracle for the AP242 PMI census (M4-tail-3).
+// STEPCAFControl_Reader transfers PMI into an XCAFDoc document; XCAFDoc_DimTolTool
+// exposes the semantic dimension / geometric-tolerance / datum labels the native
+// step_scan_pmi is compared against.
+#include <STEPCAFControl_Reader.hxx>
+#include <XCAFDoc_DimTolTool.hxx>
+#include <TDF_LabelSequence.hxx>
 #include <TDocStd_Application.hxx>
 #include <TDocStd_Document.hxx>
 #include <XCAFDoc_DocumentTool.hxx>
@@ -981,6 +988,103 @@ void runAp242Pmi() {
     compare("ap242", "pmi_box", nat, oracle, 5e-3, 5e-3);
 }
 
+// ── (L2) AP242 PMI CENSUS — native step_scan_pmi vs OCCT XDE (M4-tail-3) ──────────
+// The SIM gate for the PMI recognise/classify/count slice. Author an AP242 file with
+// a KNOWN semantic-PMI census (2 dimensions, 1 geometric tolerance, 1 datum — plus
+// attachment carriers that must NOT be counted), then census it two ways:
+//   * NATIVE: cc_step_pmi_scan (the additive ABI, under the native engine).
+//   * OCCT XDE: STEPCAFControl_Reader → XCAFDoc document → XCAFDoc_DimTolTool
+//     dimension / geometric-tolerance / datum labels (the oracle).
+// Assert the native scan equals the KNOWN census, the geometry still imports
+// (byte-identical PMI-skip solid), and — where OCCT XDE surfaces a semantic class —
+// the native count MATCHES XDE (never diverges upward). Classes OCCT XDE does not
+// surface from this fixture are host-verified (the honest boundary the design states,
+// and the exact XDE numbers are printed so parity is transparent, never assumed).
+struct XdeCensus { bool ok = false; int dimensions = 0, tolerances = 0, datums = 0; };
+
+XdeCensus occtXdePmi(const std::string& path) {
+    XdeCensus c;
+    try {
+        Handle(TDocStd_Application) app = new TDocStd_Application();
+        Handle(TDocStd_Document) doc;
+        app->NewDocument("MDTV-XCAF", doc);
+        STEPCAFControl_Reader reader;  // GD&T transfer is ON by default in OCCT 7.x
+        if (reader.ReadFile(path.c_str()) != IFSelect_RetDone) return c;
+        if (!reader.Transfer(doc)) return c;
+        Handle(XCAFDoc_DimTolTool) dt = XCAFDoc_DocumentTool::DimTolTool(doc->Main());
+        TDF_LabelSequence dims, tols, dats;
+        dt->GetDimensionLabels(dims);
+        dt->GetGeomToleranceLabels(tols);
+        dt->GetDatumLabels(dats);
+        c.dimensions = dims.Length();
+        c.tolerances = tols.Length();
+        c.datums = dats.Length();
+        c.ok = true;
+    } catch (const Standard_Failure&) {
+        c.ok = false;
+    }
+    return c;
+}
+
+void runAp242PmiCensus() {
+    const std::string path = "/tmp/cck_nimport_ap242_pmi_census.step";
+    const std::string srcPath = "/tmp/cck_nimport_ap242_census_src.step";
+    TopoDS_Shape box = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 10, 10, 10).Shape();
+    if (!occtWriteStep(box, srcPath)) { record(false, "ap242", "census author", "OCCT write failed"); return; }
+    std::string txt;
+    if (FILE* f = std::fopen(srcPath.c_str(), "rb")) {
+        char buf[8192]; size_t n; while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) txt.append(buf, n); std::fclose(f);
+    }
+    { const std::size_t s = txt.find("FILE_SCHEMA"); const std::size_t e = txt.find(';', s);
+      if (s != std::string::npos)
+          txt.replace(s, e - s, "FILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF { 1 0 10303 442 1 1 4 }'))"); }
+    // KNOWN census: dimensions=2, tolerances=1, datums=1 (carriers #98000x NOT counted).
+    const std::size_t ins = txt.find('\n', txt.find("DATA;")) + 1;
+    txt.insert(ins,
+        "#980001 = SHAPE_ASPECT('f1','',#980000,.T.);\n"
+        "#980002 = SHAPE_ASPECT('f2','',#980000,.T.);\n"
+        "#980003 = DATUM_FEATURE('df','',#980000,.T.);\n"
+        "#980010 = DIMENSIONAL_SIZE(#980001,'width');\n"
+        "#980011 = DIMENSIONAL_LOCATION('loc','',#980001,#980002);\n"
+        "#980020 = ( GEOMETRIC_TOLERANCE('',$,#980099,#980001) FLATNESS_TOLERANCE() );\n"
+        "#980030 = DATUM('','',#980098,.T.,'A');\n");
+    writeFile(path, txt);
+
+    // NATIVE census via the additive facade ABI (under the native engine).
+    cc_set_engine(1);
+    CCPmiSummary ps;
+    std::memset(&ps, 0, sizeof ps);
+    const int okScan = cc_step_pmi_scan(path.c_str(), &ps);
+    const bool nativeMatchesKnown = okScan == 1 && ps.dimensions == 2 && ps.tolerances == 1 &&
+                                    ps.datums == 1 && ps.datum_targets == 0 && ps.unknown == 0 &&
+                                    ps.total == 4;
+
+    // Geometry still imports (byte-identical PMI-skip solid) — native vs OCCT.
+    const Props nat = importUnder(1, path);
+    const Props oracle = importUnder(0, path);
+    const bool geomOk = nat.ok && oracle.ok && oracle.vol > 0 &&
+                        std::fabs(nat.vol - oracle.vol) / oracle.vol < 5e-3;
+
+    // OCCT XDE oracle census.
+    const XdeCensus xde = occtXdePmi(path);
+    // Honest parity: where XDE surfaces a class it MUST equal native; where it does
+    // not (0), the class is host-verified (never a false OCCT-parity claim). Never
+    // allow XDE to exceed native (that would mean native under-counted).
+    const bool xdeParity =
+        (xde.dimensions == 0 || xde.dimensions == ps.dimensions) &&
+        (xde.tolerances == 0 || xde.tolerances == ps.tolerances) &&
+        (xde.datums == 0 || xde.datums == ps.datums) &&
+        xde.dimensions <= ps.dimensions && xde.tolerances <= ps.tolerances &&
+        xde.datums <= ps.datums;
+
+    char d[420];
+    std::snprintf(d, sizeof d,
+        "native{dim=%d tol=%d dat=%d tot=%d} xde{ok=%d dim=%d tol=%d dat=%d} known{2,1,1} geomVol nat=%.6g occt=%.6g",
+        ps.dimensions, ps.tolerances, ps.datums, ps.total, xde.ok, xde.dimensions,
+        xde.tolerances, xde.datums, nat.vol, oracle.vol);
+    record(nativeMatchesKnown && geomOk && xdeParity, "ap242", "pmi census vs xde", d);
+}
+
 // ── (M) TRIMMED_CURVE edge (T1) — a wrapped CIRCLE rim unwraps to the native arc ──────
 // Author a native cylinder, wrap its CIRCLE rim geometry in a TRIMMED_CURVE (a foreign
 // bounded-curve the native writer never emits), and import it. The NATIVE reader must
@@ -1595,6 +1699,7 @@ int main() {
     runScaledAssembly();     // T1a: uniform-scale component (native k³; OCCT→rigid)
     runMirroredAssembly();   // T1b: mirrored component (native reflect; OCCT→rigid)
     runAp242Pmi();           // T2 : AP242 file (solid imported, PMI skipped) vs OCCT
+    runAp242PmiCensus();     // M4-tail-3: native PMI recognise/classify/count vs OCCT XDE
 
     // ── GENERAL SURFACES (this task) — a TRIMMED_CURVE edge + a SURFACE_OF_REVOLUTION
     //    face the reader previously declined. The cylinder revolution reduces to a native

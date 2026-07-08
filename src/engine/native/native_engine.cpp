@@ -13,7 +13,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <fstream>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -1572,6 +1574,30 @@ ShapeResult NativeEngine::step_import(const char* path) {
             return track(wrapNative(std::move(solid)));
     }
     return fallback().step_import(path);
+}
+// NATIVE AP242 PMI SCAN (additive, read-only). A SEPARATE pass over the parsed
+// Part-21 record table — it does NOT touch step_import's geometry path, so the
+// imported solid is byte-identical whether or not this is called. Recognise /
+// classify / count only (no GD&T semantic model); OCCT-free.
+Result<PmiData> NativeEngine::pmi_scan(const char* path) {
+    if (!path) return make_error("pmi_scan: null path");
+    // An unreadable file is a FAILURE (0 + error); a readable file with no PMI is a
+    // SUCCESS with total 0. Probe openability to keep those cases distinct.
+    if (!std::ifstream(path, std::ios::binary))
+        return make_error(std::string("pmi_scan: cannot open file: ") + path);
+    const cybercad::native::exchange::PmiSummary s =
+        cybercad::native::exchange::step_scan_pmi(path);
+    PmiData out;
+    out.dimensions = static_cast<int>(s.dimensions);
+    out.tolerances = static_cast<int>(s.tolerances);
+    out.datums = static_cast<int>(s.datums);
+    out.datumTargets = static_cast<int>(s.datumTargets);
+    out.notes = static_cast<int>(s.notes);
+    out.annotationGeometry = static_cast<int>(s.annotationGeometry);
+    out.unknown = static_cast<int>(s.unknown);
+    out.total = static_cast<int>(s.total);
+    out.anyPmi = s.anyPmi;
+    return out;
 }
 Result<void> NativeEngine::iges_export(EngineShape body, const char* path) {
     CC_NATIVE_BODY_UNSUPPORTED("iges_export", body);

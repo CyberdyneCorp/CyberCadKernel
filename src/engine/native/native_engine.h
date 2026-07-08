@@ -270,6 +270,8 @@ public:
 
     Result<void> step_export(EngineShape body, const char* path) override;
     ShapeResult step_import(const char* path) override;
+    // NATIVE: read-only AP242 PMI recognise/classify/count (additive; no geometry).
+    Result<PmiData> pmi_scan(const char* path) override;
     Result<void> iges_export(EngineShape body, const char* path) override;
     ShapeResult iges_import(const char* path) override;
     // NATIVE: import an ASCII/binary STL as a mesh-backed native body (issue #5).

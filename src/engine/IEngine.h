@@ -37,6 +37,15 @@ struct MassData {
     bool valid = false;
 };
 
+// AP242 PMI census (converted to CCPmiSummary by the facade). Per-class counts of
+// the recognised PMI annotation entities in a STEP file — a read-only, engine-
+// independent parse (no geometry import). See native::exchange::PmiSummary.
+struct PmiData {
+    int dimensions = 0, tolerances = 0, datums = 0, datumTargets = 0, notes = 0,
+        annotationGeometry = 0, unknown = 0, total = 0;
+    bool anyPmi = false;
+};
+
 struct EdgePolylineData {
     int edgeId = 0;
     std::vector<double> points;  // x,y,z triplets
@@ -447,6 +456,14 @@ public:
     virtual ShapeResult step_import(const char* path) {
         (void)path;
         return engine_unsupported("step_import");
+    }
+    // Read-only AP242 PMI scan (ADDITIVE). Recognise / classify / count the PMI
+    // annotation entities in a STEP file. Engine-independent parsing (no geometry
+    // import, no OCCT); NativeEngine implements it via the native reader. The
+    // default is unsupported so other adapters inherit a clean decline.
+    virtual Result<PmiData> pmi_scan(const char* path) {
+        (void)path;
+        return engine_unsupported("pmi_scan");
     }
     virtual Result<void> iges_export(EngineShape body, const char* path) {
         (void)body; (void)path;

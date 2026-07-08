@@ -29,8 +29,10 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -2615,6 +2617,143 @@ class Mapper {
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AP242 PMI recognise / classify / count (read-only pass — see step_reader.h).
+//
+// This is a SEPARATE, PURE pass over the SAME `records` table the Parser produced.
+// It never constructs a Mapper and never touches any geometry path, so the imported
+// solid is byte-identical whether or not it runs. It classifies annotation entities
+// by keyword and counts them; it does NOT model GD&T semantics (no magnitudes /
+// zones / modifiers / datum reference frames) and never invents a class for an
+// unrecognised keyword (that is counted `Unknown`).
+// ─────────────────────────────────────────────────────────────────────────────
+
+bool kwStarts(const std::string& kw, std::string_view p) {
+  return kw.size() >= p.size() && std::equal(p.begin(), p.end(), kw.begin());
+}
+bool kwEnds(const std::string& kw, std::string_view s) {
+  return kw.size() >= s.size() && std::equal(s.rbegin(), s.rend(), kw.rbegin());
+}
+bool kwHas(const std::string& kw, std::string_view sub) {
+  return kw.find(sub) != std::string::npos;
+}
+
+// A keyword that names a shape-aspect / feature / link carrier — the TARGET a PMI
+// annotation points at, NOT a standalone annotation. Excluded from the census so a
+// DATUM_FEATURE is not double-counted against its DATUM and a
+// DIMENSIONAL_CHARACTERISTIC_REPRESENTATION link is not counted as a second
+// dimension (this keeps the per-class counts aligned with OCCT XDE's DimTol model).
+bool isPmiAttachmentCarrier(const std::string& kw) {
+  static const std::unordered_set<std::string> kCarriers = {
+      "SHAPE_ASPECT",           "SHAPE_ASPECT_RELATIONSHIP",
+      "COMPOSITE_SHAPE_ASPECT", "DERIVED_SHAPE_ASPECT",
+      "COMPOSITE_GROUP_SHAPE_ASPECT",
+      "DATUM_FEATURE",          "DIMENSIONAL_CHARACTERISTIC_REPRESENTATION"};
+  return kCarriers.count(kw) != 0;
+}
+
+// Classify a single STEP keyword. Returns nullopt for a non-PMI keyword (geometry,
+// topology, product structure) or a bare attachment carrier; otherwise the PmiClass
+// (possibly Unknown for a PMI-adjacent keyword outside the recognised table).
+std::optional<PmiClass> classifyKeyword(const std::string& kw) {
+  if (kw.empty() || isPmiAttachmentCarrier(kw)) return std::nullopt;
+  if (kw == "DATUM_TARGET" || kw == "PLACED_DATUM_TARGET_FEATURE")
+    return PmiClass::DatumTarget;
+  if (kw == "DATUM" || kw == "COMMON_DATUM" || kwStarts(kw, "DATUM_SYSTEM") ||
+      kwStarts(kw, "DATUM_REFERENCE"))
+    return PmiClass::Datum;
+  if (kwStarts(kw, "DIMENSIONAL_") || kwStarts(kw, "ANGULAR_SIZE") ||
+      kwStarts(kw, "ANGULAR_LOCATION"))
+    return PmiClass::Dimension;
+  if (kwStarts(kw, "GEOMETRIC_TOLERANCE") || kwEnds(kw, "_TOLERANCE"))
+    return PmiClass::GeometricTolerance;
+  if (kw == "DRAUGHTING_CALLOUT") return PmiClass::Note;
+  if (kwStarts(kw, "ANNOTATION_") || kw == "DRAUGHTING_MODEL" ||
+      kwEnds(kw, "_ANNOTATION_OCCURRENCE"))
+    return PmiClass::AnnotationGeometry;
+  if (kwHas(kw, "TOLERANCE") || kwHas(kw, "DATUM") || kwHas(kw, "DIMENSION") ||
+      kwHas(kw, "ANNOTATION") || kwHas(kw, "DRAUGHTING"))
+    return PmiClass::Unknown;
+  return std::nullopt;
+}
+
+// Classify a whole record. A combined instance ( SUB(..) SUB(..) ) is ONE entity =
+// one annotation: it takes the class of its FIRST classifying sub-record (subs are
+// in file order — deterministic) and that sub's keyword for the audit trail. Returns
+// nullopt when no part of the record is a recognised PMI annotation.
+std::optional<std::pair<PmiClass, std::string>> classifyRecord(const Record& r) {
+  if (!r.combined) {
+    if (auto c = classifyKeyword(r.keyword)) return std::make_pair(*c, r.keyword);
+    return std::nullopt;
+  }
+  for (const SubRecord& sub : r.subs)
+    if (auto c = classifyKeyword(sub.keyword)) return std::make_pair(*c, sub.keyword);
+  return std::nullopt;
+}
+
+// True iff `r` names a SHAPE_ASPECT-family feature (the attachment target of an
+// annotation). Used to resolve `attachedTo`.
+bool targetIsFeature(const Record& r) {
+  if (r.combined) return false;
+  const std::string& k = r.keyword;
+  return kwHas(k, "SHAPE_ASPECT") || k == "DATUM_FEATURE" ||
+         k == "DIMENSIONAL_CHARACTERISTIC_REPRESENTATION";
+}
+
+// The first direct-arg reference (in file order) that points at a SHAPE_ASPECT-family
+// feature — the toleranced / dimensioned / datum feature the annotation attaches to.
+// 0 when the annotation carries no such reference. First slice: direct args only (no
+// list recursion); the #id is recorded faithfully, face-level binding is a later
+// slice. Nothing is invented.
+long resolveAttachment(const std::unordered_map<int, Record>& recs, const Record& r) {
+  auto firstFeatureRef = [&](const ArgList& args) -> long {
+    for (const Arg& a : args) {
+      if (!a.isRef()) continue;
+      auto it = recs.find(static_cast<int>(a.ref));
+      if (it != recs.end() && targetIsFeature(it->second)) return a.ref;
+    }
+    return 0;
+  };
+  if (!r.combined) return firstFeatureRef(r.args);
+  for (const SubRecord& s : r.subs)
+    if (const long id = firstFeatureRef(s.args)) return id;
+  return 0;
+}
+
+void tallyPmi(PmiSummary& s, PmiClass c) {
+  switch (c) {
+    case PmiClass::Dimension: ++s.dimensions; break;
+    case PmiClass::GeometricTolerance: ++s.tolerances; break;
+    case PmiClass::Datum: ++s.datums; break;
+    case PmiClass::DatumTarget: ++s.datumTargets; break;
+    case PmiClass::Note: ++s.notes; break;
+    case PmiClass::AnnotationGeometry: ++s.annotationGeometry; break;
+    case PmiClass::Unknown: ++s.unknown; break;
+  }
+}
+
+// One linear pass over the record table → the per-class census, items in ascending
+// #id order (deterministic; the table is unordered).
+PmiSummary scanPmi(const std::unordered_map<int, Record>& recs) {
+  PmiSummary out;
+  for (const auto& [id, r] : recs) {
+    auto cls = classifyRecord(r);
+    if (!cls) continue;
+    PmiAnnotation a;
+    a.id = id;
+    a.cls = cls->first;
+    a.keyword = std::move(cls->second);
+    a.attachedTo = resolveAttachment(recs, r);
+    out.items.push_back(std::move(a));
+  }
+  std::sort(out.items.begin(), out.items.end(),
+            [](const PmiAnnotation& x, const PmiAnnotation& y) { return x.id < y.id; });
+  for (const PmiAnnotation& a : out.items) tallyPmi(out, a.cls);
+  out.total = out.items.size();
+  out.anyPmi = out.total != 0;
+  return out;
+}
+
 }  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2648,6 +2787,21 @@ topo::Shape readStepFile(const std::string& path) {
   std::ostringstream ss;
   ss << in.rdbuf();
   return readStepString(ss.str());
+}
+
+PmiSummary step_scan_pmi_content(const std::string& content) {
+  std::unordered_map<int, Record> records;
+  Parser parser(content);
+  if (!parser.parse(records)) return {};  // no DATA section / malformed → empty census
+  return scanPmi(records);
+}
+
+PmiSummary step_scan_pmi(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return {};
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  return step_scan_pmi_content(ss.str());
 }
 
 }  // namespace cybercad::native::exchange

@@ -15,6 +15,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -1016,6 +1018,99 @@ CC_TEST(native_step_import_reads_native_file) {
         cc_shape_release(back);
     }
     std::remove(path);
+    cc_shape_release(box);
+}
+
+// ── ADDITIVE ABI: cc_step_pmi_scan recognises/classifies/counts PMI, and the
+// geometry import of the SAME file stays byte-identical ────────────────────────
+// Under the native engine, export a box to STEP, inject a KNOWN PMI block, then:
+//   (1) cc_step_pmi_scan fills CCPmiSummary with the exact census; and
+//   (2) cc_step_import of the PMI-bearing file imports the SAME solid as the
+//       PMI-free file (mass properties bit-for-bit) — the scan is additive and the
+//       geometry import is untouched.
+CC_TEST(native_step_pmi_scan_census_and_byte_identical_import) {
+    EngineGuard g;
+    cc_set_engine(1);
+    const double sq[] = {0, 0, 10, 0, 10, 10, 0, 10};
+    const CCShapeId box = cc_solid_extrude(sq, 4, 10.0);
+    CC_CHECK(box != 0);
+
+    const char* plainPath = "/tmp/cybercad_pmi_plain.step";
+    const char* pmiPath = "/tmp/cybercad_pmi_augmented.step";
+    std::remove(plainPath);
+    std::remove(pmiPath);
+    CC_CHECK_EQ(cc_step_export(box, plainPath), 1);
+
+    // Read the exported STEP and inject a known PMI block (2 dims, 2 tols, 1 datum,
+    // 1 datum target, 1 note, 1 annotation geometry, 1 unknown = total 9) before
+    // ENDSEC; — the injected entities are never reached from the solid's brep.
+    std::string step;
+    {
+        std::ifstream in(plainPath, std::ios::binary);
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        step = ss.str();
+    }
+    const std::string pmi =
+        "#900001 = SHAPE_ASPECT('feature','',#900000,.T.);\n"
+        "#900002 = DATUM_FEATURE('df','',#900000,.T.);\n"
+        "#900010 = DIMENSIONAL_SIZE(#900001,'diameter');\n"
+        "#900011 = DIMENSIONAL_LOCATION('loc','',#900001,#900002);\n"
+        "#900020 = FLATNESS_TOLERANCE('','',#900099,#900001);\n"
+        "#900021 = ( GEOMETRIC_TOLERANCE('','',#900099,#900001) FLATNESS_TOLERANCE() );\n"
+        "#900030 = DATUM('','',#900070,.T.,'A');\n"
+        "#900031 = DATUM_TARGET('P1','1',#900001,.T.,$);\n"
+        "#900040 = DRAUGHTING_CALLOUT((#900041));\n"
+        "#900050 = ANNOTATION_PLANE('',(#900051),#900052);\n"
+        "#900060 = TOLERANCE_ZONE('',(#900061),#900062,#900063);\n";
+    const std::size_t data = step.find("DATA;");
+    const std::size_t end = step.find("ENDSEC;", data);
+    CC_CHECK(end != std::string::npos);
+    const std::string augmented = step.substr(0, end) + pmi + step.substr(end);
+    {
+        std::ofstream out(pmiPath, std::ios::binary);
+        out << augmented;
+    }
+
+    // (1) PMI census via the facade.
+    CCPmiSummary sum;
+    std::memset(&sum, 0, sizeof(sum));
+    CC_CHECK_EQ(cc_step_pmi_scan(pmiPath, &sum), 1);
+    CC_CHECK_EQ(sum.dimensions, 2);
+    CC_CHECK_EQ(sum.tolerances, 2);
+    CC_CHECK_EQ(sum.datums, 1);
+    CC_CHECK_EQ(sum.datum_targets, 1);
+    CC_CHECK_EQ(sum.notes, 1);
+    CC_CHECK_EQ(sum.annotation_geometry, 1);
+    CC_CHECK_EQ(sum.unknown, 1);
+    CC_CHECK_EQ(sum.total, 9);
+
+    // (2) Byte-identical geometry: importing the PMI-bearing file yields the SAME
+    // solid as the PMI-free file.
+    const CCShapeId plain = cc_step_import(plainPath);
+    const CCShapeId withPmi = cc_step_import(pmiPath);
+    CC_CHECK(plain != 0);
+    CC_CHECK(withPmi != 0);
+    if (plain != 0 && withPmi != 0) {
+        const CCMassProps a = cc_mass_properties(plain);
+        const CCMassProps b = cc_mass_properties(withPmi);
+        CC_CHECK(a.valid != 0 && b.valid != 0);
+        CC_CHECK(std::fabs(a.volume - b.volume) < 1e-9);
+        CC_CHECK(std::fabs(a.area - b.area) < 1e-9);
+        CC_CHECK(std::fabs(a.cx - b.cx) < 1e-9 && std::fabs(a.cy - b.cy) < 1e-9 &&
+                 std::fabs(a.cz - b.cz) < 1e-9);
+    }
+    if (plain != 0) cc_shape_release(plain);
+    if (withPmi != 0) cc_shape_release(withPmi);
+
+    // Failure paths: null out, and an unreadable path → 0 with an error set.
+    CC_CHECK_EQ(cc_step_pmi_scan(pmiPath, nullptr), 0);
+    CCPmiSummary junk;
+    CC_CHECK_EQ(cc_step_pmi_scan("/no/such/pmi/file.step", &junk), 0);
+    CC_CHECK(std::strcmp(cc_last_error(), "") != 0);
+
+    std::remove(plainPath);
+    std::remove(pmiPath);
     cc_shape_release(box);
 }
 

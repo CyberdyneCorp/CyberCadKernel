@@ -79,7 +79,9 @@
 
 #include "native/topology/shape.h"
 
+#include <cstddef>
 #include <string>
+#include <vector>
 
 namespace cybercad::native::exchange {
 
@@ -94,6 +96,62 @@ topo::Shape readStepString(const std::string& content);
 /// failure (missing file, out of scope, unhealable). The engine self-verifies the
 /// result and falls back to OCCT on NULL.
 topo::Shape readStepFile(const std::string& path);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AP242 PMI recognise / classify / count (ADDITIVE, READ-ONLY metadata).
+//
+// A SEPARATE pass over the SAME Part-21 record table the reader parses. It does NOT
+// invoke or modify the geometry mapper (Mapper::build) — the imported solid is
+// byte-identical whether or not this scan runs. It recognises the AP242 PMI / GD&T /
+// draughting annotation entities, classifies each into a PmiClass, counts them per
+// class, and records each annotation's raw STEP keyword and the referenced feature
+// #id it attaches to. This is a COUNT/CLASSIFY slice, NOT a GD&T semantic model:
+// tolerance magnitudes, zones, modifiers, feature-control-frame semantics, and datum
+// reference frames are deliberately OUT of scope and are never invented. A PMI-family
+// keyword outside the recognised table is counted `Unknown`, never faked into a
+// specific class. OCCT-FREE (pure function of the record table).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The native classification of one AP242 PMI annotation entity.
+enum class PmiClass {
+  Dimension,           ///< DIMENSIONAL_SIZE / _LOCATION, ANGULAR_SIZE / _LOCATION, …
+  GeometricTolerance,  ///< GEOMETRIC_TOLERANCE + its *_TOLERANCE subtypes
+  Datum,               ///< DATUM / DATUM_SYSTEM / DATUM_REFERENCE
+  DatumTarget,         ///< DATUM_TARGET / PLACED_DATUM_TARGET_FEATURE
+  Note,                ///< DRAUGHTING_CALLOUT (textual note)
+  AnnotationGeometry,  ///< ANNOTATION_*_OCCURRENCE / DRAUGHTING_MODEL (graphical PMI)
+  Unknown              ///< PMI-adjacent but not classifiable — counted, never faked
+};
+
+/// One recognised PMI annotation: its entity #id, class, raw STEP keyword (audit
+/// trail), and the referenced feature #id it attaches to (a SHAPE_ASPECT / datum
+/// feature / dimensional-characteristic), or 0 when none is resolvable.
+struct PmiAnnotation {
+  int id = 0;
+  PmiClass cls = PmiClass::Unknown;
+  std::string keyword;
+  long attachedTo = 0;
+};
+
+/// The per-class PMI census of a STEP file. `items` lists every recognised
+/// annotation in ascending #id order (deterministic). `total` == items.size();
+/// `anyPmi` == (total != 0).
+struct PmiSummary {
+  std::size_t dimensions = 0, tolerances = 0, datums = 0, datumTargets = 0, notes = 0,
+              annotationGeometry = 0, unknown = 0, total = 0;
+  bool anyPmi = false;
+  std::vector<PmiAnnotation> items;
+};
+
+/// Recognise + classify + count the AP242 PMI annotations in the STEP text
+/// `content`. Read-only; never touches the geometry mapper. Returns an empty
+/// (all-zero, anyPmi=false) summary for content with no DATA section or no PMI.
+PmiSummary step_scan_pmi_content(const std::string& content);
+
+/// Read the STEP file at `path` and scan its AP242 PMI (see
+/// step_scan_pmi_content). Returns an empty summary on a missing/unreadable file.
+/// Does NOT import geometry and does NOT alter readStepFile / step_import_native.
+PmiSummary step_scan_pmi(const std::string& path);
 
 }  // namespace cybercad::native::exchange
 

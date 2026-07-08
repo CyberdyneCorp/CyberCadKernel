@@ -16,6 +16,13 @@
 //     STL file (stl_writer.h) and import an ASCII/binary STL back as a welded
 //     triangle-soup mesh (stl_reader.h). Import-as-mesh only (NOT B-rep) — the mesh
 //     serves display + measurement + tessellate directly.
+//   * NATIVE AP242 PMI SCAN — recognise / classify / count the PMI / GD&T /
+//     draughting annotation entities in a STEP file as ADDITIVE read-only metadata
+//     (step_scan_pmi / PmiSummary, declared in step_reader.h and re-exported here).
+//     A SEPARATE pass over the parsed record table — it does NOT touch the geometry
+//     import, so a STEP file's imported solid is byte-identical whether or not it is
+//     called. This is a COUNT/CLASSIFY slice, NOT a GD&T semantic model (no
+//     magnitudes / zones / modifiers / datum reference frames — never invented).
 //
 #ifndef CYBERCAD_NATIVE_EXCHANGE_H
 #define CYBERCAD_NATIVE_EXCHANGE_H

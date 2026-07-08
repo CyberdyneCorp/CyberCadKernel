@@ -289,6 +289,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_wrap_emboss
         test_native_step_writer
         test_native_step_reader
+        test_native_step_pmi
         test_native_stl
         test_native_quality
         test_native_step
@@ -434,6 +435,8 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step_writer.cpp")
     set(test_native_step_reader_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step_reader.cpp")
+    set(test_native_step_pmi_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step_pmi.cpp")
     set(test_native_stl_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_stl.cpp")
     set(test_native_quality_SRC

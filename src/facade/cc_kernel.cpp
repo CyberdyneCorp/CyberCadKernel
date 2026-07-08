@@ -911,6 +911,32 @@ CCShapeId cc_step_import(const char* path) {
         CCShapeId{0});
 }
 
+int cc_step_pmi_scan(const char* path, CCPmiSummary* out) {
+    return cyber::guard(
+        [&]() -> int {
+            if (!out) {
+                set_last_error("cc_step_pmi_scan: null out");
+                return 0;
+            }
+            auto r = active_engine()->pmi_scan(path);
+            if (!r) {
+                set_last_error(r.error().message);
+                return 0;
+            }
+            const auto& s = r.value();
+            out->dimensions = s.dimensions;
+            out->tolerances = s.tolerances;
+            out->datums = s.datums;
+            out->datum_targets = s.datumTargets;
+            out->notes = s.notes;
+            out->annotation_geometry = s.annotationGeometry;
+            out->unknown = s.unknown;
+            out->total = s.total;
+            return 1;
+        },
+        0);
+}
+
 int cc_iges_export(CCShapeId body, const char* path) {
     return cyber::guard(
         [&]() -> int {

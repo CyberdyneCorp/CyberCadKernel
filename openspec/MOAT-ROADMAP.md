@@ -395,8 +395,31 @@ direct-modeling operations through the `cc_*` ABI that are OCCT-only in the kern
 `cc_split_plane`, `cc_replace_face`, `cc_replace_face_to_plane`, plus the project tool. These are
 *local B-rep re-solving* operations (the heart of synchronous/direct modeling), distinct from the
 feature-tree construction the other stages cover. Substages:
-- **DM1 — `cc_split_plane`** (split a solid by a plane into pieces). **Largely reachable NOW** — it
-  reuses the landed M2 `half_space_cut` (B4) verb on each side + BSP for analytic solids. ~0.5–1 py.
+- **DM1 — `cc_split_plane`** (split a solid by a plane into pieces). **FIRST SLICE LANDED** (native,
+  additive, OCCT-free). `NativeEngine::split_plane` now routes native B-rep bodies through
+  `native/boolean/split_plane.h::splitByPlane`, which composes the two landed verbs unchanged:
+  `freeformHalfSpaceCut` (KeepSide::Below/Above → the two pieces) for a single-freeform-walled operand,
+  else `boolean_solid(operand, discard-half-space-box, Cut)` for an all-planar polyhedron. Each piece
+  is accepted only after the mandatory `watertightVolume` self-verify; otherwise an honest decline
+  (the same clean error the pre-DM1 path returned — a native void is never handed to OCCT).
+  - *Native cases (both gates green):* axis-aligned **BOX** / planar polyhedron (host partition-closure
+    fp-exact; sim volume/area rel ≤ 2.3e-16 vs OCCT) and the bowl-lidded **PRISM** with one freeform
+    wall (host closed-form band; sim vol rel ≤ 5.5e-3, area ≤ 6e-4, χ=2, bbox ≤ 1e-7, partition
+    closure 5.4e-3 — all inside the landed curved-slice tolerances, never widened).
+  - *Honest declines → OCCT (measured, not faked):* the **perpendicular cylinder slice** is `cyl − box`,
+    which the landed curved slice (`curved::tryBoxCylinder`) explicitly excludes → NULL both sides;
+    likewise a grazing-tangent plane, a degenerate/missing plane, a multi-freeform operand, a mesh-only
+    or foreign body. The design's original case C (native cylinder ⊥ slice) was demoted to this decline
+    — adding a cylinder-slice verb would violate the consume-unchanged discipline.
+  - *Gates:* host `tests/native/test_native_split_plane.cpp` (partition-closure, OCCT-free, 5/5) +
+    sim `tests/sim/native_split_plane_parity.mm` (native-vs-OCCT, 31/31). Remaining ~0.3–0.7 py for
+    oblique-plane / multi-lump breadth. cc_* ABI unchanged; OCCT bodies byte-identical.
+  - *Zero-regression (substrate-gated):* `split_plane.h` reaches the freeform seam trace
+    `ssi::trace_intersection`, defined only under `CYBERCAD_HAS_NUMSCI`, so the always-compiled
+    `native_engine.cpp` gates both the include and the native-split body on `#ifdef CYBERCAD_HAS_NUMSCI`
+    (native split honestly declines when OFF, as pre-DM1). Verified: NUMSCI-OFF host links
+    `test_native_engine`/`test_native_boolean` (pass) with 0 `trace_intersection` refs (matches `main`),
+    and `run-sim-native-boolean.sh` links + 25/25. NUMSCI-ON host suite + split-plane sim (31/31) green.
 - **DM2 — `cc_replace_face_to_plane`** (flatten/retarget a face to a plane, re-solving adjacent faces
   — extend neighbours to the new plane, retrim, heal). Bounded. ~0.5–1.5 py.
 - **DM3 — `cc_replace_face` (general push-pull / move-face)** — replace a face with an arbitrary

@@ -31,6 +31,15 @@
 #include "native/heal/native_heal.h"
 #include "native/tessellate/native_tessellate.h"
 
+// DM1 split_plane composes the landed freeformHalfSpaceCut, whose freeform-wall seam
+// trace (ssi::trace_intersection) is DEFINED only under CYBERCAD_HAS_NUMSCI. Including
+// this header — and calling into it — is therefore gated on the substrate so the
+// always-compiled native engine links without NUMSCI (native split then honestly
+// declines, exactly as it did pre-DM1). The analytic paths are unaffected.
+#ifdef CYBERCAD_HAS_NUMSCI
+#include "native/boolean/split_plane.h"
+#endif
+
 #ifdef CYBERCAD_HAS_OCCT
 #include "engine/occt/occt_engine.h"
 #endif
@@ -1319,10 +1328,38 @@ ShapeResult NativeEngine::fillet_face(EngineShape body, int f, double r) {
     CC_NATIVE_BODY_UNSUPPORTED("fillet_face", body);
     return fallback().fillet_face(body, f, r);
 }
+// ── NATIVE DM1 plane split (additive; the ONLY DM1 change) ────────────────────────
+// An OCCT body is UNCHANGED — it forwards to the OCCT split_plane oracle byte-for-byte.
+// A NATIVE B-rep body is split by composing the two landed verbs
+// (native/boolean/split_plane.h: freeformHalfSpaceCut for a freeform wall, else the BSP
+// cut against a discard half-space box), then the piece is accepted ONLY when it passes
+// the engine's mandatory watertight audit. A native body the composition cannot robustly
+// split (a curved perpendicular slice, a grazing-tangent plane, a degenerate/coincident
+// plane, a multi-freeform operand, or a mesh-only body) returns the SAME clean error the
+// prior unconditional fall-through produced — a native void is NEVER handed to OCCT
+// (whose unwrap would misread it), so the decline is reported honestly, never faked.
 ShapeResult NativeEngine::split_plane(EngineShape body, double ox, double oy, double oz, double nx,
                                       double ny, double nz, int keep) {
-    CC_NATIVE_BODY_UNSUPPORTED("split_plane", body);
-    return fallback().split_plane(body, ox, oy, oz, nx, ny, nz, keep);
+    if (!isNative(body)) return fallback().split_plane(body, ox, oy, oz, nx, ny, nz, keep);
+
+#ifdef CYBERCAD_HAS_NUMSCI
+    // The native split composes freeformHalfSpaceCut, whose seam trace is NUMSCI-only.
+    // Without the substrate this path is absent and we fall straight to the honest
+    // decline below (the SAME behaviour as the pre-DM1 native engine).
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (!holder->isMesh) {
+        namespace nb = cybercad::native::boolean;
+        namespace nm = cybercad::native::math;
+        nb::HalfSpaceCutDecline why = nb::HalfSpaceCutDecline::Ok;
+        ntopo::Shape piece = nb::splitByPlane(holder->shape, nm::Point3{ox, oy, oz},
+                                              nm::Vec3{nx, ny, nz}, keep != 0, 0.008, &why);
+        if (!piece.isNull() && watertightVolume(piece) > 0.0)
+            return track(wrapNative(std::move(piece)));
+    }
+#endif
+    // Honest decline: identical to the pre-DM1 native-body behaviour (never → OCCT).
+    return make_error("operation not supported on a native body yet: split_plane"
+                      " (native scope: extrude/revolve + tessellate/mass/bbox)");
 }
 ShapeResult NativeEngine::full_round_fillet(EngineShape body, int f) {
     CC_NATIVE_BODY_UNSUPPORTED("full_round_fillet", body);

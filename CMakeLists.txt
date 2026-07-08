@@ -371,6 +371,14 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_analysis_facade)
         set(test_native_analysis_facade_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_analysis_facade.cpp")
+        # MOAT M-DM DM1 — host GATE (a), the OCCT-free partition-closure proof of the
+        # FIRST native direct-modeling verb (planar half-space SPLIT). splitByPlane
+        # composes the landed freeformHalfSpaceCut + boolean_solid into the two pieces of
+        # a plane cut; the freeform composition traces the real S3 seam, so this host
+        # suite builds only under CYBERCAD_HAS_NUMSCI. Header-only verb; no lib change.
+        list(APPEND CYBERCAD_TESTS test_native_split_plane)
+        set(test_native_split_plane_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_split_plane.cpp")
     endif()
 
     # The tet-mesher test drives the real TetGen backend, so it is added ONLY when

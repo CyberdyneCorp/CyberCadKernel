@@ -52,7 +52,11 @@
 #ifdef CYBERCAD_HAS_NUMSCI
 #include "native/boolean/split_plane.h"
 #include "native/directmodel/replace_face.h"
+#include "native/directmodel/replace_face_general.h"  // DM3 general offset/tilt retarget
 #endif
+
+// DM4 point projection is pure analytic geometry (no NUMSCI substrate) — always on.
+#include "native/directmodel/project.h"
 
 #ifdef CYBERCAD_HAS_OCCT
 #include "engine/occt/occt_engine.h"
@@ -1346,9 +1350,35 @@ ShapeResult NativeEngine::offset_face(EngineShape body, int f, double d) {
             "(curved solid / non-planar face or degenerate offset → OCCT-only)");
     return track(wrapNative(std::move(result)));
 }
+// ── NATIVE DM3 general move-face (additive; derives the target plane, reuses DM2) ──
+// The app's `cc_replace_face(body, faceId, offset, tiltDeg)` — retarget a planar face
+// by OFFSETTING it along its outward normal and TILTING it about the face's parametric
+// X-axis. An OCCT body is UNCHANGED — it forwards to the OCCT half-space-cut oracle.
+// A NATIVE B-rep body is served for the PURE-OFFSET case (tiltDeg ≈ 0): directmodel::
+// replaceFaceOffsetTilt derives the target plane (o + n̂_F·offset, n̂_F) and re-solves
+// via the landed DM2 replaceFaceToPlane (the SAME watertight self-verify + closed-form
+// V₀+A·offset oracle). A NON-ZERO tilt rotates about OCCT's face-parametrization X-axis
+// — a foreign convention we do not reproduce for a native body — so it, a non-planar
+// picked face, and a non-all-planar solid yield NULL and the SAME honest decline the
+// prior fall-through produced (a native void is NEVER handed to OCCT).
 ShapeResult NativeEngine::replace_face(EngineShape body, int f, double o, double t) {
-    CC_NATIVE_BODY_UNSUPPORTED("replace_face", body);
-    return fallback().replace_face(body, f, o, t);
+    if (!isNative(body)) return fallback().replace_face(body, f, o, t);
+
+#ifdef CYBERCAD_HAS_NUMSCI
+    // The re-solve reuses replaceFaceToPlane, whose tilted probe traces the NUMSCI-only
+    // seam; without the substrate this path is absent and we fall to the honest decline.
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (!holder->isMesh) {
+        namespace dm = cybercad::native::directmodel;
+        dm::ReplaceFaceGeneralDecline why = dm::ReplaceFaceGeneralDecline::Ok;
+        ntopo::Shape result = dm::replaceFaceOffsetTilt(holder->shape, f, o, t, &why);
+        if (!result.isNull() && watertightVolume(result) > 0.0)
+            return track(wrapNative(std::move(result)));
+    }
+#endif
+    // Honest decline: identical to the pre-DM3 native-body behaviour (never → OCCT).
+    return make_error("operation not supported on a native body yet: replace_face"
+                      " (native scope: pure-offset planar retarget; tilt / non-planar → OCCT-only)");
 }
 // ── NATIVE DM2 move-face (additive; consumes DM1 split + boolean + construct) ─────
 // The app's push/pull "move a planar face to a target plane", re-solving the adjacent
@@ -1946,6 +1976,33 @@ Result<std::vector<double>> NativeEngine::principal_moments(EngineShape body) {
             "principal_moments: declined (mesh not watertight / zero volume — no "
             "defined inertia)");
     return std::vector<double>{inertia->moments[0], inertia->moments[1], inertia->moments[2]};
+}
+
+// DM4 native projection: the closed-form foot-of-perpendicular of a point on a
+// plane / cylinder / sphere face's analytic surface (directmodel::projectPointOnFace).
+// A cone / torus / freeform face, or an AMBIGUOUS pose (point on a cylinder axis / at
+// a sphere centre), is honestly DECLINED with an error — never a fabricated foot. An
+// OCCT body forwards to the GeomAPI_ProjectPointOnSurf oracle.
+Result<ProjectionData> NativeEngine::project_point_on_face(EngineShape body, int f, double px,
+                                                           double py, double pz) {
+    if (!isNative(body)) return fallback().project_point_on_face(body, f, px, py, pz);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh)
+        return make_error("project_point_on_face: a native mesh body carries no analytic "
+                          "surface (declined)");
+    namespace dm = cybercad::native::directmodel;
+    namespace nm = cybercad::native::math;
+    dm::ProjectDecline why = dm::ProjectDecline::Ok;
+    const auto r = dm::projectPointOnFace(holder->shape, f, nm::Point3{px, py, pz}, &why);
+    if (!r)
+        return make_error("project_point_on_face: declined (non-analytic / ambiguous face — "
+                          "native scope: plane / cylinder / sphere → OCCT-only)");
+    ProjectionData out;
+    out.footX = r->foot.x;
+    out.footY = r->foot.y;
+    out.footZ = r->foot.z;
+    out.distance = r->distance;
+    return out;
 }
 
 // GS6 native validity: a structural-validity report over the M0 boundary mesh

@@ -306,6 +306,9 @@ public:
     // ── query (occt_query.cpp) ────────────────────────────────────────────────
     Result<MassData> mass_properties(EngineShape body) override;
     Result<std::vector<double>> principal_moments(EngineShape body) override;
+    // MOAT M-DM DM4 — GeomAPI_ProjectPointOnSurf oracle (occt_query.cpp).
+    Result<ProjectionData> project_point_on_face(EngineShape body, int faceId, double px, double py,
+                                                 double pz) override;
     Result<ValidityData> check_solid(EngineShape body) override;  // MOAT M-GS GS6
     Result<std::vector<double>> bounding_box(EngineShape body) override;
     Result<std::vector<double>> face_axis(EngineShape body, int faceId) override;

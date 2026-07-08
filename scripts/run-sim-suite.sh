@@ -78,6 +78,10 @@ SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 # deltas, and asserts the honest NotAnalytic deferral on skew cylinder∩cylinder while
 # OCCT still produces a curve; header-only SSI over src/native/math, links the OCCT
 # GeomAPI_IntSS oracle slice, NOT the whole kernel),
+# MOAT M-DM DM3 + DM4 — native_dm3_dm4_parity.mm (run-sim-native-dm3-dm4.sh — its own
+# main(); drives replaceFaceOffsetTilt vs the OCCT move-face oracle and projectPointOnFace
+# vs GeomAPI_ProjectPointOnSurf; header-only DM3/DM4 verbs + the numsci-gated DM2 re-solve
+# substrate, links the OCCT oracle slice, NOT the whole kernel).
 # Phase-3 suite — phase3_suite.cpp
 # (its own main()) plus its checks_*.cpp modules (which record against
 # phase3_checks.h's Ctx, not checks.h's) — has run-sim-phase3-suite.sh. What remains
@@ -105,6 +109,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_first_freeform_boolean_parity.mm \
       native_multi_seam_freeform_boolean_parity.mm \
       native_split_plane_parity.mm \
+      native_dm3_dm4_parity.mm \
       phase3_suite.cpp checks_reference_geometry.cpp checks_wrap_emboss.cpp \
       checks_thread_boolean.cpp checks_full_round_fillet.cpp checks_g2_fillet.cpp"
 SRCS=()

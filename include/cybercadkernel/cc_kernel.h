@@ -57,6 +57,20 @@ typedef struct {
     int valid;
 } CCMassProps;
 
+/* Foot-of-perpendicular projection of a 3-D point onto a face's underlying analytic
+ * surface (MOAT M-DM DM4, ADDITIVE). Mirrors OCCT GeomAPI_ProjectPointOnSurf on the
+ * face's UNTRIMMED analytic surface: `foot*` is the closest surface point, `distance`
+ * the minimum point→surface distance. `valid` is 1 for a definite closed-form foot;
+ * it is 0 on an HONEST DECLINE (the native engine handles plane / cylinder / sphere
+ * faces; a cone / torus / freeform face, or an AMBIGUOUS pose — the point lies on a
+ * cylinder axis or at a sphere centre so the foot is a whole circle/sphere — declines,
+ * and cc_last_error is set). The OCCT adapter is the GeomAPI_ProjectPointOnSurf oracle. */
+typedef struct {
+    double footX, footY, footZ;  /* the projected foot point on the surface */
+    double distance;             /* minimum distance point → surface (mm) */
+    int valid;                   /* 1 = definite closed-form foot; 0 = declined */
+} CCProjection;
+
 /* First-failing (or undecidable) check code in a CCValidityReport::first_failure.
  * 0 = none (the solid is valid). */
 enum CCValidityCheck {
@@ -424,6 +438,15 @@ CCShapeId cc_replace_face(CCShapeId body, int faceId, double offset, double tilt
 CCShapeId cc_replace_face_to_plane(CCShapeId body, int faceId,
                                    double px, double py, double pz,
                                    double nx, double ny, double nz);
+
+/* Project the 3-D point (px,py,pz) onto the analytic surface of face `faceId`
+ * (1-based, cc_subshape_ids order) of `body` — MOAT M-DM DM4, ADDITIVE. Returns the
+ * closed-form foot-of-perpendicular + minimum distance (see CCProjection). The native
+ * engine serves plane / cylinder / sphere faces of a native body in closed form and
+ * honestly DECLINES cone / torus / freeform / ambiguous poses (valid = 0); the OCCT
+ * engine mirrors GeomAPI_ProjectPointOnSurf on the face's untrimmed surface. */
+CCProjection cc_project_point_on_face(CCShapeId body, int faceId,
+                                      double px, double py, double pz);
 
 CCShapeId cc_fillet_face(CCShapeId body, int faceId, double radius);
 

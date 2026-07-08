@@ -37,6 +37,15 @@ struct MassData {
     bool valid = false;
 };
 
+// MOAT M-DM DM4 point-projection result (converted to CCProjection by the facade):
+// the foot-of-perpendicular of a point on a face's analytic surface + the min
+// distance. A Result<ProjectionData> Error is the honest decline (→ CCProjection
+// valid = 0).
+struct ProjectionData {
+    double footX = 0.0, footY = 0.0, footZ = 0.0;
+    double distance = 0.0;
+};
+
 // MOAT M-GS GS6 solid-validity report (converted to CCValidityReport by the
 // facade). Each flag is an independent necessary condition; `valid` is their
 // conjunction AND requires `certified` (an unreachable check — e.g. certifying
@@ -413,6 +422,18 @@ public:
                                               const double normal[3]) {
         (void)body; (void)origin; (void)normal;
         return engine_unsupported("section_plane");
+    }
+
+    // ── direct modeling: point PROJECTION onto a face surface (MOAT DM4, ADDITIVE) ─
+    // Foot-of-perpendicular projection of point (px,py,pz) onto the analytic surface
+    // of face `faceId`. NativeEngine serves plane/cylinder/sphere in closed form and
+    // honestly DECLINES cone/torus/freeform/ambiguous poses; the OCCT adapter is the
+    // GeomAPI_ProjectPointOnSurf oracle. Stub / non-overriding engines inherit
+    // unsupported.
+    virtual Result<ProjectionData> project_point_on_face(EngineShape body, int faceId, double px,
+                                                         double py, double pz) {
+        (void)body; (void)faceId; (void)px; (void)py; (void)pz;
+        return engine_unsupported("project_point_on_face");
     }
 
     // ── query ─────────────────────────────────────────────────────────────────

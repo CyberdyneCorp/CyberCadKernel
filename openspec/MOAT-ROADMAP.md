@@ -503,10 +503,27 @@ feature-tree construction the other stages cover. Substages:
   plane-cut-and-extend oracle (`run-sim-native-replace-face.sh`, 32/32, volume/area/watertight/χ/bbox
   fp-exact). Honest declines (→ OCCT): curved neighbour, non-planar picked face, degenerate/topology-
   changing/non-convex move. Bounded. ~0.5–1.5 py.
-- **DM3 — `cc_replace_face` (general push-pull / move-face)** — replace a face with an arbitrary
-  target surface and locally re-solve the B-rep (extend/retrim adjacent faces, weld, heal). The hard
-  core; needs M2 (booleans), M3 (offset/blend), and M5 (healing). ~1–2 py.
-- **DM4 — project tool** (`cc_project`-style projection of a body/sketch onto a face/plane). ~0.5–1 py.
+- **DM3 — `cc_replace_face` (general push-pull / move-face)** ✅ *(pure-offset slice landed — native)*
+  — retarget a planar face by offsetting it along its own outward normal (and, in general, tilting it),
+  trimming the solid to the new plane. Native `directmodel::replaceFaceOffsetTilt`
+  (`src/native/directmodel/replace_face_general.h`, OCCT-FREE, header-only) DERIVES the target plane
+  `(o + n̂_F·offset, n̂_F)` for the pure-offset case (`tiltDeg ≈ 0`) and re-solves via the byte-frozen DM2
+  `replaceFaceToPlane` (grow-then-trim = 1 Fuse + 1 Cut, watertight self-verified at `V₀ + A_F·offset`).
+  `native_engine.cpp::replace_face` now serves a native body (was a hard `CC_NATIVE_BODY_UNSUPPORTED`);
+  an OCCT body forwards. GATE (a) HOST 6/6 (`test_native_replace_face_general` — pure push/pull fp-exact,
+  off-axis face offset, + declines). GATE (b) SIM (`native_dm3_dm4_parity.mm`, booted sim, 36/36 combined with DM4) vs
+  the OCCT move-face oracle: volume/area rel ≤ 3.5e-16, off-axis bbox 1.8e-15, watertight, Euler χ=2.
+  HONEST DECLINE: a non-zero tilt (OCCT face-parametrization X-axis is a foreign convention we don't
+  reproduce for a native body — the sharpened next blocker), a non-planar picked face, a curved neighbour
+  → OCCT. Residual (general tilt / arbitrary target surface) needs M2/M3/M5 breadth. ~1–2 py total.
+- **DM4 — project tool** ✅ *(analytic slice landed — native)* — additive `cc_project_point_on_face`:
+  drop a point onto a face's analytic surface, returning the closed-form foot-of-perpendicular + distance.
+  Native `directmodel::projectPointOnFace` (`src/native/directmodel/project.h`, OCCT-FREE, header-only) is
+  the closed-form normal projection for plane / cylinder / sphere; `OcctEngine::project_point_on_face` =
+  the `GeomAPI_ProjectPointOnSurf` oracle. GATE (a) HOST 9/9 (`test_native_project` — plane/cylinder/sphere
+  feet + declines cone/axis/centre/foreign). GATE (b) SIM vs `GeomAPI_ProjectPointOnSurf` — foot coords +
+  distance to machine precision (0). HONEST DECLINE: cone / torus / freeform, and ambiguous poses (point on
+  a cylinder axis / at a sphere centre) → OCCT. ~0.5–1 py.
 - *Oracle:* `BRepFeat` / `BRepAlgoAPI` / `ShapeUpgrade` on the re-solved solid (volume/watertight/
   topology); DM1 also has a closed-form partition oracle (the two pieces sum to the whole).
 - *Bounded* (well-understood synchronous-modeling engineering), not asymptotic. **Gates a

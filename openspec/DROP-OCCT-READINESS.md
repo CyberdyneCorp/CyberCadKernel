@@ -78,8 +78,9 @@ All `file:line` are in `src/engine/native/native_engine.cpp` unless noted.
 | shell | cc_shell | 1311 | **A** | resid M3 curved | 12 | convex-planar native; curved/non-convex → OCCT (1312) |
 | offset_face | cc_offset_face | 1321 | **A** | resid M3 curved | 10 | planar face native; curved → OCCT (1322) |
 | split_plane | cc_split_plane | 1355 | **A** | DM1 done (resid DM breadth) | 4 | box / planar / single-freeform native; cyl-slice / oblique / multi-lump → OCCT (1357) |
-| replace_face | cc_replace_face | 1332 | **B** | M-DM DM3 | 6 | **hard** `CC_NATIVE_BODY_UNSUPPORTED` on native body (1333) |
+| replace_face | cc_replace_face | 1332 | **A** | DM3 done (resid tilt breadth) | 6 | pure-offset planar retarget native via DM2 grow-then-trim (`replace_face_general.h`, both gates); non-zero tilt (foreign OCCT X-axis) / non-planar / curved neighbour → OCCT |
 | replace_face_to_plane | cc_replace_face_to_plane | 1336 | **A** | DM2 done (resid DM breadth) | 4 | planar push/pull native via grow-then-trim (98a2011); non-planar / non-prismatic target → OCCT (1338) |
+| project_point_on_face | cc_project_point_on_face | facade | **A** | DM4 done (resid non-analytic) | 0 | plane / cylinder / sphere closed-form foot native (`project.h`, both gates vs GeomAPI_ProjectPointOnSurf); cone / torus / freeform / ambiguous → OCCT |
 | fillet_face | cc_fillet_face | 1341 | **B** | M3 | 7 | hard decline (1342) |
 | full_round_fillet | cc_full_round_fillet | 1378 | **B** | M3 | 0 | hard decline (1379) |
 | full_round_fillet_faces | cc_full_round_fillet_faces | 1382 | **B** | M3 | 0 | hard decline (1383) |

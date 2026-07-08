@@ -298,6 +298,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_step
         test_native_inertia
         test_native_validity
+        test_native_project
         test_native_engine)
 
     # The numeric-facade test links NumPP/SciPP, so it is added ONLY when the
@@ -430,6 +431,15 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_replace_face)
         set(test_native_replace_face_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_replace_face.cpp")
+        # MOAT M-DM DM3 — host GATE (a), the OCCT-free closed-form proof of the native
+        # GENERAL `replace_face` (offset+tilt). replaceFaceOffsetTilt derives the target
+        # plane from the picked face's own plane and re-solves via the DM2 verb; the
+        # pure-offset slice has the exact V₀+A·offset oracle, and a non-zero tilt / curved
+        # neighbour / no-op declines. The re-solve probes the real S3 seam, so this host
+        # suite builds only under CYBERCAD_HAS_NUMSCI. Header-only verb; no lib change.
+        list(APPEND CYBERCAD_TESTS test_native_replace_face_general)
+        set(test_native_replace_face_general_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_replace_face_general.cpp")
     endif()
 
     # The tet-mesher test drives the real TetGen backend, so it is added ONLY when
@@ -529,6 +539,13 @@ if(CYBERCAD_BUILD_TESTS)
     # checker + the cc_check_solid facade wiring; no numsci link.
     set(test_native_validity_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_validity.cpp")
+    # MOAT M-DM DM4 native point PROJECTION — host GATE (a), the OCCT-free closed-form
+    # proof of projectPointOnFace: plane (drop the normal component) / cylinder & sphere
+    # (radial push to R) feet + distances, and honest declines (cone / ambiguous axis /
+    # sphere centre / foreign face id). Pure analytic geometry over hand-built B-rep
+    # faces; no numsci link, so it lives in the always-on native suite.
+    set(test_native_project_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_project.cpp")
 
     foreach(test ${CYBERCAD_TESTS})
         if(DEFINED ${test}_SRC)

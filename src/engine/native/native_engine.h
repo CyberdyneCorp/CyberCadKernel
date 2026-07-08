@@ -250,6 +250,10 @@ public:
     Result<SectionData> section_plane(EngineShape body, const double origin[3],
                                       const double normal[3]) override;
     Result<std::vector<double>> principal_moments(EngineShape body) override;
+    // MOAT M-DM DM4 — closed-form point projection onto a plane/cylinder/sphere face
+    // of a NATIVE body; cone/torus/freeform/ambiguous → honest decline (→ OCCT).
+    Result<ProjectionData> project_point_on_face(EngineShape body, int faceId, double px, double py,
+                                                 double pz) override;
     Result<ValidityData> check_solid(EngineShape body) override;  // MOAT M-GS GS6
     Result<std::vector<double>> face_axis(EngineShape body, int faceId) override;
     Result<std::vector<double>> ref_plane_from_face(EngineShape body, int faceId) override;

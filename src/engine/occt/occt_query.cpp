@@ -37,8 +37,11 @@
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepTools.hxx>
+#include <BRep_Tool.hxx>
 #include <GProp_GProps.hxx>
 #include <GProp_PrincipalProps.hxx>
+#include <Geom_Surface.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GeomAbs_SurfaceType.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopoDS_Wire.hxx>
@@ -258,6 +261,40 @@ Result<std::vector<double>> OcctEngine::face_axis(EngineShape body, int faceId) 
         const gp_Pnt p = axis.Location();
         const gp_Dir d = axis.Direction();
         return std::vector<double>{p.X(), p.Y(), p.Z(), d.X(), d.Y(), d.Z()};
+    });
+}
+
+// ── DM4 point projection onto a face surface (GeomAPI_ProjectPointOnSurf) ──────
+
+Result<ProjectionData> OcctEngine::project_point_on_face(EngineShape body, int faceId, double px,
+                                                         double py, double pz) {
+    return occt::occtGuard([&]() -> Result<ProjectionData> {
+        const TopoDS_Shape* shape = occt::unwrap(body);
+        if (shape == nullptr) {
+            return make_error("project_point_on_face: unknown body");
+        }
+        const int ids[1] = {faceId};
+        const std::vector<TopoDS_Face> faces = occt::facesByIds(*shape, ids, 1);
+        if (faces.empty()) {
+            return make_error("project_point_on_face: face not found");
+        }
+        // Project onto the face's UNTRIMMED analytic surface (matches the native
+        // infinite-surface foot; the native slice serves plane/cylinder/sphere).
+        const Handle(Geom_Surface) surf = BRep_Tool::Surface(faces.front());
+        if (surf.IsNull()) {
+            return make_error("project_point_on_face: face carries no surface");
+        }
+        GeomAPI_ProjectPointOnSurf proj(gp_Pnt(px, py, pz), surf);
+        if (!proj.IsDone() || proj.NbPoints() < 1) {
+            return make_error("project_point_on_face: projection failed");
+        }
+        const gp_Pnt foot = proj.NearestPoint();
+        ProjectionData out;
+        out.footX = foot.X();
+        out.footY = foot.Y();
+        out.footZ = foot.Z();
+        out.distance = proj.LowerDistance();
+        return out;
     });
 }
 

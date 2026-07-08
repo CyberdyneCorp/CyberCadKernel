@@ -29,6 +29,7 @@ using cyber::FaceMeshData;
 using cyber::MassData;
 using cyber::MeshData;
 using cyber::ProfileSeg;
+using cyber::ProjectionData;
 using cyber::Result;
 using cyber::set_last_error;
 using cyber::ShapeRegistry;
@@ -674,6 +675,27 @@ CCMassProps cc_mass_properties(CCShapeId body) {
             out.cy = m.cy;
             out.cz = m.cz;
             out.valid = m.valid ? 1 : 0;
+            return out;
+        },
+        invalid);
+}
+
+CCProjection cc_project_point_on_face(CCShapeId body, int faceId, double px, double py, double pz) {
+    CCProjection invalid{};  // all zero, valid == 0
+    return cyber::guard(
+        [&]() -> CCProjection {
+            auto r = active_engine()->project_point_on_face(resolve(body), faceId, px, py, pz);
+            if (!r) {
+                set_last_error(r.error().message);
+                return invalid;
+            }
+            const ProjectionData& d = r.value();
+            CCProjection out{};
+            out.footX = d.footX;
+            out.footY = d.footY;
+            out.footZ = d.footZ;
+            out.distance = d.distance;
+            out.valid = 1;
             return out;
         },
         invalid);

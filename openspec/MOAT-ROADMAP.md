@@ -462,8 +462,23 @@ feature-tree construction the other stages cover. Substages:
     (native split honestly declines when OFF, as pre-DM1). Verified: NUMSCI-OFF host links
     `test_native_engine`/`test_native_boolean` (pass) with 0 `trace_intersection` refs (matches `main`),
     and `run-sim-native-boolean.sh` links + 25/25. NUMSCI-ON host suite + split-plane sim (31/31) green.
-- **DM2 — `cc_replace_face_to_plane`** (flatten/retarget a face to a plane, re-solving adjacent faces
-  — extend neighbours to the new plane, retrim, heal). Bounded. ~0.5–1.5 py.
+- **DM2 — `cc_replace_face_to_plane`** ✅ *(landed — native slice)* (flatten/retarget a planar face to a
+  target plane, re-solving adjacent planar faces — extend neighbours to the new plane, retrim, heal).
+  Native `directmodel::replaceFaceToPlane` (`src/native/directmodel/replace_face.h`, OCCT-FREE, header-
+  only) composes the LANDED DM1 `splitByPlane` + `boolean_solid(Fuse)` + `build_prism`: a parallel PULL is
+  one DM1 cut, a parallel PUSH is a face-loop slab fused on, a tilted/mixed move is GROW-then-TRIM (one
+  Fuse + one tilted cut — NOT an N-cut half-space chain, which the DIAGNOSE probe showed breaks the
+  watertight self-verify at ~4 cuts). δ is affine over the planar face, so the swept volume is the exact
+  closed form `ΔV = A_F·d̄`. Mandatory re-solve self-verify (watertight closed 2-manifold, single lump
+  χ=2, distinct-plane count preserved, moved face on the target plane, volume == `V₀+A_F·d̄`) → else NULL →
+  honest decline. `native_engine.cpp::replace_face_to_plane` gates the native path on `#ifdef
+  CYBERCAD_HAS_NUMSCI` (an OCCT body forwards to the OCCT half-space-cut oracle unchanged; a native body
+  the slice can't re-solve declines honestly, never handed to OCCT). Verified BOTH gates: host closed-form
+  (`test_native_replace_face`, 8/8 — parallel push/pull fp-exact, tilted trim + tilted grow-then-trim,
+  and declines: curved neighbour / degenerate normal / no-op / topology-change) and sim native-vs-OCCT
+  plane-cut-and-extend oracle (`run-sim-native-replace-face.sh`, 32/32, volume/area/watertight/χ/bbox
+  fp-exact). Honest declines (→ OCCT): curved neighbour, non-planar picked face, degenerate/topology-
+  changing/non-convex move. Bounded. ~0.5–1.5 py.
 - **DM3 — `cc_replace_face` (general push-pull / move-face)** — replace a face with an arbitrary
   target surface and locally re-solve the B-rep (extend/retrim adjacent faces, weld, heal). The hard
   core; needs M2 (booleans), M3 (offset/blend), and M5 (healing). ~1–2 py.

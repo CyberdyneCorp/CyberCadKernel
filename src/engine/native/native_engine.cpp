@@ -49,6 +49,7 @@
 // declines, exactly as it did pre-DM1). The analytic paths are unaffected.
 #ifdef CYBERCAD_HAS_NUMSCI
 #include "native/boolean/split_plane.h"
+#include "native/directmodel/replace_face.h"
 #endif
 
 #ifdef CYBERCAD_HAS_OCCT
@@ -1333,10 +1334,42 @@ ShapeResult NativeEngine::replace_face(EngineShape body, int f, double o, double
     CC_NATIVE_BODY_UNSUPPORTED("replace_face", body);
     return fallback().replace_face(body, f, o, t);
 }
+// ── NATIVE DM2 move-face (additive; consumes DM1 split + boolean + construct) ─────
+// The app's push/pull "move a planar face to a target plane", re-solving the adjacent
+// planar faces so the solid stays watertight. An OCCT body is UNCHANGED — it forwards
+// to the OCCT half-space-cut oracle byte-for-byte. A NATIVE B-rep body is re-solved by
+// directmodel::replaceFaceToPlane (src/native/directmodel/replace_face.h), which
+// composes the landed verbs: a parallel pull is one DM1 splitByPlane, a parallel push
+// is a build_prism slab fused on, and a tilted/mixed move is grow-then-trim (one Fuse +
+// one tilted cut). The candidate is accepted ONLY when it passes the module's re-solve
+// self-verify (watertight closed 2-manifold, single lump χ=2, distinct-plane count
+// preserved, moved face on the target plane, enclosed volume == the closed-form
+// V₀+A·d̄) AND the engine's own watertightVolume audit. Anything outside the convex-
+// planar slice — a curved neighbour (non-all-planar), a non-planar picked face, a
+// degenerate / topology-changing target — yields NULL and the SAME honest decline the
+// prior fall-through produced (a native void is NEVER handed to OCCT).
 ShapeResult NativeEngine::replace_face_to_plane(EngineShape body, int f, double px, double py,
                                                 double pz, double nx, double ny, double nz) {
-    CC_NATIVE_BODY_UNSUPPORTED("replace_face_to_plane", body);
-    return fallback().replace_face_to_plane(body, f, px, py, pz, nx, ny, nz);
+    if (!isNative(body)) return fallback().replace_face_to_plane(body, f, px, py, pz, nx, ny, nz);
+
+#ifdef CYBERCAD_HAS_NUMSCI
+    // splitByPlane's freeform probe (used by the tilted re-solve) traces the NUMSCI-only
+    // seam; without the substrate this path is absent and we fall to the honest decline
+    // below (the SAME behaviour as the pre-DM2 native engine).
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (!holder->isMesh) {
+        namespace dm = cybercad::native::directmodel;
+        namespace nm = cybercad::native::math;
+        dm::ReplaceFaceDecline why = dm::ReplaceFaceDecline::Ok;
+        ntopo::Shape result = dm::replaceFaceToPlane(holder->shape, f, nm::Point3{px, py, pz},
+                                                     nm::Vec3{nx, ny, nz}, &why);
+        if (!result.isNull() && watertightVolume(result) > 0.0)
+            return track(wrapNative(std::move(result)));
+    }
+#endif
+    // Honest decline: identical to the pre-DM2 native-body behaviour (never → OCCT).
+    return make_error("operation not supported on a native body yet: replace_face_to_plane"
+                      " (native scope: convex planar-polyhedron move-face → OCCT-only)");
 }
 ShapeResult NativeEngine::fillet_face(EngineShape body, int f, double r) {
     CC_NATIVE_BODY_UNSUPPORTED("fillet_face", body);

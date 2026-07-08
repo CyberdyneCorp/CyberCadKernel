@@ -394,6 +394,16 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_split_plane)
         set(test_native_split_plane_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_split_plane.cpp")
+        # MOAT M-DM DM2 — host GATE (a), the OCCT-free closed-form proof of the native
+        # `replace_face_to_plane` (move a planar face to a target plane, re-solving the
+        # neighbours). directmodel::replaceFaceToPlane composes the landed splitByPlane +
+        # boolean_solid(Fuse) + build_prism into a parallel pull / push and a tilted
+        # grow-then-trim; δ is affine over the planar face so ΔV = A_F·d̄ is the exact
+        # oracle. The tilted re-solve's splitByPlane probes the real S3 seam, so this
+        # host suite builds only under CYBERCAD_HAS_NUMSCI. Header-only verb; no lib change.
+        list(APPEND CYBERCAD_TESTS test_native_replace_face)
+        set(test_native_replace_face_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_replace_face.cpp")
     endif()
 
     # The tet-mesher test drives the real TetGen backend, so it is added ONLY when

@@ -542,6 +542,8 @@ tests. Substages:
   kernel's solid-modeling primitives.**
 
 ### M8 — `drop-occt` — unlink OCCT · gated on M0–M7 + **M-DM** + **M-GS** + M6 bar
+> **Itemized unlink checklist:** [DROP-OCCT-READINESS.md](DROP-OCCT-READINESS.md) — every OCCT fall-through site classified A (now-native) / B (must-go-native, ~6.5–15 py) / C (IGES decline), with the concrete unlink sequence and readiness verdict.
+
 Delete `src/engine/occt`, drop the OCCT link, remove/stub `cc_iges_*`. **Only** once every
 stage above (including **M-DM** for direct modeling and **M-GS** for the app's drafting/measurement
 geometry services) is native at the acceptance bar AND the M6 completeness bar holds (differential

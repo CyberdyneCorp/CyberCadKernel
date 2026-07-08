@@ -385,6 +385,19 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_multi_seam)
         set(test_native_multi_seam_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_multi_seam.cpp")
+        # MOAT M2b / B2 SMOOTH-TRIM generalisation — host GATE (a), the OCCT-free
+        # closed/circular-seam tiling proof. A quad-trimmed Bézier bowl sliced by a
+        # HORIZONTAL plane (z=c) has a CLOSED CIRCULAR seam interior to the face; the
+        # additive splitFaceSmoothTrim partitions it into the enclosed disk + the
+        # annulus (the seam as a hole), tiling to machine ε at the closed-form circle
+        # area, both sub-faces meshing watertight at multiple deflections. Byte-frozen
+        # B2 splitFace still DECLINES the same seam (CrossingsNot2, crossings==0) — the
+        # contrast asserted. Its seam is the real S3 trace, so this host suite builds
+        # only under CYBERCAD_HAS_NUMSCI. Additive header-only verb (smooth_trim_split.h);
+        # no lib change, no cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_smooth_trim_split)
+        set(test_native_smooth_trim_split_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_smooth_trim_split.cpp")
         # MOAT M-GS GS3/GS4 analysis services (src/native/analysis) — host GATE (a),
         # the OCCT-free closed-form/brute-force proof of minimum distance, angle and
         # surface/edge curvature (+ honest declines). The freeform seed-and-refine

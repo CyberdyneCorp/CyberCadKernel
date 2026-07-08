@@ -52,11 +52,14 @@ honest decline for any configuration it cannot classify correctly.
    native-vs-OCCT: match `HLRBRep_Algo` / `HLRBRep_HLRToShape` visible/hidden
    compounds on segment count, total projected length, and endpoint positions
    within tolerance (a separate `.mm` harness, scoped in tasks).
-5. **An additive `cc_*` accessor** (`cc_hlr_project`) is specified as the ABI
-   seam that returns the visible/hidden 2D edge-segment sets; existing `cc_*`
-   signatures are unchanged and the drawing PODs are additive-only. Wiring the
-   facade body is scoped as a follow-up task; this change lands the OCCT-free
-   native core + the host analytic gate and specifies the ABI contract.
+5. **An additive `cc_*` accessor** (`cc_hlr_project` + `cc_drawing_free` and the
+   `CCDrawing` / `CCDrawingSegment` / `CCHlrOptions` PODs) returns the
+   visible/hidden 2D edge-segment sets; existing `cc_*` signatures are unchanged
+   and the drawing PODs are additive-only. The accessor is wired end to end —
+   facade → `IEngine::hlr_project` → `NativeEngine::hlr_project` (the OCCT-free
+   polyhedral core over the M0 occluder + the deduplicated topology edges) with
+   `OcctEngine::hlr_project` (the `HLRBRep_Algo` oracle) as the fallthrough — and
+   Gate (b) native-vs-OCCT parity now passes for polyhedral solids.
 
 ## Capabilities
 
@@ -81,10 +84,17 @@ honest decline for any configuration it cannot classify correctly.
   native suite (no NumSci link).
 - `CMakeLists.txt` — `test_native_drafting` added to the always-on `CYBERCAD_TESTS`
   list with its source mapping, exactly like `test_native_quality`.
-- **Out of scope (follow-up):** the topology-driven entry that walks `Explorer`
-  edges + builds the `SolidMesher` occluder + emits analytic curved silhouettes;
-  the `cc_hlr_project` facade body + PODs in `include/cybercadkernel/`; and the
-  Gate (b) `tests/sim/native_drafting_parity.mm` OCCT harness. These reuse the
-  landed core and are specified here but not implemented in this slice.
+- **Landed here (ABI + Gate b wiring):** the topology-driven entry
+  `NativeEngine::hlr_project` (walks the edges, dedups coincident per-face edge
+  nodes, builds the `SolidMesher` occluder, runs the core); the `cc_hlr_project` /
+  `cc_drawing_free` facade + PODs in `include/cybercadkernel/cc_kernel.h`;
+  `IEngine::hlr_project`; the `OcctEngine::hlr_project` oracle in
+  `src/engine/occt/occt_drafting.cpp` (the only OCCT-linked piece, `TKHLR`); and
+  the Gate (b) `tests/sim/native_hlr_parity.mm` + `scripts/run-sim-native-hlr.sh`
+  harness (13/13 PASS, native == OCCT for box / prism / non-convex L-prism).
+- **Out of scope (documented next GS1 slice):** emitting analytic **curved
+  silhouette** curves (cylinder/cone/sphere outline generators + end-ellipse arcs)
+  — these solids are honestly DECLINED today; and native OCCT-style edge sharing
+  (the drawing dedups coincident edges instead).
 - Behaviour otherwise unchanged: `src/native/**` stays OCCT-free (0 OCCT includes),
   the `cc_*` ABI is untouched, and no existing engine path is affected.

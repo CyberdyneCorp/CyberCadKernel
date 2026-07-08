@@ -1,7 +1,8 @@
-# native-drafting
+# native-drafting Specification
 
-## ADDED Requirements
-
+## Purpose
+TBD - created by archiving change moat-hlr-hidden-line-removal. Update Purpose after archive.
+## Requirements
 ### Requirement: Orthographic hidden-line removal over an analytic/polyhedral solid
 
 The native drafting service SHALL perform **orthographic (parallel) hidden-line
@@ -105,6 +106,12 @@ link OCCT; the native drafting library SHALL remain OCCT-free.
 - WHEN it is run
 - THEN all cases SHALL pass — the box isometric-corner `9 visible + 3 hidden`, the no-occluder `12 visible / 0 hidden` baseline, the half-occluded edge split, and projected-length conservation
 
+#### Scenario: The simulator gate matches OCCT HLRBRep_Algo on polyhedral solids
+
+- GIVEN the simulator harness `tests/sim/native_hlr_parity.mm` (via `scripts/run-sim-native-hlr.sh`) driving `cc_hlr_project` on a booted iOS simulator under BOTH engines — `cc_set_engine(0)` (OCCT `HLRBRep_Algo` oracle) and `cc_set_engine(1)` (the OCCT-free native core) — for the SAME polyhedral solids (box iso + oblique, triangle prism, non-convex L-prism) built identically under each engine
+- WHEN each solid is projected both ways and the native visible/hidden 2D segment sets are compared against the OCCT sets
+- THEN the native result SHALL match the OCCT oracle on visible COUNT, hidden COUNT, total projected LENGTH (relative tolerance ≤ `1e-4`), and endpoint PARTITION (every native segment covered by an OCCT segment of the same visible/hidden class within `1e-5`, and vice versa) AND a curved-silhouette solid (cylinder) SHALL be asserted DECLINED, not compared — with NO tolerance widening to mask a divergence
+
 #### Scenario: The native library links no OCCT
 
 - GIVEN the `src/native/drafting/**` sources
@@ -136,3 +143,4 @@ or a freeform face) the accessor SHALL return an empty `CCDrawing` with
 - GIVEN a `body` whose drawing requires a case declined in this slice (a curved silhouette outline or a freeform face)
 - WHEN `cc_hlr_project(...)` is called
 - THEN it SHALL return an empty `CCDrawing` (null/zero segment arrays) with `cc_last_error` set AND SHALL NOT return a partial drawing or a wrong visible/hidden classification
+

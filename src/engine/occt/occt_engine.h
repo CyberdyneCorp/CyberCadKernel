@@ -296,6 +296,13 @@ public:
     Result<std::vector<FaceMeshData>> face_meshes(EngineShape body, double deflection) override;
     Result<std::vector<EdgePolylineData>> edge_polylines(EngineShape body) override;
 
+    // ── drafting: orthographic HLR oracle (occt_drafting.cpp) ─────────────────
+    // The HLRBRep_Algo / HLRBRep_HLRToShape oracle the native polyhedral HLR core
+    // is verified against (GATE b). Projects onto the SAME drawing-plane basis the
+    // native path uses (right = normalize(viewDir × up), trueUp = right × viewDir).
+    Result<DrawingData> hlr_project(EngineShape body, const double viewDir[3], const double up[3],
+                                    HlrOptionsData opts) override;
+
     // ── query (occt_query.cpp) ────────────────────────────────────────────────
     Result<MassData> mass_properties(EngineShape body) override;
     Result<std::vector<double>> principal_moments(EngineShape body) override;

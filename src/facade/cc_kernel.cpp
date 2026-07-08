@@ -818,6 +818,70 @@ void cc_edge_polylines_free(CCEdgePolyline* edges, int count) {
     std::free(edges);
 }
 
+// ── drafting: orthographic hidden-line removal (MOAT GS1, ADDITIVE) ─────────────
+
+namespace {
+CCDrawing empty_drawing() {
+    CCDrawing d;
+    d.visible = nullptr;
+    d.visibleCount = 0;
+    d.hidden = nullptr;
+    d.hiddenCount = 0;
+    return d;
+}
+
+// Copy an engine DrawingSegmentData vector into a C-owned CCDrawingSegment array.
+CCDrawingSegment* copy_segments(const std::vector<cyber::DrawingSegmentData>& src) {
+    if (src.empty()) {
+        return nullptr;
+    }
+    auto* out = static_cast<CCDrawingSegment*>(std::malloc(src.size() * sizeof(CCDrawingSegment)));
+    if (!out) {
+        return nullptr;
+    }
+    for (std::size_t i = 0; i < src.size(); ++i) {
+        out[i].ax = src[i].ax;
+        out[i].ay = src[i].ay;
+        out[i].bx = src[i].bx;
+        out[i].by = src[i].by;
+    }
+    return out;
+}
+}  // namespace
+
+CCDrawing cc_hlr_project(CCShapeId body, const double viewDir[3], const double up[3],
+                         CCHlrOptions opts) {
+    return cyber::guard(
+        [&]() -> CCDrawing {
+            if (!viewDir || !up) {
+                set_last_error("cc_hlr_project: null viewDir/up");
+                return empty_drawing();
+            }
+            cyber::HlrOptionsData o;
+            o.deflection = opts.deflection;
+            o.samplesPerEdge = opts.samplesPerEdge;
+            o.surfaceOffset = opts.surfaceOffset;
+            auto r = active_engine()->hlr_project(resolve(body), viewDir, up, o);
+            if (!r) {
+                set_last_error(r.error().message);
+                return empty_drawing();
+            }
+            const cyber::DrawingData& d = r.value();
+            CCDrawing out = empty_drawing();
+            out.visible = copy_segments(d.visible);
+            out.visibleCount = static_cast<int>(d.visible.size());
+            out.hidden = copy_segments(d.hidden);
+            out.hiddenCount = static_cast<int>(d.hidden.size());
+            return out;
+        },
+        empty_drawing());
+}
+
+void cc_drawing_free(CCDrawing drawing) {
+    std::free(drawing.visible);
+    std::free(drawing.hidden);
+}
+
 int cc_offset_face_boundary(CCShapeId body, int faceId, double distance, double** outXYZ) {
     return cyber::guard(
         [&]() -> int {

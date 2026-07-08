@@ -237,6 +237,12 @@ public:
     ShapeResult thread_apply(EngineShape shaft, EngineShape thread, int op) override;
 
     Result<std::vector<EdgePolylineData>> edge_polylines(EngineShape body) override;
+    // NATIVE: orthographic HLR for the POLYHEDRAL core (planar-faced solids). A
+    // curved/freeform-faced body (a curved silhouette this slice does not trace) is
+    // honestly DECLINED with an error — never a wrong visible/hidden classification.
+    // An OCCT body forwards to the fallback (the HLRBRep_Algo oracle).
+    Result<DrawingData> hlr_project(EngineShape body, const double viewDir[3], const double up[3],
+                                    HlrOptionsData opts) override;
     Result<std::vector<double>> principal_moments(EngineShape body) override;
     Result<std::vector<double>> face_axis(EngineShape body, int faceId) override;
     Result<std::vector<double>> ref_plane_from_face(EngineShape body, int faceId) override;

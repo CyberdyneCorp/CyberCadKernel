@@ -57,6 +57,28 @@ struct FaceMeshData {
     std::vector<int> triangles;    // i,j,k triplets (face-local)
 };
 
+// One projected 2D drawing-plane segment (drawing coords u,w). Mirrors
+// CCDrawingSegment but kept in engine-internal form.
+struct DrawingSegmentData {
+    double ax = 0.0, ay = 0.0;  // endpoint A (u, w)
+    double bx = 0.0, by = 0.0;  // endpoint B (u, w)
+};
+
+// Result of an HLR pass: disjoint visible + hidden projected-segment sets.
+struct DrawingData {
+    std::vector<DrawingSegmentData> visible;
+    std::vector<DrawingSegmentData> hidden;
+};
+
+// Options for hlr_project (mirrors CCHlrOptions). deflection <= 0 => engine
+// default occluder tessellation; samplesPerEdge <= 0 / surfaceOffset <= 0 =>
+// native-core defaults.
+struct HlrOptionsData {
+    double deflection = 0.0;
+    int samplesPerEdge = 0;
+    double surfaceOffset = 0.0;
+};
+
 // A profile segment mirrored from CCProfileSeg but kept in engine-internal form.
 struct ProfileSeg {
     int kind = 0;
@@ -334,6 +356,18 @@ public:
     virtual Result<std::vector<EdgePolylineData>> edge_polylines(EngineShape body) {
         (void)body;
         return engine_unsupported("edge_polylines");
+    }
+
+    // ── drafting: orthographic hidden-line removal (MOAT GS1, ADDITIVE) ─────────
+    // Project `body` onto the drawing plane defined by (viewDir, up) and return the
+    // disjoint visible/hidden 2D segment sets. NativeEngine implements the
+    // polyhedral core and honestly DECLINES curved/freeform silhouettes; the OCCT
+    // adapter is the HLRBRep_Algo oracle. Stub / non-overriding engines inherit
+    // unsupported.
+    virtual Result<DrawingData> hlr_project(EngineShape body, const double viewDir[3],
+                                            const double up[3], HlrOptionsData opts) {
+        (void)body; (void)viewDir; (void)up; (void)opts;
+        return engine_unsupported("hlr_project");
     }
 
     // ── query ─────────────────────────────────────────────────────────────────

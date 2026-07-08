@@ -11,11 +11,13 @@
 #include "engine/native/native_engine.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <fstream>
 #include <optional>
 #include <string>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -28,10 +30,12 @@
 #include "native/blend/native_blend.h"
 #include "native/boolean/native_boolean.h"
 #include "native/construct/native_construct.h"
+#include "native/drafting/native_drafting.h"
 #include "native/exchange/native_exchange.h"
 #include "native/feature/wrap_emboss.h"
 #include "native/heal/native_heal.h"
 #include "native/tessellate/native_tessellate.h"
+#include "native/topology/accessors.h"
 
 // DM1 split_plane composes the landed freeformHalfSpaceCut, whose freeform-wall seam
 // trace (ssi::trace_intersection) is DEFINED only under CYBERCAD_HAS_NUMSCI. Including
@@ -53,6 +57,8 @@ namespace {
 namespace ntopo = cybercad::native::topology;
 namespace nan = cybercad::native::analysis;
 namespace ntess = cybercad::native::tessellate;
+namespace ndraft = cybercad::native::drafting;
+namespace nmath = cybercad::native::math;
 
 // ── Native shape holder type-erased behind the registry's EngineShape ──────────
 // Distinct from occt::OcctShape. A native void MUST NEVER be handed to the OCCT
@@ -1465,6 +1471,108 @@ Result<std::vector<EdgePolylineData>> NativeEngine::edge_polylines(EngineShape b
     }
     return edges;
 }
+// ── drafting: orthographic HLR over the polyhedral core ─────────────────────────
+// Build the M0 boundary tessellation as the occluder + the topological (straight)
+// edges as the lines to draw, then run the OCCT-FREE orthographic_hlr core. Curved
+// / freeform faces (a curved silhouette this slice does not trace) are DECLINED —
+// never a wrong classification. An OCCT body forwards to the HLRBRep_Algo oracle.
+Result<DrawingData> NativeEngine::hlr_project(EngineShape body, const double viewDir[3],
+                                              const double up[3], HlrOptionsData opts) {
+    if (!isNative(body)) return fallback().hlr_project(body, viewDir, up, opts);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh)
+        return make_error("hlr_project: a native mesh body carries no B-rep topology (declined)");
+    const ntopo::Shape& shape = holder->shape;
+
+    // View basis validity: viewDir must be non-null and NOT parallel to `up`, else
+    // the drawing-plane basis is undefined (decline, never guess).
+    const nmath::Vec3 vd{viewDir[0], viewDir[1], viewDir[2]};
+    const nmath::Vec3 uh{up[0], up[1], up[2]};
+    if (nmath::norm(vd) < nmath::kLinearTolerance)
+        return make_error("hlr_project: degenerate view direction");
+    if (nmath::norm(nmath::cross(vd, uh)) < nmath::kLinearTolerance)
+        return make_error("hlr_project: up hint parallel to view direction (declined)");
+
+    // Honest decline: any NON-PLANAR face means the visible outline can be a curved
+    // silhouette this slice does not trace. Scope to the polyhedral core.
+    for (ntopo::Explorer ex(shape, ntopo::ShapeType::Face); ex.more(); ex.next()) {
+        const auto srf = ntopo::surfaceOf(ex.current());
+        if (!srf || srf->surface == nullptr ||
+            srf->surface->kind != ntopo::FaceSurface::Kind::Plane)
+            return make_error(
+                "hlr_project: curved/freeform silhouette declined (polyhedral core only "
+                "in this slice)");
+    }
+
+    // Occluder = the M0 boundary mesh at the caller-chosen deflection (never a hidden
+    // default: opts.deflection <= 0 uses the mesher's own documented default).
+    ntess::MeshParams mp;
+    if (opts.deflection > 0.0) mp.deflection = opts.deflection;
+    const ntess::Mesh mesh = ntess::SolidMesher(mp).mesh(shape);
+    std::vector<std::array<std::uint32_t, 3>> tris;
+    tris.reserve(mesh.triangles.size());
+    for (const ntess::Triangle& t : mesh.triangles) tris.push_back({t.a, t.b, t.c});
+    ndraft::Occluder occ{&mesh.vertices, &tris};
+
+    // Straight edges to draw: discretize each topological edge (a polyhedral edge is
+    // a single straight segment; a generic polyline is fed as consecutive straight
+    // segments) into world points + index pairs. Matches edge_polylines' cache.
+    //
+    // DE-DUPLICATE coincident edges. The native B-rep emits one edge node PER
+    // ADJACENT FACE (edge-sharing is deferred — see native_construct_parity), so a
+    // box carries 24 edge nodes for its 12 physical edges. Drawing every node would
+    // draw each edge TWICE (correct classification, but doubled count / length /
+    // overdraw). Keying each edge by its quantized, order-independent endpoint pair
+    // collapses the coincident duplicates so the drawing emits each edge ONCE —
+    // matching the OCCT oracle's edge set exactly.
+    auto quantize = [](const nmath::Point3& p) {
+        constexpr double kGrid = 1e7;  // 0.1 µm — well under the 1e-5 mm parity tol
+        return std::array<long long, 3>{static_cast<long long>(std::llround(p.x * kGrid)),
+                                        static_cast<long long>(std::llround(p.y * kGrid)),
+                                        static_cast<long long>(std::llround(p.z * kGrid))};
+    };
+    std::set<std::array<long long, 6>> seenEdges;
+    std::vector<nmath::Point3> edgeVertices;
+    std::vector<ndraft::EdgeIndices> edges;
+    ntess::EdgeCache cache(/*deflection=*/0.2, /*minSegs=*/1, /*maxSegs=*/64);
+    const ntopo::ShapeMap map = ntopo::mapShapes(shape, ntopo::ShapeType::Edge);
+    for (std::size_t i = 0; i < map.size(); ++i) {
+        const ntess::EdgeDiscretization& d = cache.discretize(map.shape(static_cast<int>(i) + 1));
+        if (d.points.size() < 2) continue;
+        const std::array<long long, 3> qa = quantize(d.points.front());
+        const std::array<long long, 3> qb = quantize(d.points.back());
+        const bool aFirst = qa <= qb;  // order-independent key (endpoints sorted)
+        std::array<long long, 6> key{};
+        for (int k = 0; k < 3; ++k) {
+            key[k] = (aFirst ? qa : qb)[k];
+            key[3 + k] = (aFirst ? qb : qa)[k];
+        }
+        if (!seenEdges.insert(key).second) continue;  // coincident duplicate → skip
+        const auto base = static_cast<std::uint32_t>(edgeVertices.size());
+        for (const auto& p : d.points) edgeVertices.push_back(p);
+        for (std::uint32_t k = 0; k + 1 < d.points.size(); ++k)
+            edges.push_back({base + k, base + k + 1});
+    }
+
+    ndraft::OrthographicView view;
+    view.viewDir = nmath::Dir3{vd};
+    view.up = nmath::Dir3{uh};
+    ndraft::HlrParams prm;
+    if (opts.samplesPerEdge > 0) prm.samplesPerEdge = opts.samplesPerEdge;
+    if (opts.surfaceOffset > 0.0) prm.surfaceOffset = opts.surfaceOffset;
+
+    const ndraft::HlrResult hlr = ndraft::projectOrthographic(edgeVertices, edges, occ, view, prm);
+
+    DrawingData out;
+    out.visible.reserve(hlr.visible.size());
+    for (const ndraft::Segment2D& s : hlr.visible)
+        out.visible.push_back(DrawingSegmentData{s.ax, s.ay, s.bx, s.by});
+    out.hidden.reserve(hlr.hidden.size());
+    for (const ndraft::Segment2D& s : hlr.hidden)
+        out.hidden.push_back(DrawingSegmentData{s.ax, s.ay, s.bx, s.by});
+    return out;
+}
+
 Result<std::vector<double>> NativeEngine::principal_moments(EngineShape body) {
     CC_NATIVE_BODY_UNSUPPORTED("principal_moments", body);
     return fallback().principal_moments(body);

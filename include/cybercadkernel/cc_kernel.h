@@ -135,6 +135,36 @@ typedef struct {
     int unknown;
     int total;
 } CCPmiSummary;
+/* ── Phase-additive (NOT part of the mirrored KernelBridgeAPI.h ABI): drafting /
+ *    hidden-line removal (MOAT M-GS GS1) ───────────────────────────────────── */
+
+/* One projected 2D drawing-plane segment (drawing coordinates u,w in mm). The
+ * drawing-plane basis is right = normalize(viewDir × up), trueUp = right × viewDir;
+ * a world point projects to (P·right, P·trueUp). */
+typedef struct {
+    double ax, ay;   /* endpoint A (u, w) */
+    double bx, by;   /* endpoint B (u, w) */
+} CCDrawingSegment;
+
+/* Result of an orthographic hidden-line-removal pass: DISJOINT visible + hidden
+ * projected-segment sets, owned by the caller and released with cc_drawing_free.
+ * On failure / honest decline both arrays are null / counts 0 and cc_last_error is
+ * set. */
+typedef struct {
+    CCDrawingSegment *visible;   int visibleCount;
+    CCDrawingSegment *hidden;    int hiddenCount;
+} CCDrawing;
+
+/* Options for cc_hlr_project. deflection: the occluder tessellation chord bound
+ * (mm) used to build the triangle occluder — an explicit, caller-chosen value
+ * (<= 0 => the engine default). samplesPerEdge: classification samples per edge
+ * (<= 0 => default). surfaceOffset: the nudge toward the camera that discounts an
+ * edge's own coplanar adjacent faces (<= 0 => default). */
+typedef struct {
+    double deflection;
+    int    samplesPerEdge;
+    double surfaceOffset;
+} CCHlrOptions;
 
 #ifndef CC_KERNEL_NO_PROTOTYPES
 
@@ -548,6 +578,24 @@ void cc_tet_mesh_free(CCTetMesh mesh);
  * Returns valid=0 (and sets cc_last_error) on empty/degenerate input. */
 CCQualityReport cc_mesh_quality(CCTetMesh mesh, double min_scaled_jacobian);
 void cc_quality_report_free(CCQualityReport report);
+
+/* ── Phase-additive: drafting / orthographic hidden-line removal (MOAT GS1) ──── */
+
+/* Orthographic (parallel) hidden-line removal of a body onto a drawing plane.
+ * viewDir[3] is the direction the camera looks ALONG (into the scene); up[3] is an
+ * up hint (must not be parallel to viewDir). Returns the DISJOINT visible + hidden
+ * 2D drawing-plane segment sets (see CCDrawing), so the app's DrawingProjector /
+ * ProjectEdges / ProjectBody path can consume native HLR in place of OCCT's
+ * visible/hidden compounds. ADDITIVE: no existing cc_* signature changes.
+ *
+ * Scope (this slice): the POLYHEDRAL core (box / prism / multi-box — planar-faced
+ * solids). A body whose drawing needs a CURVED-surface silhouette (cylinder / cone
+ * / sphere outline) or a FREEFORM face is DECLINED — cc_hlr_project returns an
+ * empty CCDrawing with cc_last_error set, NEVER a partial or wrong classification.
+ * Under the OCCT engine the result is the HLRBRep_Algo oracle. */
+CCDrawing cc_hlr_project(CCShapeId body, const double viewDir[3], const double up[3],
+                         CCHlrOptions opts);
+void cc_drawing_free(CCDrawing drawing);
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 

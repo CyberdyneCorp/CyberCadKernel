@@ -79,7 +79,7 @@ All `file:line` are in `src/engine/native/native_engine.cpp` unless noted.
 | offset_face | cc_offset_face | 1321 | **A** | resid M3 curved | 10 | planar face native; curved → OCCT (1322) |
 | split_plane | cc_split_plane | 1355 | **A** | DM1 done (resid DM breadth) | 4 | box / planar / single-freeform native; cyl-slice / oblique / multi-lump → OCCT (1357) |
 | replace_face | cc_replace_face | 1332 | **B** | M-DM DM3 | 6 | **hard** `CC_NATIVE_BODY_UNSUPPORTED` on native body (1333) |
-| replace_face_to_plane | cc_replace_face_to_plane | 1336 | **B** | M-DM DM2 | 4 | hard decline (1338) |
+| replace_face_to_plane | cc_replace_face_to_plane | 1336 | **A** | DM2 done (resid DM breadth) | 4 | planar push/pull native via grow-then-trim (98a2011); non-planar / non-prismatic target → OCCT (1338) |
 | fillet_face | cc_fillet_face | 1341 | **B** | M3 | 7 | hard decline (1342) |
 | full_round_fillet | cc_full_round_fillet | 1378 | **B** | M3 | 0 | hard decline (1379) |
 | full_round_fillet_faces | cc_full_round_fillet_faces | 1382 | **B** | M3 | 0 | hard decline (1383) |
@@ -145,7 +145,7 @@ degenerate-slice construct ops (`extrude_mesh`, `twisted_sweep`, `loft_along_rai
 |---|---|---|---|---|
 | **M-TX native transforms** (UNROADMAPPED — flag as its own bounded item) | translate_shape, rotate_shape_about, mirror_shape, scale_shape, scale_shape_about, place_on_frame, extrude_mesh | **M-TX (new)** | 27 + 10 | **~0.5–1** |
 | **M-REF reference / topology** (needs native edge-sharing topology reads) | face_axis, ref_plane_from_face, ref_axis_from_edge, ref_axis_from_face, tangent_chain, outer_rim_chain, offset_face_boundary | **M-REF** | 22 | **~0.5–1** |
-| **M-DM direct modeling** | replace_face (DM3), replace_face_to_plane (DM2) | **M-DM** | 10 | **~1.5–3** |
+| **M-DM direct modeling** | replace_face (DM3) — DM2 replace_face_to_plane now native (98a2011) | **M-DM** | 6 | **~1–2** |
 | **M3 OCCT-only + curved-blend breadth** | fillet_face, full_round_fillet, full_round_fillet_faces, fillet_edges_g2 + curved/freeform residuals of the A-class blends (fillet/chamfer/shell/offset_face) | **M3** (in M2/M3 breadth bucket) | 14 direct | **~3–8** (shared M2/M3) |
 | **M2 freeform-boolean breadth + thread_apply** | boolean_op freeform/mixed residual, thread_apply | **M2** (same bucket) | 0 direct | (in the ~3–8) |
 | **M7 / M7b construct tails** | twisted_sweep (real twist), loft_along_rail (curved rail), fine-pitch thread residuals | **M7 / M7b** | 12 | **~1–2** |
@@ -212,7 +212,7 @@ out-of-envelope input via the self-verify fall-through; these need only OCCT-arm
 **(2)** The unlink blockers are all **B**: the high-usage but *small and unroadmapped*
 **M-TX transform (27+10 sites) + M-REF reference-topology (22 sites)** group, which hard-errors
 on native bodies today yet is bounded at ~1–2 py combined and is the largest app-facing
-blocker; then **M-DM** replace_face/to_plane (~1.5–3 py); then the **M2/M3** freeform
+blocker; then **M-DM** replace_face DM3 (~1–2 py; DM2 to_plane already native); then the **M2/M3** freeform
 boolean/blend breadth (~3–8 py, the dominant asymptotic cost) plus **M7/M7b/M-GS** tails.
 **(3)** **IGES is the only clean Class-C decline** — trivial to convert, but the app must make
 its own IGES decision (drop / OCCT-shim / native). **(4)** The whole finish is gated on the

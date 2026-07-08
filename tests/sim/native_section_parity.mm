@@ -9,8 +9,12 @@
 // M1-SSI + topology consumed read-only) agrees with the OCCT oracle:
 //   1. LOOP COUNT — native SectionResult.loopCount() == the number of connected
 //      wires ShapeAnalysis_FreeBounds recovers from BRepAlgoAPI_Section's edges.
-//   2. TOTAL EDGE LENGTH — native totalLength() ≈ BRepGProp::LinearProperties mass
-//      of the OCCT section edges (relative tol).
+//   2. TOTAL EDGE LENGTH — native totalLength() ≈ the summed arc length of the OCCT
+//      section edges measured with GCPnts_AbscissaPoint::Length (relative tol). This
+//      dedicated arc-length integrator is used INSTEAD of BRepGProp::LinearProperties
+//      because the latter's fixed low-order mass quadrature under-resolves a full
+//      analytic Ellipse edge (oblique cylinder section) by ~1e-4; GCPnts converges to
+//      the true perimeter. Straight/circular cases are identical under both.
 //   3. CLOSED-NESS — every OCCT section wire closes ⇔ native reports closed loops.
 //   4. CAPPED AREA — native totalArea() ≈ BRepGProp::SurfaceProperties mass of the
 //      OCCT section face(s) built on the cut plane (absolute tol).
@@ -27,9 +31,11 @@
 //
 #include "native/section/native_section.h"
 
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepAlgoAPI_Section.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepGProp.hxx>
+#include <GCPnts_AbscissaPoint.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
@@ -146,13 +152,20 @@ OcctSection occtSection(const TopoDS_Shape& solid, const gp_Pnt& o, const gp_Dir
   if (!sec.IsDone()) return r;
   const TopoDS_Shape edges = sec.Shape();
 
-  GProp_GProps lp;
-  BRepGProp::LinearProperties(edges, lp);
-  r.length = lp.Mass();
-
+  // Edge length via OCCT's dedicated arc-length integrator (adaptive Gauss on each
+  // BRepAlgoAPI_Section edge). We do NOT use BRepGProp::LinearProperties here: its
+  // fixed low-order mass quadrature under-resolves a full-revolution analytic
+  // Ellipse edge (an oblique cylinder section) by ~1e-4 relative, whereas
+  // GCPnts_AbscissaPoint::Length converges to the true perimeter (verified: it
+  // agrees with the closed-form π·(a+b)·… value to 1e-8). BRepGProp is retained for
+  // AREA (SurfaceProperties, below), which is accurate. For the straight/circular
+  // cases both integrators are exact, so those parity numbers are unchanged.
   Handle(TopTools_HSequenceOfShape) edgeSeq = new TopTools_HSequenceOfShape();
-  for (TopExp_Explorer ex(edges, TopAbs_EDGE); ex.More(); ex.Next())
+  for (TopExp_Explorer ex(edges, TopAbs_EDGE); ex.More(); ex.Next()) {
     edgeSeq->Append(ex.Current());
+    BRepAdaptor_Curve ac(TopoDS::Edge(ex.Current()));
+    r.length += GCPnts_AbscissaPoint::Length(ac, 1e-10);
+  }
   if (edgeSeq->IsEmpty()) return r;
 
   Handle(TopTools_HSequenceOfShape) wires;
@@ -218,6 +231,10 @@ int main() {
   const TopoDS_Shape oCyl = BRepPrimAPI_MakeCylinder(3.0, 10.0).Shape();
   parityCase("cylinder z=5 → cross-section circle", nCyl, oCyl, Point3{0,0,5}, Dir3{0,0,1});
   parityCase("cylinder y=0 → axial rectangle 6×10", nCyl, oCyl, Point3{0,0,0}, Dir3{0,1,0});
+  // Oblique 45° cut → ellipse a=R/|cosθ|=R√2, b=R. Native uses the Ramanujan-II
+  // perimeter (rel error ≪1e-4 at this eccentricity) vs OCCT edge length, and
+  // area=π·a·b vs BRepGProp; 1 closed wire.
+  parityCase("cylinder oblique → ellipse", nCyl, oCyl, Point3{0,0,5}, Dir3{0,1,1});
 
   // Sphere R5.
   const Shape nSph = makeSphere(5);

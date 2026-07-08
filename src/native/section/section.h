@@ -19,17 +19,19 @@
 //   (b) SIM native-vs-OCCT: match BRepAlgoAPI_Section (edge length + loop count +
 //       closed-ness) and the capped area vs BRepGProp.
 //
+// The OBLIQUE cut of a cylindrical face is now COMPUTED: the landed SSI
+// `intersectPlaneCylinder` returns the correct oblique ellipse (semi-major R/|cosθ|,
+// semi-minor R; see plane_conics.h, regression test_native_ssi::plane_cylinder(3b)),
+// so GS2 assembles it into a closed Ellipse loop exactly like the circle/great-circle
+// conic cases. The perpendicular (circle), oblique (ellipse), and parallel (ruling)
+// cylinder cuts are all in scope.
+//
 // HONEST DECLINE is first-class. This slice NEVER emits a wrong or open section: it
 // returns `Declined` (with a measured reason) for configurations it does not
 // robustly handle — the plane tangent to a curved face (section does not enclose
-// area), a section that does not close, a freeform face (deferred to the marcher,
-// not implemented in this slice), and — decisively — the OBLIQUE cut of a
-// cylindrical face, because the landed SSI `intersectPlaneCylinder` returns an
-// inverted oblique-ellipse semi-major (semi-major R/|sinθ| instead of R/|cosθ|; see
-// plane_conics.h). That is an upstream `ssi/` defect out of GS2's disjoint scope, so
-// GS2 routes AROUND it (decline) rather than editing `ssi/`. The perpendicular
-// (circle) and parallel (ruling) cylinder cuts — the correct closed-form targets —
-// stay in scope.
+// area), a section that does not close, a curved-face conic trimmed by the finite
+// face boundary (arc-trim, e.g. an oblique cut that runs off the cylinder's finite
+// axial band), and a freeform face (deferred to the marcher, not in this slice).
 //
 // Header-only, OCCT-FREE. clang++ -std=c++20. Consumes src/native/{math,topology,
 // ssi} read-only; adds NOTHING to boolean/ or ssi/.
@@ -72,7 +74,7 @@ inline constexpr double kOnTol = 1e-7;     ///< on-plane / on-surface residual b
 enum class LoopShape {
   Polygon,  ///< straight-segment loop (box, cylinder axial rectangle)
   Circle,   ///< a full circle (cylinder cross-section, sphere great circle, cone base-parallel)
-  Ellipse,  ///< a full ellipse (reserved; oblique cylinder is DECLINED this slice)
+  Ellipse,  ///< a full ellipse (oblique cut of a cylindrical face)
 };
 
 /// One closed section loop. `points` is an ordered, densely-sampled polyline (the
@@ -92,8 +94,8 @@ struct SectionLoop {
   double length() const noexcept {
     if (shape == LoopShape::Circle) return 2.0 * kPi * radius;
     if (shape == LoopShape::Ellipse) {
-      // Ramanujan II — exact enough for parity; ellipses are DECLINED this slice so
-      // this path is only a safety fallback.
+      // Ramanujan II — relative error ≪1e-4 at the eccentricities an oblique
+      // cylinder cut produces; within the OCCT parity harness's edge-length tol.
       const double h = ((a - b) * (a - b)) / ((a + b) * (a + b));
       return kPi * (a + b) * (1.0 + 3.0 * h / (10.0 + std::sqrt(4.0 - 3.0 * h)));
     }
@@ -357,6 +359,10 @@ inline bool sectionOneFace(const topo::Shape& face, const topo::FaceSurface& fs,
       std::vector<Point3> ends;
       for (const Point3& p : crossings)
         if (detail::lineResidual(c, p) <= kOnTol) ends.push_back(p);
+      // A cut line that misses this finite planar face (no boundary crossings)
+      // contributes no edge — that is not an error (e.g. the oblique cut plane
+      // meets a cap's infinite plane in a Line that misses the finite cap disk).
+      if (ends.empty()) continue;
       if (ends.size() != 2) {
         why = "section: a planar/ruled face contributes an open edge with " +
               std::to_string(ends.size()) + " boundary crossings (expected 2) — declined";
@@ -479,7 +485,6 @@ inline SectionResult sectionByPlane(const topo::Shape& solid, const math::Plane&
   SectionResult result;
   result.planeFrame = cut.pos;
   const ssi::Surface cutSurf = ssi::Surface::of(cut);
-  const Vec3 n = cut.pos.z.vec();
 
   std::vector<SectionEdge> openEdges;
   std::vector<SectionLoop> closedLoops;
@@ -494,18 +499,6 @@ inline SectionResult sectionByPlane(const topo::Shape& solid, const math::Plane&
     if (!detail::isElementary(fs.kind))
       return SectionResult::declined(
           "section: freeform/torus face — deferred to the SSI marcher, not in this slice (declined)");
-
-    // DECLINE the oblique cut of a cylindrical face (upstream ssi oblique-ellipse
-    // defect: intersectPlaneCylinder returns semi-major R/|sinθ| not R/|cosθ|).
-    if (fs.kind == topo::FaceSurface::Kind::Cylinder) {
-      const math::Ax3 sf = detail::placeFrame(fs.frame, fsr->location);
-      const double na = std::fabs(math::dot(n, sf.z.vec()));
-      const double s = math::norm(math::cross(n, sf.z.vec()));
-      if (na > ssi::kAngularEps && s > ssi::kAngularEps)
-        return SectionResult::declined(
-            "section: oblique cut of a cylindrical face — declined (upstream ssi "
-            "plane∩cylinder oblique-ellipse semi-major is inverted; out of GS2 scope)");
-    }
 
     const auto surf = detail::toSsiSurface(fs, fsr->location);
     if (!surf) return SectionResult::declined("section: unsupported face surface (declined)");

@@ -521,6 +521,19 @@ tests. Substages:
 - **GS2 — Section curves** — extract the section *curves* (not just the solid) where a plane cuts a
   solid, incl. capped section geometry (OCCT `BRepAlgoAPI_Section`). Largely reachable via the landed
   M2 half-space / SSI seam machinery. ~0.5–1 py.
+  **✅ NATIVE (landed).** Header-only, OCCT-free `src/native/section/section.h` behind the additive
+  `cc_section_plane` facade: plane∩{plane,cylinder,cone,sphere} closed-form conics assembled into
+  closed section loops (+ capped area). **Oblique-cylinder relaxation (this pass):** now that the
+  landed ssi `intersectPlaneCylinder` returns the correct oblique ellipse (semi-major `R/|cosθ|`,
+  regression `test_native_ssi::plane_cylinder`), GS2's conservative oblique-cylinder DECLINE guard is
+  removed and the oblique cut COMPUTES the section ellipse (`a=R/|cosθ|`, `b=R`, area `π·R²/|cosθ|`),
+  assembled into a closed `Ellipse` loop like the other conic cases. **Verified both gates:** GATE A
+  host closed-form (`test_native_section` 11/0, incl. `cylinder_oblique_section_is_ellipse`;
+  `test_native_ssi` 11/0) and GATE B sim native-vs-OCCT `BRepAlgoAPI_Section` (`native_section_parity`
+  all-pass, oblique case edge-length 22.921187 = OCCT, capped area 39.985946 = OCCT, 1 closed loop).
+  **Honest declines preserved (not faked):** plane tangent to a curved face, a non-closing section,
+  an arc-trimmed curved-face conic, and freeform/torus faces still return a typed decline; the final
+  closed-loop self-verify still guards against emitting any wrong/open section.
 - **GS3 — Exact measurement / distance queries** — minimum entity-to-entity distance (point/edge/
   face pairs) + angle, analytically/NURBS-exact rather than mesh-approximate (OCCT
   `BRepExtrema_DistShapeShape`). Consumes the native NURBS eval. ~0.5–1.5 py.

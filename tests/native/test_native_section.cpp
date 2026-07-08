@@ -6,10 +6,10 @@
 //   * LIE on the cut plane and on the solid's faces (self-verify passes);
 //   * CLOSE into the expected number of loops;
 //   * enclose an area that matches the CLOSED-FORM value (box rectangle, cylinder
-//     cross-section circle πR², cylinder axial rectangle 2R·H, sphere great/small
-//     circle πr²) and have the closed-form perimeter length.
-// Plus the HONEST DECLINES: an oblique cut of a cylindrical face (upstream ssi
-// oblique-ellipse defect) and a cut plane coincident with a planar face.
+//     cross-section circle πR², cylinder axial rectangle 2R·H, oblique cylinder cut
+//     ellipse π·R²/|cosθ|, sphere great/small circle πr²) and have the closed-form
+//     perimeter length.
+// Plus the HONEST DECLINE: a cut plane coincident with a planar face.
 //
 // Build (standalone):
 //   clang++ -std=c++20 tests/native/test_native_section.cpp \
@@ -206,11 +206,22 @@ CC_TEST(cylinder_axial_section_is_rectangle_2RH) {
   CC_CHECK(near(r.totalArea(), 2.0 * R * H));  // 60
 }
 
-CC_TEST(cylinder_oblique_cut_is_declined) {
-  const Shape cyl = makeCylinder(3.0, 10.0);
-  // Normal tilted between axis (+Z) and radial (+Y): oblique to the cylinder.
+CC_TEST(cylinder_oblique_section_is_ellipse) {
+  const double R = 3.0, H = 10.0;
+  const Shape cyl = makeCylinder(R, H);
+  // Normal tilted 45° between axis (+Z) and radial (+Y): oblique to the cylinder.
+  // cosθ = |n̂·ẑ| = 1/√2, so the section is an ellipse a = R/|cosθ| = R√2, b = R.
   const auto r = sec::sectionByPlane(cyl, cutPlane(Point3{0, 0, 5}, Dir3{0, 1, 1}));
-  CC_CHECK(r.status == sec::SectionStatus::Declined);
+  CC_CHECK(r.ok());
+  CC_CHECK_EQ(r.loopCount(), 1);
+  if (r.loops.empty()) return;
+  CC_CHECK(r.loops[0].shape == sec::LoopShape::Ellipse);
+  const double a = R * std::sqrt(2.0);  // 4.242641
+  CC_CHECK(near(r.loops[0].a, a, 1e-6));
+  CC_CHECK(near(r.loops[0].b, R, 1e-6));
+  // Oblique cut of a cylinder is an ellipse: area = π·R²/|cosθ| = π·a·b.
+  CC_CHECK(near(r.totalArea(), kPi * R * R * std::sqrt(2.0), 1e-5));  // 39.985946
+  CC_CHECK(r.loops[0].closed);
 }
 
 CC_TEST(sphere_great_circle_area_piR2) {

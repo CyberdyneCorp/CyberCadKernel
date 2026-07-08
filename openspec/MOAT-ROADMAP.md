@@ -371,11 +371,21 @@ weaken the tessellator). Gate 1 (host, no OCCT): `test_native_loft` 21/21. Gate 
 `ThruSections`): `native_loft_parity` 39/39. Additive-only (`cc_kernel.h` no deletions),
 `src/native/**` 0 OCCT includes, tessellator untouched.
 
-Still deferred (honest decline, this change did NOT land them): **orientation guided/rail
-sweep** (`cc_guided_orient_sweep`) — needs a NEW OCCT `MakePipeShell(guideWire)` oracle + a
-guide-aimed native frame (the ABI-additive path is open, next M7 slice); **non-planar-cap
-loft** (needs a filling surface, no closed-form volume); **fine-pitch self-intersecting
-threads** (intersecting-helicoid trimming — needs M1/M2). Independent of the
+**M7-tail LANDED — straight-spine guided-ORIENT sweep native (overturns the M7a decline):** M7a
+honest-declined a guide-aimed sweep after measuring a rigid law that was volume-correct but ~7 %
+spatially wrong (bboxΔ 0.54). M7-tail reverse-engineered OCCT's actual `MakePipeShell +
+SetMode(guide, CE=false, NoContact)` law from source (`GeomFill_GuideTrihedronPlan::D0`) and found
+M7a *misdiagnosed* it: the law IS a rigid per-station frame, but keyed to the guide point in the
+plane **perpendicular to the spine tangent**, not a guide-parameter-fraction aim. Fixing the
+correspondence fixes the trap. New additive `cc_guided_orient_sweep` (distinct from the scale-splay
+`cc_guided_sweep`) + `build_guided_orient_sweep` (`sweep.h`), self-verify MANDATORILY including a
+bbox/Hausdorff SPATIAL check (the explicit anti-M7a-trap safeguard), NULL→OCCT for a curved spine.
+Verified vs OCCT (`native_sweep_parity` 19/19) with the spatial gate: offset guide vol rel 1.8e-16 /
+bboxΔ 1e-7; rotating guide (the M7a trap) vol rel 2.95e-3 / **bboxΔ 2.49e-4** (vs M7a's 0.54).
+
+Still deferred (honest decline): **rail** sweep + curved-spine guided sweep (per-station tangent
+varies); **non-planar-cap loft** (needs a filling surface, no closed-form volume); **fine-pitch
+self-intersecting threads** (intersecting-helicoid trimming — needs M1/M2). Independent of the
 freeform-boolean chain except fine-pitch (needs M2).
 - *Oracle:* `BRepOffsetAPI_MakePipeShell` / `ThruSections` / thread fixtures (volume/watertight).
 

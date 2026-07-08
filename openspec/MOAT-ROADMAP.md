@@ -319,7 +319,7 @@ fuzzing vs OCCT).
   `tests/sim/native_boolean_fuzz.mm` + `scripts/run-sim-native-boolean-fuzz.sh`; `src/native`
   untouched (pure test infra). The FIRST measured completeness signal beyond the hand-picked
   native-pass=18 fixtures.
-- **Breadth — FOUR native domains now under the fuzzing bar.** (2nd) STEP round-trip
+- **Breadth — FIVE native domains now under the fuzzing bar.** (2nd) STEP round-trip
   `tests/sim/native_step_import_fuzz.mm` (0 DISAGREED; *surfaced* an OCCT reader inaccuracy on
   shallow frustums, native vindicated by closed-form). (3rd, this slice) **construction
   loft/sweep** `tests/sim/native_construct_fuzz.mm` + `scripts/run-sim-native-construct-fuzz.sh`:
@@ -355,6 +355,27 @@ fuzzing vs OCCT).
   held ~2e-4 vs exact math → logged ORACLE-INACCURATE. Concave stepped-shaft fillet +
   offset/shell are an honest domain-level decline for this first blend slice. `src/native`
   untouched; on run-sim-suite.sh SKIP list (own main(), std::_Exit).
+- **Breadth — 5th native domain: WRAP-EMBOSS (feature on a cylinder lateral face).**
+  `tests/sim/native_wrap_emboss_fuzz.mm` + `scripts/run-sim-native-wrap-emboss-fuzz.sh`: a
+  DETERMINISTIC seeded generator (splitmix64→xoshiro256**, seeded ONLY by FUZZ_SEED) drives
+  random VALID inputs from four native-claimed families — a rectangular PAD emboss (material
+  added), a rectangular DEBOSS pocket, and a convex N-gon emboss/deboss — all wrapped onto a
+  CYLINDER lateral face, through BOTH the OCCT-FREE native builder called DIRECTLY
+  (`feature::wrap_emboss`, measured by the native tessellator) AND the PRIMARY closed-form
+  curvature-corrected changed-volume oracle `A·|Rout²−R²|/(2R)`, plus a SECONDARY OCCT-boolean
+  reconstruction (base cylinder FUSED/CUT with a wrapped angular-sector wedge, measured by
+  `BRepGProp`) that is clean for the rectangle footprints and is the only independent AREA
+  oracle. Sparse out-of-scope inputs (non-cylindrical base, >2π footprint, deboss depth ≥ R,
+  self-intersecting loop) exercise the native NULL→OCCT DECLINE branch. Two seeds
+  (0x5745E6B055 N=120 → 107 AGREED / 0 DISAGREED / 13 BOTH-DECLINED, per-family emboss-rect 39
+  / deboss-rect 27 / emboss-poly 25 / deboss-poly 16, 66 OCCT rect reconstructions; 0xC0FFEE01
+  N=240 → 204 AGREED / 0 DISAGREED / 36 BOTH-DECLINED, per-family 49/58/45/52, 107 OCCT rect
+  reconstructions): **0 DISAGREED** on both seeds, rectangle AGREE matches the OCCT
+  reconstruction and the closed form, polygon AGREE matches the closed form (OCCT recon
+  honestly skipped for arc footprints), all out-of-scope exercisers route to BOTH-DECLINED
+  (DECLINE fires, never DISAGREE), max native-vs-oracle bias vol=7.641e-3 (~2.6× under the
+  FIXED vol=2e-2 area=3e-2 tol, NEVER widened). Determinism re-verified (same seed → identical
+  classification counts). `src/native` untouched; on run-sim-suite.sh SKIP list (own main()).
 - REMAINING (asymptotic, gates M8): extend the generator across the remaining blend families
   (concave stepped-shaft, offset/shell) and healing; loop-until-dry critics; the standing
   zero-silent-wrong-results bar.
@@ -533,7 +554,7 @@ slices used). Both are captured below.
 | **M0** freeform mesher/trimmer | `tessellate/` | — | ✅ **Wave-1 slice LANDED** — mesher ready; unblocks M2/M4. ✅ **Weld robustness LANDED (deflection-fragility RESOLVED):** shared-curved-edge single-sampling (`edge_mesher.h`+`face_mesher.h`, additive, OCCT-free) welds the freeform boolean seam + bowl-lid quad edges watertight at ANY deflection — the freeform CUT/COMMON no longer oscillate watertight↔decline across `{0.03…0.002}`. Zero regression PROVEN byte-identical (FNV of verts+tris+wt+area+vol) for every existing surface kind; host `41/41`, sim parity `20/20` at d=0.01 AND 0.004 |
 | **M1** SSI S4 general robustness | `ssi/marching` | — | ✅ **Wave-1 slice LANDED** — breadth continues (asymptotic) |
 | **M5** shape-healing robustness | `heal/` | — | ✅ **Wave-1 slice LANDED** — tail continues (asymptotic) |
-| **M6** completeness / fuzzing harness | test infra + `ssi/` | — | ✅ **Wave-1 + breadth×4 LANDED** — curved-boolean + STEP round-trip + construction loft/sweep + blend fillet/chamfer fuzzers (0 DISAGREED, 4 native domains); concave-shaft blends + healing remain (gates M8) |
+| **M6** completeness / fuzzing harness | test infra + `ssi/` | — | ✅ **Wave-1 + breadth×5 LANDED** — curved-boolean + STEP round-trip + construction loft/sweep + blend fillet/chamfer + wrap-emboss fuzzers (0 DISAGREED, 5 native domains); concave-shaft blends + healing remain (gates M8) |
 | **M7a** guided sweep · hard loft | `construct/` | — | ✅ **Wave-1 slice LANDED** — N-section loft ABI (`cc_solid_loft_sections`); guided sweep (measured trap) + non-planar-cap loft remain OCCT |
 | **M4** general STEP/AP242 import | `exchange/` | M0 | ✅ **Wave-2 LANDED** — non-rational + `RATIONAL_B_SPLINE_SURFACE` admission native (parity 83/83); rational-*curve* trims, PMI, deep assemblies remain OCCT |
 | **M2b (B2)** freeform face-split | `boolean/` · `ssi/` | M0 ✅ + M1 ✅ | ✅ **Wave-2 slice LANDED** — `boolean/face_split.h` `splitFace` (tiles vs OCCT 12/12); non-convex/multi-crossing tail declines |

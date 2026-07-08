@@ -105,6 +105,7 @@
 #include <iterator>
 #include <string>
 #include <sys/stat.h>
+#include <vector>
 
 namespace ntopo = cybercad::native::topology;
 namespace ntess = cybercad::native::tessellate;
@@ -1435,6 +1436,127 @@ void runNurbsConvertRationalDecline() {
     record(ok, "foreign", "nurbs-rational shipping", d);
 }
 
+// ── (G5) foreign RATIONAL B-spline CURVE edge — native admit vs OCCT (MOAT M4-tail-2) ──
+// OCCT STEPControl_Writer emits a rational NURBS edge / trim curve as a COMBINED Part-21 instance
+//   ( BOUNDED_CURVE() B_SPLINE_CURVE(deg,(poles),..) B_SPLINE_CURVE_WITH_KNOTS((mults),(knots),spec)
+//     CURVE() GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_CURVE((weights)) REPRESENTATION_ITEM('') )
+// A clean OCCT-authored rational EDGE on an ADMISSIBLE surface is not readily producible —
+// NurbsConvert (G4) bundles it with a non-standard seam surface the reader declines. So, EXACTLY as
+// the landed M4-RATIONAL surface SIM gate did (rewriting native records into the combined form), we
+// take the native spline-wall prism, rewrite its B_SPLINE_CURVE rim edges into the combined RATIONAL
+// form with UNIT weights (identical geometry), and read that SAME file BOTH ways: the NATIVE reader
+// through the new combined-rational-curve arm and the OCCT STEPControl_Reader oracle. Both must
+// reconstruct the SAME watertight solid (the exact prism volume). The unfaithful (non-unit weight)
+// variant must DECLINE natively → OCCT still reads the standard entity → shipping matches OCCT.
+namespace ratcurve {
+
+std::string readFile(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+}
+void writeFile(const std::string& path, const std::string& s) {
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    f << s;
+}
+// Split on top-level commas (commas inside () or '' ignored).
+std::vector<std::string> splitTopCommas(const std::string& s) {
+    std::vector<std::string> out;
+    int depth = 0; bool inStr = false; std::size_t start = 0;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        if (inStr) { if (c == '\'') inStr = false; continue; }
+        if (c == '\'') inStr = true;
+        else if (c == '(') ++depth;
+        else if (c == ')') --depth;
+        else if (c == ',' && depth == 0) { out.push_back(s.substr(start, i - start)); start = i + 1; }
+    }
+    out.push_back(s.substr(start));
+    return out;
+}
+// Rewrite EVERY B_SPLINE_CURVE_WITH_KNOTS('',deg,(poles),form,closed,si,(mults),(knots),spec) into the
+// combined RATIONAL_B_SPLINE_CURVE form (alphabetical complex-entity order OCCT expects). Weights are
+// all-unit; `perturb` bumps the first weight to 3.0 (an off-surface rim the reader must decline).
+std::string rationalize(const std::string& step, bool perturb) {
+    const std::string kw = "B_SPLINE_CURVE_WITH_KNOTS(";
+    std::string out = step;
+    std::size_t from = 0;
+    while (true) {
+        const std::size_t kwPos = out.find(kw, from);
+        if (kwPos == std::string::npos) break;
+        const std::size_t argStart = kwPos + kw.size();
+        int depth = 1; bool inStr = false; std::size_t i = argStart;
+        for (; i < out.size(); ++i) {
+            const char c = out[i];
+            if (inStr) { if (c == '\'') inStr = false; continue; }
+            if (c == '\'') inStr = true;
+            else if (c == '(') ++depth;
+            else if (c == ')' && --depth == 0) break;
+        }
+        const std::vector<std::string> a = splitTopCommas(out.substr(argStart, i - argStart));
+        if (a.size() < 9) { from = i + 1; continue; }
+        const std::size_t lp = a[2].find('('), rp = a[2].rfind(')');
+        const int nPoles = (lp == std::string::npos || rp == std::string::npos || rp <= lp + 1)
+                               ? 0
+                               : static_cast<int>(splitTopCommas(a[2].substr(lp + 1, rp - lp - 1)).size());
+        std::string w = "(";
+        for (int k = 0; k < nPoles; ++k) w += (k ? "," : "") + std::string((perturb && k == 0) ? "3." : "1.");
+        w += ")";
+        std::string combined = "( BOUNDED_CURVE() B_SPLINE_CURVE(" + a[1] + "," + a[2] + "," + a[3] +
+                               "," + a[4] + "," + a[5] + ") B_SPLINE_CURVE_WITH_KNOTS(" + a[6] + "," +
+                               a[7] + "," + a[8] + ") CURVE() GEOMETRIC_REPRESENTATION_ITEM() " +
+                               "RATIONAL_B_SPLINE_CURVE(" + w + ") REPRESENTATION_ITEM('') )";
+        out = out.substr(0, kwPos) + combined + out.substr(i + 1);
+        from = kwPos + combined.size();
+    }
+    return out;
+}
+}  // namespace ratcurve
+
+void runRationalBsplineCurveEdge() {
+    const std::string path = "/tmp/cck_nimport_ratcurve_nat.step";
+    const double splineXY[] = {10, 6, 7, 8, 3, 8, 0, 6};
+    std::vector<cybercad::native::construct::ProfileSegment> segs(4);
+    segs[0].kind = 0; segs[0].x0 = 0;  segs[0].y0 = 0; segs[0].x1 = 10; segs[0].y1 = 0;
+    segs[1].kind = 0; segs[1].x0 = 10; segs[1].y0 = 0; segs[1].x1 = 10; segs[1].y1 = 6;
+    segs[2].kind = 3; segs[2].ptOffset = 0; segs[2].ptCount = 4;
+    segs[3].kind = 0; segs[3].x0 = 0;  segs[3].y0 = 6; segs[3].x1 = 0;  segs[3].y1 = 0;
+    const ntopo::Shape solid =
+        cybercad::native::construct::build_prism_profile_spline(segs, splineXY, 8, {}, {}, 4.0);
+    if (solid.isNull() || !nex::step_can_export_native(solid)) {
+        record(false, "foreign", "ratcurve build", "native spline build/export unsupported"); return;
+    }
+    const double vOrig = nativeVol(solid);
+    if (!nex::step_export_native(solid, path)) {
+        record(false, "foreign", "ratcurve export", "write failed"); return;
+    }
+    const std::string base = ratcurve::readFile(path);
+    const std::string rat = ratcurve::rationalize(base, /*perturb=*/false);
+    if (rat.find("RATIONAL_B_SPLINE_CURVE") == std::string::npos) {
+        record(false, "foreign", "ratcurve rewrite", "no B_SPLINE_CURVE rim to rationalize"); return;
+    }
+    ratcurve::writeFile(path, rat);
+    const NativeProbe pr = probeNative(path);   // native reader: combined-rational-curve arm
+    const double ov = occtStepVolume(path);     // OCCT STEPControl_Reader oracle on the SAME file
+    char d[400];
+    std::snprintf(d, sizeof d,
+                  "native parsed=%d watertight=%d solids=%d nativeVol=%.6g occtVol=%.6g orig=%.6g",
+                  pr.parsed, pr.parsed && pr.allWatertight, pr.solids, pr.vol, ov, vOrig);
+    const bool vsOrig = vOrig > 0 && std::fabs(pr.vol - vOrig) / vOrig < 1e-6;      // reader == source mesh
+    const bool vsOcct = ov > 0 && pr.vol > 0 && std::fabs(pr.vol - ov) / ov < 5e-3; // native == OCCT oracle
+    record(pr.parsed && pr.allWatertight && pr.solids == 1 && vsOrig && vsOcct,
+           "foreign", "ratcurve admit", d);
+
+    // Unfaithful (non-unit weight) variant: the rim leaves the B-spline wall → native DECLINES;
+    // OCCT still reads the standard rational-curve entity → shipping falls back to OCCT.
+    const std::string badPath = "/tmp/cck_nimport_ratcurve_bad_nat.step";
+    ratcurve::writeFile(badPath, ratcurve::rationalize(base, /*perturb=*/true));
+    const NativeProbe badPr = probeNative(badPath);
+    const double badOv = occtStepVolume(badPath);
+    char e[320];
+    std::snprintf(e, sizeof e, "native parsed=%d (must be 0 → decline) occtVol=%.6g", badPr.parsed, badOv);
+    record(!badPr.parsed && badOv > 0, "foreign", "ratcurve decline", e);
+}
+
 }  // namespace
 
 int main() {
@@ -1499,6 +1621,7 @@ int main() {
     // (G3/G4) MOAT M4-RATIONAL: the combined RATIONAL_B_SPLINE_SURFACE record read.
     runRationalBsplineSphere();      // G3 : combined rational-surface record → native admit vs OCCT
     runNurbsConvertRationalDecline();// G4 : genuine OCCT NurbsConvert rational surface → honest probe
+    runRationalBsplineCurveEdge();   // G5 : combined rational-CURVE edge record → native admit vs OCCT
 
     cc_set_engine(0);  // restore the default engine before we leave
     std::printf("[NIMPORT] DONE  passed=%d failed=%d\n", g_passed, g_failed);

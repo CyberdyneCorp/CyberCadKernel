@@ -880,7 +880,19 @@ class Mapper {
   // ── EdgeCurve (LINE / CIRCLE / ELLIPSE / B_SPLINE_CURVE_WITH_KNOTS) by #id ────
   std::optional<topo::EdgeCurve> curve(long id) {
     const Record* r = rec(id);
-    if (!r || r->combined) { return std::nullopt; }
+    if (!r) return std::nullopt;
+    // A COMBINED Part-21 instance is how OCCT STEPControl_Writer emits a RATIONAL B-spline
+    // CURVE used as edge / trim geometry (the one-dimension-down analogue of the rational
+    // SURFACE record surface() handles): ( BOUNDED_CURVE() B_SPLINE_CURVE(deg,(poles),..)
+    // B_SPLINE_CURVE_WITH_KNOTS((mults),(knots),spec) CURVE() GEOMETRIC_REPRESENTATION_ITEM()
+    // RATIONAL_B_SPLINE_CURVE((weights)) REPRESENTATION_ITEM('') ). Route ONLY the
+    // RATIONAL_B_SPLINE_CURVE-bearing combined record to the rational arm (reusing the sub-record
+    // scan the reader already uses for rational surfaces / assembly relationships); every OTHER
+    // combined curve record keeps the honest decline it had.
+    if (r->combined) {
+      if (hasSub(*r, "RATIONAL_B_SPLINE_CURVE")) return rationalBsplineCurve(*r);
+      return std::nullopt;
+    }
     // SURFACE_CURVE / SEAM_CURVE / INTERSECTION_CURVE wrap a 3D `curve_3d` (arg[1])
     // together with a list of PCURVEs. A FOREIGN AP203 file (OCCT STEPControl_Writer)
     // wraps every EDGE_CURVE's 3D geometry this way; the native writer emits the 3D
@@ -981,24 +993,75 @@ class Mapper {
     return c;
   }
 
+  // Shared pole + RLE-knot fill for BOTH the non-rational B_SPLINE_CURVE_WITH_KNOTS KEYWORD path
+  // and the combined RATIONAL_B_SPLINE_CURVE path (whose degree + poles live in the B_SPLINE_CURVE
+  // sub-record and whose knots live in the B_SPLINE_CURVE_WITH_KNOTS sub-record). Fills `out` as a
+  // Kind::BSpline edge curve; returns false (caller → nullopt → decline) on any malformed / short /
+  // knot-invariant-violating input. The non-rational keyword path is byte-identical to before the
+  // factor (same reads, same single knot-length guard).
+  bool fillBsplineCurve(int degree, const Arg& polesArg, const Arg& multsArg, const Arg& knotsArg,
+                        topo::EdgeCurve& out) {
+    if (!polesArg.isList() || !multsArg.isList() || !knotsArg.isList()) return false;
+    out.kind = topo::EdgeCurve::Kind::BSpline;
+    out.degree = degree;
+    for (const Arg& p : polesArg.list) {
+      if (!p.isRef()) return false;
+      const auto pt = point(p.ref);
+      if (!pt) return false;
+      out.poles.push_back(*pt);
+    }
+    out.knots = expandKnots(knotsArg.list, multsArg.list);
+    // Knot vector length must be nPoles + degree + 1 (same invariant for rational + non-rational).
+    if (out.knots.size() != out.poles.size() + static_cast<std::size_t>(out.degree) + 1)
+      return false;
+    return true;
+  }
+
   // B_SPLINE_CURVE_WITH_KNOTS('',deg,(poles),form,closed,self_int,(mults),(knots),form)
   std::optional<topo::EdgeCurve> bsplineCurve(const Record& r) {
     if (r.args.size() < 8) return std::nullopt;
     if (!r.args[1].isInt() || !r.args[2].isList() || !r.args[6].isList() || !r.args[7].isList())
       return std::nullopt;
     topo::EdgeCurve c;
-    c.kind = topo::EdgeCurve::Kind::BSpline;
-    c.degree = static_cast<int>(r.args[1].asInt());
-    for (const Arg& p : r.args[2].list) {
-      if (!p.isRef()) return std::nullopt;
-      const auto pt = point(p.ref);
-      if (!pt) return std::nullopt;
-      c.poles.push_back(*pt);
-    }
-    c.knots = expandKnots(r.args[7].list, r.args[6].list);
-    // Non-rational only: knot vector length must be nPoles + degree + 1.
-    if (c.knots.size() != c.poles.size() + static_cast<std::size_t>(c.degree) + 1)
+    if (!fillBsplineCurve(static_cast<int>(r.args[1].asInt()), r.args[2], r.args[6], r.args[7], c))
       return std::nullopt;
+    return c;
+  }
+
+  // Combined RATIONAL B-spline curve — the ONLY new curve read this slice adds. OCCT
+  // STEPControl_Writer emits a rational NURBS curve (edge / trim geometry) as a combined instance
+  // whose fields are split across sub-records:
+  //   B_SPLINE_CURVE(deg, (poles), form, closed, selfInt)    — degree + poles
+  //   B_SPLINE_CURVE_WITH_KNOTS((mults), (knots), spec)      — RLE knots
+  //   RATIONAL_B_SPLINE_CURVE((weights))                     — one weight per pole
+  // Read all three, populate EdgeCurve::weights parallel to the poles, then let the (already
+  // rational-aware) faithful guard + tessellator (edgeCurveLocal → math::nurbsCurvePoint) and the
+  // engine self-verify do the rest. Any malformed / short / mismatched cardinality / non-finite /
+  // non-positive weight, or any missing sibling sub-record, returns nullopt → DECLINE → OCCT
+  // (never a clamped weight, never a wrong solid).
+  std::optional<topo::EdgeCurve> rationalBsplineCurve(const Record& r) {
+    const SubRecord* bc = findSub(r, "B_SPLINE_CURVE");
+    const SubRecord* wk = findSub(r, "B_SPLINE_CURVE_WITH_KNOTS");
+    const SubRecord* rc = findSub(r, "RATIONAL_B_SPLINE_CURVE");
+    if (!bc || !wk || !rc) return std::nullopt;
+    if (bc->args.size() < 2 || !bc->args[0].isInt()) return std::nullopt;
+    if (wk->args.size() < 2) return std::nullopt;
+    topo::EdgeCurve c;
+    if (!fillBsplineCurve(static_cast<int>(bc->args[0].asInt()), bc->args[1], wk->args[0],
+                          wk->args[1], c))
+      return std::nullopt;
+    // Weight list (w…): SAME cardinality as the poles, each finite and strictly positive.
+    if (rc->args.empty() || !rc->args[0].isList()) return std::nullopt;
+    std::vector<double> w;
+    w.reserve(c.poles.size());
+    for (const Arg& a : rc->args[0].list) {
+      if (!a.isNumber()) return std::nullopt;
+      const double wv = a.asReal();
+      if (!std::isfinite(wv) || !(wv > 0.0)) return std::nullopt;  // strict-positive, never clamp
+      w.push_back(wv);
+    }
+    if (w.size() != c.poles.size()) return std::nullopt;
+    c.weights = std::move(w);
     return c;
   }
 
@@ -2337,8 +2400,15 @@ class Mapper {
       default:
         if (c.poles.empty()) return c.frame.origin;
         if (c.knots.empty()) return math::bezierPoint({c.poles.data(), c.poles.size()}, t);
-        return math::curvePoint(c.degree, {c.poles.data(), c.poles.size()},
-                                {c.knots.data(), c.knots.size()}, t);
+        // Rational-aware: a populated weight vector routes to the NURBS evaluator, matching the
+        // tessellator's edgeCurveLocal EXACTLY (so the faithful guard and the mesh agree). An empty
+        // weight vector keeps the non-rational path byte-identical.
+        return c.weights.empty()
+                   ? math::curvePoint(c.degree, {c.poles.data(), c.poles.size()},
+                                      {c.knots.data(), c.knots.size()}, t)
+                   : math::nurbsCurvePoint(c.degree, {c.poles.data(), c.poles.size()},
+                                           {c.weights.data(), c.weights.size()},
+                                           {c.knots.data(), c.knots.size()}, t);
     }
   }
 

@@ -80,7 +80,10 @@ patches. **Unblocks M1, M2, M3, and foreign-B-spline STEP import (M4).**
   verified vs OCCT `STEPControl_Reader` + `BRepMesh` on the simulator (STEP import parity 83/83).
   The guard tolerance coincides with the mesher's weld snap radius (`kSnapEps = 1e-6`), so passing
   the guard *guarantees* a watertight seam. So the M0 keystone is now complete end-to-end (mesher +
-  admission); the only import residual is a rational-*curve* trim boundary (still OCCT, see M4).
+  admission); the last B-spline import residual — a foreign rational-*curve* trim/edge boundary —
+  now imports native too (M4-tail-2, combined `RATIONAL_B_SPLINE_CURVE` edge geometry, verified vs
+  OCCT `STEPControl_Reader`, SIM parity 90/90). The remaining import tail is AP242 PMI semantics +
+  `MAPPED_ITEM` (Form-B) assemblies.
 
 ### M1 — General freeform surface–surface intersection robustness (SSI S4 general) · ~2–5 py
 Extend the SSI marcher (S1–S5 + S4-a…e already native) to the **general/freeform** degeneracy
@@ -556,7 +559,7 @@ slices used). Both are captured below.
 | **M5** shape-healing robustness | `heal/` | — | ✅ **Wave-1 slice LANDED** — tail continues (asymptotic) |
 | **M6** completeness / fuzzing harness | test infra + `ssi/` | — | ✅ **Wave-1 + breadth×5 LANDED** — curved-boolean + STEP round-trip + construction loft/sweep + blend fillet/chamfer + wrap-emboss fuzzers (0 DISAGREED, 5 native domains); concave-shaft blends + healing remain (gates M8) |
 | **M7a** guided sweep · hard loft | `construct/` | — | ✅ **Wave-1 slice LANDED** — N-section loft ABI (`cc_solid_loft_sections`); guided sweep (measured trap) + non-planar-cap loft remain OCCT |
-| **M4** general STEP/AP242 import | `exchange/` | M0 | ✅ **Wave-2 LANDED** — non-rational + `RATIONAL_B_SPLINE_SURFACE` admission native (parity 83/83); rational-*curve* trims, PMI, deep assemblies remain OCCT |
+| **M4** general STEP/AP242 import | `exchange/` | M0 | ✅ **Wave-2 LANDED** — non-rational + `RATIONAL_B_SPLINE_SURFACE` + `RATIONAL_B_SPLINE_CURVE` (edge/trim) admission native (parity 90/90); PMI + `MAPPED_ITEM` assemblies remain OCCT |
 | **M2b (B2)** freeform face-split | `boolean/` · `ssi/` | M0 ✅ + M1 ✅ | ✅ **Wave-2 slice LANDED** — `boolean/face_split.h` `splitFace` (tiles vs OCCT 12/12); non-convex/multi-crossing tail declines |
 | **M2c (B3)** freeform point-in-solid | `boolean/` | M0 ✅ | ✅ **Wave-2 slice LANDED** — `boolean/freeform_membership.h` `classifyPointInMesh` (crispDISAGREE=0 vs `BRepClass3d`); near-tangent band → On/Unknown |
 | **M2a (B1)** freeform operand descriptor | `boolean/` | `shape.h` | ✅ **Wave-2 slice LANDED** — `boolean/freeform_operand.h` `recogniseFreeformSolid` (host gate 14/14; admit + round-trip + 8-way decline battery); **completes the M2 substrate**. End-to-end assembly honest-declined (B2 needs smooth-trim split + a B4 analytic-face-split/cap-synth verb) |
@@ -622,7 +625,7 @@ freeform-boolean chain's *enablers* are done; the *payoff breadth* is what's ahe
 |---|---|---|---|---|
 | **M2 breadth** | freeform booleans across families: NURBS↔NURBS, all 3 ops, **multi-face / holed / multi-branch-seam** splits (first slice reachable once B1 lands; breadth ahead) | bounded *per family*, asymptotic in full generality | substrate (B1+B2+B3) | assembly serial; **families parallelize** |
 | **M3** blends + wrap-emboss | curved-curved fillets/chamfers + wrap-emboss on **freeform bases** | bounded per family | **M2** | after M2; families parallel |
-| **M4 tail** | rational-*curve* trims · AP242 **PMI semantics** · ~~deep-nested rigid/conformal assemblies~~ **LANDED** (Form-A CDSR chain walk, verified vs OCCT) · `MAPPED_ITEM` (Form-B) still deferred | bounded (parser breadth) | M0 ✅ | ✅ **now** (`exchange/`) |
+| **M4 tail** | ~~rational-*curve* trims~~ **LANDED** (M4-tail-2, combined `RATIONAL_B_SPLINE_CURVE` edge/trim admission, verified vs OCCT, SIM parity 90/90) · AP242 **PMI semantics** · ~~deep-nested rigid/conformal assemblies~~ **LANDED** (Form-A CDSR chain walk, verified vs OCCT) · `MAPPED_ITEM` (Form-B) still deferred | bounded (parser breadth) | M0 ✅ | ✅ **now** (`exchange/`) |
 | **M5 tail** | self-intersecting-wire repair · pcurve reconstruction · **arbitrary broken industrial B-rep** | **ASYMPTOTIC** (`ShapeFix` moat) | — | ✅ **now** (`heal/`) |
 | **M6 bar** | fuzz the remaining domains (blends, healing) + **HOLD** zero-silent-wrong across the whole surface | **ASYMPTOTIC** — the *gate*, never "done" | tracks it guards | ✅ **now** (test infra) |
 | **M7 tail** | guided-sweep **orientation law** (the measured self-verify trap needs a correct law) · curved-rail morph · fine-pitch thread | bounded-ish | some need M2 | partly now (`construct/`) |

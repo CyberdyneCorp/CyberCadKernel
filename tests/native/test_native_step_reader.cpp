@@ -19,6 +19,7 @@
 //
 #include "native/exchange/native_exchange.h"
 #include "native/construct/native_construct.h"
+#include "native/tessellate/edge_mesher.h"  // detail::edgeCurveLocal — the rational edge evaluator
 #include "native/tessellate/native_tessellate.h"
 #include "native/topology/native_topology.h"
 
@@ -26,6 +27,7 @@
 
 #include <cctype>
 #include <cmath>
+#include <functional>
 #include <sstream>
 #include <string>
 
@@ -627,6 +629,204 @@ CC_TEST(combined_bspline_surface_without_rational_sub_declines) {
   CC_CHECK(comb.find("( BOUNDED_SURFACE()") != std::string::npos);          // genuinely combined
   CC_CHECK(comb.find("RATIONAL_B_SPLINE_SURFACE") == std::string::npos);    // but not rational
   CC_CHECK(ex::readStepString(comb).isNull());  // other combined surfaces still decline → OCCT
+}
+
+// ── M4-tail-2 — foreign RATIONAL B-spline CURVE (edge / trim geometry) ──────────
+// OCCT STEPControl_Writer emits a rational NURBS edge/trim curve NOT as the bare
+// B_SPLINE_CURVE_WITH_KNOTS keyword but as a COMBINED Part-21 instance whose fields are split
+// across sub-records (the one-dimension-down analogue of the M4-RATIONAL surface record):
+//   ( BOUNDED_CURVE() B_SPLINE_CURVE(deg,(poles),form,closed,si)
+//     B_SPLINE_CURVE_WITH_KNOTS((mults),(knots),spec) CURVE() GEOMETRIC_REPRESENTATION_ITEM()
+//     RATIONAL_B_SPLINE_CURVE((weights)) REPRESENTATION_ITEM('') )
+// The reader now parses that record, populates EdgeCurve::weights, and evaluates the edge
+// RATIONALLY (evalEdge / edgeCurveLocal → math::nurbsCurvePoint) through the SAME faithful guard as
+// the non-rational path. These host gates prove it with NO OCCT linked.
+namespace {
+
+namespace mm = cybercad::native::math;
+
+// The exact rational evaluator the reader's admitted rational edge is meshed with
+// (native_tessellate → edgeCurveLocal) — byte-identical to the reader's own guard-side evalEdge.
+mm::Point3 edgeAt(const topo::EdgeCurve& c, double t) {
+  return ntess::detail::edgeCurveLocal(c, t);
+}
+
+// A weight list "(w0,w1,…)" with `n` entries, `first` overriding entry 0 (the rest 1.0). A caller
+// injects a unit grid (first=1), a perturbing grid (first≠1), or a non-positive entry (first≤0).
+std::string weightList(int n, double first) {
+  std::ostringstream q;
+  q << "(";
+  for (int i = 0; i < n; ++i) {
+    const double w = (i == 0) ? first : 1.0;
+    std::ostringstream w0;
+    w0.precision(15);
+    w0 << w;
+    std::string t = w0.str();  // STEP reals need a decimal point (or exponent)
+    if (t.find('.') == std::string::npos && t.find('e') == std::string::npos) t += ".";
+    q << (i ? "," : "") << t;
+  }
+  q << ")";
+  return q.str();
+}
+
+// Rewrite EVERY non-rational B_SPLINE_CURVE_WITH_KNOTS('',deg,(poles),form,closed,si,(mults),
+// (knots),spec) record the writer emits into the COMBINED RATIONAL_B_SPLINE_CURVE form, splitting
+// the 9 keyword args EXACTLY as OCCT splits them across sub-records (alphabetical complex-entity
+// order): deg+poles+flags → B_SPLINE_CURVE, RLE knots → B_SPLINE_CURVE_WITH_KNOTS, the weights →
+// RATIONAL_B_SPLINE_CURVE. `makeWeights(nPoles)` supplies the "(w..)" list (a caller injects unit /
+// perturbed / malformed grids). `withRational=false` omits the RATIONAL sub-record (a plain
+// combined curve the reader must still DECLINE). Everything else is the writer's genuine output.
+std::string rationalizeCurves(const std::string& step,
+                              const std::function<std::string(int)>& makeWeights,
+                              bool withRational = true) {
+  const std::string kw = "B_SPLINE_CURVE_WITH_KNOTS(";
+  std::string out = step;
+  std::size_t from = 0;
+  while (true) {
+    const std::size_t kwPos = out.find(kw, from);
+    if (kwPos == std::string::npos) break;
+    const std::size_t argStart = kwPos + kw.size();
+    int depth = 1;
+    bool inStr = false;
+    std::size_t i = argStart;
+    for (; i < out.size(); ++i) {
+      const char c = out[i];
+      if (inStr) {
+        if (c == '\'') inStr = false;
+        continue;
+      }
+      if (c == '\'') inStr = true;
+      else if (c == '(') ++depth;
+      else if (c == ')' && --depth == 0) break;
+    }
+    const std::vector<std::string> a = splitTopCommas(out.substr(argStart, i - argStart));
+    if (a.size() < 9) { from = i + 1; continue; }
+    const std::size_t lp = a[2].find('('), rp = a[2].rfind(')');
+    const int nPoles = (lp == std::string::npos || rp == std::string::npos || rp <= lp + 1)
+                           ? 0
+                           : static_cast<int>(splitTopCommas(a[2].substr(lp + 1, rp - lp - 1)).size());
+    std::string combined = "( BOUNDED_CURVE() B_SPLINE_CURVE(" + a[1] + "," + a[2] + "," + a[3] +
+                           "," + a[4] + "," + a[5] + ") B_SPLINE_CURVE_WITH_KNOTS(" + a[6] + "," +
+                           a[7] + "," + a[8] + ") CURVE()";
+    if (withRational)
+      combined += " GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_CURVE(" + makeWeights(nPoles) +
+                  ")";
+    combined += " REPRESENTATION_ITEM('') )";
+    out = out.substr(0, kwPos) + combined + out.substr(i + 1);
+    from = kwPos + combined.size();
+  }
+  return out;
+}
+
+std::function<std::string(int)> unitW = [](int n) { return weightList(n, 1.0); };
+
+}  // namespace
+
+// GATE A (HOST ANALYTIC) — the rational evaluator the reader meshes an admitted rational edge with
+// reproduces a CLOSED-FORM curve to machine epsilon, and the rational weights are LOAD-BEARING. The
+// fixture is the textbook rational-quadratic 90° circular arc (degree 2, poles {(R,0),(R,R),(0,R)},
+// weights {1,1/√2,1}, knots {0,0,0,1,1,1}): the ONLY exact circle representation a NURBS admits, and
+// one a non-rational B-spline on the SAME poles canNOT reproduce. Evaluating it rationally must land
+// on the exact circle r=R; evaluating the same poles NON-rationally must miss it by O(10%).
+CC_TEST(rational_bspline_curve_arc_reproduces_exact_circle) {
+  const double R = 2.0, s = 1.0 / std::sqrt(2.0);
+  topo::EdgeCurve arc{};
+  arc.kind = topo::EdgeCurve::Kind::BSpline;
+  arc.degree = 2;
+  arc.poles = {mm::Point3{R, 0, 0}, mm::Point3{R, R, 0}, mm::Point3{0, R, 0}};
+  arc.knots = {0, 0, 0, 1, 1, 1};
+  arc.weights = {1.0, s, 1.0};  // rational: exact quarter circle
+  double maxErrRat = 0.0;
+  for (int k = 0; k <= 32; ++k) {
+    const mm::Point3 p = edgeAt(arc, k / 32.0);
+    maxErrRat = std::max(maxErrRat, std::fabs(std::sqrt(p.x * p.x + p.y * p.y) - R));
+  }
+  CC_CHECK(maxErrRat < 1e-9);  // exact circle to machine epsilon
+
+  // The SAME poles/knots WITHOUT weights (non-rational) trace a parabola-like curve that misses the
+  // circle by O(10%) — so the rational weights are genuinely load-bearing, not coincidental.
+  topo::EdgeCurve nonRat = arc;
+  nonRat.weights.clear();
+  double maxErrNon = 0.0;
+  for (int k = 0; k <= 32; ++k) {
+    const mm::Point3 p = edgeAt(nonRat, k / 32.0);
+    maxErrNon = std::max(maxErrNon, std::fabs(std::sqrt(p.x * p.x + p.y * p.y) - R));
+  }
+  CC_CHECK(maxErrNon > 1e-2);
+}
+
+// GATE A2 (HOST) — the all-unit-weight combined rational-curve record denotes the SAME geometry as
+// the non-rational keyword form: the spline-wall prism's B_SPLINE_CURVE rim edges, rewritten into
+// the combined RATIONAL_B_SPLINE_CURVE form with unit weights, admit, mesh watertight, and
+// reproduce the SAME solid (volume + face count) as the non-rational round-trip — proving the
+// split-record parse (fillBsplineCurve shared factor), the weight read paired with the poles, and
+// the rational-aware faithful guard (evalEdge → nurbsCurvePoint) accepting the on-surface rim.
+CC_TEST(foreign_rational_bspline_curve_unit_weights_matches_nonrational) {
+  const topo::Shape orig = splineWallPrism();
+  CC_CHECK(!orig.isNull());
+  if (orig.isNull()) return;
+  const std::string nonRat = ex::writeStepString(orig, "spline");
+  CC_CHECK(nonRat.find("B_SPLINE_CURVE_WITH_KNOTS") != std::string::npos);
+  const std::string rat = rationalizeCurves(nonRat, unitW);
+  CC_CHECK(rat.find("RATIONAL_B_SPLINE_CURVE") != std::string::npos);  // now a combined record
+  const topo::Shape rBack = ex::readStepString(rat);
+  const topo::Shape nBack = ex::readStepString(nonRat);
+  CC_CHECK(!rBack.isNull());  // admitted via the combined rational-curve arm
+  CC_CHECK(!nBack.isNull());
+  if (rBack.isNull() || nBack.isNull()) return;
+  CC_CHECK(watertight(rBack));
+  const double vr = volumeOf(rBack), vn = volumeOf(nBack);
+  CC_CHECK(vr > 0.0 && vn > 0.0);
+  CC_CHECK(std::fabs(vr - vn) / vn < 1e-9);  // unit weights ⇒ identical geometry to non-rational
+  CC_CHECK(countType(rBack, topo::ShapeType::Face) == countType(nBack, topo::ShapeType::Face));
+}
+
+// GATE A3 (HOST) — a genuinely NON-UNIT curve weight pulls the rational rim OFF the B-spline wall's
+// top isocurve, so the wall face's faithful-reconstruction guard REJECTS the edge → DECLINE. This
+// is the precise regression test for the rational-aware evalEdge: if the reader ignored curve
+// weights, the perturbed rim would evaluate on-surface and WRONGLY admit.
+CC_TEST(foreign_rational_bspline_curve_nonunit_weight_off_surface_declines) {
+  const topo::Shape orig = splineWallPrism();
+  CC_CHECK(!orig.isNull());
+  if (orig.isNull()) return;
+  const std::string nonRat = ex::writeStepString(orig, "spline");
+  const std::string rat = rationalizeCurves(nonRat, [](int n) { return weightList(n, 3.0); });
+  CC_CHECK(rat.find("RATIONAL_B_SPLINE_CURVE") != std::string::npos);
+  CC_CHECK(ex::readStepString(rat).isNull());  // off-surface rational rim → guard declines → OCCT
+}
+
+// GATE A4 (HOST) — a malformed weight list is an HONEST DECLINE (NULL → OCCT), never a clamped
+// weight: a wrong cardinality (fewer weights than poles), a zero, or a negative weight each decline.
+CC_TEST(foreign_rational_bspline_curve_malformed_weights_decline) {
+  const topo::Shape orig = splineWallPrism();
+  CC_CHECK(!orig.isNull());
+  if (orig.isNull()) return;
+  const std::string base = ex::writeStepString(orig, "spline");
+  CC_CHECK(base.find("B_SPLINE_CURVE_WITH_KNOTS") != std::string::npos);
+  // Too few weights (cardinality < poles) → decline.
+  CC_CHECK(
+      ex::readStepString(rationalizeCurves(base, [](int) { return std::string("(1.,1.)"); }))
+          .isNull());
+  // Zero weight (not strictly positive) → decline.
+  CC_CHECK(
+      ex::readStepString(rationalizeCurves(base, [](int n) { return weightList(n, 0.0); })).isNull());
+  // Negative weight → decline.
+  CC_CHECK(ex::readStepString(rationalizeCurves(base, [](int n) { return weightList(n, -1.0); }))
+               .isNull());
+}
+
+// GATE A5 (HOST) — a COMBINED curve record carrying NO RATIONAL_B_SPLINE_CURVE sub-record keeps the
+// honest OCCT decline (unchanged): the new arm is reachable ONLY via the rational sub-record, so
+// every other combined curve still returns NULL — the zero-regression contract at the read.
+CC_TEST(combined_bspline_curve_without_rational_sub_declines) {
+  const topo::Shape orig = splineWallPrism();
+  CC_CHECK(!orig.isNull());
+  if (orig.isNull()) return;
+  const std::string base = ex::writeStepString(orig, "spline");
+  const std::string comb = rationalizeCurves(base, unitW, /*withRational=*/false);
+  CC_CHECK(comb.find("( BOUNDED_CURVE()") != std::string::npos);        // genuinely combined
+  CC_CHECK(comb.find("RATIONAL_B_SPLINE_CURVE") == std::string::npos);  // but not rational
+  CC_CHECK(ex::readStepString(comb).isNull());  // other combined curves still decline → OCCT
 }
 
 // ── T2 — multi-solid file → a Compound of watertight Solids ────────────────────

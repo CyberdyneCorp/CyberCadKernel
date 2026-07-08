@@ -292,6 +292,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_step_pmi
         test_native_stl
         test_native_quality
+        test_native_drafting
         test_native_step
         test_native_engine)
 
@@ -441,6 +442,12 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_stl.cpp")
     set(test_native_quality_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_quality.cpp")
+    # MOAT M-GS GS1 orthographic HLR — host GATE (a), the OCCT-free analytic proof
+    # (box from an isometric corner → 9 visible + 3 hidden segments; edge splitting
+    # at visibility transitions). Header-only drafting core over the M0 occluder
+    # mesh; no numsci link, so it lives in the always-on native suite.
+    set(test_native_drafting_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_drafting.cpp")
     set(test_native_step_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step.cpp")
 

@@ -464,6 +464,21 @@ tests. Substages:
   plane and classify visible vs hidden segments against the occluding faces (OCCT `HLRBRep_Algo`).
   The 2D-drawings feature (`DrawingProjector`, `ProjectEdges`, `ProjectBody`) cannot go OCCT-free
   without it. Consumes the native tessellator + topology; the algorithm itself is net-new. ~1–2 py.
+  - *Status (first slice, IN PROGRESS — not archived):* OCCT-free header-only orthographic-HLR
+    core landed uncommitted at `src/native/drafting/` (`orthographic_hlr.h`): orthographic
+    edge projection → Möller–Trumbore occlusion against the M0 triangle mesh → midpoint-interior
+    visibility classification → bisection edge-splitting → disjoint visible/hidden 2D sets.
+    **Gate (a) HOST ANALYTIC: PASS** — box from an isometric corner → exactly 9 visible + 3 hidden
+    segments (hidden triple meeting at the occluded far corner), plus empty-occluder and
+    edge-split invariants; wired into the always-on native suite (host OFF 32/32, ON 42/42).
+    **Gate (b) SIM native-vs-OCCT `HLRBRep_Algo` parity: DEFERRED** (no `.mm` sim harness yet).
+    **Scoped out / sharpened blockers for next wave:** (1) curved-surface silhouette tracing —
+    emit the closed-form `n·viewDir=0` outline (lines for cylinder/cone flanks, ellipses for
+    sphere/cone-base) as first-class projected edges, then reuse the existing occlusion+split
+    path; this unblocks the cylinder host oracle (outline rectangle + end-ellipse arcs) and is
+    the prerequisite for the Gate (b) OCCT parity harness. (2) the `Explorer`+`SolidMesher`
+    topology adapter and the `cc_hlr_project` facade body (spec'd, not wired). (3) freeform faces
+    (declined outright). No wrong visible/hidden classification is emitted for any accepted case.
 - **GS2 — Section curves** — extract the section *curves* (not just the solid) where a plane cuts a
   solid, incl. capped section geometry (OCCT `BRepAlgoAPI_Section`). Largely reachable via the landed
   M2 half-space / SSI seam machinery. ~0.5–1 py.

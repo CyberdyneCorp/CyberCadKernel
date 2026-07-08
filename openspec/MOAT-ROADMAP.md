@@ -431,6 +431,28 @@ self-intersecting threads** (intersecting-helicoid trimming — needs M1/M2). In
 freeform-boolean chain except fine-pitch (needs M2).
 - *Oracle:* `BRepOffsetAPI_MakePipeShell` / `ThruSections` / thread fixtures (volume/watertight).
 
+### M-REF — Reference / datum geometry + topology reads · **LANDED** (bounded, was Class-B)
+**Added because the CyberCad app depends on it and no numbered stage covered it** (a MUST-GO-
+NATIVE Class-B bucket, 22 app sites). The seven READ-ONLY datum / reference queries that
+hard-errored on a native body now dispatch NATIVE through the new OCCT-FREE, header-only
+`src/native/reference/reference.h` (`cybercad::native::reference`), computed from the landed
+topology graph + frame math and consuming `src/native/{math,topology}` read-only:
+- **Landed native (both gates green):** `cc_face_axis` / `cc_ref_axis_from_face` (cylinder/cone
+  axis), `cc_ref_plane_from_face` (planar datum plane — outward normal + on-plane origin),
+  `cc_ref_axis_from_edge` (straight-edge line axis), `cc_tangent_chain` (C1 edge walk,
+  line/circle/ellipse tangents), `cc_outer_rim_chain` (planar-cap outer wire), and
+  `cc_offset_face_boundary` (planar-polygon in-plane miter offset).
+- **Honest declines → OCCT (measured, never faked):** a non-planar face where a plane is asked;
+  a circular/freeform edge axis (no `gp_Lin` oracle); a freeform edge inside a tangent walk; and
+  a non-planar / arc-boundary / **growing-convex** (OCCT arc-rounds) / self-intersecting offset —
+  the offset is deliberately scoped to the case that provably coincides with
+  `BRepOffsetAPI_MakeOffset`. A decline returns a clean error and the facade falls through to
+  OCCT; a native void is never forwarded.
+- **Gates:** host `tests/native/test_native_reference.cpp` (closed-form, OCCT-free, 13/13) + sim
+  `tests/sim/native_reference_parity.mm` via `scripts/run-sim-native-reference.sh` (native-vs-OCCT
+  `gp_Pln`/`gp_Cylinder`/`gp_Lin`/`BRepTools::OuterWire`/`MakeOffset`/D1-tangent, 8/8). `cc_*` ABI
+  unchanged; 0 OCCT includes under `src/native/**`. OpenSpec change `moat-mref-reference-topology`.
+
 ### M-DM — Direct modeling / synchronous editing · ~1.5–3 py · needs M2 + M3 + M5
 **Added because the CyberCad app depends on it and no other stage covered it.** The app drives
 direct-modeling operations through the `cc_*` ABI that are OCCT-only in the kernel today:

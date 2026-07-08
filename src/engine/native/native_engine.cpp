@@ -41,6 +41,7 @@
 #include "native/heal/native_heal.h"
 #include "native/tessellate/native_tessellate.h"
 #include "native/topology/accessors.h"
+#include "native/reference/reference.h"  // M-REF: datum + topology-reference reads
 
 // DM1 split_plane composes the landed freeformHalfSpaceCut, whose freeform-wall seam
 // trace (ssi::trace_intersection) is DEFINED only under CYBERCAD_HAS_NUMSCI. Including
@@ -66,6 +67,7 @@ namespace ntess = cybercad::native::tessellate;
 namespace ndraft = cybercad::native::drafting;
 namespace nsec = cybercad::native::section;
 namespace nmath = cybercad::native::math;
+namespace nref = cybercad::native::reference;
 
 // ── Native shape holder type-erased behind the registry's EngineShape ──────────
 // Distinct from occt::OcctShape. A native void MUST NEVER be handed to the OCCT
@@ -1961,33 +1963,86 @@ Result<ValidityData> NativeEngine::check_solid(EngineShape body) {
     return out;
 }
 
+// ── M-REF reference / topology reads (NATIVE, OCCT-FREE) ─────────────────────────
+// Datum + topology-reference queries computed from the native B-rep (src/native/
+// reference). A native body is served here; an OCCT body forwards. On an HONEST
+// DECLINE (nullopt) a native body returns a clean Error so the facade falls
+// through to OCCT — the void is NEVER handed to OCCT. A mesh body has no B-rep
+// topology → clean error (not forwarded).
+namespace {
+// Resolve a 1-based sub-shape id to its world-placed Shape (empty on out-of-range).
+ntopo::Shape refSubShape(const ntopo::Shape& root, ntopo::ShapeType type, int id) {
+    const ntopo::ShapeMap map = ntopo::mapShapes(root, type);
+    if (id < 1 || id > static_cast<int>(map.size())) return ntopo::Shape{};
+    return map.shape(id);
+}
+}  // namespace
+
 Result<std::vector<double>> NativeEngine::face_axis(EngineShape body, int f) {
-    CC_NATIVE_BODY_UNSUPPORTED("face_axis", body);
-    return fallback().face_axis(body, f);
+    if (!isNative(body)) return fallback().face_axis(body, f);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh) return make_error("face_axis: mesh body has no B-rep geometry");
+    const ntopo::Shape face = refSubShape(holder->shape, ntopo::ShapeType::Face, f);
+    if (face.isNull()) return make_error("face_axis: face not found");
+    auto ax = nref::faceAxis(face);
+    if (!ax) return make_error("face_axis: face has no axis (only cylinder/cone)");
+    return std::vector<double>(ax->begin(), ax->end());
 }
 Result<std::vector<double>> NativeEngine::ref_plane_from_face(EngineShape body, int f) {
-    CC_NATIVE_BODY_UNSUPPORTED("ref_plane_from_face", body);
-    return fallback().ref_plane_from_face(body, f);
+    if (!isNative(body)) return fallback().ref_plane_from_face(body, f);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh) return make_error("ref_plane_from_face: mesh body has no B-rep geometry");
+    const ntopo::Shape face = refSubShape(holder->shape, ntopo::ShapeType::Face, f);
+    if (face.isNull()) return make_error("ref_plane_from_face: face not found");
+    auto pl = nref::refPlaneFromFace(face);
+    if (!pl) return make_error("ref_plane_from_face: non-planar face");
+    return std::vector<double>(pl->begin(), pl->end());
 }
 Result<std::vector<double>> NativeEngine::ref_axis_from_edge(EngineShape body, int e) {
-    CC_NATIVE_BODY_UNSUPPORTED("ref_axis_from_edge", body);
-    return fallback().ref_axis_from_edge(body, e);
+    if (!isNative(body)) return fallback().ref_axis_from_edge(body, e);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh) return make_error("ref_axis_from_edge: mesh body has no B-rep geometry");
+    const ntopo::Shape edge = refSubShape(holder->shape, ntopo::ShapeType::Edge, e);
+    if (edge.isNull()) return make_error("ref_axis_from_edge: edge not found");
+    auto ax = nref::refAxisFromEdge(edge);
+    if (!ax) return make_error("ref_axis_from_edge: non-linear edge");
+    return std::vector<double>(ax->begin(), ax->end());
 }
 Result<std::vector<double>> NativeEngine::ref_axis_from_face(EngineShape body, int f) {
-    CC_NATIVE_BODY_UNSUPPORTED("ref_axis_from_face", body);
-    return fallback().ref_axis_from_face(body, f);
+    if (!isNative(body)) return fallback().ref_axis_from_face(body, f);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh) return make_error("ref_axis_from_face: mesh body has no B-rep geometry");
+    const ntopo::Shape face = refSubShape(holder->shape, ntopo::ShapeType::Face, f);
+    if (face.isNull()) return make_error("ref_axis_from_face: face not found");
+    auto ax = nref::refAxisFromFace(face);
+    if (!ax) return make_error("ref_axis_from_face: face has no axis");
+    return std::vector<double>(ax->begin(), ax->end());
 }
 Result<std::vector<int>> NativeEngine::tangent_chain(EngineShape body, const int* e, int ec) {
-    CC_NATIVE_BODY_UNSUPPORTED("tangent_chain", body);
-    return fallback().tangent_chain(body, e, ec);
+    if (!isNative(body)) return fallback().tangent_chain(body, e, ec);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh || e == nullptr || ec <= 0)
+        return make_error("tangent_chain: mesh body or empty selection");
+    auto chain = nref::tangentChain(holder->shape, std::vector<int>(e, e + ec));
+    if (!chain) return make_error("tangent_chain: freeform edge in walk (deferred to oracle)");
+    return *chain;  // possibly empty (no chain) — a valid answer, matches OCCT
 }
 Result<std::vector<int>> NativeEngine::outer_rim_chain(EngineShape body, const int* e, int ec) {
-    CC_NATIVE_BODY_UNSUPPORTED("outer_rim_chain", body);
-    return fallback().outer_rim_chain(body, e, ec);
+    if (!isNative(body)) return fallback().outer_rim_chain(body, e, ec);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh || e == nullptr || ec <= 0)
+        return make_error("outer_rim_chain: mesh body or empty selection");
+    return nref::outerRimChain(holder->shape, std::vector<int>(e, e + ec));  // empty = no cap
 }
 Result<std::vector<double>> NativeEngine::offset_face_boundary(EngineShape body, int f, double d) {
-    CC_NATIVE_BODY_UNSUPPORTED("offset_face_boundary", body);
-    return fallback().offset_face_boundary(body, f, d);
+    if (!isNative(body)) return fallback().offset_face_boundary(body, f, d);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh) return make_error("offset_face_boundary: mesh body has no B-rep geometry");
+    const ntopo::Shape face = refSubShape(holder->shape, ntopo::ShapeType::Face, f);
+    if (face.isNull()) return make_error("offset_face_boundary: bad faceId");
+    auto pts = nref::offsetFaceBoundary(face, d);
+    if (!pts) return make_error("offset_face_boundary: declined (non-polygonal / arc-join / self-intersect)");
+    return *pts;
 }
 
 // ── transform fallthrough ─────────────────────────────────────────────────────────

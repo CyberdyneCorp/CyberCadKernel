@@ -102,14 +102,14 @@ All `file:line` are in `src/engine/native/native_engine.cpp` unless noted.
 | edge_curvature | cc_edge_curvature | 900 | **A** | done GS4 | 0 | `!isNative` guard (900) |
 | hlr_project | cc_hlr_project | 1572 | **A** | resid M-GS GS1 | 0 | polyhedral + cyl/sphere silhouette native; cone/torus/freeform → OCCT (1572) |
 | section_plane | cc_section_plane | 1834 | **A** | resid small GS2 | 1 | native analytic; oblique-cyl / freeform → OCCT (1834) |
-| **REFERENCE GEOMETRY** (hard `CC_NATIVE_BODY_UNSUPPORTED` on native body today) ||||||
-| face_axis | cc_face_axis | 1931 | **B** | M-REF / small | 6 | hard decline (1932) |
-| ref_plane_from_face | cc_ref_plane_from_face | 1935 | **B** | M-REF / small | 0 | hard decline (1936) |
-| ref_axis_from_edge | cc_ref_axis_from_edge | 1939 | **B** | M-REF / small | 0 | hard decline (1940) |
-| ref_axis_from_face | cc_ref_axis_from_face | 1943 | **B** | M-REF / small | 0 | hard decline (1944) |
-| tangent_chain | cc_tangent_chain | 1947 | **B** | M-REF (native edge-sharing topo) | 5 | hard decline (1948) |
-| outer_rim_chain | cc_outer_rim_chain | 1951 | **B** | M-REF / small | 6 | hard decline (1952) |
-| offset_face_boundary | cc_offset_face_boundary | 1955 | **B** | M-REF / small | 5 | hard decline (1956) |
+| **REFERENCE GEOMETRY** (NATIVE — MOAT M-REF; `src/native/reference/reference.h`, two gates green) ||||||
+| face_axis | cc_face_axis | 1931 | **A** | done M-REF | 6 | native cyl/cone axis; plane/sphere/torus → decline → OCCT |
+| ref_plane_from_face | cc_ref_plane_from_face | 1935 | **A** | done M-REF | 0 | native planar datum plane; non-planar → decline → OCCT |
+| ref_axis_from_edge | cc_ref_axis_from_edge | 1939 | **A** | done M-REF | 0 | native line axis; circular/freeform edge → decline → OCCT |
+| ref_axis_from_face | cc_ref_axis_from_face | 1943 | **A** | done M-REF | 0 | native cyl/cone axis (== face_axis); else decline → OCCT |
+| tangent_chain | cc_tangent_chain | 1947 | **A** | done M-REF | 5 | native C1 walk (line/circle/ellipse); freeform edge → decline → OCCT |
+| outer_rim_chain | cc_outer_rim_chain | 1951 | **A** | done M-REF | 6 | native planar-cap outer wire; empty = no cap |
+| offset_face_boundary | cc_offset_face_boundary | 1955 | **A** | done M-REF | 5 | native polygon miter offset (inward-sharp case); arc/non-planar/growing-convex → decline → OCCT |
 | **TRANSFORM** (hard `CC_NATIVE_BODY_UNSUPPORTED` today; NO named roadmap stage — flagged) ||||||
 | translate_shape | cc_translate_shape | 1981 | **B** | **M-TX (unroadmapped)** | 4 | hard decline (1982) |
 | rotate_shape_about | cc_rotate_shape_about | 1971 | **B** | M-TX | 5 | hard decline (1973) |
@@ -144,7 +144,7 @@ degenerate-slice construct ops (`extrude_mesh`, `twisted_sweep`, `loft_along_rai
 | bucket | ops | stage | app sites | remaining py |
 |---|---|---|---|---|
 | **M-TX native transforms** (UNROADMAPPED — flag as its own bounded item) | translate_shape, rotate_shape_about, mirror_shape, scale_shape, scale_shape_about, place_on_frame, extrude_mesh | **M-TX (new)** | 27 + 10 | **~0.5–1** |
-| **M-REF reference / topology** (needs native edge-sharing topology reads) | face_axis, ref_plane_from_face, ref_axis_from_edge, ref_axis_from_face, tangent_chain, outer_rim_chain, offset_face_boundary | **M-REF** | 22 | **~0.5–1** |
+| ~~**M-REF reference / topology**~~ **DONE (native, two gates green)** | face_axis, ref_plane_from_face, ref_axis_from_edge, ref_axis_from_face, tangent_chain, outer_rim_chain, offset_face_boundary | **M-REF (landed)** | 22 | **0** |
 | **M-DM direct modeling** | replace_face (DM3) — DM2 replace_face_to_plane now native (98a2011) | **M-DM** | 6 | **~1–2** |
 | **M3 OCCT-only + curved-blend breadth** | fillet_face, full_round_fillet, full_round_fillet_faces, fillet_edges_g2 + curved/freeform residuals of the A-class blends (fillet/chamfer/shell/offset_face) | **M3** (in M2/M3 breadth bucket) | 14 direct | **~3–8** (shared M2/M3) |
 | **M2 freeform-boolean breadth + thread_apply** | boolean_op freeform/mixed residual, thread_apply | **M2** (same bucket) | 0 direct | (in the ~3–8) |

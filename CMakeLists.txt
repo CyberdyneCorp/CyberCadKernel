@@ -294,6 +294,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_quality
         test_native_drafting
         test_native_section
+        test_native_reference
         test_native_step
         test_native_inertia
         test_native_validity
@@ -490,6 +491,15 @@ if(CYBERCAD_BUILD_TESTS)
     # read-only; no numsci link, so it lives in the always-on native suite.
     set(test_native_section_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_section.cpp")
+    # MOAT M-REF reference / topology reads — host GATE (a), the OCCT-free closed-form
+    # proof of the datum + topology-reference services (src/native/reference): a box's
+    # face normals / datum planes / linear-edge axes / outer-rim loops, a cylinder's
+    # face axis, tangent-chain growth on a smooth contour, and a rectangle offset
+    # boundary — all asserted to machine precision — plus the honest declines
+    # (non-planar plane, non-linear axis, growing convex offset). Header-only over
+    # topology consumed read-only; no numsci link.
+    set(test_native_reference_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_reference.cpp")
     set(test_native_step_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step.cpp")
     # MOAT M-GS GS5 native INERTIA — host GATE (a), the OCCT-free closed-form proof

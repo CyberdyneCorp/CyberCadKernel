@@ -408,12 +408,36 @@ feature-tree construction the other stages cover. Substages:
 - *Bounded* (well-understood synchronous-modeling engineering), not asymptotic. **Gates a
   fully-OCCT-free *app*, though not the kernel's geometry primitives.**
 
-### M8 — `drop-occt` — unlink OCCT · gated on M0–M7 + **M-DM** + M6 bar
+### M-GS — Kernel geometry services for drafting & analysis · ~2.5–5 py · needs tessellate + M2
+**Added from the app audit: the CyberCad app's 2D-drawing and measurement features depend on OCCT
+geometry *services* the native kernel does not provide** (distinct from solid-modeling primitives).
+Surfaced by the app's `DrawingProjector` / `ManufacturingDrawing` / `Measure` / `SectionGeometry`
+tests. Substages:
+- **GS1 — HLR (hidden-line removal) + drawing projection** — project a B-rep's edges onto a drawing
+  plane and classify visible vs hidden segments against the occluding faces (OCCT `HLRBRep_Algo`).
+  The 2D-drawings feature (`DrawingProjector`, `ProjectEdges`, `ProjectBody`) cannot go OCCT-free
+  without it. Consumes the native tessellator + topology; the algorithm itself is net-new. ~1–2 py.
+- **GS2 — Section curves** — extract the section *curves* (not just the solid) where a plane cuts a
+  solid, incl. capped section geometry (OCCT `BRepAlgoAPI_Section`). Largely reachable via the landed
+  M2 half-space / SSI seam machinery. ~0.5–1 py.
+- **GS3 — Exact measurement / distance queries** — minimum entity-to-entity distance (point/edge/
+  face pairs) + angle, analytically/NURBS-exact rather than mesh-approximate (OCCT
+  `BRepExtrema_DistShapeShape`). Consumes the native NURBS eval. ~0.5–1.5 py.
+- **GS4 — Curvature analysis** — Gaussian/mean/principal surface + edge curvature for analysis
+  (zebra, draft). Consumes native NURBS derivatives. ~0.3–0.8 py.
+- *Oracle:* `HLRBRep_Algo` / `BRepAlgoAPI_Section` / `BRepExtrema_DistShapeShape` / `BRepLProp` on
+  visible-segment sets / section-curve length+topology / min-distance / curvature values.
+- *Bounded.* GS2/GS3/GS4 reuse landed native machinery; **GS1 (HLR) is the substantial one** and the
+  hard blocker for OCCT-free 2D drawings. **Gates a fully-OCCT-free *app* with drawings, not the
+  kernel's solid-modeling primitives.**
+
+### M8 — `drop-occt` — unlink OCCT · gated on M0–M7 + **M-DM** + **M-GS** + M6 bar
 Delete `src/engine/occt`, drop the OCCT link, remove/stub `cc_iges_*`. **Only** once every
-stage above (including **M-DM** for the app's direct-modeling surface) is native at the acceptance
-bar AND the M6 completeness bar holds (differential fuzzing shows zero silent wrong results — every
-non-native input honestly declines with a clear error rather than a fabricated shape). This is the
-terminal step; it does not begin until the fallback is provably unnecessary for the supported domain.
+stage above (including **M-DM** for direct modeling and **M-GS** for the app's drafting/measurement
+geometry services) is native at the acceptance bar AND the M6 completeness bar holds (differential
+fuzzing shows zero silent wrong results — every non-native input honestly declines with a clear error
+rather than a fabricated shape). This is the terminal step; it does not begin until the fallback is
+provably unnecessary for the supported domain.
 **IGES note (app-relevant):** `cc_iges_import/export` is **descoped** from native but the app *uses*
 it — so a fully-OCCT-free *app* additionally requires an IGES decision: drop IGES from the app, keep a
 thin OCCT-linked IGES shim (app not 100 % OCCT-free), or reimplement IGES natively (~1.5–3 py, out of
@@ -515,7 +539,9 @@ calendar next.
 | **Moat slices landed (this campaign)** | **M0** keystone mesher **+ M4 / M4-rational** foreign B-spline STEP admission (keystone complete end-to-end) · **M1** freeform S4-d open-arm branch · **M2 substrate: B2** freeform face-split **+ B3** freeform point-in-solid membership · **M5** gap bridging **+ M5-tail** planar-hole cap · **M6** curved-boolean fuzzer **+ M6-breadth×3** STEP round-trip + construction loft/sweep + blend fillet/chamfer fuzzers (0 DISAGREED, 4 native domains) · **M7a** N-section loft — each verified native-vs-OCCT, additive, `src/native` OCCT-free. Honest declines that sharpened the map: M2 first-attempt (→ substrate B1/B2/B3), guided-orient sweep (measured self-verify trap) |
 | **Remaining — kernel geometry moat (M2/M3 breadth + tails + M8)** | ≈ **3–8 py** — **M2/M3 breadth** (freeform booleans/blends, bounded *per family*, the parallelizable bulk) + the **M5 + M6** asymptotic gates. M4 import is now essentially complete (B-spline surfaces + curves + rational + trims + nested assemblies + PMI census); M7 residuals small |
 | **+ M-DM direct modeling (app-required, newly added)** | ≈ **1.5–3 py** — `cc_split_plane` (near-term, reuses the landed M2 half-space verb) + `cc_replace_face(_to_plane)` + project (push-pull / local B-rep re-solve; needs M2 + M3 + M5). NOT covered by any prior stage |
-| **➤ App fully OCCT-free — recomputed (this is what "the app uses our library without OCCT" costs)** | **Adopt native kernel (native + kernel's OCCT fallback — NOT OCCT-free):** ≈ **0.25–0.5 py** (swap the app's OCCT `KernelBridge.mm` for the CyberCadKernel lib). **Scoped OCCT-free** (app declares its supported domain, natively covers must-have booleans/blends/direct-modeling + declines exotic freeform, IGES dropped or thin OCCT shim): ≈ **5–11 py**. **Full-native OCCT-free** (every input OCCT handles today — arbitrary freeform booleans/blends, robust arbitrary-broken healing, native IGES): ≈ **11–21 py + the asymptotic M5/M6 tails** (never fully "closes") |
+| **+ M-GS drafting/analysis geometry services (app-required, newly added)** | ≈ **2.5–5 py** — **GS1 HLR** (hidden-line removal for 2D drawings — the substantial one, hard blocker for OCCT-free drawings) + GS2 section curves + GS3 exact measurement + GS4 curvature. GS2/3/4 reuse landed native machinery; NOT covered by any prior stage |
+| **➤ App fully OCCT-free — recomputed (this is what "the app uses our library without OCCT" costs)** | **Adopt native kernel (native + kernel's OCCT fallback — NOT OCCT-free):** ≈ **0.25–0.5 py** (swap the app's OCCT `KernelBridge.mm` for the CyberCadKernel lib). **Scoped OCCT-free** (app declares its supported domain, natively covers must-have booleans/blends/direct-modeling/**drawings+measurement** + declines exotic freeform, IGES dropped or thin OCCT shim): ≈ **8–15 py**. **Full-native OCCT-free** (every input OCCT handles today — arbitrary freeform booleans/blends, robust arbitrary-broken healing, native IGES): ≈ **14–27 py + the asymptotic M5/M6 tails** (never fully "closes") |
+| **Note — the CAD *app* layer is separate** | The above is the **geometry-kernel** cost. CyberCad's "SolidWorks on iPad" value — sketcher/constraint solver (planegcs), parametric feature history, multi-body/mates/IK, drawing/annotation system, datums, patterns, document/persistence, Metal rendering + Pencil UX — is an **app-layer body of work OCCT never provided**, mostly already built/in-flight, and **orthogonal to drop-occt** |
 | IGES (app uses `cc_iges_import/export`) | native reimplement ≈ **1.5–3 py**, OR drop from the app / keep a thin OCCT-linked shim (**0 native**, app not 100 % OCCT-free) — an **app decision**, not a kernel one |
 
 ## The remaining path to `drop-occt` (M8) — projection once the M2 substrate closes

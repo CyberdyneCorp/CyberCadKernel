@@ -1559,6 +1559,47 @@ topo::Shape sphere6() {
                                        6.28318530717958647692);
 }
 
+// Wrap the FIRST `<surfaceKeyword>('',...)` record in a RECTANGULAR_TRIMMED_SURFACE over
+// the (u1,u2,v1,v2) box and redirect the ADVANCED_FACE that referenced that surface to
+// the wrapper — the way a foreign AP203 writer presents an analytic face re-parametrised
+// to a (u,v) box. The reader must UNWRAP the rect-trim back to the basis surface and keep
+// the face's EDGE_LOOP as the authoritative trim. `basisOverrideRef`, when non-empty,
+// makes the rect-trim reference THAT id instead of the found surface (used to point the
+// wrapper at an UNSUPPORTED basis for the decline test).
+std::string wrapSurfaceInRectTrim(std::string step, const std::string& surfaceKeyword,
+                                  const std::string& box, const std::string& extraRecords = "",
+                                  const std::string& basisOverrideRef = "") {
+  const std::string what = surfaceKeyword + "('',";
+  const std::size_t k = step.find(what);
+  if (k == std::string::npos) return step;
+  const std::size_t h = step.rfind('#', k);
+  std::size_t j = h + 1;
+  std::string surfId;
+  while (j < step.size() && std::isdigit(static_cast<unsigned char>(step[j]))) surfId += step[j++];
+  if (surfId.empty()) return step;
+  const std::string basisRef = basisOverrideRef.empty() ? ("#" + surfId) : basisOverrideRef;
+  const std::size_t ins = step.find('\n', step.find("DATA;")) + 1;
+  step.insert(ins, extraRecords + "#700000 = RECTANGULAR_TRIMMED_SURFACE(''," + basisRef +
+                       "," + box + ",.T.,.T.);\n");
+  // Redirect the ADVANCED_FACE surface ref (the 3rd arg, following the bound list's
+  // closing ')'): `ADVANCED_FACE('',(#loop),#surfId,.T.)` → `...,#700000,.T.)`.
+  const std::string faceRef = "),#" + surfId + ",";
+  const std::size_t f = step.find(faceRef);
+  if (f != std::string::npos) step.replace(f, faceRef.size(), "),#700000,");
+  return step;
+}
+
+// The reconstructed analytic surface of the FIRST face of `solid` whose FaceSurface has
+// the given kind, or nullptr. Used for the cylinder-basis closed-form corner check.
+const topo::FaceSurface* firstSurfaceOfKind(const topo::Shape& solid,
+                                            topo::FaceSurface::Kind kind) {
+  for (topo::Explorer e(solid, topo::ShapeType::Face); e.more(); e.next()) {
+    const auto sr = topo::surfaceOf(e.current());
+    if (sr && sr->surface && sr->surface->kind == kind) return sr->surface;
+  }
+  return nullptr;
+}
+
 }  // namespace
 
 // ── T1 (TRIMMED_CURVE, LINE basis) — accepted + unwrapped, box stays watertight ──
@@ -2145,6 +2186,223 @@ CC_TEST(surface_of_revolution_on_axis_circle_perp_plane_declines) {
       "800004");
   CC_CHECK(rev.find("SURFACE_OF_REVOLUTION") != std::string::npos);
   CC_CHECK(ex::readStepString(rev).isNull());  // plane ⟂ axis → degenerate → decline
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// M4-tail-4 — deep-nested N-level chain guard + general RECTANGULAR_TRIMMED_SURFACE
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── DEEP-NESTED (M4-tail-4) — a 3-level assembly composes W = T₁∘T₂∘T₃ (HOST ANALYTIC) ──
+// The landed composeChain walks parent edges leaf→root in an UNBOUNDED loop, so depth is
+// data, not a constant. This locks the "already composes N levels" finding with a genuine
+// depth-3 tree: leaf(#900008) placed into sub2(#900040) by T₃=(1,0,0); sub2 into
+// sub1(#900030) by T₂=(0,2,0); sub1 into root(#900009) by T₁=(0,0,40). GATE (a): the
+// reader's placed leaf box is verified against an INDEPENDENT math::Transform product
+// W = T₁∘T₂∘T₃ (computed in the test, NOT via composeChain) with NO OCCT. The leaf's
+// local box [0,6]³ (centroid (3,3,3)) must land at [1,7]×[2,8]×[40,46], centre (4,5,43).
+CC_TEST(nested_three_level_assembly_composes_chain_host_analytic) {
+  const TwoBox t = twoBox();
+  std::string a;
+  a += "#900008 = SHAPE_REPRESENTATION('',(#" + std::to_string(t.brepB) + "),#900020);\n";
+  a += "#900040 = SHAPE_REPRESENTATION('',(),#900020);\n";
+  a += "#900030 = SHAPE_REPRESENTATION('',(),#900020);\n";
+  a += "#900009 = SHAPE_REPRESENTATION('',(),#900020);\n";
+  a += "#900020 = GEOMETRIC_REPRESENTATION_CONTEXT(3);\n";
+  a += "#900001 = CARTESIAN_POINT('',(0.,0.,0.));\n";
+  a += "#900002 = DIRECTION('',(0.,0.,1.));\n#900003 = DIRECTION('',(1.,0.,0.));\n";
+  a += "#900004 = AXIS2_PLACEMENT_3D('',#900001,#900002,#900003);\n";      // identity FROM
+  a += "#900101 = CARTESIAN_POINT('',(1.,0.,0.));\n";
+  a += "#900102 = AXIS2_PLACEMENT_3D('',#900101,#900002,#900003);\n";      // T3 TO
+  a += "#900103 = ITEM_DEFINED_TRANSFORMATION('','',#900004,#900102);\n";  // T3
+  a += "#900201 = CARTESIAN_POINT('',(0.,2.,0.));\n";
+  a += "#900202 = AXIS2_PLACEMENT_3D('',#900201,#900002,#900003);\n";      // T2 TO
+  a += "#900203 = ITEM_DEFINED_TRANSFORMATION('','',#900004,#900202);\n";  // T2
+  a += "#900301 = CARTESIAN_POINT('',(0.,0.,40.));\n";
+  a += "#900302 = AXIS2_PLACEMENT_3D('',#900301,#900002,#900003);\n";      // T1 TO
+  a += "#900303 = ITEM_DEFINED_TRANSFORMATION('','',#900004,#900302);\n";  // T1
+  a += "#900410 = ( REPRESENTATION_RELATIONSHIP('','',#900008,#900040) "
+       "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900103) SHAPE_REPRESENTATION_RELATIONSHIP() );\n"
+       "#900411 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900410,#900412);\n"
+       "#900412 = PRODUCT_DEFINITION_SHAPE('','',#900413);\n"
+       "#900413 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('3','','',#900008,#900040,$);\n";
+  a += "#900420 = ( REPRESENTATION_RELATIONSHIP('','',#900040,#900030) "
+       "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900203) SHAPE_REPRESENTATION_RELATIONSHIP() );\n"
+       "#900421 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900420,#900422);\n"
+       "#900422 = PRODUCT_DEFINITION_SHAPE('','',#900423);\n"
+       "#900423 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('2','','',#900040,#900030,$);\n";
+  a += "#900430 = ( REPRESENTATION_RELATIONSHIP('','',#900030,#900009) "
+       "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900303) SHAPE_REPRESENTATION_RELATIONSHIP() );\n"
+       "#900431 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900430,#900432);\n"
+       "#900432 = PRODUCT_DEFINITION_SHAPE('','',#900433);\n"
+       "#900433 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#900030,#900009,$);\n";
+
+  const topo::Shape shape = ex::readStepString(mergeAsm(t, a));
+  CC_CHECK(!shape.isNull());
+  if (shape.isNull()) return;
+  CC_CHECK(shape.type() == topo::ShapeType::Compound);
+
+  int solids = 0;
+  double volSum = 0.0;
+  bool allWatertight = true;
+  for (topo::Explorer e(shape, topo::ShapeType::Solid); e.more(); e.next()) {
+    ++solids;
+    if (!watertight(e.current())) allWatertight = false;
+    volSum += volumeOf(e.current());
+  }
+  CC_CHECK(solids == 2);
+  CC_CHECK(allWatertight);
+  CC_CHECK(std::fabs(volSum - (1000.0 + 216.0)) < 1e-6);
+
+  // INDEPENDENT composition (no reader graph walk, no OCCT): W = T₁∘T₂∘T₃, all
+  // translations, so W is a pure translate by (1,2,40); centroid (3,3,3) → (4,5,43).
+  const nm::Transform T3{nm::Mat3{1, 0, 0, 0, 1, 0, 0, 0, 1}, nm::Vec3{1, 0, 0}};
+  const nm::Transform T2{nm::Mat3{1, 0, 0, 0, 1, 0, 0, 0, 1}, nm::Vec3{0, 2, 0}};
+  const nm::Transform T1{nm::Mat3{1, 0, 0, 0, 1, 0, 0, 0, 1}, nm::Vec3{0, 0, 40}};
+  const nm::Point3 wc = T1.composedWith(T2).composedWith(T3).applyToPoint(nm::Point3{3, 3, 3});
+  CC_CHECK(std::fabs(wc.x - 4.0) < 1e-9 && std::fabs(wc.y - 5.0) < 1e-9 &&
+           std::fabs(wc.z - 43.0) < 1e-9);
+
+  // Discriminate the leaf by its z-placement (z ≥ 40; root stays z ∈ [0,10]).
+  Box b{{0, 0, 0}, {0, 0, 0}};
+  for (topo::Explorer e(shape, topo::ShapeType::Solid); e.more(); e.next()) {
+    const Box wb = worldBox(e.current());
+    if (wb.lo[2] > 20.0) b = wb;
+  }
+  CC_CHECK(std::fabs(b.lo[0] - 1.0) < 1e-6 && std::fabs(b.hi[0] - 7.0) < 1e-6);
+  CC_CHECK(std::fabs(b.lo[1] - 2.0) < 1e-6 && std::fabs(b.hi[1] - 8.0) < 1e-6);
+  CC_CHECK(std::fabs(b.lo[2] - 40.0) < 1e-6 && std::fabs(b.hi[2] - 46.0) < 1e-6);
+  const double cx = 0.5 * (b.lo[0] + b.hi[0]), cy = 0.5 * (b.lo[1] + b.hi[1]),
+               cz = 0.5 * (b.lo[2] + b.hi[2]);
+  CC_CHECK(std::fabs(cx - wc.x) < 1e-6 && std::fabs(cy - wc.y) < 1e-6 &&
+           std::fabs(cz - wc.z) < 1e-6);
+}
+
+// ── DEEP-NESTED (M4-tail-4) — a 4-level chain composes (latent depth-cap guard) ──
+// Same wiring extended one level: leaf→sub3→sub2→sub1→root, four translations summing to
+// (1,2,4,8)→(1,2,44) with T levels (1,0,0),(0,2,0),(0,0,4),(0,0,40). If any constant
+// capped the chain length the leaf would land short; the unbounded walk composes all four.
+CC_TEST(nested_four_level_assembly_composes_chain) {
+  const TwoBox t = twoBox();
+  std::string a;
+  a += "#900008 = SHAPE_REPRESENTATION('',(#" + std::to_string(t.brepB) + "),#900020);\n";
+  a += "#900050 = SHAPE_REPRESENTATION('',(),#900020);\n";   // sub3
+  a += "#900040 = SHAPE_REPRESENTATION('',(),#900020);\n";   // sub2
+  a += "#900030 = SHAPE_REPRESENTATION('',(),#900020);\n";   // sub1
+  a += "#900009 = SHAPE_REPRESENTATION('',(),#900020);\n";   // root
+  a += "#900020 = GEOMETRIC_REPRESENTATION_CONTEXT(3);\n";
+  a += "#900001 = CARTESIAN_POINT('',(0.,0.,0.));\n";
+  a += "#900002 = DIRECTION('',(0.,0.,1.));\n#900003 = DIRECTION('',(1.,0.,0.));\n";
+  a += "#900004 = AXIS2_PLACEMENT_3D('',#900001,#900002,#900003);\n";
+  a += "#900101 = CARTESIAN_POINT('',(1.,0.,0.));\n#900102 = AXIS2_PLACEMENT_3D('',#900101,#900002,#900003);\n#900103 = ITEM_DEFINED_TRANSFORMATION('','',#900004,#900102);\n";
+  a += "#900201 = CARTESIAN_POINT('',(0.,2.,0.));\n#900202 = AXIS2_PLACEMENT_3D('',#900201,#900002,#900003);\n#900203 = ITEM_DEFINED_TRANSFORMATION('','',#900004,#900202);\n";
+  a += "#900301 = CARTESIAN_POINT('',(0.,0.,4.));\n#900302 = AXIS2_PLACEMENT_3D('',#900301,#900002,#900003);\n#900303 = ITEM_DEFINED_TRANSFORMATION('','',#900004,#900302);\n";
+  a += "#900501 = CARTESIAN_POINT('',(0.,0.,40.));\n#900502 = AXIS2_PLACEMENT_3D('',#900501,#900002,#900003);\n#900503 = ITEM_DEFINED_TRANSFORMATION('','',#900004,#900502);\n";
+  a += "#900410 = ( REPRESENTATION_RELATIONSHIP('','',#900008,#900050) REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900103) SHAPE_REPRESENTATION_RELATIONSHIP() );\n#900411 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900410,#900412);\n#900412 = PRODUCT_DEFINITION_SHAPE('','',#900413);\n#900413 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('4','','',#900008,#900050,$);\n";
+  a += "#900420 = ( REPRESENTATION_RELATIONSHIP('','',#900050,#900040) REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900203) SHAPE_REPRESENTATION_RELATIONSHIP() );\n#900421 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900420,#900422);\n#900422 = PRODUCT_DEFINITION_SHAPE('','',#900423);\n#900423 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('3','','',#900050,#900040,$);\n";
+  a += "#900430 = ( REPRESENTATION_RELATIONSHIP('','',#900040,#900030) REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900303) SHAPE_REPRESENTATION_RELATIONSHIP() );\n#900431 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900430,#900432);\n#900432 = PRODUCT_DEFINITION_SHAPE('','',#900433);\n#900433 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('2','','',#900040,#900030,$);\n";
+  a += "#900440 = ( REPRESENTATION_RELATIONSHIP('','',#900030,#900009) REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900503) SHAPE_REPRESENTATION_RELATIONSHIP() );\n#900441 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900440,#900442);\n#900442 = PRODUCT_DEFINITION_SHAPE('','',#900443);\n#900443 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#900030,#900009,$);\n";
+
+  const topo::Shape shape = ex::readStepString(mergeAsm(t, a));
+  CC_CHECK(!shape.isNull());
+  if (shape.isNull()) return;
+  // Leaf translated by (1,2,44): local [0,6]³ → [1,7]×[2,8]×[44,50].
+  Box b{{0, 0, 0}, {0, 0, 0}};
+  for (topo::Explorer e(shape, topo::ShapeType::Solid); e.more(); e.next()) {
+    const Box wb = worldBox(e.current());
+    if (wb.lo[2] > 20.0) b = wb;
+  }
+  CC_CHECK(std::fabs(b.lo[0] - 1.0) < 1e-6 && std::fabs(b.hi[0] - 7.0) < 1e-6);
+  CC_CHECK(std::fabs(b.lo[1] - 2.0) < 1e-6 && std::fabs(b.hi[1] - 8.0) < 1e-6);
+  CC_CHECK(std::fabs(b.lo[2] - 44.0) < 1e-6 && std::fabs(b.hi[2] - 50.0) < 1e-6);
+}
+
+// ── RECTANGULAR_TRIMMED_SURFACE (PLANE basis) — unwraps to the SAME solid (HOST) ──
+// One box face's PLANE is re-parametrised as a RECTANGULAR_TRIMMED_SURFACE over a (u,v)
+// box (a foreign analytic-face form). The reader must unwrap to the basis PLANE and keep
+// the face's EDGE_LOOP trim, importing to the IDENTICAL solid as the un-wrapped file:
+// EXACT volume (planar), same watertight topology, same face/edge/vertex counts. GATE (a):
+// independent host equivalence to the basis-referenced import — no OCCT.
+CC_TEST(rect_trimmed_plane_unwraps_to_same_solid) {
+  const std::string base = ex::writeStepString(box10(), "box");
+  const topo::Shape basis = ex::readStepString(base);
+  const std::string wrapped =
+      wrapSurfaceInRectTrim(base, "PLANE", "0.,10.,0.,10.");
+  CC_CHECK(wrapped.find("RECTANGULAR_TRIMMED_SURFACE") != std::string::npos);
+  const topo::Shape back = ex::readStepString(wrapped);
+  CC_CHECK(!basis.isNull() && !back.isNull());
+  if (basis.isNull() || back.isNull()) return;
+  CC_CHECK(watertight(back));
+  const double v0 = volumeOf(basis), v1 = volumeOf(back);
+  CC_CHECK(std::fabs(v0 - 1000.0) < 1e-6);
+  CC_CHECK(std::fabs(v1 - v0) < 1e-6);  // EXACT: the rect box is discarded, loop is the trim
+  CC_CHECK(countType(back, topo::ShapeType::Face) == countType(basis, topo::ShapeType::Face));
+  CC_CHECK(countType(back, topo::ShapeType::Edge) == countType(basis, topo::ShapeType::Edge));
+  CC_CHECK(countType(back, topo::ShapeType::Vertex) == countType(basis, topo::ShapeType::Vertex));
+  CC_CHECK(countType(back, topo::ShapeType::Face) == 6);
+}
+
+// ── RECTANGULAR_TRIMMED_SURFACE (CYLINDER basis) — watertight + closed-form corner ──
+// One cylinder-wall sector's CYLINDRICAL_SURFACE is wrapped in a rect-trim over the
+// angular×axial (u,v) box. The reader unwraps to the basis CYLINDER; the solid imports
+// watertight with volume = the CLOSED-FORM π·r²·h (analytic, no OCCT). GATE (a): the
+// reconstructed cylinder surface's radius equals the analytic value 5, and the surface
+// sampled at the box corners S(u,v)=O+r(cos u·X+sin u·Y)+v·Z lies EXACTLY radius r from
+// the axis — the closed-form invariant of the unwrapped basis.
+CC_TEST(rect_trimmed_cylinder_unwraps_watertight_closed_form) {
+  const std::string base = ex::writeStepString(cylinder(), "cyl");
+  const std::string wrapped =
+      wrapSurfaceInRectTrim(base, "CYLINDRICAL_SURFACE", "0.,6.2831853071795862,0.,20.");
+  CC_CHECK(wrapped.find("RECTANGULAR_TRIMMED_SURFACE") != std::string::npos);
+  const topo::Shape back = ex::readStepString(wrapped);
+  CC_CHECK(!back.isNull());
+  if (back.isNull()) return;
+  CC_CHECK(watertight(back));
+  const double v1 = volumeOf(back);
+  const double analytic = 3.14159265358979323846 * 25.0 * 20.0;  // π r² h, r=5 h=20
+  CC_CHECK(std::fabs(v1 - analytic) / analytic < 5e-3);          // closed-form volume
+
+  // The reconstructed basis cylinder: radius must equal the analytic 5, and evaluating
+  // the analytic surface at the (u,v) box corners must land exactly r from the axis.
+  const topo::FaceSurface* cyl = firstSurfaceOfKind(back, topo::FaceSurface::Kind::Cylinder);
+  CC_CHECK(cyl != nullptr);
+  if (!cyl) return;
+  CC_CHECK(std::fabs(cyl->radius - 5.0) < 1e-9);
+  const nm::Vec3 X = cyl->frame.x.vec(), Y = cyl->frame.y.vec(), Z = cyl->frame.z.vec();
+  const nm::Point3 O = cyl->frame.origin;
+  const double us[] = {0.0, 6.2831853071795862}, vs[] = {0.0, 20.0};
+  for (double u : us)
+    for (double v : vs) {
+      const nm::Vec3 P = O.asVec() + (X * (cyl->radius * std::cos(u)) +
+                                      Y * (cyl->radius * std::sin(u)) + Z * v);
+      const nm::Vec3 rel = P - O.asVec();
+      const double axial = nm::dot(rel, Z);
+      const double perp = nm::norm(rel - Z * axial);  // distance from the axis
+      CC_CHECK(std::fabs(perp - cyl->radius) < 1e-9);
+    }
+}
+
+// ── RECTANGULAR_TRIMMED_SURFACE (DECLINE) — an UNSUPPORTED basis → NULL → OCCT ──
+// The wrapper points at an OFFSET_SURFACE (a keyword surface() does not map). The unwrap
+// recurses to the basis, inherits its decline, and returns NULL → OCCT. The rect-trim
+// arm never fabricates a face for a basis the reader cannot reconstruct.
+CC_TEST(rect_trimmed_unsupported_basis_declines) {
+  const std::string base = ex::writeStepString(box10(), "box");
+  const std::string wrapped = wrapSurfaceInRectTrim(
+      base, "PLANE", "0.,10.,0.,10.",
+      /*extraRecords=*/"#700001 = OFFSET_SURFACE('',#5,1.,.T.);\n",
+      /*basisOverrideRef=*/"#700001");
+  CC_CHECK(wrapped.find("RECTANGULAR_TRIMMED_SURFACE") != std::string::npos);
+  CC_CHECK(ex::readStepString(wrapped).isNull());  // unsupported basis → decline
+}
+
+// ── RECTANGULAR_TRIMMED_SURFACE (DECLINE) — an INVERTED rect box → NULL → OCCT ──
+// The (u,v) box is inverted (u2 < u1): a malformed / unrepresentable trim. validRectBox
+// rejects it and the whole file DECLINES rather than importing a fabricated face.
+CC_TEST(rect_trimmed_inverted_box_declines) {
+  const std::string base = ex::writeStepString(box10(), "box");
+  const std::string wrapped = wrapSurfaceInRectTrim(base, "PLANE", "10.,0.,0.,10.");  // u2<u1
+  CC_CHECK(wrapped.find("RECTANGULAR_TRIMMED_SURFACE") != std::string::npos);
+  CC_CHECK(ex::readStepString(wrapped).isNull());  // inverted box → decline
 }
 
 CC_RUN_ALL()

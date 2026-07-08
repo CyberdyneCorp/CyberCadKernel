@@ -1091,7 +1091,39 @@ class Mapper {
     if (r->keyword == "TOROIDAL_SURFACE") return toroidalSurface(*r);
     if (r->keyword == "B_SPLINE_SURFACE_WITH_KNOTS") return bsplineSurface(*r);
     if (r->keyword == "SURFACE_OF_REVOLUTION") return surfaceOfRevolution(*r);
+    if (r->keyword == "RECTANGULAR_TRIMMED_SURFACE") return rectangularTrimmedSurface(*r);
     return std::nullopt;  // any other surface keyword is out of scope
+  }
+
+  // A finite rectangular (u,v) parameter box with a strictly positive extent in each
+  // direction (u2 > u1, v2 > v1). A non-finite or inverted/degenerate box is a
+  // malformed / unrepresentable trim and DECLINES.
+  static bool validRectBox(double u1, double u2, double v1, double v2) {
+    if (!std::isfinite(u1) || !std::isfinite(u2) || !std::isfinite(v1) || !std::isfinite(v2))
+      return false;
+    return u2 > u1 && v2 > v1;
+  }
+
+  // RECTANGULAR_TRIMMED_SURFACE('',#basis,u1,u2,v1,v2,usense,vsense): a basis surface
+  // re-parametrised to a rectangular (u,v) box — the way many foreign AP203 writers
+  // (CATIA / NX / SolidWorks) present an analytic face. We UNWRAP to the #basis surface
+  // by recursing surface(#basis) — mirroring the existing TRIMMED_CURVE / SURFACE_CURVE
+  // curve unwrap — and DISCARD the redundant rectangular box: the ADVANCED_FACE's own
+  // EDGE_LOOP remains the AUTHORITATIVE trim (its analytic pcurves are reconstructed per
+  // basis kind exactly as for a directly-referenced basis). The unwrap inherits the
+  // basis's own supported/decline verdict (an unsupported basis → nullopt → OCCT). A
+  // basis arg that is not a ref, or a non-finite / inverted (u1,u2,v1,v2) box, DECLINES.
+  // No boundary is synthesised from the box: a rect-trim on a face WITHOUT a real
+  // EDGE_LOOP bound still declines through the unchanged advancedFace bound guards.
+  std::optional<topo::FaceSurface> rectangularTrimmedSurface(const Record& r) {
+    if (r.args.size() < 6 || !r.args[1].isRef()) return std::nullopt;
+    if (!r.args[2].isNumber() || !r.args[3].isNumber() ||
+        !r.args[4].isNumber() || !r.args[5].isNumber())
+      return std::nullopt;
+    if (!validRectBox(r.args[2].asReal(), r.args[3].asReal(),
+                      r.args[4].asReal(), r.args[5].asReal()))
+      return std::nullopt;
+    return surface(r.args[1].ref);  // recurse to the basis; keep the EDGE_LOOP trim
   }
 
   // TOROIDAL_SURFACE('',#placement,majorR,minorR) → a native Kind::Torus. The frame's

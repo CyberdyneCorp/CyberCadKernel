@@ -651,6 +651,72 @@ void runNestedAssembly() {
     compare("assembly", "nested", nat, oracle, 5e-3, 5e-3);
 }
 
+// ── DEEP-NESTED (M4-tail-4) — a 3-LEVEL nested assembly composes W = T₁·T₂·T₃ vs OCCT ──
+// Extends runNestedAssembly one level deeper: a leaf 6-cube is placed by T₃ into sub2, sub2
+// by T₂ into sub1, sub1 by T₁ into the root — the true 3-level CDSR chain STEPCAFControl_-
+// Writer emits. composeChain walks leaf→root UNBOUNDED, so it must compose all three levels.
+// GATES: (b) native import matches the OCCT STEPControl_Reader re-import on COUNT / VOLUME /
+// BBOX / CENTROID / topology; and an INDEPENDENT OCCT gp_Trsf compose W = T₁·T₂·T₃ applied
+// to the local centroid cross-checks the placement (a depth cap or dropped ancestor level
+// would land the leaf elsewhere). This is the deep-nested SIM guard for the already-shipped
+// N-level chain, paired with the host-analytic 3/4-level fixtures.
+void runNestedAssemblyThreeLevel() {
+    const std::string path = "/tmp/cck_nimport_nested3.step";
+    Handle(TDocStd_Application) app = new TDocStd_Application();
+    Handle(TDocStd_Document) doc;
+    app->NewDocument("MDTV-XCAF", doc);
+    Handle(XCAFDoc_ShapeTool) stool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+
+    const TopoDS_Shape leaf = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 6, 6, 6).Shape();  // vol 216
+    const TDF_Label leafL = stool->AddShape(leaf, Standard_False);
+    // T₃: leaf → sub2 (rotate 0.4 about Z + translate (8,0,0)).
+    const TDF_Label sub2L = stool->NewShape();
+    gp_Trsf r3; r3.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 0.4);
+    gp_Trsf t3; t3.SetTranslation(gp_Vec(8, 0, 0));
+    const gp_Trsf T3 = t3 * r3;
+    stool->AddComponent(sub2L, leafL, TopLoc_Location(T3));
+    // T₂: sub2 → sub1 (rotate 0.3 about X + translate (0,15,0)).
+    const TDF_Label sub1L = stool->NewShape();
+    gp_Trsf r2; r2.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), 0.3);
+    gp_Trsf t2; t2.SetTranslation(gp_Vec(0, 15, 0));
+    const gp_Trsf T2 = t2 * r2;
+    stool->AddComponent(sub1L, sub2L, TopLoc_Location(T2));
+    // T₁: sub1 → root (rotate 0.2 about Y + translate (0,0,30)).
+    const TDF_Label topL = stool->NewShape();
+    gp_Trsf r1; r1.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), 0.2);
+    gp_Trsf t1; t1.SetTranslation(gp_Vec(0, 0, 30));
+    const gp_Trsf T1 = t1 * r1;
+    stool->AddComponent(topL, sub1L, TopLoc_Location(T1));
+    stool->UpdateAssemblies();
+
+    STEPCAFControl_Writer w;
+    if (!w.Transfer(doc, STEPControl_AsIs) || w.Write(path.c_str()) != IFSelect_RetDone) {
+        record(false, "assembly", "nested3 author", "STEPCAF 3-level write failed"); return;
+    }
+
+    const NativeProbe pr = probeNative(path);
+    const double ov = occtStepVolume(path);
+    char d[400];
+    std::snprintf(d, sizeof d, "native parsed=%d solids=%d nativeVol=%.6g occtVol=%.6g",
+                  pr.parsed, pr.solids, pr.vol, ov);
+    const bool volOk = ov > 0 && std::fabs(pr.vol - ov) / ov < 5e-3;
+    record(pr.parsed && pr.solids == 1 && pr.allWatertight && volOk, "assembly", "nested3 native", d);
+
+    cc_set_engine(1);
+    const CCShapeId nid = cc_step_import(path.c_str());
+    const Props nat = measure(nid);
+    const gp_Pnt cWorld = gp_Pnt(3, 3, 3).Transformed(T1 * T2 * T3);  // INDEPENDENT compose
+    const double cd = std::max({std::fabs(nat.cx - cWorld.X()), std::fabs(nat.cy - cWorld.Y()),
+                                std::fabs(nat.cz - cWorld.Z())});
+    char e[320];
+    std::snprintf(e, sizeof e, "native centroid=(%.4f,%.4f,%.4f) W·local=(%.4f,%.4f,%.4f) Δ=%.2e",
+                  nat.cx, nat.cy, nat.cz, cWorld.X(), cWorld.Y(), cWorld.Z(), cd);
+    record(nat.ok && cd < 5e-3, "assembly", "nested3 centroid", e);
+
+    const Props oracle = importUnder(0, path);
+    compare("assembly", "nested3", nat, oracle, 5e-3, 5e-3);
+}
+
 // ── (I) FOREIGN AP214 header accepted — schema-independent import ─────────────────
 // STEPControl_Writer emits an AP214 (AUTOMOTIVE_DESIGN) FILE_SCHEMA in this OCCT
 // build. A single OCCT-authored box therefore proves the NATIVE reader accepts an
@@ -835,6 +901,60 @@ std::string nativeConeStep() {
         cybercad::native::construct::build_revolution(
             p, 3, cybercad::native::construct::RevolveAxis{0.0, 0.0, 0.0, 1.0}, 2.0 * kPi),
         "cone");
+}
+
+// A native 10-cube box STEP string (planar) — the rect-trimmed-PLANE splice base.
+std::string nativeBoxStep() {
+    const double p[] = {0, 0, 10, 0, 10, 10, 0, 10};
+    return nex::writeStepString(
+        cybercad::native::construct::build_prism(p, 4, 10.0), "box");
+}
+
+// Wrap the FIRST `<surfaceKeyword>('',...)` record in a RECTANGULAR_TRIMMED_SURFACE over the
+// (u,v) box and redirect the ADVANCED_FACE that referenced it — a foreign analytic-face form
+// OCCT's STEPControl_Reader reads as the oracle and the NATIVE reader must unwrap to the
+// basis surface (keeping the EDGE_LOOP trim). Mirrors the host reader-suite helper.
+std::string wrapSurfaceInRectTrim(std::string step, const std::string& surfaceKeyword,
+                                  const std::string& box) {
+    const std::string what = surfaceKeyword + "('',";
+    const std::size_t k = step.find(what);
+    if (k == std::string::npos) return step;
+    const std::size_t h = step.rfind('#', k);
+    std::size_t j = h + 1; std::string surfId;
+    while (j < step.size() && std::isdigit((unsigned char)step[j])) surfId += step[j++];
+    if (surfId.empty()) return step;
+    const std::size_t ins = step.find('\n', step.find("DATA;")) + 1;
+    step.insert(ins, "#700000 = RECTANGULAR_TRIMMED_SURFACE('',#" + surfId + "," + box +
+                         ",.T.,.T.);\n");
+    const std::string faceRef = "),#" + surfId + ",";
+    const std::size_t f = step.find(faceRef);
+    if (f != std::string::npos) step.replace(f, faceRef.size(), "),#700000,");
+    return step;
+}
+
+// ── RECTANGULAR_TRIMMED_SURFACE (M4-tail-4) — native unwrap vs OCCT oracle ──────────────
+// A native-written solid with one face's PLANE (or CYLINDRICAL_SURFACE) re-parametrised as a
+// RECTANGULAR_TRIMMED_SURFACE. BOTH readers see the SAME file: OCCT STEPControl_Reader is the
+// oracle; the native reader must unwrap the rect-trim to its basis surface (keeping the
+// EDGE_LOOP trim) and reconstruct the SAME solid. GATE (b): native parsed=1 (not a fallback)
+// + watertight + volume == OCCT re-import, and count / bbox / centroid / topology match.
+void runRectTrimmedSurface(const std::string& name, const std::string& baseStep,
+                           const std::string& keyword, const std::string& box,
+                           double wantVol, double volTol) {
+    const std::string path = "/tmp/cck_nimport_recttrim_" + name + ".step";
+    const std::string step = wrapSurfaceInRectTrim(baseStep, keyword, box);
+    writeFile(path, step);
+    const bool spliced = step.find("RECTANGULAR_TRIMMED_SURFACE") != std::string::npos;
+    const NativeProbe pr = probeNative(path);
+    const double ov = occtStepVolume(path);
+    char d[400];
+    std::snprintf(d, sizeof d, "spliced=%d native parsed=%d watertight=%d vol=%.6g occtVol=%.6g (want %.6g)",
+                  spliced, pr.parsed, pr.parsed && pr.allWatertight, pr.vol, ov, wantVol);
+    const bool volOk = ov > 0 && std::fabs(pr.vol - ov) / ov < volTol &&
+                       std::fabs(pr.vol - wantVol) / wantVol < volTol;
+    record(spliced && pr.parsed && pr.allWatertight && pr.solids == 1 && volOk,
+           "foreign", "rect_trim_" + name + " native", d);
+    compare("foreign", "rect_trim_" + name, importUnder(1, path), importUnder(0, path), volTol, volTol);
 }
 
 // ── (J) SCALED assembly — OCCT degrades to rigid; native applies a genuine CTO scale ─
@@ -1688,7 +1808,15 @@ int main() {
     //    Compound vs OCCT; an AP214 foreign header is accepted (schema-independent).
     runTransformedAssembly();// two boxes placed via the transform tree → placed compound
     runNestedAssembly();     // M4-tail: 2-LEVEL nested assembly (W = T₁ ∘ T₂) vs OCCT
+    runNestedAssemblyThreeLevel(); // M4-tail-4: 3-LEVEL nested assembly (W = T₁·T₂·T₃) vs OCCT
     runAp214Header();        // foreign AP214 (AUTOMOTIVE_DESIGN) header accepted
+
+    // ── GENERAL TRIMMED SURFACES (M4-tail-4) — a RECTANGULAR_TRIMMED_SURFACE over a PLANE
+    //    (exact planar volume) and over a CYLINDRICAL_SURFACE (deflection-bounded) unwraps to
+    //    its basis surface and matches the OCCT STEPControl_Reader re-import of the same file.
+    runRectTrimmedSurface("plane", nativeBoxStep(), "PLANE", "0.,10.,0.,10.", 1000.0, 1e-4);
+    runRectTrimmedSurface("cylinder", nativeCylinderStep(), "CYLINDRICAL_SURFACE",
+                          "0.,6.2831853071795862,0.,20.", kPi * 25.0 * 20.0, 5e-3);
 
     // ── WIDENED SLICE (this task, T1/T2) — SCALED + MIRRORED component placements and
     //    an AP242 PMI file. OCCT cannot serialize a non-rigid assembly placement (it

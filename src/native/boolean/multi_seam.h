@@ -33,14 +33,16 @@
 // is exact (`tilingGap`, `rebuildResidual` ~1e-16; the corner UV area equals the closed-
 // form `Q ∩ {u≥½, v≥½}` projection to 7e-17).
 //
-// The MEASURED NEXT BLOCKER is now the full multi-FACE corner-clip weld: the corner box
-// straddles the corner of `A`'s footprint quad `Q`, so the `x=0`/`y=0` planes also corner-
-// clip `A`'s flat BOTTOM quad and the TWO side walls over the two `Q` edges they cross —
-// AND two box CAP faces (the `x=0`/`y=0` planes bounded inside `A`) must be synthesized,
-// then the whole shell welded across MULTIPLE junction vertices (`J` on the wall, `J'` on
-// the bottom, the wall/plane pierce points) and self-verified (watertight + closed-form
-// volume). That multi-face family assembly is beyond this slice, so the entry point
-// returns a NULL `Shape` → OCCT `BRepAlgoAPI_*`, recording `MultiFaceWeldUnreachable`.
+// The full multi-FACE corner-clip WELD is now LANDED (this wave, `multi_face_weld.h`):
+// the corner box straddles the corner of `A`'s footprint quad `Q`, so the `x=0`/`y=0`
+// planes also corner-clip `A`'s flat BOTTOM quad and the TWO side walls over the two `Q`
+// edges they cross, and two box CAP faces (the `x=0`/`y=0` planes bounded inside `A`) are
+// synthesized (CUT/COMMON) or the two box cutting faces are NOTCHED (FUSE); the whole
+// shell is welded across MULTIPLE junction vertices (`J` on the wall, `J'` on the bottom,
+// the wall/plane pierce points) and self-verified (watertight + a consistent op-volume
+// bound). `freeformBooleanMultiSeam` composes recognise[B1] → `buildSeamGraph` →
+// arc-B2-consistency → `splitFaceJunction` → `multiFaceCornerClip`, returning the welded
+// CUT / COMMON / FUSE solid, or NULL → OCCT `BRepAlgoAPI_*` on any decline.
 //
 // NO wrong/leaky/partial solid is EVER emitted; NO tolerance is weakened; the seam-graph
 // builder AND the junction-aware wall split are REAL (independently proven by the host
@@ -60,6 +62,7 @@
 #include "native/boolean/face_split.h"
 #include "native/boolean/freeform_operand.h"
 #include "native/boolean/junction_split.h"
+#include "native/boolean/multi_face_weld.h"
 #include "native/boolean/seam_graph.h"
 #include "native/topology/native_topology.h"
 
@@ -80,7 +83,8 @@ enum class MultiSeamDecline {
   SeamGraphDeclined,        ///< `buildSeamGraph` declined (see `subDecline` for the reason)
   ArcSplitFailed,           ///< a single-arc B2 split of the wall failed (graph not B2-consistent)
   WallJunctionSplitFailed,  ///< the junction-aware wall split declined (unexpected for a valid pose)
-  MultiFaceWeldUnreachable  ///< wall split LANDED; the multi-face corner-clip weld is the next blocker
+  MultiFaceWeldUnreachable, ///< wall split LANDED; the multi-face corner-clip weld is the next blocker
+  MultiFaceWeldDeclined     ///< the multi-face corner-clip weld self-verify declined (see `weldDecline`)
 };
 
 inline const char* multiSeamDeclineName(MultiSeamDecline d) noexcept {
@@ -91,6 +95,7 @@ inline const char* multiSeamDeclineName(MultiSeamDecline d) noexcept {
     case MultiSeamDecline::ArcSplitFailed: return "ArcSplitFailed";
     case MultiSeamDecline::WallJunctionSplitFailed: return "WallJunctionSplitFailed";
     case MultiSeamDecline::MultiFaceWeldUnreachable: return "MultiFaceWeldUnreachable";
+    case MultiSeamDecline::MultiFaceWeldDeclined: return "MultiFaceWeldDeclined";
   }
   return "?";
 }
@@ -111,6 +116,13 @@ struct MultiSeamReport {
   double junctionRebuildResidual = 0.0;                 ///< junction-aware reflatten residual (≈ 0)
   double cornerArea = 0.0;                              ///< the removed-quadrant UV area (vs the oracle)
   double junctionPlaneResidual = 0.0;                   ///< |signedDist(Pk, J)| — J lies on both planes
+  bool weldOk = false;                                  ///< the multi-face corner-clip weld landed
+  MultiFaceDecline weldDecline = MultiFaceDecline::Ok;  ///< the weld verdict (Ok when landed)
+  int weldFaceCount = 0;                                ///< survivor+synthesised face count
+  bool weldWatertight = false;                          ///< the welded result is a closed 2-manifold
+  double resultVolume = 0.0;                            ///< enclosed volume of the welded result
+  double volA = 0.0;                                    ///< V(A) reference (self-verify bound)
+  double volB = 0.0;                                    ///< V(B) reference (self-verify bound)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -127,7 +139,7 @@ struct MultiSeamReport {
 // building + proving the seam graph AND the junction-aware wall partition.
 // ─────────────────────────────────────────────────────────────────────────────
 inline topo::Shape freeformBooleanMultiSeam(const topo::Shape& A, const topo::Shape& B,
-                                            MultiSeamOp /*op*/, double /*deflection*/ = 0.01,
+                                            MultiSeamOp op, double deflection = 0.01,
                                             MultiSeamReport* report = nullptr) {
   MultiSeamReport rep;
   auto fail = [&](MultiSeamDecline d) -> topo::Shape {
@@ -171,13 +183,28 @@ inline topo::Shape freeformBooleanMultiSeam(const topo::Shape& A, const topo::Sh
   rep.junctionRebuildResidual = js.split->rebuildResidual;
   rep.cornerArea = js.split->areaCorner;
 
-  // The wall now partitions at the exact valence-3 J. The FULL multi-seam result solid
-  // additionally needs the OTHER cut faces (the corner box straddles A's footprint quad,
-  // so the x=0/y=0 planes also corner-clip A's flat BOTTOM and the TWO side walls over the
-  // Q edges they cross), the two box CAP faces synthesized inside A, and the whole shell
-  // welded across MULTIPLE junctions + self-verified (watertight + closed-form volume).
-  // That multi-face family assembly is the measured NEXT blocker → NULL → OCCT.
-  return fail(MultiSeamDecline::MultiFaceWeldUnreachable);
+  // The MULTI-FACE corner-clip WELD (this wave, LANDED): the box straddles A's footprint
+  // quad, so the x=0/y=0 planes also corner-clip A's flat BOTTOM quad + the TWO side walls
+  // over the Q edges they cross, and two box CAP faces are synthesized inside A (CUT/COMMON)
+  // or the two box cutting faces are NOTCHED (FUSE). `multiFaceCornerClip` assembles the
+  // op's shell (bowl sub-face + clipped analytic faces + caps/notches), welds it, and
+  // self-verifies (watertight + a consistent op-volume bound). NULL → OCCT on any decline.
+  const MultiFaceOp mfop = op == MultiSeamOp::Fuse    ? MultiFaceOp::Fuse
+                           : op == MultiSeamOp::Cut   ? MultiFaceOp::Cut
+                                                      : MultiFaceOp::Common;
+  MultiFaceReport wr;
+  const topo::Shape result = multiFaceCornerClip(*opA, *graph, *js.split, mfop, deflection, &wr);
+  rep.weldDecline = wr.decline;
+  rep.weldFaceCount = wr.faceCount;
+  rep.weldWatertight = wr.watertight;
+  rep.resultVolume = wr.volume;
+  rep.volA = wr.volA;
+  rep.volB = wr.volB;
+  if (result.isNull()) return fail(MultiSeamDecline::MultiFaceWeldDeclined);
+  rep.weldOk = true;
+  rep.decline = MultiSeamDecline::Ok;
+  if (report) *report = rep;
+  return result;
 }
 
 }  // namespace cybercad::native::boolean

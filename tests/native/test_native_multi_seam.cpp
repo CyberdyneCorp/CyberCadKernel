@@ -178,8 +178,8 @@ CC_TEST(junction_aware_split_lands_where_byte_frozen_b2_declines) {
   CC_CHECK(s.seam[s.jIdx].u == g->junctionUV.u && s.seam[s.jIdx].v == g->junctionUV.v);
 }
 
-// ── The full multi-FACE corner-clip weld is the measured next blocker ─────────────
-CC_TEST(multi_face_weld_is_the_measured_next_blocker) {
+// ── The full multi-FACE corner-clip weld LANDS at the closed-form corner volumes ──
+CC_TEST(multi_face_corner_clip_weld_lands_watertight_at_closed_form_volumes) {
   const auto A = ffx::buildOperand();
   const auto B = msx::cornerBox();
   bo::OperandDecline ow = bo::OperandDecline::Ok;
@@ -187,33 +187,49 @@ CC_TEST(multi_face_weld_is_the_measured_next_blocker) {
   CC_CHECK(op.has_value());
   if (!op) return;
 
-  // The new blocker is MEASURED, not asserted: the box straddles A's footprint quad, so
-  // the x=0/y=0 planes corner-clip A's flat bottom + side walls too — a MULTI-FACE cut.
+  // The pose is genuinely MULTI-FACE: the box straddles A's footprint quad, so the
+  // x=0/y=0 planes corner-clip A's flat bottom + side walls too (not only the bowl wall).
   CC_CHECK(msx::footprintStraddlesBothPlanes());
 
-  // The entry point builds + proves the graph AND lands the junction-aware wall split,
-  // then honestly DECLINES the multi-face weld → OCCT (never a leaky/partial solid).
-  bo::MultiSeamReport rep;
-  const auto r = bo::freeformBooleanMultiSeam(A, B, bo::MultiSeamOp::Fuse, 0.01, &rep);
-  CC_CHECK(r.isNull());
-  CC_CHECK(rep.decline == bo::MultiSeamDecline::MultiFaceWeldUnreachable);
-  CC_CHECK(rep.graphBuilt);
-  CC_CHECK(rep.arcsSplitOk);
-  CC_CHECK(rep.wallJunctionSplitOk);                       // the wall split LANDED
-  CC_CHECK(rep.junctionDecline == bo::JunctionDecline::Ok);
-  CC_CHECK(rep.junctionCrossings == 2);
-  CC_CHECK(rep.junctionRebuildResidual <= 1e-12);
-  CC_CHECK(std::fabs(rep.cornerArea - msx::uvCornerArea()) <= 1e-12);
   const double diag = op->bbox.diagonal();
-  CC_CHECK(rep.junctionPlaneResidual <= 1e-7 * (diag > 1.0 ? diag : 1.0));
+  struct Case { bo::MultiSeamOp op; double oracle; const char* name; };
+  const Case cases[3] = {{bo::MultiSeamOp::Cut, msx::volCut(), "CUT"},
+                         {bo::MultiSeamOp::Common, msx::volCommon(), "COMMON"},
+                         {bo::MultiSeamOp::Fuse, msx::volUnion(), "FUSE"}};
+  for (const Case& c : cases) {
+    bo::MultiSeamReport rep;
+    const auto r = bo::freeformBooleanMultiSeam(A, B, c.op, 0.01, &rep);
+    // A real watertight result solid (never NULL for this reachable pose).
+    CC_CHECK(!r.isNull());
+    CC_CHECK(rep.decline == bo::MultiSeamDecline::Ok);
+    CC_CHECK(rep.weldOk);
+    CC_CHECK(rep.weldDecline == bo::MultiFaceDecline::Ok);
+    CC_CHECK(rep.weldWatertight);
+    CC_CHECK(rep.weldFaceCount >= 6);
+    // The whole substrate is consumed + proven en route.
+    CC_CHECK(rep.graphBuilt && rep.arcsSplitOk && rep.wallJunctionSplitOk);
+    CC_CHECK(rep.junctionDecline == bo::JunctionDecline::Ok && rep.junctionCrossings == 2);
+    CC_CHECK(rep.junctionPlaneResidual <= 1e-7 * (diag > 1.0 ? diag : 1.0));
+    // Enclosed volume matches the CLOSED-FORM corner oracle to the curved-tessellation
+    // band (deflection 0.01); no tolerance is weakened — the mesh converges from above.
+    CC_CHECK(std::fabs(rep.resultVolume - c.oracle) <= 2e-2 * c.oracle);
+  }
+}
 
-  // CUT and COMMON take the same honest-out (the L-shape / corner is not a half-space of
-  // A, so unlike the single-seam slice they cannot delegate to freeformHalfSpaceCut).
-  bo::MultiSeamReport repC, repI;
-  const auto rc = bo::freeformBooleanMultiSeam(A, B, bo::MultiSeamOp::Cut, 0.01, &repC);
-  const auto ri = bo::freeformBooleanMultiSeam(A, B, bo::MultiSeamOp::Common, 0.01, &repI);
-  CC_CHECK(rc.isNull() && repC.decline == bo::MultiSeamDecline::MultiFaceWeldUnreachable);
-  CC_CHECK(ri.isNull() && repI.decline == bo::MultiSeamDecline::MultiFaceWeldUnreachable);
+// ── Volume monotonically converges to the closed-form oracle as deflection tightens ──
+CC_TEST(multi_face_weld_volume_converges_across_deflection) {
+  const auto A = ffx::buildOperand();
+  const auto B = msx::cornerBox();
+  double prevErr = 1e30;
+  for (double d : {0.02, 0.01, 0.005}) {
+    bo::MultiSeamReport rep;
+    const auto r = bo::freeformBooleanMultiSeam(A, B, bo::MultiSeamOp::Cut, d, &rep);
+    CC_CHECK(!r.isNull() && rep.weldWatertight);
+    const double err = std::fabs(rep.resultVolume - msx::volCut());
+    CC_CHECK(err <= prevErr + 1e-9);   // monotone-converging (curved tessellation)
+    prevErr = err;
+  }
+  CC_CHECK(prevErr <= 5e-3 * msx::volCut());  // ≤ 0.5% at the tightest deflection
 }
 
 // ── Honest-decline envelope: never emit a leaky/partial/wrong solid ───────────────

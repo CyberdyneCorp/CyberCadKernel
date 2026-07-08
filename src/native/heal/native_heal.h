@@ -34,6 +34,16 @@
 //                                  branching boundary, or a cap that fails self-verify
 //                                  stay Unhealed{OpenShell} / {SelfVerifyFailed}, input
 //                                  unchanged. Default false ⇒ this pass is a no-op.
+//   7. MULTI PLANAR-HOLE CAP     — OPT-IN (HealOptions.capMultiplePlanarHoles == true): the
+//                                  strict superset of pass 6 for a shell missing TWO OR MORE
+//                                  faces. When EVERY surviving boundary ring is a DISJOINT
+//                                  simple cycle, coplanar within tolerance, and a simple
+//                                  polygon, synthesize ONE cap per hole on the holes' existing
+//                                  shared nodes and re-sew. ALL-OR-NOTHING: any branching /
+//                                  non-planar / self-intersecting ring declines the WHOLE set
+//                                  (no partial closure) → Unhealed{OpenShell}, input unchanged.
+//                                  When false the single-hole pass 6 runs unchanged (every
+//                                  existing caller byte-identical). Default false ⇒ no-op.
 //
 // ── HONEST SCOPE (asymptotic completeness, like SSI S4-f — NOT a guarantee) ──
 // This slice heals the coincident-within-tolerance / degenerate / orientation defect

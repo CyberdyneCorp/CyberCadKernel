@@ -116,6 +116,17 @@ static std::vector<Quad> cubeMissingTwoOpposite(double jitter) {
   return q;
 }
 
+// A unit cube MISSING two ADJACENT faces (+Z and +X). The two exclusively-shared corners
+// (c5, c6) are orphaned (each left on a single face), so the sew measures a residual ≫ tol
+// and the wrap-around boundary is non-planar — out of scope for BOTH the single- and
+// multi-hole cap passes (native declines; OCCT cannot invent the missing faces either).
+static std::vector<Quad> cubeMissingTwoAdjacent(double jitter) {
+  std::vector<Quad> q = cubeQuads(jitter);
+  q.erase(q.begin() + 5);  // drop +X (index 5)
+  q.erase(q.begin() + 1);  // then drop +Z (index 1)
+  return q;
+}
+
 // ── Native soup builder ────────────────────────────────────────────────────────
 static topo::Shape nativeQuadFace(const Quad& q, bool reversed) {
   const m::Vec3 ref = std::fabs(q.n.z()) < 0.9 ? m::Vec3{0,0,1} : m::Vec3{1,0,0};
@@ -194,6 +205,36 @@ static TopoDS_Shape occtSoupWithPlanarCap(const std::vector<Quad>& openQuads,
     BRepBuilderAPI_MakeFace capMf(capPlane, capPoly.Wire());
     if (capMf.IsDone()) bb.Add(comp, capMf.Face());
   }
+  return comp;
+}
+
+// The OCCT MULTI reference: the open-shell faces PLUS one planar cap PER hole, each a
+// BRepBuilderAPI_MakeFace(gp_Pln, boundaryWire) over its four boundary corners. sewAndFix
+// then welds the completed soup — the OCCT 1:1 analogue of the native multi-hole cap.
+static TopoDS_Shape occtSoupWithTwoPlanarCaps(const std::vector<Quad>& openQuads,
+                                              const m::Point3 capA[4], const m::Dir3& nA,
+                                              const m::Point3 capB[4], const m::Dir3& nB) {
+  BRep_Builder bb; TopoDS_Compound comp; bb.MakeCompound(comp);
+  for (const Quad& q : openQuads) {
+    BRepBuilderAPI_MakePolygon poly;
+    for (int i = 0; i < 4; ++i) poly.Add(gp_Pnt(q.p[i].x, q.p[i].y, q.p[i].z));
+    poly.Close();
+    if (!poly.IsDone()) continue;
+    const gp_Pln plane(gp_Pnt(q.p[0].x, q.p[0].y, q.p[0].z), gp_Dir(q.n.x(), q.n.y(), q.n.z()));
+    BRepBuilderAPI_MakeFace mf(plane, poly.Wire());
+    if (mf.IsDone()) bb.Add(comp, mf.Face());
+  }
+  auto addCap = [&](const m::Point3 cap[4], const m::Dir3& n) {
+    BRepBuilderAPI_MakePolygon capPoly;
+    for (int i = 0; i < 4; ++i) capPoly.Add(gp_Pnt(cap[i].x, cap[i].y, cap[i].z));
+    capPoly.Close();
+    if (!capPoly.IsDone()) return;
+    const gp_Pln capPlane(gp_Pnt(cap[0].x, cap[0].y, cap[0].z), gp_Dir(n.x(), n.y(), n.z()));
+    BRepBuilderAPI_MakeFace capMf(capPlane, capPoly.Wire());
+    if (capMf.IsDone()) bb.Add(comp, capMf.Face());
+  };
+  addCap(capA, nA);
+  addCap(capB, nB);
   return comp;
 }
 
@@ -337,6 +378,53 @@ int main() {
     const bool ok = !nr.healed() && nr.reason == heal::UnhealedReason::OpenShell &&
                     nr.metrics.nCappedFaces == 0 && !orr.watertight;
     check("cap-two-hole decline matches OCCT", ok, buf);
+  }
+
+  // ── M5 TAIL: MULTI PLANAR-HOLE CAP (opt-in capMultiplePlanarHoles) ────────────
+  // In-scope: a unit cube missing BOTH −Z and +Z faces → two disjoint planar square
+  // holes. Native (capMultiplePlanarHoles = true) synthesizes ONE cap per hole; the OCCT
+  // reference completes the SAME soup with the SAME two caps
+  // (BRepBuilderAPI_MakeFace(gp_Pln, wire) ×2) + ShapeFix. Both land a watertight closed
+  // 6-face solid with volume ≈ 1 — the multi-hole native win matches OCCT 1:1.
+  {
+    const m::Point3 topCap[4]    = {{0,0,1},{1,0,1},{1,1,1},{0,1,1}};  // z=1 hole (+Z outward)
+    const m::Point3 bottomCap[4] = {{0,0,0},{0,1,0},{1,1,0},{1,0,0}};  // z=0 hole (−Z outward)
+    const heal::HealResult nr =
+        heal::healShell(nativeSoup(cubeMissingTwoOpposite(1e-6)),
+                        heal::HealOptions{tol, 0.0, false, true});
+    const cyber::occt::SewFixResult orr = cyber::occt::sewAndFix(
+        occtSoupWithTwoPlanarCaps(cubeMissingTwoOpposite(1e-6), topCap, m::Dir3{0,0,1},
+                                  bottomCap, m::Dir3{0,0,-1}), tol);
+    const double nv = nr.healed() ? nativeVolume(nr.shape) : 0.0;
+    char buf[200];
+    std::snprintf(buf, sizeof buf,
+                  "(native V=%.5f watertight=%d capped=%d | OCCT V=%.5f valid=%d)", nv,
+                  (int)nr.metrics.watertight, nr.metrics.nCappedFaces, orr.volume,
+                  (int)orr.validSolid);
+    const bool ok = nr.healed() && nr.metrics.watertight && nr.metrics.nCappedFaces == 2 &&
+                    orr.validSolid && std::fabs(nv - 1.0) < 1e-3 &&
+                    std::fabs(std::fabs(orr.volume) - 1.0) < 1e-3 &&
+                    std::fabs(nv - std::fabs(orr.volume)) < 1e-3;
+    check("cap-two-opposite-holes matches OCCT caps", ok, buf);
+  }
+
+  // Out-of-scope for the multi pass too: two ADJACENT missing faces orphan the two
+  // exclusively-shared corners, so the boundary is a non-planar wrap (native declines,
+  // capped=0). OCCT sewing the same open soup (no reference cap) cannot invent the
+  // missing faces and leaves the shell open — parity of decline (the asymptotic tail).
+  {
+    const heal::HealResult nr =
+        heal::healShell(nativeSoup(cubeMissingTwoAdjacent(1e-6)),
+                        heal::HealOptions{tol, 0.0, false, true});
+    const cyber::occt::SewFixResult orr =
+        cyber::occt::sewAndFix(occtSoup(cubeMissingTwoAdjacent(1e-6)), tol);
+    char buf[200];
+    std::snprintf(buf, sizeof buf,
+                  "(native UNHEALED reason=%d capped=%d residual=%.4g | OCCT valid=%d watertight=%d)",
+                  (int)nr.reason, nr.metrics.nCappedFaces, nr.metrics.maxResidualGap,
+                  (int)orr.validSolid, (int)orr.watertight);
+    const bool ok = !nr.healed() && nr.metrics.nCappedFaces == 0 && !orr.watertight;
+    check("cap-two-adjacent decline matches OCCT", ok, buf);
   }
 
   std::printf("== %d passed, %d failed ==\n", g_pass, g_fail);

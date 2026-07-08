@@ -39,12 +39,21 @@
 //      capped candidate that does not is discarded (`Unhealed{SelfVerifyFailed}`).
 //      Self-verify — not this pass's bookkeeping — is the authoritative closure check.
 //
+// ── MULTI-HOLE SUPERSET (opt-in `capMultiplePlanarHoles`) ────────────────────────
+// `capAllPlanarHoles` (below) generalizes this to a shell missing TWO OR MORE faces:
+// it reuses the IDENTICAL bestFitPlane / maxPlaneDeviation / isSimplePolygon layers,
+// only tracing ALL disjoint boundary cycles (`traceAllLoops`) instead of one. It is a
+// strict superset — ALL-OR-NOTHING: every hole must be a disjoint simple coplanar
+// non-self-intersecting cycle or the WHOLE set is declined (no partial closure). The
+// landed single-hole `capPlanarHole` / `traceSingleLoop` are left BYTE-IDENTICAL and
+// still run when `capMultiplePlanarHoles == false`.
+//
 // ── ASYMPTOTIC-TAIL CAVEAT ───────────────────────────────────────────────────────
-// This closes only a SINGLE simple planar hole. Two or more missing faces, a
-// non-planar / curved hole, a self-intersecting boundary, pcurve reconstruction, and
-// self-intersecting-wire repair remain OCCT `ShapeFix`'s moat and are declined
-// honestly (never claimed here). No new `UnhealedReason` is introduced: `OpenShell`
-// already means exactly "boundary edges survive after sewing".
+// Even with the multi-hole superset, this closes only DISJOINT SIMPLE PLANAR holes.
+// A non-planar / curved hole, a self-intersecting boundary, a branching boundary,
+// pcurve reconstruction, and self-intersecting-wire repair remain OCCT `ShapeFix`'s
+// moat and are declined honestly (never claimed here). No new `UnhealedReason` is
+// introduced: `OpenShell` already means exactly "boundary edges survive after sewing".
 //
 // OCCT-FREE. Uses src/native/{math,topology} + the FaceLoop / SewResult sew types
 // only. clang++ -std=c++20. Header-only.
@@ -78,6 +87,19 @@ struct CapResult {
   std::optional<FaceLoop> cap;  ///< the synthesized cap face-loop (empty ⇒ declined)
   bool declined = true;         ///< true ⇒ no cap (out of bound / not a simple hole)
   double planarityDev = 0.0;    ///< max coplanarity deviation of the capped loop (≤ tol)
+};
+
+/// Outcome of the multi-hole cap pass (opt-in `capMultiplePlanarHoles`). ALL-OR-NOTHING:
+/// when `declined == true` no cap was synthesized (some hole is outside the bound —
+/// branching, non-planar, or self-intersecting) and `caps` is empty; heal.cpp then
+/// keeps the honest `Unhealed{OpenShell}` verdict with the input unchanged (never a
+/// partial closure). When `declined == false`, `caps` carries ONE cap FaceLoop per
+/// disjoint simple planar hole (each on its EXISTING shared nodes) that heal.cpp
+/// appends to the working soup before the UNCHANGED re-sew + self-verify.
+struct MultiCapResult {
+  std::vector<FaceLoop> caps;  ///< one cap FaceLoop per hole (empty ⇒ declined)
+  bool declined = true;        ///< true ⇒ no caps (any hole out of bound / not simple)
+  double planarityDev = 0.0;   ///< max coplanarity deviation across all capped loops (≤ tol)
 };
 
 namespace detail {
@@ -156,6 +178,41 @@ inline std::vector<VId> traceSingleLoop(const BoundaryGraph& g) {
   if (cur != start) return {};                 // did not close cleanly
   if (loop.size() != g.adj.size()) return {};  // a second disjoint loop exists
   return loop;
+}
+
+// Trace the boundary into ONE OR MORE disjoint ordered cycles of vertex nodes — the
+// multi-hole generalization of traceSingleLoop (used only by the opt-in
+// `capMultiplePlanarHoles` pass; the landed single-hole path is untouched). Returns
+// the cycles ONLY when EVERY boundary vertex has exactly two incident boundary edges
+// AND every connected component closes into a simple cycle; returns empty (⇒ decline
+// the WHOLE set) for a branching / dangling boundary (any degree != 2) or a component
+// that does not close. Each returned loop lists its vertices once (not repeated at the
+// end); the loops are vertex-disjoint and together cover ALL boundary vertices.
+inline std::vector<std::vector<VId>> traceAllLoops(const BoundaryGraph& g) {
+  if (g.adj.size() < 3) return {};  // a hole needs ≥ 3 boundary vertices
+  for (const auto& [v, nbrs] : g.adj)
+    if (nbrs.size() != 2) return {};  // branching / dangling boundary → decline whole
+
+  std::unordered_map<VId, bool> seen;
+  seen.reserve(g.adj.size());
+  std::vector<std::vector<VId>> loops;
+  for (const auto& kv : g.adj) {
+    const VId startV = kv.first;
+    if (seen[startV]) continue;  // already consumed by an earlier component's walk
+    std::vector<VId> loop;
+    VId prev = nullptr, cur = startV;
+    do {
+      seen[cur] = true;
+      loop.push_back(cur);
+      const std::vector<VId>& nbrs = g.adj.at(cur);
+      const VId next = (nbrs[0] != prev) ? nbrs[0] : nbrs[1];
+      prev = cur;
+      cur = next;
+    } while (cur != startV && loop.size() <= g.adj.size());
+    if (cur != startV) return {};  // this component did not close → decline whole
+    loops.push_back(std::move(loop));
+  }
+  return loops;
 }
 
 // The loop's best-fit plane, as (centroid, Newell unit normal).
@@ -249,6 +306,54 @@ inline CapResult capPlanarHole(const SewResult& sr, double tol) {
   out.cap = std::move(cap);
   out.declined = false;
   out.planarityDev = dev;
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// capAllPlanarHoles — the opt-in `capMultiplePlanarHoles` generalization: attempt to
+// synthesize ONE cap FaceLoop per disjoint simple planar hole in the sewn shell. This
+// is a strict superset of `capPlanarHole`: it reuses the IDENTICAL bestFitPlane /
+// maxPlaneDeviation / isSimplePolygon layers per loop, only trading `traceSingleLoop`
+// for `traceAllLoops`. The decision is ALL-OR-NOTHING — if the boundary branches, or
+// ANY loop is non-planar or self-intersecting, the WHOLE set is declined (empty caps)
+// and heal.cpp keeps `Unhealed{OpenShell}` with the input unchanged (never a partial
+// closure). heal.cpp appends every emitted cap to the working soup and re-runs the
+// UNCHANGED sew + self-verify, which remains the authoritative closure check.
+// ─────────────────────────────────────────────────────────────────────────────
+inline MultiCapResult capAllPlanarHoles(const SewResult& sr, double tol) {
+  MultiCapResult out;  // declined by default; caps empty
+
+  // Layer 2 (multi): the boundary must resolve into disjoint simple cycles.
+  const detail::BoundaryGraph g = detail::boundaryGraph(sr);
+  const std::vector<std::vector<detail::VId>> loopIds = detail::traceAllLoops(g);
+  if (loopIds.empty()) return out;  // branching / non-closing / < 3 verts ⇒ decline whole
+
+  std::vector<FaceLoop> caps;
+  caps.reserve(loopIds.size());
+  double worstDev = 0.0;
+  for (const std::vector<detail::VId>& ids : loopIds) {
+    std::vector<math::Point3> loop;
+    loop.reserve(ids.size());
+    for (const detail::VId v : ids) loop.push_back(g.pos.at(v));
+
+    // Layers 3 + 4 per loop (UNCHANGED helpers). ANY failure declines the WHOLE set.
+    const auto [centroid, normal] = detail::bestFitPlane(loop);
+    const double dev = detail::maxPlaneDeviation(loop, centroid, normal);
+    if (dev > tol) return out;                                        // non-planar hole
+    if (!detail::isSimplePolygon(loop, centroid, normal)) return out;  // self-intersecting
+
+    FaceLoop cap;
+    cap.corners = std::move(loop);
+    cap.normal = normal;
+    cap.valid = true;
+    caps.push_back(std::move(cap));
+    worstDev = std::max(worstDev, dev);
+  }
+
+  // Every loop passed all layers — emit one cap per hole (heal.cpp re-sews + self-verifies).
+  out.caps = std::move(caps);
+  out.declined = false;
+  out.planarityDev = worstDev;
   return out;
 }
 

@@ -87,14 +87,37 @@ HealResult healShell(const topo::Shape& shape, const HealOptions& opts) {
     }
   }
 
-  // Opt-in bounded planar-hole capping (M5 tail): when a caller enables it, a shell
+  // Opt-in bounded MULTI planar-hole capping (M5 tail superset): when a caller enables
+  // capMultiplePlanarHoles, a shell that sews cleanly but is MISSING two or more faces
+  // leaves two or more disjoint rings of boundary edges. If EVERY ring is a disjoint
+  // simple cycle, coplanar within `tol`, and a simple polygon, synthesize ONE cap face
+  // per hole on the holes' existing shared nodes and re-sew (cap_hole.h,
+  // capAllPlanarHoles). ALL-OR-NOTHING: any branching / non-planar / self-intersecting
+  // ring declines the WHOLE set (no partial closure) and the surviving boundary edges
+  // are reported honestly below. With capMultiplePlanarHoles == false this block is a
+  // no-op (dead-guarded) and the path is byte-identical to the landed slices.
+  if (sr.boundaryEdges > 0 && opts.capMultiplePlanarHoles) {
+    const MultiCapResult caps = capAllPlanarHoles(sr, tol);
+    if (!caps.declined && !caps.caps.empty()) {
+      m.nCappedFaces = static_cast<int>(caps.caps.size());
+      m.maxCapPlanarityDev = caps.planarityDev;
+      for (const FaceLoop& c : caps.caps) work.push_back(c);
+      sr = sew(work, tol);  // re-sew with every cap appended; boundary edges recomputed
+      m.nMergedVerts = sr.mergedVerts;
+      m.nMergedEdges = sr.mergedEdges;
+    }
+  }
+
+  // Opt-in bounded SINGLE planar-hole capping (M5 tail): when a caller enables it, a shell
   // that sews cleanly but is simply MISSING one face leaves a single ring of boundary
   // edges. If that boundary is exactly one simple cycle, coplanar within `tol`, and a
   // simple polygon, synthesize ONE cap face on the hole's existing shared nodes and
   // re-sew (cap_hole.h). Any hole outside the bound leaves `declined` and the surviving
-  // boundary edges are reported honestly below. With capPlanarHoles == false this block
-  // is a no-op (dead-guarded) and the path is byte-identical to the landed slices.
-  if (sr.boundaryEdges > 0 && opts.capPlanarHoles) {
+  // boundary edges are reported honestly below. This landed branch runs ONLY when the
+  // multi-hole superset above is NOT enabled, so with capMultiplePlanarHoles == false
+  // (every existing caller) the guard is unchanged and the path is byte-identical to the
+  // landed slices; with capPlanarHoles == false it is likewise a no-op.
+  if (sr.boundaryEdges > 0 && opts.capPlanarHoles && !opts.capMultiplePlanarHoles) {
     const CapResult cap = capPlanarHole(sr, tol);
     if (!cap.declined && cap.cap) {
       m.nCappedFaces = 1;

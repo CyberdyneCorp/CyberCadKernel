@@ -193,6 +193,23 @@ std::vector<topo::Shape> cubeMissingTopNonPlanar(double lift) {
   return f;                                                                  // +Z missing → non-planar top loop
 }
 
+// A unit cube MISSING both −Z and +Z faces (two disjoint square holes) with the top
+// corner c[6]=(1,1,1) lifted by `lift`. c[6] is carried only by the axis-aligned +X
+// (x=1) and +Y (y=1) side faces, so lifting purely in z keeps BOTH planar and keeps
+// c[6] shared (residual stays 0). The BOTTOM hole 0-1-2-3 is planar (z=0); the TOP hole
+// 4-5-6-7 is NON-PLANAR (corner 6 off z=1). This isolates the multi-hole ALL-OR-NOTHING
+// rule: one loop passes planarity, the other fails, so the WHOLE set must decline.
+std::vector<topo::Shape> cubeMissingTopBottomOneLifted(double lift) {
+  const Corners k = cubeCorners();
+  const m::Point3 c6L{k.c[6].x, k.c[6].y, k.c[6].z + lift};
+  std::vector<topo::Shape> f;
+  f.push_back(quadFace(k.c[0], k.c[1], k.c[5], k.c[4], m::Dir3{0, -1, 0}));  // −Y
+  f.push_back(quadFace(k.c[3], k.c[7], c6L, k.c[2], m::Dir3{0, 1, 0}));      // +Y (y=1, planar)
+  f.push_back(quadFace(k.c[0], k.c[4], k.c[7], k.c[3], m::Dir3{-1, 0, 0}));  // −X
+  f.push_back(quadFace(k.c[1], k.c[2], c6L, k.c[5], m::Dir3{1, 0, 0}));      // +X (x=1, planar)
+  return f;  // −Z + +Z missing → bottom loop planar, top loop non-planar (corner 6 lifted)
+}
+
 const heal::HealOptions kOpts{1e-4};
 
 // Verify a healed solid meshes watertight with the expected enclosed volume.
@@ -421,6 +438,85 @@ CC_TEST(heal_cap_non_planar_hole_declines) {
   CC_CHECK(r.metrics.maxResidualGap == 0.0);              // single cycle, no orphaned corner
   CC_CHECK_EQ(r.metrics.nCappedFaces, 0);
   CC_CHECK(r.shape.isSameGeometry(input));  // input UNCHANGED
+}
+
+// ── (J) MULTI-HOLE CAP — two OPPOSITE missing planar faces → both capped watertight ─
+// M5 tail: −Z and +Z are removed → TWO disjoint coplanar square holes (z=0, z=1). With
+// capMultiplePlanarHoles enabled the pass synthesizes one cap per hole on the holes'
+// shared nodes and re-sews to a watertight unit cube (analytic V = 1.0, no OCCT).
+CC_TEST(heal_cap_two_opposite_planar_holes_heal) {
+  // Jitter 1e-7 (≪ heal tol 1e-4) keeps the six faces topologically independent (the
+  // unifier must merge them) while the two capped loops stay coplanar to O(1e-8); the
+  // tessellated volume is then within 1e-6 of the exact unit cube. The jitter is the
+  // input's, NOT a weakened heal tolerance (which stays 1e-4).
+  auto f = cubeFaceSoupDropping(1e-7, {0, 1});  // drop −Z and +Z → two disjoint planar loops
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r = heal::healShell(input, heal::HealOptions{1e-4, 0.0, false, true});
+  CC_CHECK(r.healed());
+  CC_CHECK(r.metrics.watertight);
+  CC_CHECK(r.metrics.valid);
+  CC_CHECK_EQ(r.metrics.nCappedFaces, 2);                     // exactly two caps synthesized
+  CC_CHECK(r.metrics.maxCapPlanarityDev <= kOpts.tolerance);  // both loops coplanar within tol
+  CC_CHECK(r.metrics.maxResidualGap == 0.0);                  // fully closed after capping
+  CC_CHECK(watertightVolumeNear(r.shape, 1.0, 1e-6));         // exact unit cube
+}
+
+// ── (J2) MULTI ALL-OR-NOTHING — two holes, one NON-PLANAR → the WHOLE set declines ──
+// Two disjoint loops: bottom planar, top non-planar (corner 6 lifted). One loop failing
+// the planarity layer declines the ENTIRE set — never a partial (bottom-only) closure.
+CC_TEST(heal_cap_multi_mixed_planarity_declines_whole) {
+  auto f = cubeMissingTopBottomOneLifted(0.5);  // bottom planar, top lifted 0.5 ≫ tol
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r = heal::healShell(input, heal::HealOptions{1e-4, 0.0, false, true});
+  CC_CHECK(!r.healed());
+  CC_CHECK(r.reason == heal::UnhealedReason::OpenShell);  // one loop non-planar → decline whole
+  CC_CHECK(r.metrics.maxResidualGap == 0.0);              // both cycles closed, no orphaned corner
+  CC_CHECK_EQ(r.metrics.nCappedFaces, 0);                // ALL-OR-NOTHING: no partial closure
+  CC_CHECK(r.shape.isSameGeometry(input));               // input UNCHANGED
+}
+
+// ── (J3) MULTI ADJACENT — two ADJACENT missing faces are out of scope, decline ───────
+// Removing two adjacent faces (+Z and +X) ORPHANS their two exclusively-shared corners
+// (c5, c6 now belong to a single remaining face each), so the sew cannot pair them and
+// measures a residual ≈ 1 — a genuine beyond-tolerance hole, not a clean cap loop. The
+// multi-cap pass declines (the wrap-around boundary is non-planar) and the honest-out
+// reports GapBeyondTolerance. Either way: no cap, input unchanged — never a fake closure.
+CC_TEST(heal_cap_multi_adjacent_declines) {
+  auto f = cubeFaceSoupDropping(1e-6, {1, 5});  // drop +Z and +X → orphaned corners c5,c6
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r = heal::healShell(input, heal::HealOptions{1e-4, 0.0, false, true});
+  CC_CHECK(!r.healed());
+  CC_CHECK(r.reason == heal::UnhealedReason::GapBeyondTolerance);  // orphaned corners ≫ tol
+  CC_CHECK(r.metrics.maxResidualGap > kOpts.tolerance);           // honest measured residual
+  CC_CHECK_EQ(r.metrics.nCappedFaces, 0);
+  CC_CHECK(r.shape.isSameGeometry(input));  // input UNCHANGED
+}
+
+// ── (J4) MULTI DEFAULT-OFF — two opposite holes, capMultiplePlanarHoles == false ─────
+// The new field defaults false. Even with the landed single-hole flag on, two disjoint
+// loops decline EXACTLY as heal_cap_two_holes_declines: the landed path is byte-identical.
+CC_TEST(heal_cap_multi_default_off_declines) {
+  auto f = cubeFaceSoupDropping(1e-6, {0, 1});  // drop −Z and +Z → two disjoint loops
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  // capPlanarHoles == true, capMultiplePlanarHoles == false (explicit).
+  const heal::HealResult r = heal::healShell(input, heal::HealOptions{1e-4, 0.0, true, false});
+  CC_CHECK(!r.healed());
+  CC_CHECK(r.reason == heal::UnhealedReason::OpenShell);
+  CC_CHECK_EQ(r.metrics.nCappedFaces, 0);   // single-hole path caps exactly one; two → decline
+  CC_CHECK(r.shape.isSameGeometry(input));  // input UNCHANGED
+}
+
+// ── (J5) SELF-INTERSECTING LAYER — the reused simple-polygon test rejects a bowtie ───
+// The multi-hole pass reuses the UNCHANGED isSimplePolygon layer per loop; a loop that
+// projects to a self-crossing polygon is refused (which declines the whole set). This
+// exercises that layer directly on a planar bowtie vs a convex square.
+CC_TEST(heal_cap_self_intersecting_layer_rejects) {
+  const m::Point3 centroid{0.5, 0.5, 0.0};
+  const m::Dir3 n{0, 0, 1};
+  const std::vector<m::Point3> square{{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+  const std::vector<m::Point3> bowtie{{0, 0, 0}, {1, 1, 0}, {1, 0, 0}, {0, 1, 0}};
+  CC_CHECK(heal::detail::isSimplePolygon(square, centroid, n));    // convex → simple
+  CC_CHECK(!heal::detail::isSimplePolygon(bowtie, centroid, n));   // crossing → declined
 }
 
 CC_RUN_ALL()

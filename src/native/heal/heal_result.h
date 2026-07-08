@@ -104,6 +104,23 @@ struct HealOptions {
   /// and any hole outside the bound (≥ 2 holes, non-planar, self-intersecting,
   /// branching) stays `Unhealed{OpenShell}` with the input unchanged. See cap_hole.h.
   bool capPlanarHoles = false;
+
+  /// Opt-in synthesis of ONE planar cap PER simple planar hole for a shell missing
+  /// TWO OR MORE faces (the M5 healing tail — a strict superset of `capPlanarHoles`).
+  /// When `false` (default) this pass is a NO-OP: `healShell` is byte-identical to the
+  /// landed sew / unify / orientation + gap-bridging + single-hole cap slices, so a
+  /// two-hole soup still returns `Unhealed{OpenShell}` exactly as `capPlanarHoles`
+  /// declines it. When `true`, a shell that sews cleanly but is missing ≥ 1 face MAY be
+  /// closed by synthesizing one planar cap per hole, but ONLY when the surviving
+  /// boundary edges resolve into disjoint simple cycles that are EACH coplanar within
+  /// `tolerance` and non-self-intersecting; each cap is then subject to the UNCHANGED
+  /// mandatory self-verify. The decision is ALL-OR-NOTHING: if ANY loop branches, is
+  /// non-planar, or self-intersects, the WHOLE set is declined (no partial closure) and
+  /// the shell stays `Unhealed{OpenShell}` with the input unchanged. The tolerance is
+  /// NEVER weakened to force a cap. When this is `true` the single-hole `capPlanarHoles`
+  /// branch is superseded (this pass caps one-or-more holes via the same layers). See
+  /// cap_hole.h (`capAllPlanarHoles(sr, tol)` / `traceAllLoops`).
+  bool capMultiplePlanarHoles = false;
 };
 
 }  // namespace cybercad::native::heal

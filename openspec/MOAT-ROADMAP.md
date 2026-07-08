@@ -301,8 +301,26 @@ bridging, arbitrary broken industrial B-rep**. Gates trustworthy foreign import 
   declines matching OCCT leaving it open. EMPIRICAL NOTE: OCCT's `MakeFace(gp_Pln, wire)` tolerates a
   mildly-non-planar wire (keeps 3D vertices) and caps it, so native declining a non-planar hole is
   native being MORE conservative and DEFERRING to OCCT — not a shared decline. REMAINING (asymptotic
-  tail): pcurve reconstruction, self-intersecting-wire repair, ≥ 2-hole / non-planar / curved
-  missing-face synthesis, arbitrary broken industrial B-rep.
+  tail): pcurve reconstruction, self-intersecting-wire repair, non-planar / curved missing-face
+  synthesis, arbitrary broken industrial B-rep.
+- **Status — tail slice LANDED (opt-in MULTI planar-hole cap).** Strict superset of the single
+  planar-hole cap: a shell MISSING two or more faces — which the healer DECLINES — now closes when
+  EVERY surviving boundary ring is a disjoint simple cycle, coplanar within `tolerance`, and a
+  simple polygon. `cap_hole.h` adds `traceAllLoops` (all disjoint degree-2 boundary cycles) +
+  `capAllPlanarHoles`, reusing the IDENTICAL best-fit-plane / planarity / simple-polygon layers per
+  ring; the landed single-hole `traceSingleLoop` / `capPlanarHole` are BYTE-IDENTICAL. ALL-OR-NOTHING:
+  if any ring branches, is non-planar, or self-intersects, the WHOLE set is declined (no partial
+  closure), and the UNCHANGED mandatory self-verify remains authoritative. Opt-in
+  (`capMultiplePlanarHoles=false` default OFF; when false the single-hole path runs unchanged so every
+  existing caller is byte-identical); NEVER weakens the weld tolerance; no new `UnhealedReason`.
+  Verified both gates: host analytic (`test_native_heal` 23/23 — cube missing two OPPOSITE faces caps
+  to V=1.0 with nCappedFaces=2; mixed-planarity two-hole set declines the WHOLE set; two ADJACENT
+  missing faces orphan the shared corners → `GapBeyondTolerance` decline; the reused simple-polygon
+  layer rejects a bowtie; default-off byte-identical) and native-vs-OCCT (`run-sim-native-heal` 10/10
+  — the two caps match an OCCT reference `BRepBuilderAPI_MakeFace(gp_Pln, wire)` ×2 + `ShapeFix` at
+  V=1.0, and the two-adjacent case declines matching OCCT leaving it open). REMAINING (asymptotic
+  tail): pcurve reconstruction, self-intersecting-wire repair, non-planar / curved missing-face
+  synthesis, arbitrary broken industrial B-rep.
 
 ### M6 — Robustness completeness bar (S4-f + coverage) · ongoing · gates drop-occt
 The measured-recall / completeness discipline (SSI S4-f landed a first slice): below any fixed

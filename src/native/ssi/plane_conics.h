@@ -152,12 +152,18 @@ inline IntersectionResult intersectPlaneCylinder(const math::Plane& pl, const ma
     return IntersectionResult::ok(makeCircle(centre, R, n, pl.pos.x));
   }
 
-  // ── (3) oblique: Ellipse. Semi-minor R, semi-major R/s. ─────────────────────
+  // ── (3) oblique: Ellipse. Semi-minor R, semi-major R/|cos θ| = R/|n·a|. ──────
+  // θ = angle(axis, plane normal). The section ellipse's minor axis is R (⟂ the
+  // tilt), and its major axis is R/|cos θ| — it must → R as the plane approaches
+  // perpendicular (θ→0, na→1, a circle) and grow as the plane tilts toward the
+  // axis (na→0). (Prior code used R/s = R/sin θ, which is inverted: it blew the
+  // ellipse OUT of the cylinder near the circle case. Fixed; regression pinned in
+  // test_native_ssi_s4_classification::plane_cylinder_oblique_ellipse_on_cylinder.)
   // Major axis direction: the in-plane direction of steepest tilt = the plane
   // component of the cylinder axis, normalized. Minor axis = n × major (⟂ tilt).
   const Vec3 aInPlane = a - n.vec() * na;      // project axis into the plane
   const Dir3 major{aInPlane};                  // semi-major direction (a/s tilt)
-  return IntersectionResult::ok(makeEllipse(centre, R / s, R, n, major));
+  return IntersectionResult::ok(makeEllipse(centre, R / std::fabs(na), R, n, major));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

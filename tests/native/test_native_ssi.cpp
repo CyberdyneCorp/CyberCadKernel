@@ -160,6 +160,23 @@ CC_TEST(plane_cylinder) {
       return std::max(distToPlane(pl, x), distToCylinder(cy, x)); }, 1e-9, ok);
     CC_CHECK(ok);
   }
+  // (3b) REGRESSION (plane_conics.h oblique semi-major fix): a 30° tilt, where
+  // sin θ ≠ cos θ, so the buggy R/sin θ (= 4) and the correct R/|cos θ| = R/|n·a|
+  // (= 4/√3 ≈ 2.309) DIFFER. The prior code returned the inverted major axis, whose
+  // ellipse LEFT the cylinder (residual ~2); GS2 surfaced it. Pins both the value and
+  // the on-surface invariant. The existing 45° case above cannot catch it (sin=cos).
+  {
+    const double c = std::cos(kPi / 6), s = std::sin(kPi / 6);  // 30°
+    nmath::Plane pl{Ax3{{0, 0, 0}, {1, 0, 0}, {0, c, s}, {0, -s, c}}};  // normal tilted 30°
+    auto r = ssi::intersect_surfaces(ssi::Surface::of(pl), ssi::Surface::of(cy));
+    CC_CHECK(r.ok_() && r.curves[0].kind == ssi::CurveKind::Ellipse);
+    CC_CHECK(std::fabs(r.curves[0].b - 2.0) < 1e-9);                      // semi-minor R
+    CC_CHECK(std::fabs(r.curves[0].a - 2.0 / std::cos(kPi / 6)) < 1e-9);  // R/cos θ, NOT R/sin θ=4
+    bool ok = true;
+    curveLiesOn(r.curves[0], [&](const Point3& x) {
+      return std::max(distToPlane(pl, x), distToCylinder(cy, x)); }, 1e-9, ok);
+    CC_CHECK(ok);  // the oblique section ellipse lies ON the cylinder (buggy R/sinθ did not)
+  }
   // (1) ∥ axis, plane x=0.5 through the cylinder → 2 rulings at y=±√(4−0.25)
   {
     nmath::Plane pl{Ax3{{0.5, 0, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 0}}};  // x=0.5

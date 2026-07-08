@@ -373,6 +373,34 @@ int cc_face_axis(CCShapeId body, int faceId, double *out6);
 int cc_subshape_ids(CCShapeId body, int kind, int **outIds);
 void cc_ints_free(int *ids);
 
+/* ── Measurement & curvature analysis (MOAT M-GS, GS3 + GS4) ─────────────────
+ * Exact analysis SERVICES on the native B-rep. subKind selects the sub-shape:
+ * 0 = vertex, 1 = edge, 2 = face; subId is the 1-based cc_subshape_ids number.
+ * Every call returns 1 on success or 0 on an HONEST DECLINE (cc_last_error set)
+ * — a non-line/plane angle, a parametric-singularity curvature, or a non-
+ * certifiable freeform-trimmed minimizer NEVER yields a fabricated number. */
+
+/* Minimum distance between two entities. Fills out7 = [d, p1x,p1y,p1z, p2x,p2y,p2z]
+ * (the gap + the witness point on entity A then on entity B). 1 on success, 0 on
+ * decline. */
+int cc_measure_distance(CCShapeId body, int subKindA, int subIdA,
+                        int subKindB, int subIdB, double *out7);
+
+/* Angle (radians) between two entities: line·line ∈ [0,π/2], plane·plane ∈ [0,π],
+ * line·plane ∈ [0,π/2]. Fills *outRadians. 1 on success, 0 on decline (any non-
+ * line/plane entity). */
+int cc_measure_angle(CCShapeId body, int subKindA, int subIdA,
+                     int subKindB, int subIdB, double *outRadians);
+
+/* Surface curvature at face (faceId) parameter (u,v). Fills out4 = [K, H, k1, k2]
+ * (Gaussian, mean, principal k1 ≥ k2). 1 on success, 0 on decline (parametric
+ * singularity). */
+int cc_surface_curvature(CCShapeId body, int faceId, double u, double v, double *out4);
+
+/* Edge curvature κ at edge (edgeId) parameter t. Fills *outKappa. 1 on success,
+ * 0 on decline (stationary/cusp point). */
+int cc_edge_curvature(CCShapeId body, int edgeId, double t, double *outKappa);
+
 int cc_tangent_chain(CCShapeId body, const int *edgeIds, int edgeCount, int **outIds);
 
 int cc_outer_rim_chain(CCShapeId body, const int *edgeIds, int edgeCount, int **outIds);

@@ -18,6 +18,11 @@
 #include <vector>
 
 #include "engine/native/native_heal_hook.h"
+#include "native/analysis/angle.h"
+#include "native/analysis/curvature.h"
+#ifdef CYBERCAD_HAS_NUMSCI
+#include "native/analysis/distance.h"  // seed-and-refine minimizer (numsci-gated)
+#endif
 #include "native/blend/native_blend.h"
 #include "native/boolean/native_boolean.h"
 #include "native/construct/native_construct.h"
@@ -35,6 +40,7 @@ namespace cyber {
 namespace {
 
 namespace ntopo = cybercad::native::topology;
+namespace nan = cybercad::native::analysis;
 namespace ntess = cybercad::native::tessellate;
 
 // ── Native shape holder type-erased behind the registry's EngineShape ──────────
@@ -801,6 +807,124 @@ Result<std::vector<int>> NativeEngine::subshape_ids(EngineShape body, int kind) 
     std::vector<int> ids(map.size());
     for (std::size_t i = 0; i < map.size(); ++i) ids[i] = static_cast<int>(i) + 1;
     return ids;
+}
+
+// ── MOAT M-GS GS3/GS4 analysis resolution ───────────────────────────────────
+// A resolved measurement operand: its analysis::Entity plus the raw geometry kind
+// (for per-cell guards) and face orientation (for the curvature-sign flip). The
+// Entity's edge/face pointers alias the child TShape geometry, which the root
+// shape keeps alive for the whole call.
+namespace {
+struct ResolvedSub {
+    nan::Entity entity;
+    int kind = 0;  // 0 vertex, 1 edge, 2 face
+    ntopo::Orientation orient = ntopo::Orientation::Forward;
+    const ntopo::FaceSurface* face = nullptr;
+    const ntopo::EdgeCurve* edge = nullptr;
+};
+
+// Resolve a 1-based sub-shape id to a measurement Entity, or an honest decline.
+// A non-identity placement is declined (world-coordinate safety), never guessed.
+std::optional<ResolvedSub> resolveSub(const ntopo::Shape& root, int subKind, int subId,
+                                      std::string& err) {
+    const ntopo::ShapeType type = subKind == 0   ? ntopo::ShapeType::Vertex
+                                  : subKind == 1 ? ntopo::ShapeType::Edge
+                                                 : ntopo::ShapeType::Face;
+    const ntopo::ShapeMap map = ntopo::mapShapes(root, type);
+    if (subId < 1 || subId > static_cast<int>(map.size())) { err = "sub-shape id out of range"; return std::nullopt; }
+    const ntopo::Shape& sub = map.shape(subId);
+    if (!sub.location().isIdentity()) { err = "located sub-shape (non-identity placement) not supported"; return std::nullopt; }
+    const auto& geom = sub.tshape()->geometry();
+    ResolvedSub r; r.kind = subKind; r.orient = sub.orientation();
+    if (subKind == 0) {
+        const auto* p = std::get_if<nan::Point3>(&geom);
+        if (!p) { err = "vertex has no point geometry"; return std::nullopt; }
+        r.entity = nan::Entity::ofVertex(*p);
+    } else if (subKind == 1) {
+        const auto* c = std::get_if<ntopo::EdgeCurve>(&geom);
+        if (!c) { err = "edge has no curve geometry"; return std::nullopt; }
+        r.edge = c;
+        r.entity = nan::Entity::ofEdge(*c, sub.tshape()->firstParam(), sub.tshape()->lastParam());
+    } else {
+        const auto* s = std::get_if<ntopo::FaceSurface>(&geom);
+        if (!s) { err = "face has no surface geometry"; return std::nullopt; }
+        r.face = s;
+        r.entity = nan::Entity::ofFace(*s, 0.0, 1.0, 0.0, 1.0);  // benign window; windowless cells only
+    }
+    return r;
+}
+}  // namespace
+
+Result<std::vector<double>> NativeEngine::surface_curvature(EngineShape body, int faceId,
+                                                            double u, double v) {
+    if (!isNative(body)) return fallback().surface_curvature(body, faceId, u, v);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh) return make_error("surface_curvature: mesh body has no surface geometry");
+    std::string err;
+    auto rs = resolveSub(holder->shape, 2, faceId, err);
+    if (!rs) return make_error("surface_curvature: " + err);
+    auto cur = nan::surfaceCurvature(*rs->face, u, v);
+    if (!cur) return make_error("surface_curvature: declined (parametric singularity)");
+    nan::SurfaceCurvature c = *cur;
+    if (rs->orient == ntopo::Orientation::Reversed) {  // face normal reversed → flip H, k1/k2 (K invariant)
+        const double k1 = -c.k2, k2 = -c.k1;           // keep k1 ≥ k2 after negation
+        c.H = -c.H; c.k1 = k1; c.k2 = k2;
+    }
+    return std::vector<double>{c.K, c.H, c.k1, c.k2};
+}
+
+Result<std::vector<double>> NativeEngine::edge_curvature(EngineShape body, int edgeId, double t) {
+    if (!isNative(body)) return fallback().edge_curvature(body, edgeId, t);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh) return make_error("edge_curvature: mesh body has no curve geometry");
+    std::string err;
+    auto rs = resolveSub(holder->shape, 1, edgeId, err);
+    if (!rs) return make_error("edge_curvature: " + err);
+    auto k = nan::edgeCurvature(*rs->edge, t);
+    if (!k) return make_error("edge_curvature: declined (stationary/cusp point)");
+    return std::vector<double>{*k};
+}
+
+Result<std::vector<double>> NativeEngine::measure_angle(EngineShape body, int subKindA, int subIdA,
+                                                        int subKindB, int subIdB) {
+    if (!isNative(body)) return fallback().measure_angle(body, subKindA, subIdA, subKindB, subIdB);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh) return make_error("measure_angle: mesh body has no B-rep geometry");
+    std::string err;
+    auto a = resolveSub(holder->shape, subKindA, subIdA, err);
+    if (!a) return make_error("measure_angle: operand A " + err);
+    auto b = resolveSub(holder->shape, subKindB, subIdB, err);
+    if (!b) return make_error("measure_angle: operand B " + err);
+    auto th = nan::angle(a->entity, b->entity);
+    if (!th) return make_error("measure_angle: declined (only line·line, plane·plane, line·plane)");
+    return std::vector<double>{*th};
+}
+
+Result<std::vector<double>> NativeEngine::measure_distance(EngineShape body, int subKindA,
+                                                           int subIdA, int subKindB, int subIdB) {
+#ifdef CYBERCAD_HAS_NUMSCI
+    if (!isNative(body)) return fallback().measure_distance(body, subKindA, subIdA, subKindB, subIdB);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh) return make_error("measure_distance: mesh body has no B-rep geometry");
+    std::string err;
+    auto a = resolveSub(holder->shape, subKindA, subIdA, err);
+    if (!a) return make_error("measure_distance: operand A " + err);
+    auto b = resolveSub(holder->shape, subKindB, subIdB, err);
+    if (!b) return make_error("measure_distance: operand B " + err);
+    // A curved-face operand needs a certified (u,v) trim window we do not synthesise
+    // here → honest decline (host scope: vertex / edge / planar-face cells).
+    auto nonPlanarFace = [](const ResolvedSub& r) {
+        return r.kind == 2 && r.face && r.face->kind != ntopo::FaceSurface::Kind::Plane;
+    };
+    if (nonPlanarFace(*a) || nonPlanarFace(*b))
+        return make_error("measure_distance: curved-face operand declined (needs a trim window)");
+    auto d = nan::minDistance(a->entity, b->entity);
+    if (!d) return make_error("measure_distance: declined (non-certifiable minimizer)");
+    return std::vector<double>{d->distance, d->p1.x, d->p1.y, d->p1.z, d->p2.x, d->p2.y, d->p2.z};
+#else
+    (void)body; (void)subKindA; (void)subIdA; (void)subKindB; (void)subIdB;
+    return make_error("measure_distance: requires a CYBERCAD_HAS_NUMSCI build");
+#endif
 }
 
 // ── Fallthrough helper for body-consuming ops with NO native implementation ─────

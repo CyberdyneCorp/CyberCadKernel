@@ -345,6 +345,30 @@ public:
         return engine_unsupported("face_axis");  // expects 6 values
     }
 
+    // ── measurement & curvature (MOAT M-GS, GS3 + GS4; additive) ────────────────
+    // subKind: 0 vertex, 1 edge, 2 face; subId = 1-based subshape_ids number. Each
+    // returns a flat vector or an honest Error (a decline the facade maps to 0).
+    virtual Result<std::vector<double>> measure_distance(EngineShape body, int subKindA,
+                                                         int subIdA, int subKindB,
+                                                         int subIdB) {
+        (void)body; (void)subKindA; (void)subIdA; (void)subKindB; (void)subIdB;
+        return engine_unsupported("measure_distance");  // expects [d,p1(3),p2(3)]
+    }
+    virtual Result<std::vector<double>> measure_angle(EngineShape body, int subKindA,
+                                                      int subIdA, int subKindB, int subIdB) {
+        (void)body; (void)subKindA; (void)subIdA; (void)subKindB; (void)subIdB;
+        return engine_unsupported("measure_angle");  // expects [radians]
+    }
+    virtual Result<std::vector<double>> surface_curvature(EngineShape body, int faceId,
+                                                          double u, double v) {
+        (void)body; (void)faceId; (void)u; (void)v;
+        return engine_unsupported("surface_curvature");  // expects [K,H,k1,k2]
+    }
+    virtual Result<std::vector<double>> edge_curvature(EngineShape body, int edgeId, double t) {
+        (void)body; (void)edgeId; (void)t;
+        return engine_unsupported("edge_curvature");  // expects [kappa]
+    }
+
     // ── reference geometry (Phase-3 additive; derived datum from geometry) ──────
     // The three point-only reference constructors (plane-from-3-points, offset
     // plane, axis-from-2-points) are exact fp64 math done facade-side and do NOT

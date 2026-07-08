@@ -357,6 +357,20 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_freeform_boolean_breadth)
         set(test_native_freeform_boolean_breadth_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_freeform_boolean_breadth.cpp")
+        # MOAT M-GS GS3/GS4 analysis services (src/native/analysis) — host GATE (a),
+        # the OCCT-free closed-form/brute-force proof of minimum distance, angle and
+        # surface/edge curvature (+ honest declines). The freeform seed-and-refine
+        # distance path uses the numerics/closest_point minimizer, so this host suite
+        # builds only under CYBERCAD_HAS_NUMSCI. Header-only analysis module; no lib change.
+        list(APPEND CYBERCAD_TESTS test_native_analysis)
+        set(test_native_analysis_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_analysis.cpp")
+        # The additive cc_measure_* / cc_*_curvature FACADE over the NativeEngine —
+        # host GATE (a) driving the real C ABI on a native box. The distance cell is
+        # numsci-gated in the engine, so this facade suite builds under HAS_NUMSCI.
+        list(APPEND CYBERCAD_TESTS test_native_analysis_facade)
+        set(test_native_analysis_facade_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_analysis_facade.cpp")
     endif()
 
     # The tet-mesher test drives the real TetGen backend, so it is added ONLY when

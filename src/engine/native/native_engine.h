@@ -248,6 +248,14 @@ public:
                                              int edgeCount) override;
     Result<std::vector<double>> offset_face_boundary(EngineShape body, int faceId,
                                                      double distance) override;
+    // MOAT M-GS GS3/GS4 analysis services (additive).
+    Result<std::vector<double>> measure_distance(EngineShape body, int subKindA, int subIdA,
+                                                 int subKindB, int subIdB) override;
+    Result<std::vector<double>> measure_angle(EngineShape body, int subKindA, int subIdA,
+                                              int subKindB, int subIdB) override;
+    Result<std::vector<double>> surface_curvature(EngineShape body, int faceId, double u,
+                                                  double v) override;
+    Result<std::vector<double>> edge_curvature(EngineShape body, int edgeId, double t) override;
 
     ShapeResult scale_shape(EngineShape body, double factor) override;
     ShapeResult scale_shape_about(EngineShape body, double cx, double cy, double cz,

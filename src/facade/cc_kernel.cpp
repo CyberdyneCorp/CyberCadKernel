@@ -714,6 +714,46 @@ int cc_subshape_ids(CCShapeId body, int kind, int** outIds) {
         0);
 }
 
+int cc_measure_distance(CCShapeId body, int subKindA, int subIdA, int subKindB, int subIdB,
+                        double* out7) {
+    return cyber::guard(
+        [&]() -> int {
+            auto r = active_engine()->measure_distance(resolve(body), subKindA, subIdA,
+                                                       subKindB, subIdB);
+            return finish_fixed(r, out7, 7);
+        },
+        0);
+}
+
+int cc_measure_angle(CCShapeId body, int subKindA, int subIdA, int subKindB, int subIdB,
+                     double* outRadians) {
+    return cyber::guard(
+        [&]() -> int {
+            auto r = active_engine()->measure_angle(resolve(body), subKindA, subIdA,
+                                                    subKindB, subIdB);
+            return finish_fixed(r, outRadians, 1);
+        },
+        0);
+}
+
+int cc_surface_curvature(CCShapeId body, int faceId, double u, double v, double* out4) {
+    return cyber::guard(
+        [&]() -> int {
+            auto r = active_engine()->surface_curvature(resolve(body), faceId, u, v);
+            return finish_fixed(r, out4, 4);
+        },
+        0);
+}
+
+int cc_edge_curvature(CCShapeId body, int edgeId, double t, double* outKappa) {
+    return cyber::guard(
+        [&]() -> int {
+            auto r = active_engine()->edge_curvature(resolve(body), edgeId, t);
+            return finish_fixed(r, outKappa, 1);
+        },
+        0);
+}
+
 void cc_ints_free(int* ids) {
     std::free(ids);
 }

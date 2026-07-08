@@ -423,8 +423,26 @@ tests. Substages:
 - **GS3 — Exact measurement / distance queries** — minimum entity-to-entity distance (point/edge/
   face pairs) + angle, analytically/NURBS-exact rather than mesh-approximate (OCCT
   `BRepExtrema_DistShapeShape`). Consumes the native NURBS eval. ~0.5–1.5 py.
+  **✅ NATIVE (landed).** Header-only, OCCT-free `src/native/analysis/{distance,angle}.h` behind the
+  additive `cc_measure_distance` / `cc_measure_angle` facade. Closed-form analytic·analytic cells
+  (point/line/segment/circle/plane/cylinder/sphere, line·line parallel+skew) + deterministic
+  seed-and-refine (degree×span grid → Newton polish) for simple-NURBS pairs; angle for
+  line·line / plane·plane / line·plane. **Verified both gates:** GATE A host closed-form
+  (`test_native_analysis` 47/0, `test_native_analysis_facade` 5/0) and GATE B sim native-vs-OCCT
+  `BRepExtrema_DistShapeShape` (`native_analysis_parity` 21/0, deltas ≤ 1.1e-16).
+  **Honest declines (expected, not faked):** genuinely-trimmed freeform patches whose global optimum
+  is not certifiable (multiple comparably-deep basins / non-converging constrained-boundary restart)
+  return a clean decline via `cc_last_error`, never a guessed minimum.
 - **GS4 — Curvature analysis** — Gaussian/mean/principal surface + edge curvature for analysis
   (zebra, draft). Consumes native NURBS derivatives. ~0.3–0.8 py.
+  **✅ NATIVE (landed).** Header-only, OCCT-free `src/native/analysis/curvature.h` behind the additive
+  `cc_surface_curvature` (→ `[K,H,k1,k2]`) / `cc_edge_curvature` (→ κ) facade. Analytic arm
+  (plane 0; sphere `1/R²`,`1/R`; cylinder `0`,`1/(2R)`; cone; torus `cos v/(r(R+r cos v))`) + NURBS
+  arm via first/second fundamental forms from native surface derivatives (maxDeriv=2), with the
+  outward-normal sign convention (curvature flipped for a `Reversed` face) and `k1≥k2` ordering.
+  **Verified both gates:** GATE A host closed-form and GATE B sim vs OCCT
+  `GeomLProp_SLProps`/`GeomLProp_CLProps`. **Honest declines:** parametric singularity
+  (`EG−F² ≤ ε·max(E,G)²`), cone apex, and degenerate edge tangent (`‖C′‖≤ε`) return a clean decline.
 - *Oracle:* `HLRBRep_Algo` / `BRepAlgoAPI_Section` / `BRepExtrema_DistShapeShape` / `BRepLProp` on
   visible-segment sets / section-curve length+topology / min-distance / curvature values.
 - *Bounded.* GS2/GS3/GS4 reuse landed native machinery; **GS1 (HLR) is the substantial one** and the

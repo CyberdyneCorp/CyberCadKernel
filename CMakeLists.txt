@@ -349,6 +349,14 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_first_freeform_boolean)
         set(test_native_first_freeform_boolean_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_first_freeform_boolean.cpp")
+        # MOAT M2-breadth / COMMON — host GATE (a), the SECOND freeform boolean operator as
+        # the complementary keep-side of the landed half-space CUT (no new geometry verb),
+        # gated on the closed-form partition identity + the complementary volume. Its operand's
+        # freeform seam is the real S3 trace, so this host suite builds only under
+        # CYBERCAD_HAS_NUMSCI. Additive sibling to the M2-assembly CUT suite; no lib change.
+        list(APPEND CYBERCAD_TESTS test_native_freeform_boolean_breadth)
+        set(test_native_freeform_boolean_breadth_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_freeform_boolean_breadth.cpp")
     endif()
 
     # The tet-mesher test drives the real TetGen backend, so it is added ONLY when

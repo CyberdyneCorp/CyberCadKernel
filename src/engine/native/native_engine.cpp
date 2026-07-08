@@ -15,6 +15,8 @@
 #include <cmath>
 #include <cstddef>
 #include <fstream>
+#include <limits>
+#include <map>
 #include <optional>
 #include <string>
 #include <set>
@@ -1475,11 +1477,96 @@ Result<std::vector<EdgePolylineData>> NativeEngine::edge_polylines(EngineShape b
     }
     return edges;
 }
-// ── drafting: orthographic HLR over the polyhedral core ─────────────────────────
+namespace {
+
+// Squared distance from point `p` to triangle (a,b,c) — Ericson, Real-Time
+// Collision Detection (region tests on the Voronoi regions of the triangle).
+inline double pointTriangleDistSq(const nmath::Point3& p, const nmath::Point3& a,
+                                  const nmath::Point3& b, const nmath::Point3& c) noexcept {
+    const nmath::Vec3 ab = b - a, ac = c - a, ap = p - a;
+    const double d1 = nmath::dot(ab, ap), d2 = nmath::dot(ac, ap);
+    if (d1 <= 0.0 && d2 <= 0.0) return nmath::normSquared(ap);
+    const nmath::Vec3 bp = p - b;
+    const double d3 = nmath::dot(ab, bp), d4 = nmath::dot(ac, bp);
+    if (d3 >= 0.0 && d4 <= d3) return nmath::normSquared(bp);
+    const double vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) {
+        const double v = d1 / (d1 - d3);
+        return nmath::normSquared(ap - ab * v);
+    }
+    const nmath::Vec3 cp = p - c;
+    const double d5 = nmath::dot(ab, cp), d6 = nmath::dot(ac, cp);
+    if (d6 >= 0.0 && d5 <= d6) return nmath::normSquared(cp);
+    const double vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) {
+        const double w = d2 / (d2 - d6);
+        return nmath::normSquared(ap - ac * w);
+    }
+    const double va = d3 * d6 - d5 * d4;
+    if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0) {
+        const double w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        return nmath::normSquared((b - p) + (c - b) * w) ;
+    }
+    const double denom = 1.0 / (va + vb + vc);
+    const double v = vb * denom, w = vc * denom;
+    return nmath::normSquared(ap - ab * v - ac * w);
+}
+
+// Distance from `p` to the NEAREST triangle of the mesh — i.e. how far `p` is off
+// the solid's (faceted) boundary. Used to SELF-VERIFY that a traced silhouette
+// point actually sits on the solid before it is emitted (a partial-quadric
+// generator in empty space is ~R away and forces an honest decline, while a point
+// on a full quadric is at most the chord sagitta ≈ deflection away).
+inline double minDistToMesh(const nmath::Point3& p, const ntess::Mesh& mesh,
+                            const std::vector<std::array<std::uint32_t, 3>>& tris) noexcept {
+    double best = std::numeric_limits<double>::infinity();
+    for (const auto& t : tris) {
+        const double d2 =
+            pointTriangleDistSq(p, mesh.vertices[t[0]], mesh.vertices[t[1]], mesh.vertices[t[2]]);
+        if (d2 < best) best = d2;
+    }
+    return std::sqrt(best);
+}
+
+// Outward analytic normal of an ANALYTIC face at a world point on it. Only the
+// kinds that can survive the face-kind gate (Plane / Cylinder / Sphere) are needed;
+// anything else returns a null vector (treated as NON-smooth → drawn, the safe
+// default). Used to decide whether a shared edge is a SMOOTH (tangent) seam that
+// the HLR must suppress — matching OCCT's outline-only treatment of curved bodies.
+inline nmath::Vec3 analyticFaceNormal(const ntopo::FaceSurface& fs, const ntopo::Location& loc,
+                                      const nmath::Point3& wp) noexcept {
+    auto placeP = [&](const nmath::Point3& p) {
+        return loc.isIdentity() ? p : loc.transform().applyToPoint(p);
+    };
+    auto placeV = [&](const nmath::Vec3& v) {
+        return loc.isIdentity() ? v : loc.transform().applyToVector(v);
+    };
+    using K = ntopo::FaceSurface::Kind;
+    switch (fs.kind) {
+        case K::Plane:
+            return nmath::Dir3{placeV(fs.frame.z.vec())}.vec();  // constant over the plane
+        case K::Cylinder: {
+            const nmath::Point3 O = placeP(fs.frame.origin);
+            const nmath::Vec3 ax = nmath::Dir3{placeV(fs.frame.z.vec())}.vec();
+            const nmath::Vec3 rel = wp - O;
+            return nmath::Dir3{rel - ax * nmath::dot(rel, ax)}.vec();  // radial
+        }
+        case K::Sphere:
+            return nmath::Dir3{wp - placeP(fs.frame.origin)}.vec();  // radial from centre
+        default:
+            return nmath::Vec3{0, 0, 0};
+    }
+}
+
+}  // namespace
+
+// ── drafting: orthographic HLR over the polyhedral core + quadric silhouettes ────
 // Build the M0 boundary tessellation as the occluder + the topological (straight)
-// edges as the lines to draw, then run the OCCT-FREE orthographic_hlr core. Curved
-// / freeform faces (a curved silhouette this slice does not trace) are DECLINED —
-// never a wrong classification. An OCCT body forwards to the HLRBRep_Algo oracle.
+// edges as the lines to draw, then run the OCCT-FREE orthographic_hlr core. CYLINDER
+// and SPHERE faces additionally contribute their closed-form SILHOUETTE outline
+// (drafting/silhouette.h) fed through the SAME occlusion + split path. Cone / torus /
+// freeform faces (a silhouette this slice does not trace) are DECLINED — never a
+// wrong classification. An OCCT body forwards to the HLRBRep_Algo oracle.
 Result<DrawingData> NativeEngine::hlr_project(EngineShape body, const double viewDir[3],
                                               const double up[3], HlrOptionsData opts) {
     if (!isNative(body)) return fallback().hlr_project(body, viewDir, up, opts);
@@ -1497,15 +1584,26 @@ Result<DrawingData> NativeEngine::hlr_project(EngineShape body, const double vie
     if (nmath::norm(nmath::cross(vd, uh)) < nmath::kLinearTolerance)
         return make_error("hlr_project: up hint parallel to view direction (declined)");
 
-    // Honest decline: any NON-PLANAR face means the visible outline can be a curved
-    // silhouette this slice does not trace. Scope to the polyhedral core.
+    // Face-kind gate. A PLANE face has no silhouette (its outline is a topological
+    // edge, already drawn). CYLINDER / SPHERE faces carry a curved silhouette this
+    // slice traces in closed form (drafting/silhouette.h); collect them. Any OTHER
+    // curved/freeform kind (Cone / Torus / BSpline / Bezier) is DECLINED — its
+    // silhouette is not robustly traceable this wave, so we never guess it.
+    std::vector<ntopo::Shape> curvedFaces;
     for (ntopo::Explorer ex(shape, ntopo::ShapeType::Face); ex.more(); ex.next()) {
         const auto srf = ntopo::surfaceOf(ex.current());
-        if (!srf || srf->surface == nullptr ||
-            srf->surface->kind != ntopo::FaceSurface::Kind::Plane)
-            return make_error(
-                "hlr_project: curved/freeform silhouette declined (polyhedral core only "
-                "in this slice)");
+        if (!srf || srf->surface == nullptr)
+            return make_error("hlr_project: face carries no surface (declined)");
+        using K = ntopo::FaceSurface::Kind;
+        const K k = srf->surface->kind;
+        if (k == K::Plane) continue;
+        if (k == K::Cylinder || k == K::Sphere) {
+            curvedFaces.push_back(ex.current());
+            continue;
+        }
+        return make_error(
+            "hlr_project: cone/torus/freeform silhouette declined (quadric slice traces "
+            "cylinder + sphere only)");
     }
 
     // Occluder = the M0 boundary mesh at the caller-chosen deflection (never a hidden
@@ -1538,11 +1636,14 @@ Result<DrawingData> NativeEngine::hlr_project(EngineShape body, const double vie
     std::set<std::array<long long, 6>> seenEdges;
     std::vector<nmath::Point3> edgeVertices;
     std::vector<ndraft::EdgeIndices> edges;
-    ntess::EdgeCache cache(/*deflection=*/0.2, /*minSegs=*/1, /*maxSegs=*/64);
-    const ntopo::ShapeMap map = ntopo::mapShapes(shape, ntopo::ShapeType::Edge);
-    for (std::size_t i = 0; i < map.size(); ++i) {
-        const ntess::EdgeDiscretization& d = cache.discretize(map.shape(static_cast<int>(i) + 1));
-        if (d.points.size() < 2) continue;
+    // Fine deflection for the DRAWING discretization of CURVED topological edges (a
+    // cylinder's end circles, projecting to ellipses) so their polyline density and
+    // total length track the OCCT oracle's tangential-deflection sampling. A STRAIGHT
+    // edge collapses to minSegs=1 (2 points) at ANY deflection, so the polyhedral
+    // output is BYTE-IDENTICAL; only genuinely curved edges (which the polyhedral core
+    // never carried) subdivide finer.
+    ntess::EdgeCache cache(/*deflection=*/0.01, /*minSegs=*/1, /*maxSegs=*/256);
+    auto edgeKey = [&](const ntess::EdgeDiscretization& d) {
         const std::array<long long, 3> qa = quantize(d.points.front());
         const std::array<long long, 3> qb = quantize(d.points.back());
         const bool aFirst = qa <= qb;  // order-independent key (endpoints sorted)
@@ -1551,11 +1652,146 @@ Result<DrawingData> NativeEngine::hlr_project(EngineShape body, const double vie
             key[k] = (aFirst ? qa : qb)[k];
             key[3 + k] = (aFirst ? qb : qa)[k];
         }
-        if (!seenEdges.insert(key).second) continue;  // coincident duplicate → skip
+        return key;
+    };
+
+    // SMOOTH-EDGE SUPPRESSION (curved bodies only). Native cc_solid_revolve builds a
+    // curved solid as several tangent angular sectors, so its B-rep carries internal
+    // sector-seam generators and coplanar cap spokes that are NOT feature lines — the
+    // OCCT HLR oracle draws only SHARP edges + silhouette outlines and suppresses
+    // these. An edge is SMOOTH when its adjacent faces meet tangentially (their
+    // outward normals are parallel at the edge). We key each face's edge by its
+    // endpoint pair (phase-independent) and collect the adjacent-face normals; an edge
+    // whose faces are all mutually tangent is dropped. This branch runs ONLY when the
+    // body has a curved face, so a purely planar body's edge set (and its 13/13
+    // polyhedral parity) is BYTE-IDENTICAL.
+    std::map<std::array<long long, 6>, std::vector<nmath::Vec3>> edgeFaceNormals;
+    if (!curvedFaces.empty()) {
+        for (ntopo::Explorer fx(shape, ntopo::ShapeType::Face); fx.more(); fx.next()) {
+            const auto fsr = ntopo::surfaceOf(fx.current());
+            if (!fsr || fsr->surface == nullptr) continue;
+            for (ntopo::Explorer eex(fx.current(), ntopo::ShapeType::Edge); eex.more(); eex.next()) {
+                const auto& de = cache.discretize(eex.current());
+                if (de.points.size() < 2) continue;
+                const nmath::Vec3 n =
+                    analyticFaceNormal(*fsr->surface, fsr->location, de.points[de.points.size() / 2]);
+                if (nmath::norm(n) > 0.5) edgeFaceNormals[edgeKey(de)].push_back(n);
+            }
+        }
+    }
+    auto isSmoothEdge = [&](const std::array<long long, 6>& key) {
+        const auto it = edgeFaceNormals.find(key);
+        if (it == edgeFaceNormals.end() || it->second.size() < 2) return false;
+        const nmath::Vec3& n0 = it->second.front();
+        for (std::size_t j = 1; j < it->second.size(); ++j)
+            if (std::fabs(nmath::dot(n0, it->second[j])) <= 0.99) return false;  // a sharp pair
+        return true;  // every adjacent face tangent → smooth seam, suppress
+    };
+
+    const ntopo::ShapeMap map = ntopo::mapShapes(shape, ntopo::ShapeType::Edge);
+    for (std::size_t i = 0; i < map.size(); ++i) {
+        const ntess::EdgeDiscretization& d = cache.discretize(map.shape(static_cast<int>(i) + 1));
+        if (d.points.size() < 2) continue;
+        const std::array<long long, 6> key = edgeKey(d);
+        if (!seenEdges.insert(key).second) continue;   // coincident duplicate → skip
+        if (!curvedFaces.empty() && isSmoothEdge(key)) continue;  // tangent seam → suppress
         const auto base = static_cast<std::uint32_t>(edgeVertices.size());
         for (const auto& p : d.points) edgeVertices.push_back(p);
         for (std::uint32_t k = 0; k + 1 < d.points.size(); ++k)
             edges.push_back({base + k, base + k + 1});
+    }
+
+    // ── Quadric silhouette augmentation ─────────────────────────────────────────
+    // For each CYLINDER / SPHERE face, trace the closed-form silhouette locus
+    // (n·viewDir = 0) and append it as extra edge polylines (straight generators /
+    // a discretized great circle). Each emitted point is SELF-VERIFIED to lie on the
+    // occluder boundary (within a faceting-sized tolerance); if any outline point is
+    // NOT on the boundary the silhouette is not robustly on this solid (a partial
+    // quadric, or a view parallel to the axis) and the WHOLE projection is declined —
+    // never a partial or fabricated outline. The appended edges then flow through the
+    // SAME occlusion + visibility-split pass as every straight edge, so their
+    // visible/hidden classification "just works".
+    const double meshDefl = mp.deflection > 0.0 ? mp.deflection : 0.1;
+    double maxSilhouetteOff = 0.0;  // worst facet inset of an emitted silhouette point
+    if (!curvedFaces.empty()) {
+        for (const ntopo::Shape& face : curvedFaces) {
+            const auto srf = ntopo::surfaceOf(face);
+            const ntopo::FaceSurface& fs = *srf->surface;
+            const ntopo::Location& loc = srf->location;
+            auto placeP = [&](const nmath::Point3& p) {
+                return loc.isIdentity() ? p : loc.transform().applyToPoint(p);
+            };
+            auto placeV = [&](const nmath::Vec3& v) {
+                return loc.isIdentity() ? v : loc.transform().applyToVector(v);
+            };
+            nmath::Ax3 wf;
+            wf.origin = placeP(fs.frame.origin);
+            wf.x = nmath::Dir3{placeV(fs.frame.x.vec())};
+            wf.y = nmath::Dir3{placeV(fs.frame.y.vec())};
+            wf.z = nmath::Dir3{placeV(fs.frame.z.vec())};
+
+            ndraft::SilhouetteResult sil;
+            if (fs.kind == ntopo::FaceSurface::Kind::Cylinder) {
+                // Trim extent along the axis from the face's bounding edge samples.
+                double vLo = std::numeric_limits<double>::infinity();
+                double vHi = -std::numeric_limits<double>::infinity();
+                const nmath::Vec3 zc = wf.z.vec();
+                for (ntopo::Explorer eex(face, ntopo::ShapeType::Edge); eex.more(); eex.next()) {
+                    const auto& de = cache.discretize(eex.current());
+                    for (const auto& p : de.points) {
+                        const double vv = nmath::dot(p - wf.origin, zc);
+                        vLo = std::min(vLo, vv);
+                        vHi = std::max(vHi, vv);
+                    }
+                }
+                if (!(vHi > vLo))
+                    return make_error("hlr_project: cylinder face has no trim extent (declined)");
+                sil = ndraft::cylinderSilhouette(wf, fs.radius, vLo, vHi, vd);
+            } else {  // Sphere
+                sil = ndraft::sphereSilhouette(wf.origin, fs.radius, vd, meshDefl);
+            }
+            if (!sil.traced)
+                return make_error(std::string("hlr_project: ") +
+                                  (sil.declineReason ? sil.declineReason : "silhouette declined"));
+
+            // Self-verify tolerance: scale-aware. A point on a FULL quadric is at
+            // most the chord sagitta (≈ deflection) off the inscribed facets; a
+            // partial-quadric point in the trimmed-away region is ~R away — a huge
+            // separation, so a generous fraction of R rejects partials while never
+            // false-declining a full quadric under a coarse mesh.
+            const double coverTol = std::max(0.25 * fs.radius, 3.0 * meshDefl + 1e-6);
+            for (const ndraft::SilhouettePolyline& pl : sil.outlines) {
+                if (pl.points.size() < 2) continue;
+                // DE-DUPLICATE across the several angular SECTOR faces a curved solid
+                // is built from: every sector shares the same axis, so all of them
+                // trace the SAME generators / great circle. Key each outline by its
+                // endpoint pair (as for topological edges) so the shared outline is
+                // emitted ONCE, matching the oracle's single silhouette.
+                const std::array<long long, 3> qa = quantize(pl.points.front());
+                const std::array<long long, 3> qb = quantize(pl.points.back());
+                const bool aFirst = qa <= qb;
+                std::array<long long, 6> okey{};
+                for (int k = 0; k < 3; ++k) {
+                    okey[k] = (aFirst ? qa : qb)[k];
+                    okey[3 + k] = (aFirst ? qb : qa)[k];
+                }
+                if (!seenEdges.insert(okey).second) continue;  // same outline from another sector
+                // Self-verify every outline point lies on the occluder boundary, and
+                // record the worst facet inset (used to size the self-grazing offset).
+                for (const nmath::Point3& p : pl.points) {
+                    const double off = minDistToMesh(p, mesh, tris);
+                    if (off > coverTol)
+                        return make_error(
+                            "hlr_project: traced silhouette leaves the solid boundary "
+                            "(partial quadric declined)");
+                    maxSilhouetteOff = std::max(maxSilhouetteOff, off);
+                }
+                const auto base = static_cast<std::uint32_t>(edgeVertices.size());
+                for (const nmath::Point3& p : pl.points) edgeVertices.push_back(p);
+                for (std::uint32_t k = 0; k + 1 < pl.points.size(); ++k)
+                    edges.push_back({base + k, base + k + 1});
+            }
+        }
     }
 
     ndraft::OrthographicView view;
@@ -1564,6 +1800,16 @@ Result<DrawingData> NativeEngine::hlr_project(EngineShape body, const double vie
     ndraft::HlrParams prm;
     if (opts.samplesPerEdge > 0) prm.samplesPerEdge = opts.samplesPerEdge;
     if (opts.surfaceOffset > 0.0) prm.surfaceOffset = opts.surfaceOffset;
+    // Curved silhouette present: the occluder is the INSCRIBED facet mesh, whose
+    // chords sit *inside* the true surface by up to the chord sagitta. A convex limb
+    // sample at the default micro-offset can self-graze those inset facets and be
+    // spuriously classified HIDDEN. Push the sample out past the WORST measured facet
+    // inset (maxSilhouetteOff, the true sagitta the mesher achieved — which can exceed
+    // the requested deflection) so it clears its own inscribed occluder. Polyhedral
+    // inputs never take this branch (curvedFaces empty), so their classification is
+    // BYTE-IDENTICAL.
+    if (!curvedFaces.empty() && opts.surfaceOffset <= 0.0)
+        prm.surfaceOffset = std::max(meshDefl, 3.0 * maxSilhouetteOff + 1e-6);
 
     const ndraft::HlrResult hlr = ndraft::projectOrthographic(edgeVertices, edges, occ, view, prm);
 

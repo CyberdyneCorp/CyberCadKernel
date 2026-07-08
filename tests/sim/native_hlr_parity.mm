@@ -210,38 +210,137 @@ void runCase(const HlrCase& c) {
     cc_shape_release(occtId);
 }
 
-// ── honest-decline: a curved-silhouette solid is DECLINED by the native core ─────
-// A cylinder (curved side face) is outside the polyhedral core; under the native
-// engine cc_hlr_project must return an EMPTY drawing with cc_last_error set — never
-// a wrong classification. (The OCCT oracle CAN draw it; this asserts only the native
-// honest-decline contract.)
+// ── CURVED-SILHOUETTE parity (cylinder + sphere) ────────────────────────────────
+// A cylinder/sphere solid's visible outline includes a CURVED silhouette (n·view=0),
+// now traced in closed form by the native core (drafting/silhouette.h). Comparing
+// native vs the OCCT HLRBRep_Algo oracle here uses a CURVE-appropriate tolerance —
+// NOT the polyhedral cases' exact 1e-5 partition, which assumes both engines sample
+// a STRAIGHT edge. Two independent discretizers place points at different phases on
+// the same smooth curve, so we compare: (1) total visible/hidden LENGTH within a
+// relative curve band, and (2) that every native VISIBLE segment lies on an OCCT
+// VISIBLE segment within a curve-sized geometric tolerance — the authoritative
+// no-misclassification check (a hidden arc drawn solid, or a fabricated outline,
+// would land off the oracle's visible outline and FAIL). The tolerance is sized to
+// the shared discretization, never widened to hide a divergence.
+struct CurvedCase {
+    const char* name;
+    CCShapeId (*build)();
+    double view[3];
+    double up[3];
+};
+
+CCShapeId buildSolidCylinder() {  // disk [0,2]×[0,3] revolved 360° about Y → R=2, h=3
+    const double prof[] = {0.0, 0.0, 2.0, 0.0, 2.0, 3.0, 0.0, 3.0};
+    return cc_solid_revolve(prof, 4, 2.0 * 3.14159265358979323846);
+}
+CCShapeId buildSphere() {  // semicircle arc (0,-2)->(0,2) about Y, closed on the axis
+    CCProfileSeg s[2];
+    s[0] = CCProfileSeg{};
+    s[0].kind = 1;  // arc
+    s[0].x0 = 0; s[0].y0 = -2; s[0].x1 = 0; s[0].y1 = 2;
+    s[0].cx = 0; s[0].cy = 0; s[0].r = 2;
+    s[0].a0 = -3.14159265358979323846 / 2; s[0].a1 = 3.14159265358979323846 / 2;
+    s[1] = CCProfileSeg{};
+    s[1].kind = 0;  // axis line closing the profile
+    s[1].x0 = 0; s[1].y0 = 2; s[1].x1 = 0; s[1].y1 = -2;
+    return cc_solid_revolve_profile(s, 2, 0.0, 0.0, 0.0, 1.0, nullptr, 0,
+                                    2.0 * 3.14159265358979323846);
+}
+
+void runCurved(const CurvedCase& c) {
+    char detail[512];
+    const double gtol = 0.06;      // curve-sized geometric tol (~facet/discretization band)
+    const double lenRel = 0.02;    // 2% relative curve-length band
+    CCHlrOptions opts{};
+    opts.deflection = 0.05;
+    opts.samplesPerEdge = 0;
+    opts.surfaceOffset = 0.0;
+
+    cc_set_engine(0);
+    const CCShapeId oId = c.build();
+    if (oId == 0) { std::snprintf(detail, sizeof detail, "OCCT build failed: %s", cc_last_error());
+        record(false, c.name, detail); return; }
+    const CCDrawing oD = cc_hlr_project(oId, c.view, c.up, opts);
+
+    cc_set_engine(1);
+    const CCShapeId nId = c.build();
+    if (nId == 0) { std::snprintf(detail, sizeof detail, "native build failed: %s", cc_last_error());
+        record(false, c.name, detail); cc_drawing_free(oD); cc_set_engine(0); cc_shape_release(oId); return; }
+    const CCDrawing nD = cc_hlr_project(nId, c.view, c.up, opts);
+
+    const bool produced = (oD.visibleCount > 0) && (nD.visibleCount > 0);
+    std::snprintf(detail, sizeof detail, "native drew a curved silhouette: vis=%d hid=%d err='%s'",
+                  nD.visibleCount, nD.hiddenCount, produced ? "" : cc_last_error());
+    record(produced, std::string(c.name) + " produced", detail);
+
+    const double nVis = totalLen(nD.visible, nD.visibleCount);
+    const double oVis = totalLen(oD.visible, oD.visibleCount);
+    const double nHid = totalLen(nD.hidden, nD.hiddenCount);
+    const double oHid = totalLen(oD.hidden, oD.hiddenCount);
+    const double visRel = oVis > 0.0 ? std::fabs(nVis - oVis) / oVis : 1.0;
+    // Hidden length compared on an ABSOLUTE band scaled to the visible outline size
+    // (the oracle's hidden may be 0 for a lone convex limb; a tiny residual facet
+    // graze must not fail, but a gross hidden mismatch must).
+    const bool hidOk = std::fabs(nHid - oHid) < lenRel * oVis;
+    const bool lenOk = produced && (visRel < lenRel) && hidOk;
+    std::snprintf(detail, sizeof detail,
+                  "visLen n=%.5g o=%.5g rel=%.2e | hidLen n=%.5g o=%.5g (band=%.4g)", nVis, oVis,
+                  visRel, nHid, oHid, lenRel * oVis);
+    record(lenOk, std::string(c.name) + " length", detail);
+
+    // No misclassification / no fabrication: every native VISIBLE segment lies on an
+    // OCCT VISIBLE segment, and every native HIDDEN segment lies on the OCCT outline
+    // (visible∪hidden). A hidden-as-solid or invented outline would land off these.
+    std::vector<CCDrawingSegment> oAll(oD.visible, oD.visible + oD.visibleCount);
+    oAll.insert(oAll.end(), oD.hidden, oD.hidden + oD.hiddenCount);
+    const bool visOnVis =
+        partitionCovered(nD.visible, nD.visibleCount, oD.visible, oD.visibleCount, gtol);
+    const bool hidOnOutline =
+        partitionCovered(nD.hidden, nD.hiddenCount, oAll.data(), static_cast<int>(oAll.size()), gtol);
+    const bool classOk = produced && visOnVis && hidOnOutline;
+    std::snprintf(detail, sizeof detail, "native-visible⊆oracle-visible=%d hidden⊆outline=%d (tol=%.0e)",
+                  visOnVis ? 1 : 0, hidOnOutline ? 1 : 0, gtol);
+    record(classOk, std::string(c.name) + " classification", detail);
+
+    cc_drawing_free(nD);
+    cc_drawing_free(oD);
+    cc_set_engine(0);
+    cc_shape_release(nId);
+    cc_shape_release(oId);
+}
+
+// ── honest-decline: a CONE solid stays DECLINED by the native core ───────────────
+// This wave traces cylinder + sphere silhouettes; a cone (apex singularity / partial-
+// quadric ambiguity) is NOT traced, so under the native engine cc_hlr_project must
+// return an EMPTY drawing with cc_last_error set — never a wrong or guessed outline.
+// (The OCCT oracle CAN draw the cone; this asserts only the native decline contract.)
 void runDecline() {
     char detail[512];
-    // A rectangle [1..2]×[0..3] revolved 360° about Y → a cylindrical tube.
-    const double prof[] = {1.0, 0.0, 2.0, 0.0, 2.0, 3.0, 1.0, 3.0};
+    // A truncated cone: trapezoid [1,0]-[2,0]-[1,3]-[0,3] revolved 360° about Y.
+    const double prof[] = {1.0, 0.0, 2.0, 0.0, 1.0, 3.0, 0.0, 3.0};
     const double view[3] = {-1.0, -0.4, -1.0};
     const double up[3] = {0.0, 1.0, 0.0};
 
     cc_set_engine(1);
-    const CCShapeId cyl = cc_solid_revolve(prof, 4, 2.0 * 3.14159265358979323846);
-    if (cyl == 0) {
-        std::snprintf(detail, sizeof detail, "native cylinder build failed: %s", cc_last_error());
-        record(false, "cylinder decline", detail);
+    const CCShapeId cone = cc_solid_revolve(prof, 4, 2.0 * 3.14159265358979323846);
+    if (cone == 0) {
+        std::snprintf(detail, sizeof detail, "native cone build failed: %s", cc_last_error());
+        record(false, "cone decline", detail);
         cc_set_engine(0);
         return;
     }
     CCHlrOptions opts{};
     opts.deflection = 0.05;
-    const CCDrawing d = cc_hlr_project(cyl, view, up, opts);
+    const CCDrawing d = cc_hlr_project(cone, view, up, opts);
     const bool declined = (d.visibleCount == 0) && (d.hiddenCount == 0) &&
                           (d.visible == nullptr) && (d.hidden == nullptr);
     std::snprintf(detail, sizeof detail, "declined=%d (visible=%d hidden=%d) err='%s'",
                   declined ? 1 : 0, d.visibleCount, d.hiddenCount, cc_last_error());
-    record(declined, "cylinder decline", detail);
+    record(declined, "cone decline", detail);
 
     cc_drawing_free(d);
     cc_set_engine(0);
-    cc_shape_release(cyl);
+    cc_shape_release(cone);
 }
 
 }  // namespace
@@ -266,6 +365,15 @@ int main() {
     };
 
     for (const HlrCase& c : cases) runCase(c);
+
+    // Curved silhouettes (cylinder + sphere) — the quadric slice, vs the OCCT oracle.
+    const std::vector<CurvedCase> curved = {
+        {"cylinder-oblique", buildSolidCylinder, {-1.0, -0.5, -0.8}, {0.0, 0.0, 1.0}},
+        {"sphere-oblique", buildSphere, {-1.0, -0.5, -0.8}, {0.0, 1.0, 0.0}},
+    };
+    for (const CurvedCase& c : curved) runCurved(c);
+
+    // Honest decline: a cone stays declined (not traced this wave).
     runDecline();
 
     cc_set_engine(0);

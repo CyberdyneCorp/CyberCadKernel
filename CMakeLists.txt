@@ -372,6 +372,18 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_two_operand_freeform_boolean)
         set(test_native_two_operand_freeform_boolean_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_two_operand_freeform_boolean.cpp")
+        # MOAT M2-multiseam — host GATE (a), the FIRST multi-seam two-operand freeform
+        # boolean: a bowl-lidded prism A against a corner box B whose TWO adjacent faces
+        # slice A's Bézier wall (a two-arc, one-junction seam graph). Proves buildSeamGraph
+        # in ISOLATION (two cutting faces, analytic junction J on both planes, arcs joined
+        # + each B2-split) against the closed-form corner oracle, and records the measured
+        # junction-vertex weld as the next blocker (freeformBooleanMultiSeam → NULL → OCCT).
+        # Its arcs are the real S3 trace, so this host suite builds only under
+        # CYBERCAD_HAS_NUMSCI. Additive header-only verbs (seam_graph.h + multi_seam.h);
+        # no lib change, no cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_multi_seam)
+        set(test_native_multi_seam_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_multi_seam.cpp")
         # MOAT M-GS GS3/GS4 analysis services (src/native/analysis) — host GATE (a),
         # the OCCT-free closed-form/brute-force proof of minimum distance, angle and
         # surface/edge curvature (+ honest declines). The freeform seed-and-refine

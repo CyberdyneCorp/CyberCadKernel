@@ -516,6 +516,13 @@ tests. Substages:
   mass-properties fuzzer). The app's `Inertia`/`MassReadout` features have no native inertia tensor.
   A mesh-based inertia tensor (signed-tetra second moments over the M0 triangulation, then eigen) is
   straightforward + reuses landed machinery. ~0.3–0.6 py. *Oracle:* OCCT `GProp_PrincipalProps`.
+- **GS6 — B-rep validity checking** — the app's `occt-usage` spec depends on OCCT `BRepCheck_Analyzer`
+  (validity/closed-ness/self-intersection/orientation checks) to validate imports + operation results.
+  The native kernel has the watertight+volume *self-verify* (per-operation) but no **general standalone
+  validity checker**. A native `cc_check_solid` (closed 2-manifold, consistent orientation, no
+  self-intersection, finite/degenerate-free) reuses the tessellator + topology + GS3 distance. ~0.5–1 py.
+  *Oracle:* `BRepCheck_Analyzer.IsValid` on valid + deliberately-broken fixtures. Gates trustworthy
+  import (with M5) and any healing UX.
 - *Oracle:* `HLRBRep_Algo` / `BRepAlgoAPI_Section` / `BRepExtrema_DistShapeShape` / `BRepLProp` on
   visible-segment sets / section-curve length+topology / min-distance / curvature values.
 - *Bounded.* GS2/GS3/GS4 reuse landed native machinery; **GS1 (HLR) is the substantial one** and the

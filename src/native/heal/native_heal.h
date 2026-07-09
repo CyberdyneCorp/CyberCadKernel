@@ -58,6 +58,22 @@
 //                                  straight span the neighbour already carries. The weld
 //                                  tolerance is NEVER widened. Default 0 ⇒ this pass is a
 //                                  no-op (existing callers byte-identical).
+//   9. COLLINEAR-VERTEX REMOVAL   — OPT-IN (HealOptions.removeCollinearVerts == true): drop a
+//                                  single REDUNDANT COLLINEAR vertex B a STEP exporter / mesh→
+//                                  B-rep conversion dropped onto a face's straight boundary run
+//                                  A→C (the classic "T-vertex" / seam-split artifact) — the face
+//                                  lists A→B→C (two edges) while the NEIGHBOUR carries the same
+//                                  span as ONE straight edge A→C, so the sew cannot share the run
+//                                  and the shell is left open. Distinct from pass 8: BOTH incident
+//                                  edges may be FULL-LENGTH (no ¼·neighbour micro-edge bound; a
+//                                  single corner removed, not two), so short_edge.h cannot reach
+//                                  it. B is removed ONLY when its perpendicular distance to A→C is
+//                                  ≤ tolerance AND it projects strictly between A and C, restoring
+//                                  the exact straight span the neighbour carries; a vertex that
+//                                  turns a real corner is left in place. Introduces NO length
+//                                  parameter — exact collinearity is the sole criterion — and
+//                                  NEVER widens the weld tolerance. Default false ⇒ this pass is a
+//                                  no-op (existing callers byte-identical). See collinear_vert.h.
 //
 // ── HONEST SCOPE (asymptotic completeness, like SSI S4-f — NOT a guarantee) ──
 // This slice heals the coincident-within-tolerance / degenerate / orientation defect
@@ -98,6 +114,7 @@
 // individual step or inspect the intermediate types.
 #include "native/heal/assemble_shell.h"
 #include "native/heal/cap_hole.h"
+#include "native/heal/collinear_vert.h"
 #include "native/heal/degenerate.h"
 #include "native/heal/face_soup.h"
 #include "native/heal/gap_bridge.h"

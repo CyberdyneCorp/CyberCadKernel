@@ -274,6 +274,72 @@ std::vector<topo::Shape> cubeTopShortEdge(double seg) {
   return f;
 }
 
+// A quad face whose one side p0→p1 carries a SINGLE extra vertex B at parameter `t`
+// along the side (0<t<1), offset perpendicular in-plane by `off` (off==0 ⇒ exactly
+// collinear; off>0 ⇒ a real corner). Unlike quadFaceSplitFirstSide this inserts ONE
+// vertex between two FULL-LENGTH sub-edges p0→B and B→p1 — the redundant collinear
+// "T-vertex" a STEP exporter drops onto a straight run. The neighbour face carries the
+// plain straight p0→p1 span, so B blocks sharing until it is removed. Loop: pentagon
+// p0, B, p1, p2, p3.
+topo::Shape quadFaceExtraVertFirstSide(const m::Point3& p0, const m::Point3& p1,
+                                       const m::Point3& p2, const m::Point3& p3,
+                                       const m::Dir3& normal, double t, double off) {
+  const m::Vec3 e = (p1 - p0);
+  const m::Vec3 u = e / m::norm(e);  // unit along the side p0→p1
+  const m::Vec3 ref = std::fabs(normal.z()) < 0.9 ? m::Vec3{0, 0, 1} : m::Vec3{1, 0, 0};
+  const m::Ax3 frame = m::Ax3::fromAxisAndRef(p0, normal, m::Dir3{ref});
+  // In-plane perpendicular to the side (for the off-line notch case).
+  const m::Vec3 perp = m::cross(normal.vec(), u);
+  const m::Point3 B = p0 + e * t + perp * off;  // one interior vertex on the p0-p1 run
+  const m::Point3 pts[5] = {p0, B, p1, p2, p3};
+  topo::Shape v[5];
+  for (int i = 0; i < 5; ++i) v[i] = topo::ShapeBuilder::makeVertex(pts[i]);
+  auto toUV = [&](const m::Point3& p) -> m::Point3 {
+    const m::Vec3 d = p - frame.origin;
+    return m::Point3{m::dot(d, frame.x.vec()), m::dot(d, frame.y.vec()), 0.0};
+  };
+  std::vector<topo::Shape> edges;
+  for (int i = 0; i < 5; ++i) {
+    const m::Point3& a = pts[i];
+    const m::Point3& b = pts[(i + 1) % 5];
+    const m::Vec3 d = b - a;
+    const double len = std::max(m::norm(d), 1e-12);
+    topo::EdgeCurve c;
+    c.kind = topo::EdgeCurve::Kind::Line;
+    c.frame.origin = a;
+    c.frame.x = m::norm(d) > 1e-12 ? m::Dir3{d} : m::Dir3{1, 0, 0};
+    c.frame.z = frame.z;
+    topo::Shape ed = topo::ShapeBuilder::makeEdge(c, 0.0, len, v[i], v[(i + 1) % 5]);
+    topo::PCurve pc;
+    pc.kind = topo::EdgeCurve::Kind::Line;
+    const m::Point3 uv0 = toUV(a), uv1 = toUV(b);
+    pc.origin2d = uv0;
+    pc.dir2d = (uv1 - uv0) / len;
+    edges.push_back(topo::ShapeBuilder::addPCurve(ed, ed.tshape(), pc));
+  }
+  topo::Shape wire = topo::ShapeBuilder::makeWire(std::move(edges));
+  topo::FaceSurface s;
+  s.kind = topo::FaceSurface::Kind::Plane;
+  s.frame = frame;
+  return topo::ShapeBuilder::makeFace(s, wire, {}, topo::Orientation::Forward);
+}
+
+// The six unit-cube faces, but the +Z (top) face has one extra vertex on its first side
+// c4→c5 at parameter `t`, offset `off` perpendicular in-plane. off==0 ⇒ a redundant
+// collinear T-vertex (both sub-edges full-length); off>0 ⇒ a real corner. Every other
+// corner is exactly coincident (jitter 0) so a repaired heal lands at exactly V=1.
+std::vector<topo::Shape> cubeTopCollinearVert(double t, double off) {
+  const Corners k = cubeCorners();
+  std::vector<topo::Shape> f;
+  f.push_back(quadFace(k.c[0], k.c[3], k.c[2], k.c[1], m::Dir3{0, 0, -1}));  // −Z
+  f.push_back(quadFaceExtraVertFirstSide(k.c[4], k.c[5], k.c[6], k.c[7], m::Dir3{0, 0, 1}, t, off));  // +Z
+  f.push_back(quadFace(k.c[0], k.c[1], k.c[5], k.c[4], m::Dir3{0, -1, 0}));  // −Y (plain c4-c5)
+  f.push_back(quadFace(k.c[3], k.c[7], k.c[6], k.c[2], m::Dir3{0, 1, 0}));   // +Y
+  f.push_back(quadFace(k.c[0], k.c[4], k.c[7], k.c[3], m::Dir3{-1, 0, 0}));  // −X
+  f.push_back(quadFace(k.c[1], k.c[2], k.c[6], k.c[5], m::Dir3{1, 0, 0}));   // +X
+  return f;
+}
+
 const heal::HealOptions kOpts{1e-4};
 
 // Verify a healed solid meshes watertight with the expected enclosed volume.
@@ -707,6 +773,91 @@ CC_TEST(heal_short_edge_collapse_loop_layer) {
       heal::detail::collapseLoop(notch, 1e-4, 1e-1, n2, mx2);
   CC_CHECK_EQ(n2, 0);                // off-line corner is not collinear → kept
   CC_CHECK_EQ((int)out2.size(), 6);  // unchanged
+}
+
+// ── (L) COLLINEAR-VERTEX REMOVAL — a redundant T-vertex is dropped, cube heals ─────
+// The +Z face's c4→c5 side carries ONE extra vertex at t=0.3 exactly on the line (both
+// sub-edges full-length: |c4−B|=0.3, |B−c5|=0.7 — far above short_edge's ¼·neighbour
+// micro-edge bound, so pass 8 cannot touch it). The neighbour −Y face carries the plain
+// straight c4-c5 span, so the extra vertex blocks sharing → OpenShell without the flag.
+// With removeCollinearVerts=true the pass drops B, restoring the straight span → V=1.
+CC_TEST(heal_collinear_vert_removal_heals) {
+  auto f = cubeTopCollinearVert(0.3, 0.0);
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r =
+      heal::healShell(input, heal::HealOptions{1e-4, 0.0, false, false, 0.0, true});
+  CC_CHECK(r.healed());
+  CC_CHECK(r.metrics.watertight);
+  CC_CHECK(r.metrics.valid);
+  CC_CHECK(r.metrics.nRemovedCollinearVerts > 0);            // the redundant vertex was removed
+  CC_CHECK(r.metrics.maxCollinearVertDev <= 1e-4);           // deviation within tolerance
+  CC_CHECK(r.metrics.nCollapsedShortEdges == 0);             // NOT the short-edge pass (full-length edges)
+  CC_CHECK(r.metrics.maxResidualGap == 0.0);                 // fully closed after removal
+  CC_CHECK(watertightVolumeNear(r.shape, 1.0, 1e-6));        // exact unit cube
+}
+
+// ── (L2) DEFAULT-OFF — the same soup declines (landed slices byte-identical) ───────
+// With removeCollinearVerts == false the extra vertex is an unpaired boundary corner
+// whose matching span is on the neighbour, so the landed sew reports an honest
+// GapBeyondTolerance decline with the input unchanged — exactly as before this pass.
+CC_TEST(heal_collinear_vert_default_off_declines) {
+  auto f = cubeTopCollinearVert(0.3, 0.0);
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r = heal::healShell(input, kOpts);  // removeCollinearVerts == false
+  CC_CHECK(!r.healed());
+  CC_CHECK(r.reason == heal::UnhealedReason::GapBeyondTolerance);  // honest landed decline
+  CC_CHECK(r.metrics.maxResidualGap > 1e-4);                       // measured residual > tol
+  CC_CHECK_EQ(r.metrics.nRemovedCollinearVerts, 0);               // nothing removed
+  CC_CHECK(r.shape.isSameGeometry(input));                        // input UNCHANGED
+}
+
+// ── (L3) COLLINEARITY LAYER — a vertex that turns a REAL corner is NOT removed ─────
+// The extra vertex is pushed 0.1 off the c4-c5 line (a genuine notch, not a redundant
+// collinear T-vertex). The collinearity layer refuses to remove it even with the flag
+// ON, so the loop is unchanged and the shell stays open — never erases real feature.
+CC_TEST(heal_collinear_vert_real_corner_declines) {
+  auto f = cubeTopCollinearVert(0.3, 0.1);  // 0.1 off the line ⇒ a real corner
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r =
+      heal::healShell(input, heal::HealOptions{1e-4, 0.0, false, false, 0.0, true});
+  CC_CHECK(!r.healed());                              // a real corner is never removed
+  CC_CHECK_EQ(r.metrics.nRemovedCollinearVerts, 0);   // collinearity layer refuses
+  CC_CHECK(r.shape.isSameGeometry(input));            // input UNCHANGED
+}
+
+// ── (L4) UNIT LAYER — removeLoopVerts drops a collinear vertex, keeps a real corner ─
+// Drives the helper directly: a square whose bottom side has one collinear midpoint
+// vertex (removed), an off-line notch (kept), and a backtracking spur t∉(0,1) (kept —
+// a fold-back is never treated as a redundant interior vertex).
+CC_TEST(heal_collinear_vert_remove_loop_layer) {
+  int n = 0; double mx = 0.0;
+  // Square 0..1 with a collinear extra vertex at (0.3,0) on the bottom side:
+  const std::vector<m::Point3> collinear{
+      {0, 0, 0}, {0.3, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+  const std::vector<m::Point3> out =
+      heal::detail::removeLoopVerts(collinear, 1e-4, n, mx);
+  CC_CHECK_EQ(n, 1);                 // the collinear vertex removed
+  CC_CHECK_EQ((int)out.size(), 4);   // pentagon → square
+  CC_CHECK(mx <= 1e-4);
+
+  int n2 = 0; double mx2 = 0.0;
+  // Same loop but the extra vertex is off-line (a real notch) → must survive.
+  const std::vector<m::Point3> notch{
+      {0, 0, 0}, {0.3, 0.1, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+  const std::vector<m::Point3> out2 =
+      heal::detail::removeLoopVerts(notch, 1e-4, n2, mx2);
+  CC_CHECK_EQ(n2, 0);                // off-line corner is not collinear → kept
+  CC_CHECK_EQ((int)out2.size(), 5);  // unchanged
+
+  int n3 = 0; double mx3 = 0.0;
+  // A backtracking spur: B at (1.3,0) folds PAST C, so t>1 on the A→C line even though
+  // it is on the line — must NOT be removed (it is a real degenerate spur, not redundant).
+  const std::vector<m::Point3> spur{
+      {0, 0, 0}, {1.3, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+  const std::vector<m::Point3> out3 =
+      heal::detail::removeLoopVerts(spur, 1e-4, n3, mx3);
+  CC_CHECK_EQ(n3, 0);                // t∉(0,1) ⇒ the projection test refuses
+  CC_CHECK_EQ((int)out3.size(), 5);  // unchanged
 }
 
 CC_RUN_ALL()

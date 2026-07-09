@@ -8,6 +8,7 @@
 
 #include "native/heal/assemble_shell.h"
 #include "native/heal/cap_hole.h"
+#include "native/heal/collinear_vert.h"
 #include "native/heal/degenerate.h"
 #include "native/heal/face_soup.h"
 #include "native/heal/gap_bridge.h"
@@ -78,6 +79,28 @@ HealResult healShell(const topo::Shape& shape, const HealOptions& opts) {
       m.nCollapsedShortEdges = se.nCollapsed;
       m.maxCollapsedShortEdge = se.maxCollapsed;
       work = se.soup;
+    }
+  }
+
+  // Opt-in REDUNDANT COLLINEAR-VERTEX removal (M5 tail): when a caller enables it, drop a
+  // single extra vertex B a STEP exporter / mesh→B-rep conversion dropped onto a face's
+  // straight boundary run A→C (so the face lists A→B→C while the NEIGHBOUR carries A→C as
+  // one straight edge). B is removed ONLY when it lies within `tol` of the line A→C AND
+  // projects strictly between A and C, so a vertex that turns a real corner is left in
+  // place; both incident edges may be full-length, which is why short_edge.h (¼·neighbour
+  // micro-edge only) and degenerate.h (≤tol only) cannot reach it. Removing B restores the
+  // straight span the neighbour already carries, so vertex_unify then shares A and C and
+  // the shell closes (collinear_vert.h). Introduces NO length parameter — exact
+  // collinearity is the sole criterion — and NEVER widens the weld `tol`. With
+  // removeCollinearVerts == false this block is a no-op (dead-guarded) and `work` stays
+  // == `clean` (modulo any short-edge collapse), byte-identical to the landed slices. Runs
+  // BEFORE the first sew because it rewrites per-face corner loops.
+  if (opts.removeCollinearVerts) {
+    const CollinearVertResult cv = removeCollinearVertices(work, tol);
+    if (cv.applied) {
+      m.nRemovedCollinearVerts = cv.nRemoved;
+      m.maxCollinearVertDev = cv.maxDeviation;
+      work = cv.soup;
     }
   }
 

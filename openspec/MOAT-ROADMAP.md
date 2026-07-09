@@ -355,6 +355,28 @@ bridging, arbitrary broken industrial B-rep**. Gates trustworthy foreign import 
   closure the same honest unit cube, so deferring costs no correctness). REMAINING (asymptotic tail):
   a short edge that turns a real corner, a collapse needing the neighbour face re-projected, pcurve
   reconstruction, self-intersecting-wire repair, arbitrary broken industrial B-rep.
+- **Status — tail slice LANDED (opt-in COLLINEAR-VERTEX removal).** Beyond the sew/unify/orientation +
+  bridging + capping + short-edge healer, a shell whose boundary carries a single REDUNDANT COLLINEAR
+  vertex — the classic STEP "T-vertex" / seam-split: an exporter drops an extra vertex B onto a face's
+  straight run A→C (the face lists A→B→C, two edges) while the NEIGHBOUR carries the same span as ONE
+  straight edge A→C, so the sew cannot share the run and the healer DECLINES — now heals. `collinear_vert.h`
+  (new, header-only, OCCT-free) removes B when its perpendicular distance to line A→C is ≤ `tol` AND it
+  projects strictly between A and C (0<t<1, so a backtracking spur is never removed), restoring the exact
+  span A→C the neighbour already carries, then re-sews; the UNCHANGED mandatory self-verify proves
+  watertight + positive volume. Distinct from `short_edge.h`: BOTH incident edges may be FULL-LENGTH (no
+  ¼·neighbour micro-edge bound; a SINGLE corner removed, not two), so `collapseLoop`'s length band cannot
+  reach it. Introduces NO length parameter — exact collinearity is the sole criterion. Opt-in
+  (`removeCollinearVerts=false` default OFF, existing healer BYTE-IDENTICAL); NEVER widens the weld
+  tolerance; no new `UnhealedReason`; a vertex that turns a REAL (non-collinear) corner is left in place.
+  Verified both gates: host analytic (`test_native_heal` 32/32 — cube with a collinear T-vertex at t=0.3
+  heals to V=1.0 with nRemovedCollinearVerts=1 and nCollapsedShortEdges=0; default-off declines
+  `GapBeyondTolerance` residual=0.3 with input unchanged; a 0.1-off-line real corner is kept; the
+  `removeLoopVerts` layer unit-driven incl. the backtracking-spur refusal) and native-vs-OCCT
+  (`run-sim-native-heal` 14/14 — the removal matches OCCT `Sewing`+`ShapeFix` at V=1.0; with the flag OFF
+  native declines while OCCT aggressively drops the collinear vertex → native EQUAL-OR-MORE-CONSERVATIVE,
+  OCCT's closure the same honest unit cube). REMAINING (asymptotic tail): a vertex that turns a real corner,
+  a removal needing the neighbour face re-projected, pcurve reconstruction, self-intersecting-wire repair,
+  arbitrary broken industrial B-rep.
 
 ### M6 — Robustness completeness bar (S4-f + coverage) · ongoing · gates drop-occt
 The measured-recall / completeness discipline (SSI S4-f landed a first slice): below any fixed

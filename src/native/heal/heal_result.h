@@ -65,6 +65,8 @@ struct HealMetrics {
   double maxBridgedGap = 0.0;   ///< largest near-miss gap bridged (≤ the effective bound)
   int nCollapsedShortEdges = 0; ///< redundant collinear short edges removed by the opt-in merge pass
   double maxCollapsedShortEdge = 0.0;  ///< longest short edge collapsed (≤ the effective bound)
+  int nRemovedCollinearVerts = 0;  ///< redundant collinear vertices removed by the opt-in unify pass
+  double maxCollinearVertDev = 0.0;  ///< largest perpendicular deviation of a removed vertex (≤ tolerance)
   int nCappedFaces = 0;         ///< planar holes closed by the opt-in cap pass (≤ 1 this slice)
   double maxCapPlanarityDev = 0.0;  ///< largest coplanarity deviation of a capped loop (≤ tolerance)
   double maxResidualGap = 0.0;  ///< largest surviving boundary gap (0 ⇒ closed)
@@ -138,6 +140,24 @@ struct HealOptions {
   /// prevents closure still returns `Unhealed{OpenShell}`. NEVER weakens the tolerance;
   /// no new `UnhealedReason`. See short_edge.h (`collapseShortEdges`).
   double shortEdgeMergeLen = 0.0;
+
+  /// Opt-in removal of a single REDUNDANT COLLINEAR vertex on an otherwise-straight
+  /// boundary run — the classic STEP-import "T-vertex" / seam-split artifact: a face
+  /// carries an extra vertex B on the straight span A→C (so it lists A→B→C, two edges)
+  /// while the NEIGHBOUR face carries the same span as ONE straight edge A→C. B turns no
+  /// corner (it lies within `tolerance` of the line A→C) and BOTH incident edges may be
+  /// FULL-LENGTH real edges, so neither `short_edge.h` (which bounds the removed span at
+  /// ¼·neighbour and removes a MICRO-edge's TWO corners) nor `degenerate.h` (which drops
+  /// only ≤`tolerance` sides) touches it, and the sew cannot share the run → the shell is
+  /// left open. When `true`, such a vertex is removed ONLY when its perpendicular distance
+  /// to A→C is ≤ `tolerance` AND it projects strictly between A and C, restoring the exact
+  /// straight span the neighbour carries; a vertex that turns a real corner is left in
+  /// place. Introduces NO length parameter — exact collinearity is the sole criterion — so
+  /// it never erases real feature whatever the edge lengths, and the UNCHANGED mandatory
+  /// self-verify remains authoritative. `false` (default) DISABLES the pass, making
+  /// `healShell` byte-identical to the landed slices. NEVER weakens the tolerance; no new
+  /// `UnhealedReason`. See collinear_vert.h (`removeCollinearVertices`).
+  bool removeCollinearVerts = false;
 };
 
 }  // namespace cybercad::native::heal

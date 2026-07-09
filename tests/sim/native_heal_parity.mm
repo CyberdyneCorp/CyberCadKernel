@@ -155,6 +155,31 @@ static HexTopSoup cubeTopShortEdgeSoup(double seg) {
   return h;
 }
 
+// A pentagonal +Z top face whose first side c4→c5 (the y=0,z=1 edge) carries ONE extra
+// vertex B at parameter `t` along the side, exactly on the line (a redundant COLLINEAR
+// T-vertex); the other five faces are plain quads. The neighbour −Y face carries the plain
+// straight c4-c5 span, so the extra vertex blocks sharing until it is removed. Unlike the
+// short-edge soup this inserts a SINGLE vertex between two FULL-LENGTH sub-edges (the M5
+// collinear-vertex fixture — see host cubeTopCollinearVert / collinear_vert.h).
+struct PentaTopSoup {
+  std::vector<Quad> quads;     // the five plain quad faces (−Z,−Y,+Y,−X,+X)
+  m::Point3 topPenta[5];       // the +Z face as a 5-corner loop (c4,B,c5,c6,c7)
+  m::Dir3 topN{0, 0, 1};
+};
+static PentaTopSoup cubeTopCollinearVertSoup(double t) {
+  const double s = 1.0;
+  const m::Point3 c[8] = {{0,0,0},{s,0,0},{s,s,0},{0,s,0},{0,0,s},{s,0,s},{s,s,s},{0,s,s}};
+  const m::Point3 B = c[4] + (c[5] - c[4]) * t;  // exactly on the c4-c5 line
+  PentaTopSoup h;
+  h.quads.push_back({{c[0],c[3],c[2],c[1]}, m::Dir3{0,0,-1}});  // −Z
+  h.quads.push_back({{c[0],c[1],c[5],c[4]}, m::Dir3{0,-1,0}});  // −Y (plain c4-c5)
+  h.quads.push_back({{c[3],c[7],c[6],c[2]}, m::Dir3{0,1,0}});   // +Y
+  h.quads.push_back({{c[0],c[4],c[7],c[3]}, m::Dir3{-1,0,0}});  // −X
+  h.quads.push_back({{c[1],c[2],c[6],c[5]}, m::Dir3{1,0,0}});   // +X
+  h.topPenta[0]=c[4]; h.topPenta[1]=B; h.topPenta[2]=c[5]; h.topPenta[3]=c[6]; h.topPenta[4]=c[7];
+  return h;
+}
+
 // A native face from an N-corner planar loop (Line edges + pcurves), like nativeQuadFace.
 static topo::Shape nativePolyFace(const m::Point3* pts, int n, const m::Dir3& normal) {
   const m::Vec3 ref = std::fabs(normal.z()) < 0.9 ? m::Vec3{0,0,1} : m::Vec3{1,0,0};
@@ -244,6 +269,40 @@ static topo::Shape nativeShortEdgeSoup(const HexTopSoup& h) {
   for (const Quad& q : h.quads) faces.push_back(nativeQuadFace(q, false));
   faces.push_back(nativePolyFace(h.topHex, 6, h.topN));
   return topo::ShapeBuilder::makeShell(faces);
+}
+
+// The native collinear-vertex soup: five plain quad faces + the pentagonal +Z face.
+static topo::Shape nativeCollinearVertSoup(const PentaTopSoup& h) {
+  std::vector<topo::Shape> faces;
+  for (const Quad& q : h.quads) faces.push_back(nativeQuadFace(q, false));
+  faces.push_back(nativePolyFace(h.topPenta, 5, h.topN));
+  return topo::ShapeBuilder::makeShell(faces);
+}
+
+// The OCCT collinear-vertex soup: the SAME five plain quad faces + the pentagonal +Z face
+// (a 5-vertex polygon). BRepBuilderAPI_Sewing + ShapeFix (ShapeFix_Wire drops the collinear
+// vertex / merges it) closes it — the OCCT analogue of the native collinear-vertex removal.
+static TopoDS_Shape occtCollinearVertSoup(const PentaTopSoup& h) {
+  BRep_Builder bb; TopoDS_Compound comp; bb.MakeCompound(comp);
+  for (const Quad& q : h.quads) {
+    BRepBuilderAPI_MakePolygon poly;
+    for (int i = 0; i < 4; ++i) poly.Add(gp_Pnt(q.p[i].x, q.p[i].y, q.p[i].z));
+    poly.Close();
+    if (!poly.IsDone()) continue;
+    const gp_Pln plane(gp_Pnt(q.p[0].x, q.p[0].y, q.p[0].z), gp_Dir(q.n.x(), q.n.y(), q.n.z()));
+    BRepBuilderAPI_MakeFace mf(plane, poly.Wire());
+    if (mf.IsDone()) bb.Add(comp, mf.Face());
+  }
+  BRepBuilderAPI_MakePolygon top;
+  for (int i = 0; i < 5; ++i) top.Add(gp_Pnt(h.topPenta[i].x, h.topPenta[i].y, h.topPenta[i].z));
+  top.Close();
+  if (top.IsDone()) {
+    const gp_Pln plane(gp_Pnt(h.topPenta[0].x, h.topPenta[0].y, h.topPenta[0].z),
+                       gp_Dir(h.topN.x(), h.topN.y(), h.topN.z()));
+    BRepBuilderAPI_MakeFace mf(plane, top.Wire());
+    if (mf.IsDone()) bb.Add(comp, mf.Face());
+  }
+  return comp;
 }
 
 // ── OCCT soup builder (a compound of independent planar faces) ─────────────────
@@ -570,6 +629,57 @@ int main() {
     const bool occtEitherDeclinesOrHonest =
         !orr.watertight || std::fabs(std::fabs(orr.volume) - 1.0) < occtTol;
     check("short-edge default-off: native more-conservative than OCCT",
+          nativeConservative && occtEitherDeclinesOrHonest, buf);
+  }
+
+  // ── M5 TAIL: COLLINEAR-VERTEX REMOVAL (opt-in removeCollinearVerts) ────────────
+  // In-scope: a unit cube whose +Z top face carries ONE redundant COLLINEAR vertex an
+  // exporter dropped onto the y=0,z=1 boundary run at t=0.3 (both sub-edges full-length:
+  // 0.3 and 0.7 — far above short_edge's ¼·neighbour bound, so pass 8 cannot reach it).
+  // Native (removeCollinearVerts=true) drops the redundant vertex and re-sews to a
+  // watertight unit cube EXACTLY (the span becomes the straight edge — no repositioning).
+  // The OCCT reference sews the SAME six-face soup (five quads + the pentagon) at tol; its
+  // sewer / ShapeFix_Wire drops the collinear vertex and closes it. Both land V ≈ 1.
+  {
+    const PentaTopSoup h = cubeTopCollinearVertSoup(0.3);
+    const heal::HealResult nr = heal::healShell(
+        nativeCollinearVertSoup(h), heal::HealOptions{tol, 0.0, false, false, 0.0, true});
+    const cyber::occt::SewFixResult orr = cyber::occt::sewAndFix(occtCollinearVertSoup(h), tol);
+    const double nv = nr.healed() ? nativeVolume(nr.shape) : 0.0;
+    char buf[220];
+    std::snprintf(buf, sizeof buf,
+                  "(native V=%.5f watertight=%d removed=%d | OCCT V=%.5f valid=%d)", nv,
+                  (int)nr.metrics.watertight, nr.metrics.nRemovedCollinearVerts, orr.volume,
+                  (int)orr.validSolid);
+    // Native lands EXACTLY 1 (collinear removal); OCCT closes the same honest unit cube.
+    const bool ok = nr.healed() && nr.metrics.watertight && nr.metrics.nRemovedCollinearVerts > 0 &&
+                    orr.validSolid && std::fabs(nv - 1.0) < 1e-3 &&
+                    std::fabs(std::fabs(orr.volume) - 1.0) < 1e-3 &&
+                    std::fabs(nv - std::fabs(orr.volume)) < 1e-3;
+    check("collinear-vert-removal matches OCCT sew+fix", ok, buf);
+  }
+
+  // EQUAL-OR-MORE-CONSERVATIVE: with the flag OFF (removeCollinearVerts = false) native
+  // declines the SAME soup honestly (GapBeyondTolerance, input unchanged, nothing removed)
+  // — byte-identical to the landed slices. OCCT sewing the same soup still drops the
+  // collinear vertex and closes it (aggressive). Native DEFERRING where OCCT repairs is
+  // native being MORE conservative — the intended contract — and the opt-in flag recovers
+  // exactly that win (proven by the check above). If OCCT closed, its solid is the honest
+  // unit cube; if OCCT also declined, that is straight parity of decline.
+  {
+    const PentaTopSoup h = cubeTopCollinearVertSoup(0.3);
+    const heal::HealResult nr = heal::healShell(nativeCollinearVertSoup(h), opts);  // flag OFF
+    const cyber::occt::SewFixResult orr = cyber::occt::sewAndFix(occtCollinearVertSoup(h), tol);
+    char buf[240];
+    std::snprintf(buf, sizeof buf,
+                  "(native UNHEALED reason=%d removed=%d residual=%.4g | OCCT valid=%d watertight=%d V=%.5f — native MORE conservative)",
+                  (int)nr.reason, nr.metrics.nRemovedCollinearVerts, nr.metrics.maxResidualGap,
+                  (int)orr.validSolid, (int)orr.watertight, orr.volume);
+    const bool nativeConservative = !nr.healed() && nr.metrics.nRemovedCollinearVerts == 0 &&
+                                    nr.metrics.maxResidualGap > tol;
+    const bool occtEitherDeclinesOrHonest =
+        !orr.watertight || std::fabs(std::fabs(orr.volume) - 1.0) < 1e-3;
+    check("collinear-vert default-off: native more-conservative than OCCT",
           nativeConservative && occtEitherDeclinesOrHonest, buf);
   }
 

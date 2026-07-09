@@ -10,6 +10,11 @@ have no finite "done" line.
 Parent: [NATIVE-REWRITE.md](NATIVE-REWRITE.md) (#8 `drop-occt`). Enabler already built:
 [SSI-ROADMAP.md](SSI-ROADMAP.md) (S1–S5 curve pipeline + curved booleans).
 
+App migration readiness: see [docs/APP-MIGRATION-READINESS.md](../docs/APP-MIGRATION-READINESS.md)
+— audits whether the CyberCad app can flip to the native engine. Finding: no B-class op blocks
+the app (`fillet_edges_g2`/`thread_apply` = 0 app sites); the real work is app-side adoption of
+the kernel product + an IGES decision + the M2/M3/M7b curved-blend/freeform-boolean A-envelope gaps.
+
 ## The non-negotiable discipline (every stage, no exceptions)
 
 **OCCT is the ORACLE throughout implementation — it is NOT removed until the capability it

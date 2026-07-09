@@ -400,6 +400,38 @@ CCShapeId cc_loft_along_rail(const double* railXYZ, int railCount, const double*
         CCShapeId{0});
 }
 
+CCShapeId cc_loft_circles(const double* c1, const double* n1, double r1, const double* c2,
+                          const double* n2, double r2) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            auto r = active_engine()->loft_circles(c1, n1, r1, c2, n2, r2);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
+}
+
+CCShapeId cc_loft_circle_wire(const double* cc, const double* cn, double cr, const double* wXYZ,
+                              int wCount) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            auto r = active_engine()->loft_circle_wire(cc, cn, cr, wXYZ, wCount);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
+}
+
+CCShapeId cc_loft_along_rails(const double* railXYZ, int railCount, const double* guideXYZ,
+                              int guideCount, const double* profileA_XY, int aCount,
+                              const double* profileB_XY, int bCount) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            auto r = active_engine()->loft_along_rails(railXYZ, railCount, guideXYZ, guideCount,
+                                                       profileA_XY, aCount, profileB_XY, bCount);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
+}
+
 CCShapeId cc_guided_sweep(const double* profileXY, int profileCount, const double* pathXYZ,
                           int pathCount, const double* guideXYZ, int guideCount) {
     return cyber::guard(
@@ -529,6 +561,22 @@ CCShapeId cc_solid_revolve_profile(const CCProfileSeg* segs, int segCount, doubl
             auto r = active_engine()->solid_revolve_profile(s.data(), static_cast<int>(s.size()),
                                                             ax, ay, adx, ady, splineXY,
                                                             splineXYCount, angleRadians);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
+}
+
+CCShapeId cc_loft_typed(const CCProfileSeg* segsA, int countA, const double* splineA,
+                        int splineACount, const double* frameA, const CCProfileSeg* segsB,
+                        int countB, const double* splineB, int splineBCount, const double* frameB) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            std::vector<ProfileSeg> a = to_profile_segs(segsA, countA);
+            std::vector<ProfileSeg> b = to_profile_segs(segsB, countB);
+            auto r = active_engine()->loft_typed(a.data(), static_cast<int>(a.size()), splineA,
+                                                 splineACount, frameA, b.data(),
+                                                 static_cast<int>(b.size()), splineB, splineBCount,
+                                                 frameB);
             return finish_shape(r);
         },
         CCShapeId{0});
@@ -778,6 +826,28 @@ int cc_subshape_ids(CCShapeId body, int kind, int** outIds) {
             return finish_ints(r, outIds);
         },
         0);
+}
+
+int cc_shape_solid_count(CCShapeId body) {
+    return cyber::guard(
+        [&]() -> int {
+            auto r = active_engine()->shape_solid_count(resolve(body));
+            if (!r) {
+                set_last_error(r.error().message);
+                return 0;
+            }
+            return r.value();
+        },
+        0);
+}
+
+CCShapeId cc_shape_solid_at(CCShapeId body, int index) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            auto r = active_engine()->shape_solid_at(resolve(body), index);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
 }
 
 int cc_measure_distance(CCShapeId body, int subKindA, int subIdA, int subKindB, int subIdB,

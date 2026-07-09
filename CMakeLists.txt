@@ -331,6 +331,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_inertia
         test_native_validity
         test_native_project
+        test_native_solid_enum
         test_native_engine)
 
     # The numeric-facade test links NumPP/SciPP, so it is added ONLY when the
@@ -684,6 +685,12 @@ if(CYBERCAD_BUILD_TESTS)
     # faces; no numsci link, so it lives in the always-on native suite.
     set(test_native_project_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_project.cpp")
+    # MOAT ABI-parity — host GATE (a): the OCCT-free proof of the app-parity connected-
+    # solid enumeration (cc_shape_solid_count / cc_shape_solid_at) on a known 2-lump
+    # compound + the FACADE single-solid path, and the honest native decline of the
+    # app-parity loft variants. Header-only topology/tessellate/construct; no numsci link.
+    set(test_native_solid_enum_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_solid_enum.cpp")
 
     foreach(test ${CYBERCAD_TESTS})
         if(DEFINED ${test}_SRC)

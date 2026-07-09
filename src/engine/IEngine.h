@@ -214,6 +214,31 @@ public:
         (void)bCount;
         return engine_unsupported("loft_along_rail");
     }
+    // ── app-parity loft variants (ADDITIVE) ─────────────────────────────────────
+    // Loft between two TRUE circles; a smooth conical/cylindrical B-rep (one side face,
+    // two circular edges). The native engine declines (true-circle rim topology is
+    // outside its ruled-loft envelope) → OCCT oracle.
+    virtual ShapeResult loft_circles(const double* c1, const double* n1, double r1,
+                                     const double* c2, const double* n2, double r2) {
+        (void)c1; (void)n1; (void)r1; (void)c2; (void)n2; (void)r2;
+        return engine_unsupported("loft_circles");
+    }
+    // Loft a true circle section to an arbitrary polygon wire (x,y,z triplets).
+    virtual ShapeResult loft_circle_wire(const double* cc, const double* cn, double cr,
+                                         const double* wXYZ, int wCount) {
+        (void)cc; (void)cn; (void)cr; (void)wXYZ; (void)wCount;
+        return engine_unsupported("loft_circle_wire");
+    }
+    // Two-rail loft: railXYZ is the spine, guideXYZ an auxiliary/guide spine; falls back
+    // to the single-rail sweep (guide dropped) if the guided build fails.
+    virtual ShapeResult loft_along_rails(const double* railXYZ, int railCount,
+                                         const double* guideXYZ, int guideCount,
+                                         const double* profileA_XY, int aCount,
+                                         const double* profileB_XY, int bCount) {
+        (void)railXYZ; (void)railCount; (void)guideXYZ; (void)guideCount; (void)profileA_XY;
+        (void)aCount; (void)profileB_XY; (void)bCount;
+        return engine_unsupported("loft_along_rails");
+    }
     virtual ShapeResult guided_sweep(const double* profileXY, int profileCount,
                                      const double* pathXYZ, int pathCount, const double* guideXYZ,
                                      int guideCount) {
@@ -292,6 +317,17 @@ public:
         (void)segs; (void)segCount; (void)ax; (void)ay; (void)adx; (void)ady; (void)splineXY;
         (void)splineXYCount; (void)angleRadians;
         return engine_unsupported("solid_revolve_profile");
+    }
+    // Loft between two TYPED section profiles (line/arc/circle/spline loops), each placed on
+    // its own plane frame (9 doubles: origin(3)+u(3)+v(3)). Curved boundaries stay true
+    // B-rep curve edges. The native engine declines → OCCT oracle. ADDITIVE.
+    virtual ShapeResult loft_typed(const ProfileSeg* segsA, int countA, const double* splineA,
+                                   int splineACount, const double* frameA, const ProfileSeg* segsB,
+                                   int countB, const double* splineB, int splineBCount,
+                                   const double* frameB) {
+        (void)segsA; (void)countA; (void)splineA; (void)splineACount; (void)frameA; (void)segsB;
+        (void)countB; (void)splineB; (void)splineBCount; (void)frameB;
+        return engine_unsupported("loft_typed");
     }
 
     // ── feature ───────────────────────────────────────────────────────────────
@@ -509,6 +545,17 @@ public:
     virtual Result<std::vector<int>> subshape_ids(EngineShape body, int kind) {
         (void)body; (void)kind;
         return engine_unsupported("subshape_ids");
+    }
+    // ── connected-solid enumeration (ADDITIVE, app-parity) ──────────────────────
+    // Number of connected solids in a body (a compound may hold several disjoint lumps),
+    // and the index-th (0-based) solid as its own shape. Mirrors TopExp_Explorer(TopAbs_SOLID).
+    virtual Result<int> shape_solid_count(EngineShape body) {
+        (void)body;
+        return engine_unsupported("shape_solid_count");
+    }
+    virtual ShapeResult shape_solid_at(EngineShape body, int index) {
+        (void)body; (void)index;
+        return engine_unsupported("shape_solid_at");
     }
     virtual Result<std::vector<int>> tangent_chain(EngineShape body, const int* edgeIds,
                                                    int edgeCount) {

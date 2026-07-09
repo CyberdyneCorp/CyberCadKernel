@@ -44,9 +44,21 @@ are byte-identical declarations in both `cybercad/.../KernelBridgeAPI.h` and
 replacement** for the app's hand-rolled bridge. The migration is therefore two distinct steps,
 and only the *first* is a hard prerequisite for the flip:
 
+> **ABI-parity link blocker — RESOLVED (MOAT abi-app-parity).** The app declared and CALLED
+> six `cc_*` symbols that were absent from the shipped kernel ABI — `cc_loft_circles`,
+> `cc_loft_circle_wire`, `cc_loft_typed`, `cc_loft_along_rails`, `cc_shape_solid_count`,
+> `cc_shape_solid_at` — so a naïve link of the app against `libcybercadkernel.a` could not
+> resolve them. They are now ADDED to `include/cybercadkernel/cc_kernel.h` (additive-only),
+> signature-matched to `KernelBridgeAPI.h`, and implemented (OCCT oracle for the four smooth
+> lofts; native `Explorer(Solid)` enumeration for `shape_solid_count`/`_at`, with the loft
+> variants honestly declining to OCCT during the transition). The `test_abi` contract test
+> now links EVERY app-declared `cc_*` prototype against the library: all 63 app `cc_*` symbols
+> are present in `cc_kernel.h`.
+
 1. **ADOPT** — replace `KernelBridge.mm`'s OCCT bridge with a link against
    `libcybercadkernel.a` + `cc_kernel.h` (the app keeps its `cc_*` call-sites and its Swift
-   `BRepShape` wrapper unchanged). This is app-integration work, not geometry.
+   `BRepShape` wrapper unchanged). This is app-integration work, not geometry. The 6-symbol
+   ABI-parity link blocker above is now cleared, so this link resolves.
 2. **FLIP** — call `cc_set_engine(1)` to select the NativeEngine (OCCT still linked as the
    fallback/oracle), then eventually build the kernel OCCT-free (the `drop-occt` unlink).
 
@@ -75,6 +87,7 @@ their class from the readiness table (+ the M8-measured verdict):
 | cc_solid_loft / _wires / _sections | 8/6/0 | A | SERVED-NATIVE | non-planar/self-folding → decline |
 | cc_solid_sweep | 11 | A | SERVED-NATIVE | tight-curvature/SSI spine → decline |
 | cc_loft_along_rail | 8 | A (M7t) | SERVED-NATIVE straight+smooth-curved rail | tight-kink rail → decline |
+| cc_loft_circles / _circle_wire / _typed / _along_rails | — | A (abi-parity) | OCCT oracle (added) | true-circle/spline rim → native declines to OCCT; ADDED so the app LINKS |
 | cc_twisted_sweep | 4 | A (M7t) | SERVED-NATIVE plain+pure-twist | twist+scale saddle → decline |
 | cc_guided_sweep | 5 | A | SERVED-NATIVE | self-folding SSI → decline |
 | cc_helical_thread / cc_tapered_thread | 6/5 | A (resid M7b) | coarse-pitch NATIVE | **fine-pitch self-intersecting → decline** |
@@ -97,6 +110,7 @@ their class from the readiness table (+ the M8-measured verdict):
 | cc_tessellate / face_meshes / edge_polylines | 12/9/8 | A | SERVED-NATIVE | `!isNative` guard; native bodies served |
 | cc_mass_properties / principal_moments / bounding_box | 7/6/4 | A | SERVED-NATIVE | native served |
 | cc_subshape_ids | 17 | A | SERVED-NATIVE | native served (highest-count op) |
+| cc_shape_solid_count / cc_shape_solid_at | — | A (abi-parity) | SERVED-NATIVE | native `Explorer(Solid)`; OCCT body → OCCT fallback; ADDED so the app LINKS |
 | cc_section_plane | 1 | A (resid GS2) | native analytic | oblique-cyl/freeform → decline |
 | **REFERENCE GEOMETRY (M-REF, native)** ||||
 | cc_face_axis / tangent_chain / outer_rim_chain / offset_face_boundary | 6/5/6/5 | A | SERVED-NATIVE | non-analytic edge → decline |

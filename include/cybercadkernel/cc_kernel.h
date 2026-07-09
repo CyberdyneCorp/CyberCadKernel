@@ -347,6 +347,28 @@ CCShapeId cc_loft_along_rail(const double *railXYZ, int railCount,
                              const double *profileA_XY, int aCount,
                              const double *profileB_XY, int bCount);
 
+/* Loft between two TRUE CIRCLES given by centre (x,y,z), unit normal (x,y,z), and radius:
+ * builds circular section wires so the result is a smooth conical/cylindrical B-rep (one
+ * side face, two circular edges), not a faceted polygon. Returns 0 on bad input (null
+ * pointer or a non-positive radius). ADDITIVE (app-parity). */
+CCShapeId cc_loft_circles(const double *c1, const double *n1, double r1,
+                          const double *c2, const double *n2, double r2);
+
+/* Loft a TRUE CIRCLE section (centre `cc`, unit normal `cn`, radius `cr`) to an arbitrary
+ * polygon wire (`wXYZ`, x,y,z triplets, `wCount`>=3) — a smooth circle<->polygon loft with a
+ * true circular rim (no faceting on the circle side). Returns 0 on bad input. ADDITIVE. */
+CCShapeId cc_loft_circle_wire(const double *cc, const double *cn, double cr,
+                              const double *wXYZ, int wCount);
+
+/* Two-rail variant of cc_loft_along_rail: `railXYZ` is the spine and `guideXYZ` steers the
+ * sweep as an auxiliary/guide spine, so the loft is shaped by two curves. Falls back to the
+ * single-rail sweep (guide dropped) if the guided build fails, and returns 0 only if even
+ * that fails. ADDITIVE (app-parity). */
+CCShapeId cc_loft_along_rails(const double *railXYZ, int railCount,
+                              const double *guideXYZ, int guideCount,
+                              const double *profileA_XY, int aCount,
+                              const double *profileB_XY, int bCount);
+
 CCShapeId cc_guided_sweep(const double *profileXY, int profileCount,
                           const double *pathXYZ, int pathCount,
                           const double *guideXYZ, int guideCount);
@@ -418,6 +440,16 @@ CCShapeId cc_solid_revolve_profile(const CCProfileSeg *segs, int segCount,
                                    double ax, double ay, double adx, double ady,
                                    const double *splineXY, int splineXYCount,
                                    double angleRadians);
+
+/* General loft between two TYPED section profiles (ordered CCProfileSeg loops with spline
+ * side-channels — same encoding as cc_solid_extrude_profile), each placed on its own plane
+ * frame (origin(3)+u(3)+v(3) = 9 doubles). Curved boundaries (arcs/circles/splines) become
+ * true B-rep curve edges, so composite profiles loft smoothly. Returns 0 on invalid input.
+ * ADDITIVE (app-parity). */
+CCShapeId cc_loft_typed(const CCProfileSeg *segsA, int countA, const double *splineA,
+                        int splineACount, const double *frameA,
+                        const CCProfileSeg *segsB, int countB, const double *splineB,
+                        int splineBCount, const double *frameB);
 
 /* ── Feature edits ───────────────────────────────────────────────────────── */
 
@@ -508,6 +540,15 @@ int cc_face_axis(CCShapeId body, int faceId, double *out6);
  * Caller frees outIds with cc_ints_free. Returns the id count. */
 int cc_subshape_ids(CCShapeId body, int kind, int **outIds);
 void cc_ints_free(int *ids);
+
+/* Number of connected solids in a body (a body may be a compound of several disjoint
+ * lumps). Returns 0 if the shape has no solids or is unknown. ADDITIVE (app-parity). */
+int cc_shape_solid_count(CCShapeId body);
+
+/* The `index`-th connected solid of a body (index is 0-based), registered as its own
+ * independent shape (0 on out-of-range or failure). Lets a disconnected lump be
+ * selected/moved alone. ADDITIVE (app-parity). */
+CCShapeId cc_shape_solid_at(CCShapeId body, int index);
 
 /* ── Measurement & curvature analysis (MOAT M-GS, GS3 + GS4) ─────────────────
  * Exact analysis SERVICES on the native B-rep. subKind selects the sub-shape:

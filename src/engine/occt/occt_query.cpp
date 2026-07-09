@@ -44,6 +44,7 @@
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GeomAbs_SurfaceType.hxx>
 #include <TopAbs_ShapeEnum.hxx>
+#include <TopExp_Explorer.hxx>
 #include <TopoDS_Wire.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_ListIteratorOfListOfShape.hxx>
@@ -319,6 +320,38 @@ Result<std::vector<int>> OcctEngine::subshape_ids(EngineShape body, int kind) {
             ids[static_cast<std::size_t>(i)] = i + 1;
         }
         return ids;
+    });
+}
+
+// ── Connected-solid enumeration (app-parity) ──────────────────────────────────
+
+Result<int> OcctEngine::shape_solid_count(EngineShape body) {
+    return occt::occtGuard([&]() -> Result<int> {
+        const TopoDS_Shape* shape = occt::unwrap(body);
+        if (shape == nullptr) {
+            return make_error("shape_solid_count: unknown body");
+        }
+        int n = 0;
+        for (TopExp_Explorer ex(*shape, TopAbs_SOLID); ex.More(); ex.Next()) {
+            ++n;
+        }
+        return n;
+    });
+}
+
+ShapeResult OcctEngine::shape_solid_at(EngineShape body, int index) {
+    return occt::occtGuard([&]() -> ShapeResult {
+        const TopoDS_Shape* shape = occt::unwrap(body);
+        if (shape == nullptr || index < 0) {
+            return make_error("shape_solid_at: unknown body or negative index");
+        }
+        int i = 0;
+        for (TopExp_Explorer ex(*shape, TopAbs_SOLID); ex.More(); ex.Next(), ++i) {
+            if (i == index) {
+                return ShapeResult(occt::wrap(ex.Current()));
+            }
+        }
+        return make_error("shape_solid_at: index out of range");
     });
 }
 

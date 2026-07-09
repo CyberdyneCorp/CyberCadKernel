@@ -125,6 +125,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_dm3_dm4_parity.mm \
       native_analytic_fillet_parity.mm \
       native_step_mapped_item_parity.mm \
+      native_abi_parity.mm \
       native_heal_parity.mm \
       phase3_suite.cpp checks_reference_geometry.cpp checks_wrap_emboss.cpp \
       checks_thread_boolean.cpp checks_full_round_fillet.cpp checks_g2_fillet.cpp"

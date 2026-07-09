@@ -29,6 +29,9 @@
 #include <gp_Ax2.hxx>
 #include <gp_Ax3.hxx>
 #include <gp_Circ.hxx>
+#include <gp_Trsf.hxx>
+#include <gp_Vec.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
 #include <gp_Cylinder.hxx>
 #include <gp_XY.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
@@ -365,6 +368,26 @@ bool buildTypedWire(const ProfileSeg* segs, int segCount, TopoDS_Wire& out,
         return false;
     }
     out = wire.Wire();
+    return true;
+}
+
+// Place a wire built in the global XOY plane onto a plane frame (origin + u + v) via a rigid
+// motion (dimensions preserved). Mirrors the app's KernelBridge.mm placeWireOnFrame so
+// cc_loft_typed's frame semantics match the oracle. Returns false on a degenerate frame.
+bool placeWireOnFrame(TopoDS_Wire& w, const double* f) {
+    gp_Vec u(f[3], f[4], f[5]), v(f[6], f[7], f[8]);
+    gp_Vec n = u.Crossed(v);
+    if (u.Magnitude() < 1.0e-9 || v.Magnitude() < 1.0e-9 || n.Magnitude() < 1.0e-9) {
+        return false;
+    }
+    gp_Ax3 dst(gp_Pnt(f[0], f[1], f[2]), gp_Dir(n), gp_Dir(u));
+    gp_Trsf t;
+    t.SetDisplacement(gp_Ax3(), dst);
+    BRepBuilderAPI_Transform xf(w, t, Standard_True);
+    if (!xf.IsDone()) {
+        return false;
+    }
+    w = TopoDS::Wire(xf.Shape());
     return true;
 }
 
@@ -885,6 +908,156 @@ ShapeResult OcctEngine::loft_along_rail(const double* railXYZ, int railCount,
             return make_error("loft_along_rail: make-solid failed");
         }
         return occt::addIfValid(mk.Shape(), "loft_along_rail: invalid solid");
+    });
+}
+
+// ── App-parity loft variants (ADDITIVE) ────────────────────────────────────────
+// These MATCH the app's reference KernelBridge.mm construction exactly so that, during
+// the OCCT-transition, the kernel is behaviourally identical to the app's inline bridge.
+
+// Loft between two TRUE circles → a smooth conical/cylindrical B-rep (one side face, two
+// circular edges), not a faceted polygon.
+ShapeResult OcctEngine::loft_circles(const double* c1, const double* n1, double r1,
+                                     const double* c2, const double* n2, double r2) {
+    return occt::occtGuard([&]() -> ShapeResult {
+        if (c1 == nullptr || n1 == nullptr || c2 == nullptr || n2 == nullptr || !(r1 > 1.0e-6) ||
+            !(r2 > 1.0e-6)) {
+            return make_error("loft_circles: degenerate input");
+        }
+        const gp_Ax2 a1(gp_Pnt(c1[0], c1[1], c1[2]), gp_Dir(n1[0], n1[1], n1[2]));
+        const gp_Ax2 a2(gp_Pnt(c2[0], c2[1], c2[2]), gp_Dir(n2[0], n2[1], n2[2]));
+        const TopoDS_Wire w1 = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(gp_Circ(a1, r1)));
+        const TopoDS_Wire w2 = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(gp_Circ(a2, r2)));
+        BRepOffsetAPI_ThruSections gen(Standard_True /*solid*/, Standard_True /*ruled*/);
+        gen.AddWire(w1);
+        gen.AddWire(w2);
+        gen.Build();
+        if (!gen.IsDone()) {
+            return make_error("loft_circles: thru-sections failed");
+        }
+        return occt::addIfValid(gen.Shape(), "loft_circles: invalid solid");
+    });
+}
+
+// Loft a TRUE circle section to an arbitrary polygon wire — smooth circle rim, exact polygon.
+ShapeResult OcctEngine::loft_circle_wire(const double* cc, const double* cn, double cr,
+                                         const double* wXYZ, int wCount) {
+    return occt::occtGuard([&]() -> ShapeResult {
+        if (cc == nullptr || cn == nullptr || wXYZ == nullptr || !(cr > 1.0e-6) || wCount < 3) {
+            return make_error("loft_circle_wire: degenerate input");
+        }
+        const gp_Ax2 ax(gp_Pnt(cc[0], cc[1], cc[2]), gp_Dir(cn[0], cn[1], cn[2]));
+        const TopoDS_Wire circle = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(gp_Circ(ax, cr)));
+        BRepBuilderAPI_MakePolygon poly;
+        for (int i = 0; i < wCount; ++i) {
+            poly.Add(gp_Pnt(wXYZ[i * 3], wXYZ[i * 3 + 1], wXYZ[i * 3 + 2]));
+        }
+        poly.Close();
+        if (!poly.IsDone()) {
+            return make_error("loft_circle_wire: polygon wire failed");
+        }
+        BRepOffsetAPI_ThruSections gen(Standard_True /*solid*/, Standard_True /*ruled*/);
+        gen.AddWire(circle);
+        gen.AddWire(poly.Wire());
+        gen.Build();
+        if (!gen.IsDone()) {
+            return make_error("loft_circle_wire: thru-sections failed");
+        }
+        return occt::addIfValid(gen.Shape(), "loft_circle_wire: invalid solid");
+    });
+}
+
+// Two-rail loft: the rail is the spine and the guide steers as an auxiliary spine; retry
+// without the guide if the guided build fails, mirroring the app's two-pass loop.
+ShapeResult OcctEngine::loft_along_rails(const double* railXYZ, int railCount,
+                                         const double* guideXYZ, int guideCount,
+                                         const double* profileA_XY, int aCount,
+                                         const double* profileB_XY, int bCount) {
+    return occt::occtGuard([&]() -> ShapeResult {
+        if (railXYZ == nullptr || profileA_XY == nullptr || profileB_XY == nullptr) {
+            return make_error("loft_along_rails: null input");
+        }
+        if (railCount < 2 || aCount < 3 || bCount < 3) {
+            return make_error("loft_along_rails: too few points");
+        }
+        TopoDS_Wire spine;
+        gp_Pnt startPt, endPt;
+        gp_Vec startTan, endTan;
+        if (!buildSpineWire(railXYZ, railCount, spine, startPt, startTan, endPt, endTan)) {
+            return make_error("loft_along_rails: degenerate rail");
+        }
+        gp_Vec uA, vA, uB, vB;
+        if (!perpendicularFrame(startTan, uA, vA) || !perpendicularFrame(endTan, uB, vB)) {
+            return make_error("loft_along_rails: degenerate rail tangent");
+        }
+        TopoDS_Wire wireA, wireB;
+        if (!buildRailSectionWire(profileA_XY, aCount, startPt, uA, vA, wireA)) {
+            return make_error("loft_along_rails: section A wire failed");
+        }
+        if (!buildRailSectionWire(profileB_XY, bCount, endPt, uB, vB, wireB)) {
+            return make_error("loft_along_rails: section B wire failed");
+        }
+        // Build a guide wire; add it as an auxiliary spine when it is valid.
+        TopoDS_Wire guide;
+        bool haveGuide = false;
+        if (guideXYZ != nullptr && guideCount >= 2) {
+            gp_Pnt gs, ge;
+            gp_Vec gts, gte;
+            haveGuide = buildSpineWire(guideXYZ, guideCount, guide, gs, gts, ge, gte);
+        }
+        // Try the two-rail (guided) sweep first; on failure retry without the guide.
+        for (int pass = 0; pass < 2; ++pass) {
+            BRepOffsetAPI_MakePipeShell mk(spine);
+            mk.SetTransitionMode(BRepBuilderAPI_RoundCorner);
+            if (haveGuide && pass == 0) {
+                mk.SetMode(guide, Standard_True /*CurvilinearEquivalence*/);
+            }
+            mk.Add(wireA, Standard_False /*withContact*/, Standard_True /*withCorrection*/);
+            mk.Add(wireB, Standard_False, Standard_True);
+            if (mk.IsReady()) {
+                mk.Build();
+                if (mk.IsDone() && mk.MakeSolid()) {
+                    ShapeResult id = occt::addIfValid(mk.Shape(), "loft_along_rails: invalid solid");
+                    if (id) {
+                        return id;
+                    }
+                }
+            }
+            if (!haveGuide) {
+                break;  // no guide → nothing to retry
+            }
+        }
+        return make_error("loft_along_rails: pipe shell build failed");
+    });
+}
+
+// Loft between two TYPED section profiles, each placed on its own plane frame.
+ShapeResult OcctEngine::loft_typed(const ProfileSeg* segsA, int countA, const double* splineA,
+                                   int splineACount, const double* frameA, const ProfileSeg* segsB,
+                                   int countB, const double* splineB, int splineBCount,
+                                   const double* frameB) {
+    return occt::occtGuard([&]() -> ShapeResult {
+        if (frameA == nullptr || frameB == nullptr) {
+            return make_error("loft_typed: null frame");
+        }
+        TopoDS_Wire wa, wb;
+        if (!buildTypedWire(segsA, countA, wa, splineA, splineACount)) {
+            return make_error("loft_typed: section A wire failed");
+        }
+        if (!buildTypedWire(segsB, countB, wb, splineB, splineBCount)) {
+            return make_error("loft_typed: section B wire failed");
+        }
+        if (!placeWireOnFrame(wa, frameA) || !placeWireOnFrame(wb, frameB)) {
+            return make_error("loft_typed: degenerate plane frame");
+        }
+        BRepOffsetAPI_ThruSections gen(Standard_True /*solid*/, Standard_True /*ruled*/);
+        gen.AddWire(wa);
+        gen.AddWire(wb);
+        gen.Build();
+        if (!gen.IsDone()) {
+            return make_error("loft_typed: thru-sections failed");
+        }
+        return occt::addIfValid(gen.Shape(), "loft_typed: invalid solid");
     });
 }
 

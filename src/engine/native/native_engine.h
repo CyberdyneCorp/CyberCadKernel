@@ -161,6 +161,11 @@ public:
     // Topology query native for a native body (Vertex/Edge/Face counts via the
     // native Explorer); an OCCT body forwards to the fallback.
     Result<std::vector<int>> subshape_ids(EngineShape body, int kind) override;
+    // Connected-solid enumeration native for a native body (the native Explorer over
+    // ShapeType::Solid, matching OCCT's TopExp_Explorer for disjoint lumps); an OCCT
+    // body forwards to the fallback. index is 0-based.
+    Result<int> shape_solid_count(EngineShape body) override;
+    ShapeResult shape_solid_at(EngineShape body, int index) override;
 
     // ── everything else falls through to the fallback engine ────────────────────
     Result<MeshData> extrude_mesh(const double* profileXY, int pointCount, double depth) override;

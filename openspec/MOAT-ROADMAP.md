@@ -20,6 +20,16 @@ sequenced integration steps to link the kernel xcframework behind the app's exis
 the enumerated ABI deltas (6 app-only loft/solid-split entry points to add), the IGES decision memo,
 and the reversible per-op `cc_set_engine` rollout.
 
+**ABI-parity link blocker — RESOLVED (change `moat-abi-app-parity`).** The #1 adoption blocker
+(the app could not even LINK the kernel product) was six `cc_*` symbols the app declares + CALLS
+but the shipped ABI was missing: `cc_loft_circles`, `cc_loft_circle_wire`, `cc_loft_typed`,
+`cc_loft_along_rails`, `cc_shape_solid_count`, `cc_shape_solid_at`. All six are now ADDED to
+`include/cybercadkernel/cc_kernel.h` (additive-only, signature-matched to `KernelBridgeAPI.h`)
+and implemented (OCCT oracle for the four smooth lofts; native `Explorer(Solid)` enumeration for
+`shape_solid_count`/`_at`; the loft variants honestly decline to OCCT during the transition).
+Two-gate verified (host analytic `test_native_solid_enum` + sim `native_abi_parity.mm`). The
+`test_abi` contract test links all 63 app-declared `cc_*` prototypes against the library.
+
 ## The non-negotiable discipline (every stage, no exceptions)
 
 **OCCT is the ORACLE throughout implementation — it is NOT removed until the capability it

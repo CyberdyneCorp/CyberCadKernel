@@ -856,6 +856,31 @@ Result<std::vector<int>> NativeEngine::subshape_ids(EngineShape body, int kind) 
     return ids;
 }
 
+// ── Connected-solid enumeration (app-parity) ──────────────────────────────────
+// The native Explorer over ShapeType::Solid emits the root itself when the root IS a
+// solid and dedups shared solids by isSame — identical to OCCT's TopExp_Explorer for the
+// app's use (splitting a disjoint boolean union into its connected lumps). A mesh body has
+// no B-rep solids → 0. An OCCT body forwards to the fallback (the OCCT explorer).
+Result<int> NativeEngine::shape_solid_count(EngineShape body) {
+    if (!isNative(body)) return fallback().shape_solid_count(body);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh) return 0;
+    int n = 0;
+    for (ntopo::Explorer ex(holder->shape, ntopo::ShapeType::Solid); ex.more(); ex.next()) ++n;
+    return n;
+}
+
+ShapeResult NativeEngine::shape_solid_at(EngineShape body, int index) {
+    if (!isNative(body)) return fallback().shape_solid_at(body, index);
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh || index < 0) return make_error("shape_solid_at: no solid at index");
+    int i = 0;
+    for (ntopo::Explorer ex(holder->shape, ntopo::ShapeType::Solid); ex.more(); ex.next(), ++i) {
+        if (i == index) return wrapNative(ex.current());
+    }
+    return make_error("shape_solid_at: index out of range");
+}
+
 // ── MOAT M-GS GS3/GS4 analysis resolution ───────────────────────────────────
 // A resolved measurement operand: its analysis::Entity plus the raw geometry kind
 // (for per-cell guards) and face orientation (for the curvature-sign flip). The

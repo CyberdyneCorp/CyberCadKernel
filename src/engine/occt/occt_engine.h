@@ -221,6 +221,17 @@ public:
                               int pathCount, double twistRadians, double scaleEnd) override;
     ShapeResult loft_along_rail(const double* railXYZ, int railCount, const double* profileA_XY,
                                 int aCount, const double* profileB_XY, int bCount) override;
+    ShapeResult loft_circles(const double* c1, const double* n1, double r1, const double* c2,
+                             const double* n2, double r2) override;
+    ShapeResult loft_circle_wire(const double* cc, const double* cn, double cr, const double* wXYZ,
+                                 int wCount) override;
+    ShapeResult loft_along_rails(const double* railXYZ, int railCount, const double* guideXYZ,
+                                 int guideCount, const double* profileA_XY, int aCount,
+                                 const double* profileB_XY, int bCount) override;
+    ShapeResult loft_typed(const ProfileSeg* segsA, int countA, const double* splineA,
+                           int splineACount, const double* frameA, const ProfileSeg* segsB,
+                           int countB, const double* splineB, int splineBCount,
+                           const double* frameB) override;
     ShapeResult guided_sweep(const double* profileXY, int profileCount, const double* pathXYZ,
                              int pathCount, const double* guideXYZ, int guideCount) override;
     ShapeResult guided_orient_sweep(const double* profileXY, int profileCount, const double* pathXYZ,
@@ -313,6 +324,8 @@ public:
     Result<std::vector<double>> bounding_box(EngineShape body) override;
     Result<std::vector<double>> face_axis(EngineShape body, int faceId) override;
     Result<std::vector<int>> subshape_ids(EngineShape body, int kind) override;
+    Result<int> shape_solid_count(EngineShape body) override;
+    ShapeResult shape_solid_at(EngineShape body, int index) override;
     Result<std::vector<int>> tangent_chain(EngineShape body, const int* edgeIds,
                                            int edgeCount) override;
     Result<std::vector<int>> outer_rim_chain(EngineShape body, const int* edgeIds,

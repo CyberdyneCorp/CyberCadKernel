@@ -463,6 +463,7 @@ follow-ups. See [docs/STATUS.md](docs/STATUS.md) and
 - **[docs/FEATURES.md](docs/FEATURES.md)** — capability catalogue (the `cc_*` surface).
 - **[docs/STATUS.md](docs/STATUS.md)** — what is verified, and how to reproduce it.
 - **[docs/BENCH-native-vs-occt.md](docs/BENCH-native-vs-occt.md)** — measured native-vs-OCCT latency + binary-size payoff (the drop-OCCT "why").
+- **[docs/APP-ADOPTION-GUIDE.md](docs/APP-ADOPTION-GUIDE.md)** — the concrete, sequenced plan for the CyberCad iPad app to link the kernel product in place of its own OCCT bridge (drop-OCCT blocker #1).
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — layers, seams, and design decisions.
 - **[docs/python.md](docs/python.md)** — the desktop Python binding (`cybercadkernel`).
 - **[docs/build.md](docs/build.md)** — toolchain and build instructions.

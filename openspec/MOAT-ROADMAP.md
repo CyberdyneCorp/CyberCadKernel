@@ -15,6 +15,11 @@ App migration readiness: see [docs/APP-MIGRATION-READINESS.md](../docs/APP-MIGRA
 the app (`fillet_edges_g2`/`thread_apply` = 0 app sites); the real work is app-side adoption of
 the kernel product + an IGES decision + the M2/M3/M7b curved-blend/freeform-boolean A-envelope gaps.
 
+App adoption plan: see [docs/APP-ADOPTION-GUIDE.md](../docs/APP-ADOPTION-GUIDE.md) — the concrete,
+sequenced integration steps to link the kernel xcframework behind the app's existing `cc_*` calls,
+the enumerated ABI deltas (6 app-only loft/solid-split entry points to add), the IGES decision memo,
+and the reversible per-op `cc_set_engine` rollout.
+
 ## The non-negotiable discipline (every stage, no exceptions)
 
 **OCCT is the ORACLE throughout implementation — it is NOT removed until the capability it

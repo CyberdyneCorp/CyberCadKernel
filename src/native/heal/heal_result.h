@@ -63,6 +63,8 @@ struct HealMetrics {
   int nFlipped = 0;             ///< faces re-oriented by the flood-fill
   int nBridgedGaps = 0;         ///< boundary corners closed by the opt-in bridging pass
   double maxBridgedGap = 0.0;   ///< largest near-miss gap bridged (≤ the effective bound)
+  int nCollapsedShortEdges = 0; ///< redundant collinear short edges removed by the opt-in merge pass
+  double maxCollapsedShortEdge = 0.0;  ///< longest short edge collapsed (≤ the effective bound)
   int nCappedFaces = 0;         ///< planar holes closed by the opt-in cap pass (≤ 1 this slice)
   double maxCapPlanarityDev = 0.0;  ///< largest coplanarity deviation of a capped loop (≤ tolerance)
   double maxResidualGap = 0.0;  ///< largest surviving boundary gap (0 ⇒ closed)
@@ -121,6 +123,21 @@ struct HealOptions {
   /// branch is superseded (this pass caps one-or-more holes via the same layers). See
   /// cap_hole.h (`capAllPlanarHoles(sr, tol)` / `traceAllLoops`).
   bool capMultiplePlanarHoles = false;
+
+  /// Opt-in merge length (model units) for the bounded SHORT-EDGE collapse pass: the
+  /// largest absolute edge length the healer may remove ABOVE `tolerance` when it is a
+  /// REDUNDANT COLLINEAR sub-feature edge (a boundary vertex a STEP exporter split into
+  /// a tiny non-zero edge on an otherwise-straight wire run). It is a SEPARATE,
+  /// caller-supplied bound — the primary weld `tolerance` is never widened by it. Each
+  /// candidate short edge is additionally capped at a quarter of the shorter NEIGHBOUR
+  /// edge (the local-feature cap, see short_edge.h) and is collapsed ONLY when both of
+  /// its endpoints lie within `tolerance` of the straight line through its wire
+  /// neighbours, so a short edge that turns a real corner can never be removed. `0.0`
+  /// (default) DISABLES the pass, making `healShell` byte-identical to the landed
+  /// sew / unify / orientation + bridging + capping slices — a spurious short edge that
+  /// prevents closure still returns `Unhealed{OpenShell}`. NEVER weakens the tolerance;
+  /// no new `UnhealedReason`. See short_edge.h (`collapseShortEdges`).
+  double shortEdgeMergeLen = 0.0;
 };
 
 }  // namespace cybercad::native::heal

@@ -210,6 +210,70 @@ std::vector<topo::Shape> cubeMissingTopBottomOneLifted(double lift) {
   return f;  // −Z + +Z missing → bottom loop planar, top loop non-planar (corner 6 lifted)
 }
 
+// A quad face whose one side p0→p1 carries an EXTRA pair of collinear vertices that
+// split it into a tiny NON-zero edge of length `seg` centred on the side's midpoint
+// (a hexagonal loop p0, B, C, p1, p2, p3 with B,C exactly on the p0-p1 line). This is
+// the spurious short-edge defect a STEP exporter / mesh→B-rep split inserts: the
+// neighbour face's matching side is one straight span, so the interior verts B,C block
+// sharing and the shell is left open until the collinear short edge is collapsed.
+topo::Shape quadFaceSplitFirstSide(const m::Point3& p0, const m::Point3& p1, const m::Point3& p2,
+                                   const m::Point3& p3, const m::Dir3& normal, double seg) {
+  const m::Vec3 e = (p1 - p0);
+  const m::Vec3 u = e / m::norm(e);              // unit along the side p0→p1
+  const m::Point3 mid = p0 + e * 0.5;            // side midpoint
+  const m::Point3 B = mid - u * (seg * 0.5);     // both exactly on the p0-p1 line
+  const m::Point3 C = mid + u * (seg * 0.5);     // |B−C| = seg (the short edge)
+  const m::Vec3 ref = std::fabs(normal.z()) < 0.9 ? m::Vec3{0, 0, 1} : m::Vec3{1, 0, 0};
+  const m::Ax3 frame = m::Ax3::fromAxisAndRef(p0, normal, m::Dir3{ref});
+  const m::Point3 pts[6] = {p0, B, C, p1, p2, p3};
+  topo::Shape v[6];
+  for (int i = 0; i < 6; ++i) v[i] = topo::ShapeBuilder::makeVertex(pts[i]);
+  auto toUV = [&](const m::Point3& p) -> m::Point3 {
+    const m::Vec3 d = p - frame.origin;
+    return m::Point3{m::dot(d, frame.x.vec()), m::dot(d, frame.y.vec()), 0.0};
+  };
+  std::vector<topo::Shape> edges;
+  for (int i = 0; i < 6; ++i) {
+    const m::Point3& a = pts[i];
+    const m::Point3& b = pts[(i + 1) % 6];
+    const m::Vec3 d = b - a;
+    const double len = std::max(m::norm(d), 1e-12);
+    topo::EdgeCurve c;
+    c.kind = topo::EdgeCurve::Kind::Line;
+    c.frame.origin = a;
+    c.frame.x = m::norm(d) > 1e-12 ? m::Dir3{d} : m::Dir3{1, 0, 0};
+    c.frame.z = frame.z;
+    topo::Shape ed = topo::ShapeBuilder::makeEdge(c, 0.0, len, v[i], v[(i + 1) % 6]);
+    topo::PCurve pc;
+    pc.kind = topo::EdgeCurve::Kind::Line;
+    const m::Point3 uv0 = toUV(a), uv1 = toUV(b);
+    pc.origin2d = uv0;
+    pc.dir2d = (uv1 - uv0) / len;
+    edges.push_back(topo::ShapeBuilder::addPCurve(ed, ed.tshape(), pc));
+  }
+  topo::Shape wire = topo::ShapeBuilder::makeWire(std::move(edges));
+  topo::FaceSurface s;
+  s.kind = topo::FaceSurface::Kind::Plane;
+  s.frame = frame;
+  return topo::ShapeBuilder::makeFace(s, wire, {}, topo::Orientation::Forward);
+}
+
+// The six unit-cube faces, but the +Z (top) face has its first side c4→c5 (the y=0,z=1
+// edge) split by a collinear short edge of length `seg`. Every other corner is exactly
+// coincident (jitter 0) so a collapsed heal lands at exactly V=1. The neighbour −Y face
+// carries the plain straight c4-c5 span, so the split blocks sharing until collapsed.
+std::vector<topo::Shape> cubeTopShortEdge(double seg) {
+  const Corners k = cubeCorners();
+  std::vector<topo::Shape> f;
+  f.push_back(quadFace(k.c[0], k.c[3], k.c[2], k.c[1], m::Dir3{0, 0, -1}));           // −Z
+  f.push_back(quadFaceSplitFirstSide(k.c[4], k.c[5], k.c[6], k.c[7], m::Dir3{0, 0, 1}, seg));  // +Z split
+  f.push_back(quadFace(k.c[0], k.c[1], k.c[5], k.c[4], m::Dir3{0, -1, 0}));           // −Y (plain c4-c5)
+  f.push_back(quadFace(k.c[3], k.c[7], k.c[6], k.c[2], m::Dir3{0, 1, 0}));            // +Y
+  f.push_back(quadFace(k.c[0], k.c[4], k.c[7], k.c[3], m::Dir3{-1, 0, 0}));           // −X
+  f.push_back(quadFace(k.c[1], k.c[2], k.c[6], k.c[5], m::Dir3{1, 0, 0}));            // +X
+  return f;
+}
+
 const heal::HealOptions kOpts{1e-4};
 
 // Verify a healed solid meshes watertight with the expected enclosed volume.
@@ -517,6 +581,132 @@ CC_TEST(heal_cap_self_intersecting_layer_rejects) {
   const std::vector<m::Point3> bowtie{{0, 0, 0}, {1, 1, 0}, {1, 0, 0}, {0, 1, 0}};
   CC_CHECK(heal::detail::isSimplePolygon(square, centroid, n));    // convex → simple
   CC_CHECK(!heal::detail::isSimplePolygon(bowtie, centroid, n));   // crossing → declined
+}
+
+// ── (K) SHORT-EDGE COLLAPSE — a collinear sub-feature edge is removed, cube heals ──
+// The +Z face's c4→c5 side is split by a collinear short edge of length 5e-3 (> tol
+// 1e-4, < ¼·neighbour 0.25). Without the flag the interior split verts block sharing
+// with the plain −Y face → OpenShell. With shortEdgeMergeLen = 1e-2 the pass removes
+// the redundant micro-edge, restoring the straight span → watertight unit cube (V=1).
+CC_TEST(heal_short_edge_collapse_heals) {
+  const double seg = 5e-3;
+  auto f = cubeTopShortEdge(seg);
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r = heal::healShell(input, heal::HealOptions{1e-4, 0.0, false, false, 1e-2});
+  CC_CHECK(r.healed());
+  CC_CHECK(r.metrics.watertight);
+  CC_CHECK(r.metrics.valid);
+  CC_CHECK(r.metrics.nCollapsedShortEdges > 0);                    // the short edge was collapsed
+  CC_CHECK(std::fabs(r.metrics.maxCollapsedShortEdge - seg) < 1e-9);  // longest collapsed ≈ seg
+  CC_CHECK(r.metrics.maxResidualGap == 0.0);                       // fully closed after collapse
+  CC_CHECK(watertightVolumeNear(r.shape, 1.0, 1e-6));              // exact unit cube
+}
+
+// ── (K2) DEFAULT-OFF — the same split soup declines (landed slice byte-identical) ──
+// With shortEdgeMergeLen == 0 the split verts are unpaired boundary corners whose
+// nearest cross-face partner is `seg` (> tol) away, so the landed sew reports an honest
+// GapBeyondTolerance decline with the input unchanged — exactly as before this pass
+// existed. The decisive proof is that the flag OFF neither heals nor collapses anything.
+CC_TEST(heal_short_edge_default_off_declines) {
+  const double seg = 5e-3;
+  auto f = cubeTopShortEdge(seg);
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r = heal::healShell(input, kOpts);  // shortEdgeMergeLen == 0
+  CC_CHECK(!r.healed());
+  CC_CHECK(r.reason == heal::UnhealedReason::GapBeyondTolerance);  // honest landed decline
+  CC_CHECK(std::fabs(r.metrics.maxResidualGap - seg) < 1e-9);      // measured residual = seg
+  CC_CHECK_EQ(r.metrics.nCollapsedShortEdges, 0);                  // nothing collapsed
+  CC_CHECK(r.shape.isSameGeometry(input));                         // input UNCHANGED
+}
+
+// ── (K3) FEATURE CAP — a merge length larger than the edge cannot beat the ¼ cap ───
+// seg = 0.3 > tol; merge length 0.5 > seg, but ¼·neighbour = 0.25 < 0.3, so the
+// local-feature cap refuses: the caller's merge length does NOT override the guarantee.
+CC_TEST(heal_short_edge_feature_cap_refuses) {
+  auto f = cubeTopShortEdge(0.3);
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r = heal::healShell(input, heal::HealOptions{1e-4, 0.0, false, false, 0.5});
+  CC_CHECK(!r.healed());                              // refused despite mergeLen > seg
+  CC_CHECK_EQ(r.metrics.nCollapsedShortEdges, 0);     // the cap, not the merge length, governs
+  CC_CHECK(r.shape.isSameGeometry(input));            // input UNCHANGED
+}
+
+// ── (K4) COLLINEARITY LAYER — a short edge that turns a REAL corner is NOT removed ──
+// The split verts B,C are pushed 0.1 off the c4-c5 line (a genuine notch, not a
+// redundant collinear split). The collinearity layer refuses to collapse it, so the
+// pass leaves the loop unchanged and the shell stays open — never erases real feature.
+CC_TEST(heal_short_edge_non_collinear_declines) {
+  const Corners k = cubeCorners();
+  // Build a +Z top face whose c4→c5 side detours through an off-line notch B,C.
+  const m::Point3 B{0.45, 0.1, 1.0}, C{0.55, 0.1, 1.0};  // 0.1 off the y=0 line
+  std::vector<topo::Shape> f;
+  f.push_back(quadFace(k.c[0], k.c[3], k.c[2], k.c[1], m::Dir3{0, 0, -1}));  // −Z
+  {  // +Z with a NON-collinear notch on c4→c5 (hexagon c4,B,C,c5,c6,c7)
+    const m::Point3 pts[6] = {k.c[4], B, C, k.c[5], k.c[6], k.c[7]};
+    const m::Ax3 frame = m::Ax3::fromAxisAndRef(k.c[4], m::Dir3{0, 0, 1}, m::Dir3{1, 0, 0});
+    topo::Shape v[6];
+    for (int i = 0; i < 6; ++i) v[i] = topo::ShapeBuilder::makeVertex(pts[i]);
+    auto toUV = [&](const m::Point3& p) {
+      const m::Vec3 d = p - frame.origin;
+      return m::Point3{m::dot(d, frame.x.vec()), m::dot(d, frame.y.vec()), 0.0};
+    };
+    std::vector<topo::Shape> edges;
+    for (int i = 0; i < 6; ++i) {
+      const m::Point3 a = pts[i], b = pts[(i + 1) % 6];
+      const m::Vec3 d = b - a;
+      const double len = std::max(m::norm(d), 1e-12);
+      topo::EdgeCurve c;
+      c.kind = topo::EdgeCurve::Kind::Line;
+      c.frame.origin = a;
+      c.frame.x = m::norm(d) > 1e-12 ? m::Dir3{d} : m::Dir3{1, 0, 0};
+      c.frame.z = frame.z;
+      topo::Shape ed = topo::ShapeBuilder::makeEdge(c, 0.0, len, v[i], v[(i + 1) % 6]);
+      topo::PCurve pc;
+      pc.kind = topo::EdgeCurve::Kind::Line;
+      const m::Point3 uv0 = toUV(a), uv1 = toUV(b);
+      pc.origin2d = uv0;
+      pc.dir2d = (uv1 - uv0) / len;
+      edges.push_back(topo::ShapeBuilder::addPCurve(ed, ed.tshape(), pc));
+    }
+    topo::Shape wire = topo::ShapeBuilder::makeWire(std::move(edges));
+    topo::FaceSurface s;
+    s.kind = topo::FaceSurface::Kind::Plane;
+    s.frame = frame;
+    f.push_back(topo::ShapeBuilder::makeFace(s, wire, {}, topo::Orientation::Forward));
+  }
+  f.push_back(quadFace(k.c[0], k.c[1], k.c[5], k.c[4], m::Dir3{0, -1, 0}));  // −Y
+  f.push_back(quadFace(k.c[3], k.c[7], k.c[6], k.c[2], m::Dir3{0, 1, 0}));   // +Y
+  f.push_back(quadFace(k.c[0], k.c[4], k.c[7], k.c[3], m::Dir3{-1, 0, 0}));  // −X
+  f.push_back(quadFace(k.c[1], k.c[2], k.c[6], k.c[5], m::Dir3{1, 0, 0}));   // +X
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r = heal::healShell(input, heal::HealOptions{1e-4, 0.0, false, false, 1e-1});
+  CC_CHECK(!r.healed());                            // a real corner is never collapsed
+  CC_CHECK_EQ(r.metrics.nCollapsedShortEdges, 0);   // collinearity layer refuses
+  CC_CHECK(r.shape.isSameGeometry(input));          // input UNCHANGED
+}
+
+// ── (K5) UNIT LAYER — collapseLoop removes a collinear short edge, keeps a real corner ─
+// Exercises the collapse helper directly on a straight run with one collinear micro-edge
+// vs a run whose short edge is an off-line corner (which must survive).
+CC_TEST(heal_short_edge_collapse_loop_layer) {
+  int n = 0; double mx = 0.0;
+  // A square 0..1 whose bottom side has a collinear split at (0.49,0)-(0.51,0):
+  const std::vector<m::Point3> collinear{
+      {0, 0, 0}, {0.49, 0, 0}, {0.51, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+  const std::vector<m::Point3> out =
+      heal::detail::collapseLoop(collinear, 1e-4, 1e-1, n, mx);
+  CC_CHECK_EQ(n, 1);                 // the collinear micro-edge collapsed
+  CC_CHECK_EQ((int)out.size(), 4);   // hexagon → square (both split verts removed)
+  CC_CHECK(std::fabs(mx - 0.02) < 1e-9);
+
+  int n2 = 0; double mx2 = 0.0;
+  // Same loop but the split verts are pushed off-line (a real notch) → must survive.
+  const std::vector<m::Point3> notch{
+      {0, 0, 0}, {0.49, 0.1, 0}, {0.51, 0.1, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+  const std::vector<m::Point3> out2 =
+      heal::detail::collapseLoop(notch, 1e-4, 1e-1, n2, mx2);
+  CC_CHECK_EQ(n2, 0);                // off-line corner is not collinear → kept
+  CC_CHECK_EQ((int)out2.size(), 6);  // unchanged
 }
 
 CC_RUN_ALL()

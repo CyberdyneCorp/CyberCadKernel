@@ -127,6 +127,85 @@ static std::vector<Quad> cubeMissingTwoAdjacent(double jitter) {
   return q;
 }
 
+// A hexagonal +Z top face whose first side c4→c5 (the y=0,z=1 edge) is split by a
+// COLLINEAR short edge of length `seg` centred on its midpoint; the other five faces are
+// plain quads. The neighbour −Y face carries the plain straight c4-c5 span, so the two
+// interior split verts block sharing until the collinear short edge is collapsed (the M5
+// short-edge-merge fixture — see host cubeTopShortEdge / short_edge.h). Returned as the
+// six top corners for the native builder + as explicit point lists for OCCT.
+struct HexTopSoup {
+  std::vector<Quad> quads;     // the five plain quad faces (−Z,−Y,+Y,−X,+X)
+  m::Point3 topHex[6];         // the split +Z face as a 6-corner loop (c4,B,C,c5,c6,c7)
+  m::Dir3 topN{0, 0, 1};
+};
+static HexTopSoup cubeTopShortEdgeSoup(double seg) {
+  const double s = 1.0;
+  const m::Point3 c[8] = {{0,0,0},{s,0,0},{s,s,0},{0,s,0},{0,0,s},{s,0,s},{s,s,s},{0,s,s}};
+  const m::Vec3 e = c[5] - c[4];
+  const m::Vec3 u = e / m::norm(e);
+  const m::Point3 mid = c[4] + e * 0.5;
+  const m::Point3 B = mid - u * (seg * 0.5), C = mid + u * (seg * 0.5);  // collinear on c4-c5
+  HexTopSoup h;
+  h.quads.push_back({{c[0],c[3],c[2],c[1]}, m::Dir3{0,0,-1}});  // −Z
+  h.quads.push_back({{c[0],c[1],c[5],c[4]}, m::Dir3{0,-1,0}});  // −Y (plain c4-c5)
+  h.quads.push_back({{c[3],c[7],c[6],c[2]}, m::Dir3{0,1,0}});   // +Y
+  h.quads.push_back({{c[0],c[4],c[7],c[3]}, m::Dir3{-1,0,0}});  // −X
+  h.quads.push_back({{c[1],c[2],c[6],c[5]}, m::Dir3{1,0,0}});   // +X
+  h.topHex[0]=c[4]; h.topHex[1]=B; h.topHex[2]=C; h.topHex[3]=c[5]; h.topHex[4]=c[6]; h.topHex[5]=c[7];
+  return h;
+}
+
+// A native face from an N-corner planar loop (Line edges + pcurves), like nativeQuadFace.
+static topo::Shape nativePolyFace(const m::Point3* pts, int n, const m::Dir3& normal) {
+  const m::Vec3 ref = std::fabs(normal.z()) < 0.9 ? m::Vec3{0,0,1} : m::Vec3{1,0,0};
+  const m::Ax3 frame = m::Ax3::fromAxisAndRef(pts[0], normal, m::Dir3{ref});
+  std::vector<topo::Shape> v(n);
+  for (int i = 0; i < n; ++i) v[i] = topo::ShapeBuilder::makeVertex(pts[i]);
+  auto toUV = [&](const m::Point3& p) { const m::Vec3 d = p - frame.origin;
+    return m::Point3{m::dot(d, frame.x.vec()), m::dot(d, frame.y.vec()), 0.0}; };
+  std::vector<topo::Shape> edges;
+  for (int i = 0; i < n; ++i) {
+    const m::Point3 a = pts[i], b = pts[(i+1)%n];
+    const m::Vec3 d = b - a; const double len = std::max(m::norm(d), 1e-12);
+    topo::EdgeCurve cc; cc.kind = topo::EdgeCurve::Kind::Line; cc.frame.origin = a;
+    cc.frame.x = m::norm(d) > 1e-12 ? m::Dir3{d} : m::Dir3{1,0,0}; cc.frame.z = frame.z;
+    topo::Shape ed = topo::ShapeBuilder::makeEdge(cc, 0.0, len, v[i], v[(i+1)%n]);
+    topo::PCurve pc; pc.kind = topo::EdgeCurve::Kind::Line;
+    const m::Point3 uv0 = toUV(a), uv1 = toUV(b); pc.origin2d = uv0; pc.dir2d = (uv1-uv0)/len;
+    edges.push_back(topo::ShapeBuilder::addPCurve(ed, ed.tshape(), pc));
+  }
+  topo::Shape wire = topo::ShapeBuilder::makeWire(std::move(edges));
+  topo::FaceSurface fs; fs.kind = topo::FaceSurface::Kind::Plane; fs.frame = frame;
+  return topo::ShapeBuilder::makeFace(fs, wire, {}, topo::Orientation::Forward);
+}
+
+// The OCCT short-edge soup: the SAME five plain quad faces + the split hexagonal +Z face
+// (a 6-vertex polygon). BRepBuilderAPI_Sewing at a tolerance ≥ seg merges the split verts
+// (its own small-edge handling), so sewAndFix closes it — the OCCT analogue of the native
+// short-edge collapse; at a tolerance < seg it leaves the interior verts and stays open.
+static TopoDS_Shape occtShortEdgeSoup(const HexTopSoup& h) {
+  BRep_Builder bb; TopoDS_Compound comp; bb.MakeCompound(comp);
+  for (const Quad& q : h.quads) {
+    BRepBuilderAPI_MakePolygon poly;
+    for (int i = 0; i < 4; ++i) poly.Add(gp_Pnt(q.p[i].x, q.p[i].y, q.p[i].z));
+    poly.Close();
+    if (!poly.IsDone()) continue;
+    const gp_Pln plane(gp_Pnt(q.p[0].x, q.p[0].y, q.p[0].z), gp_Dir(q.n.x(), q.n.y(), q.n.z()));
+    BRepBuilderAPI_MakeFace mf(plane, poly.Wire());
+    if (mf.IsDone()) bb.Add(comp, mf.Face());
+  }
+  BRepBuilderAPI_MakePolygon top;
+  for (int i = 0; i < 6; ++i) top.Add(gp_Pnt(h.topHex[i].x, h.topHex[i].y, h.topHex[i].z));
+  top.Close();
+  if (top.IsDone()) {
+    const gp_Pln plane(gp_Pnt(h.topHex[0].x, h.topHex[0].y, h.topHex[0].z),
+                       gp_Dir(h.topN.x(), h.topN.y(), h.topN.z()));
+    BRepBuilderAPI_MakeFace mf(plane, top.Wire());
+    if (mf.IsDone()) bb.Add(comp, mf.Face());
+  }
+  return comp;
+}
+
 // ── Native soup builder ────────────────────────────────────────────────────────
 static topo::Shape nativeQuadFace(const Quad& q, bool reversed) {
   const m::Vec3 ref = std::fabs(q.n.z()) < 0.9 ? m::Vec3{0,0,1} : m::Vec3{1,0,0};
@@ -156,6 +235,14 @@ static topo::Shape nativeSoup(const std::vector<Quad>& quads, int flipIndex = -1
   std::vector<topo::Shape> faces;
   for (int i = 0; i < (int)quads.size(); ++i)
     faces.push_back(nativeQuadFace(quads[i], i == flipIndex));
+  return topo::ShapeBuilder::makeShell(faces);
+}
+
+// The native short-edge soup: five plain quad faces + the split hexagonal +Z face.
+static topo::Shape nativeShortEdgeSoup(const HexTopSoup& h) {
+  std::vector<topo::Shape> faces;
+  for (const Quad& q : h.quads) faces.push_back(nativeQuadFace(q, false));
+  faces.push_back(nativePolyFace(h.topHex, 6, h.topN));
   return topo::ShapeBuilder::makeShell(faces);
 }
 
@@ -425,6 +512,65 @@ int main() {
                   (int)orr.validSolid, (int)orr.watertight);
     const bool ok = !nr.healed() && nr.metrics.nCappedFaces == 0 && !orr.watertight;
     check("cap-two-adjacent decline matches OCCT", ok, buf);
+  }
+
+  // ── M5 TAIL: SHORT-EDGE COLLAPSE (opt-in shortEdgeMergeLen) ───────────────────
+  // In-scope: a unit cube whose +Z top face carries a COLLINEAR short edge (seg) an
+  // exporter split into the y=0,z=1 boundary run. Native (shortEdgeMergeLen ≥ seg)
+  // removes the redundant micro-edge and re-sews to a watertight unit cube. The OCCT
+  // reference sews the SAME six-face soup (five quads + the split hexagon) at a tolerance
+  // ≥ seg, so BRepBuilderAPI_Sewing's own small-edge handling merges the split verts and
+  // ShapeFix closes it. Both land a watertight closed solid with volume ≈ 1.
+  {
+    const double seg = 5e-3, mergeLen = 1e-2, occtTol = 1e-2;  // occtTol ≥ seg swallows it
+    const HexTopSoup h = cubeTopShortEdgeSoup(seg);
+    const heal::HealResult nr =
+        heal::healShell(nativeShortEdgeSoup(h), heal::HealOptions{tol, 0.0, false, false, mergeLen});
+    const cyber::occt::SewFixResult orr = cyber::occt::sewAndFix(occtShortEdgeSoup(h), occtTol);
+    const double nv = nr.healed() ? nativeVolume(nr.shape) : 0.0;
+    char buf[220];
+    std::snprintf(buf, sizeof buf,
+                  "(native V=%.5f watertight=%d collapsed=%d | OCCT V=%.5f valid=%d)", nv,
+                  (int)nr.metrics.watertight, nr.metrics.nCollapsedShortEdges, orr.volume,
+                  (int)orr.validSolid);
+    // OCCT sewing at occtTol may reposition the merged vertex within seg, so volumes
+    // agree only within the sew tolerance; native lands exactly 1 (collinear collapse).
+    const bool ok = nr.healed() && nr.metrics.watertight && nr.metrics.nCollapsedShortEdges > 0 &&
+                    orr.validSolid && std::fabs(nv - 1.0) < 1e-3 &&
+                    std::fabs(std::fabs(orr.volume) - 1.0) < occtTol &&
+                    std::fabs(nv - std::fabs(orr.volume)) < occtTol;
+    check("short-edge-collapse matches OCCT sew@mergeLen", ok, buf);
+  }
+
+  // EQUAL-OR-MORE-CONSERVATIVE: with the flag OFF (shortEdgeMergeLen = 0) native declines
+  // the SAME split soup honestly (GapBeyondTolerance, input unchanged, nothing collapsed).
+  // OCCT sewing the same soup at a nominal tolerance BELOW seg is AGGRESSIVE — its sewer /
+  // ShapeFix computes its own effective tolerance and closes the collinear split anyway
+  // (observed here: valid=watertight=1 at V≈1). Native DEFERRING where OCCT aggressively
+  // repairs is native being MORE conservative — the intended contract — NOT a wrong repair.
+  // The bar: native must never emit a DIFFERENT watertight solid than the truth; a decline
+  // is always safe. So we assert native declined + collapsed nothing, and — when OCCT DID
+  // close — that OCCT's closure is the same honest unit cube (native lost no correctness by
+  // deferring; the opt-in flag recovers exactly that win, proven by the check above).
+  {
+    const double seg = 5e-3, occtTol = 1e-4;  // occtTol < seg (OCCT still aggressively closes)
+    const HexTopSoup h = cubeTopShortEdgeSoup(seg);
+    const heal::HealResult nr = heal::healShell(nativeShortEdgeSoup(h), opts);  // flag OFF
+    const cyber::occt::SewFixResult orr = cyber::occt::sewAndFix(occtShortEdgeSoup(h), occtTol);
+    char buf[240];
+    std::snprintf(buf, sizeof buf,
+                  "(native UNHEALED reason=%d collapsed=%d residual=%.4g | OCCT valid=%d watertight=%d V=%.5f — native MORE conservative)",
+                  (int)nr.reason, nr.metrics.nCollapsedShortEdges, nr.metrics.maxResidualGap,
+                  (int)orr.validSolid, (int)orr.watertight, orr.volume);
+    // Native declined honestly (never a wrong repair). If OCCT closed, its solid is the
+    // honest unit cube (V≈1) — so native deferring cost no correctness, only recovered by
+    // the opt-in flag. If OCCT also declined, that is straight parity of decline.
+    const bool nativeConservative = !nr.healed() && nr.metrics.nCollapsedShortEdges == 0 &&
+                                    nr.metrics.maxResidualGap > tol;
+    const bool occtEitherDeclinesOrHonest =
+        !orr.watertight || std::fabs(std::fabs(orr.volume) - 1.0) < occtTol;
+    check("short-edge default-off: native more-conservative than OCCT",
+          nativeConservative && occtEitherDeclinesOrHonest, buf);
   }
 
   std::printf("== %d passed, %d failed ==\n", g_pass, g_fail);

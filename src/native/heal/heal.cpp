@@ -13,6 +13,7 @@
 #include "native/heal/gap_bridge.h"
 #include "native/heal/orient.h"
 #include "native/heal/self_verify.h"
+#include "native/heal/short_edge.h"
 #include "native/heal/tolerant_sew.h"
 
 #include <cmath>
@@ -59,6 +60,27 @@ HealResult healShell(const topo::Shape& shape, const HealOptions& opts) {
   // working soup the sew reads; the opt-in bridging / capping passes below rewrite it
   // and re-sew (with both opt-in flags off it stays == `clean` and never changes).
   std::vector<FaceLoop> work = clean;
+
+  // Opt-in bounded SHORT-EDGE collapse (M5 tail): when a caller supplies a merge
+  // length, remove any REDUNDANT COLLINEAR sub-feature edge a boundary vertex-split
+  // inserted into an otherwise-straight wire run — a tiny NON-zero edge above the weld
+  // `tol` but below the bounded band (tol, min(mergeLen, ¼·neighbour)] whose interior
+  // vertex the neighbour face does not carry, so the sew cannot share the run and the
+  // shell is left open. Collapsing it restores the straight span the neighbour already
+  // has, so vertex_unify then shares the corners (short_edge.h). The primary weld `tol`
+  // is NEVER widened; only a within-tolerance-collinear short edge is removed, so a
+  // short edge that turns a real corner is left in place. With mergeLen == 0 this block
+  // is a no-op (dead-guarded) and `work` stays == `clean`, byte-identical to the landed
+  // slices. Runs BEFORE the first sew because it rewrites per-face corner loops.
+  if (opts.shortEdgeMergeLen > 0.0) {
+    const ShortEdgeResult se = collapseShortEdges(work, tol, opts.shortEdgeMergeLen);
+    if (se.applied) {
+      m.nCollapsedShortEdges = se.nCollapsed;
+      m.maxCollapsedShortEdge = se.maxCollapsed;
+      work = se.soup;
+    }
+  }
+
   SewResult sr = sew(work, tol);
   m.nMergedVerts = sr.mergedVerts;
   m.nMergedEdges = sr.mergedEdges;

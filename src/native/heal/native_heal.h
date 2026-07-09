@@ -44,6 +44,20 @@
 //                                  (no partial closure) → Unhealed{OpenShell}, input unchanged.
 //                                  When false the single-hole pass 6 runs unchanged (every
 //                                  existing caller byte-identical). Default false ⇒ no-op.
+//   8. SHORT-EDGE COLLAPSE        — OPT-IN (HealOptions.shortEdgeMergeLen > 0): remove a
+//                                  REDUNDANT COLLINEAR sub-feature edge a boundary
+//                                  vertex-split inserted into an otherwise-straight wire
+//                                  run — a tiny NON-zero edge above the weld tolerance but
+//                                  below the bounded band (tolerance, min(mergeLen,
+//                                  ¼·neighbour)] whose interior vertex the neighbour face
+//                                  does not carry (so the sew cannot share the run and the
+//                                  shell is left open). Collapsed ONLY when both endpoints
+//                                  lie within tolerance of the straight line through the
+//                                  wire neighbours, so a short edge that turns a real
+//                                  corner is left in place; removing it restores the exact
+//                                  straight span the neighbour already carries. The weld
+//                                  tolerance is NEVER widened. Default 0 ⇒ this pass is a
+//                                  no-op (existing callers byte-identical).
 //
 // ── HONEST SCOPE (asymptotic completeness, like SSI S4-f — NOT a guarantee) ──
 // This slice heals the coincident-within-tolerance / degenerate / orientation defect
@@ -89,6 +103,7 @@
 #include "native/heal/gap_bridge.h"
 #include "native/heal/orient.h"
 #include "native/heal/self_verify.h"
+#include "native/heal/short_edge.h"
 #include "native/heal/tolerant_sew.h"
 #include "native/heal/vertex_unify.h"
 

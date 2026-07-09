@@ -332,6 +332,29 @@ bridging, arbitrary broken industrial B-rep**. Gates trustworthy foreign import 
   V=1.0, and the two-adjacent case declines matching OCCT leaving it open). REMAINING (asymptotic
   tail): pcurve reconstruction, self-intersecting-wire repair, non-planar / curved missing-face
   synthesis, arbitrary broken industrial B-rep.
+- **Status — tail slice LANDED (opt-in SHORT-EDGE merge).** Beyond the sew/unify/orientation +
+  bridging + capping healer, a shell whose boundary carries a spurious SHORT (sub-feature) edge —
+  a boundary vertex a STEP exporter / mesh→B-rep conversion split into a tiny NON-zero edge on an
+  otherwise-straight wire run, above the weld `tol` (so `dropZeroLengthSides` leaves it) but whose
+  interior split vertex the neighbour face does not carry (so the sew cannot share the run and the
+  healer DECLINES) — now heals. `short_edge.h` (new, header-only, OCCT-free) removes a REDUNDANT
+  COLLINEAR short edge B→C (wire neighbours A,D) when it lies in the bounded band
+  `(tol, min(shortEdgeMergeLen, ¼·min(|A−B|,|C−D|))]` AND both endpoints lie within `tol` of the
+  straight line A→D, dropping BOTH endpoints to restore the exact span A→D the neighbour already
+  carries, then re-sews; the UNCHANGED mandatory self-verify proves watertight + positive volume.
+  Distinct from the landed passes: `dropZeroLengthSides` removes only ≤tol consecutive corners;
+  `gap_bridge` snaps only CROSS-FACE seam corners (this is WITHIN one face). Opt-in
+  (`shortEdgeMergeLen=0` default OFF, existing healer BYTE-IDENTICAL); NEVER widens the weld
+  tolerance; no new `UnhealedReason`; a short edge that turns a REAL (non-collinear) corner is left
+  in place. Verified both gates: host analytic (`test_native_heal` 28/28 — split cube collapses to
+  V=1.0 with nCollapsedShortEdges=1; default-off declines `GapBeyondTolerance` residual=seg with
+  input unchanged; the ¼·neighbour feature cap refuses a large merge length; a non-collinear notch
+  is kept; the `collapseLoop` layer unit-driven) and native-vs-OCCT (`run-sim-native-heal` 12/12 —
+  the collapse matches OCCT `Sewing`@(tol≥seg)+`ShapeFix` at V=1.0; with the flag OFF native declines
+  while OCCT aggressively closes the collinear split → native is EQUAL-OR-MORE-CONSERVATIVE, OCCT's
+  closure the same honest unit cube, so deferring costs no correctness). REMAINING (asymptotic tail):
+  a short edge that turns a real corner, a collapse needing the neighbour face re-projected, pcurve
+  reconstruction, self-intersecting-wire repair, arbitrary broken industrial B-rep.
 
 ### M6 — Robustness completeness bar (S4-f + coverage) · ongoing · gates drop-occt
 The measured-recall / completeness discipline (SSI S4-f landed a first slice): below any fixed

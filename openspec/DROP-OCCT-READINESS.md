@@ -149,17 +149,28 @@ are the two C-class invocations.
 | **M-TX native transforms** — ✅ LANDED (native `Shape::located(math::Transform)`; two-gate proven) | translate_shape, rotate_shape_about, mirror_shape, scale_shape, scale_shape_about, place_on_frame, extrude_mesh | **M-TX (done)** | 27 + 10 | **0 (done)** |
 | **M-REF reference / topology** — ✅ LANDED (native, two gates green) | face_axis, ref_plane_from_face, ref_axis_from_edge, ref_axis_from_face, tangent_chain, outer_rim_chain, offset_face_boundary | **M-REF (done)** | 22 | **0 (done)** |
 | **M-DM direct modeling** — ✅ core LANDED (DM1/DM2/DM3 offset + DM4 project native) | replace_face offset (DM3) + project_point_on_face (DM4) native; only tilted/non-planar retarget breadth residual (gates M2/M3) | **M-DM (done, resid breadth)** | 6 | **~0.5 (residual)** |
-| **M3 OCCT-only + curved-blend breadth** | fillet_face, full_round_fillet, full_round_fillet_faces, fillet_edges_g2 + curved/freeform residuals of the A-class blends (fillet/chamfer/shell/offset_face) | **M3** (in M2/M3 breadth bucket) | 14 direct | **~3–8** (shared M2/M3) |
-| **M2 freeform-boolean breadth + thread_apply** — thread_apply NATIVE MACHINERY LANDED (recognise+facet+planar-BSP+4-part self-verify, both gates; multi-turn declines with a measured reason → M7b) | boolean_op freeform/mixed residual, thread_apply multi-turn weld (orientation-coherent thread builder + robust dense-soup CSG w/ T-junction repair) | **M2 / M7b** (same bucket) | 0 direct | (in the ~3–8) |
+| **M3 curved-blend breadth** — ✅ MAJOR SLICES LANDED (fillet_face + full_round_fillet[_faces] + chamfer_face/chamfer_corner native via the spherical/planar corner weld; **curved-edge fillet_edges native on cylinder + cone-frustum + sphere cap-rims** — the app's @15 curved-fillet gap for every analytic-revolve substrate; **curved shell** capped-cyl/cone; all two-gate vs OCCT) | **remaining:** fillet_edges_g2 (0 app sites, needs a G2 blend family), curved offset_face, cyl↔cyl canal fillet (needs a NEW tessellator crease weld), torus/elliptical-crease fillet (no OCCT-free native substrate / OCCT-built body), freeform-base wrap_emboss (needs freeform-surface breadth + a new tessellator weld) | **M3** | 14 direct | **~1–3** (down from ~3–8; the freeform-boolean spine + corner/curved-rim welds landed) |
+| **M2 freeform-boolean breadth + thread_apply** — ✅ SPINE COMPLETE (half-space, corner-clip, curved-wall CUT+COMMON, ff↔ff CUT+COMMON, ≥3-seam strip all weld vs OCCT); thread_apply NATIVE MACHINERY LANDED (recognise+facet+planar-BSP+4-part self-verify, both gates; multi-turn declines with a measured reason → M7b) | boolean_op freeform/mixed residual (breadth on the landed spine), thread_apply multi-turn weld (orientation-coherent thread builder + dense-soup CSG w/ T-junction repair) | **M2 / M7b** | 0 direct | **~0.5–1** (spine done; residual breadth + thread) |
 | **M7b construct tails** — ✅ M7t LANDED (twisted_sweep real twist + loft_along_rail curved rail native, both gates) | ~~twisted_sweep (real twist)~~ ✅, ~~loft_along_rail (curved rail)~~ ✅, fine-pitch thread residuals | **M7t (done) / M7b** | 12 | **~0.5 (M7b thread residual)** |
 | **M-GS GS1 curved-HLR** — ✅ LANDED (native cone/frustum + torus silhouettes, two gates green) | hlr_project cone/frustum/torus(Kind::Torus) silhouettes native; freeform + revolve-built torus (B-spline bands) → OCCT | **M-GS GS1 (done)** | 0 direct | **0 (done — freeform B-spline silhouette is the honest residual)** |
 
-**MUST-GO-NATIVE remaining-py total: ≈ 4.5–11 py (midpoint ≈ 7 py)**, now almost entirely the
-**M2/M3 freeform breadth bucket (~3–8 py)** plus the small **M7/M7b construct tails (~1–2 py)**.
-The cheap, high-leverage app-facing group is DONE: **M-TX + M-REF + M-DM core (~2–3 py, ~55 app
-call-sites)** all landed this wave with two gates green — the largest *app-facing* hard-decline
-blocker is cleared. What remains is dominated by the asymptotic freeform kernel moat, not
-app-surface ops.
+**MUST-GO-NATIVE remaining-py total: ≈ 2.5–5 py (midpoint ≈ 3.5 py)** — down from the ~7 py
+midpoint before the M0 tessellator welds (open-seam + closed-inner-seam + curved-rim) and the
+M2 freeform-boolean spine (half-space → corner-clip → curved-wall CUT+COMMON → ff↔ff → ≥3-seam)
+landed. **The coupled high-risk spine research that dominated the old estimate is DONE.** What
+remains is *breadth on machinery that already works for the common case*, in one bucket:
+- **M3 curved-blend residuals (~1–3 py)** — the dominant remainder: cyl↔cyl canal fillet (needs
+  a new tessellator crease weld), freeform-base wrap_emboss (freeform-surface breadth + weld),
+  curved offset_face, and fillet_edges_g2 (0 app sites). The **app-used** curved-edge fillet is
+  already native for the analytic-revolve substrates the app exercises.
+- **M2/M7b tails (~0.5–1 py)** — freeform-boolean breadth on the landed spine + the multi-turn
+  thread weld (0 app sites).
+- **M8 unlink execution (~0.25 py)** + the standing **M6 completeness bar** (ongoing, gates
+  the unlink; now 13 native fuzz domains, 0 DISAGREED).
+
+The whole app-facing hard-decline group (**M-TX + M-REF + M-DM + M3 fillets/shell + curved-wall
+booleans**) is now native. The measured drop-OCCT payoff (docs/BENCH-*.md): native **7–20×
+faster**, **~28 MB in-binary / ~112 MB dependency lighter**, **~11.5 MB less peak RAM**.
 
 ---
 
@@ -210,23 +221,26 @@ is native at the acceptance bar, (b) every Class-A/C residual is a clean decline
 
 ## 5. Readiness verdict (itemized)
 
-**Scoped `drop-occt` is architecturally reachable but not yet ready — blocked on ≈ 6.5–15 py
-(midpoint ~10 py) of Class-B native work, concentrated in one asymptotic bucket.** Itemized:
+**Scoped `drop-occt` is architecturally reachable — the build-unlink is PROVEN today (§6
+rehearsal: native-only build, 0 crash / 0 silent-wrong), and ship-quality is now blocked on only
+≈ 2.5–5 py (midpoint ~3.5 py) of breadth, no longer coupled spine research.** Itemized:
 **(1)** the Class-A spine — construct (extrude/revolve/loft/sweep), tessellate, query/analysis
-(mass/bbox/subshape/moments/curvature/measure), and STEP/STL exchange — is native and already
-carries the bulk of the ~69 app `cc_*` ops, forwarding to OCCT only on genuinely
-out-of-envelope input via the self-verify fall-through; these need only OCCT-arm deletion.
-**(2)** The unlink blockers are all **B**: the high-usage but *small and unroadmapped*
-**M-TX transform (27+10 sites) + M-REF reference-topology (22 sites)** group, which hard-errors
-on native bodies today yet is bounded at ~1–2 py combined and is the largest app-facing
-blocker; then **M-DM** replace_face DM3 (~1–2 py; DM2 to_plane already native); then the **M2/M3** freeform
-boolean/blend breadth (~3–8 py, the dominant asymptotic cost) plus **M7/M7b/M-GS** tails.
-**(3)** **IGES is the only clean Class-C decline** — trivial to convert, but the app must make
-its own IGES decision (drop / OCCT-shim / native). **(4)** The whole finish is gated on the
-asymptotic **M5 healing** + **M6 completeness/fuzzing** bars that guarantee no silent wrong
-results after the fallback is gone. **Cheapest credible path to carrying a large fraction of
-the app OCCT-free: land M-TX + M-REF first (bounded, unroadmapped, ~1–2 py), before committing
-to the M2/M3/M-DM moat.**
+(mass/bbox/subshape/moments/curvature/measure), and STEP/STL exchange — is native and carries the
+bulk of the ~69 app `cc_*` ops. **(2)** The former unlink blockers are now LANDED native at the
+two-gate bar: **M-TX transforms**, **M-REF reference-topology**, **M-DM** direct-modeling core,
+the **M2 freeform-boolean spine** (half-space → corner-clip → curved-wall CUT+COMMON → ff↔ff →
+≥3-seam, on the M0 open-seam/closed-inner-seam/curved-rim tessellator welds), **M3** fillet_face
+/ full_round / chamfer / **curved-edge fillet on cylinder+cone+sphere** / curved shell, **M7t**
+twisted_sweep + loft_along_rail, and **M-GS/M-DM/M-REF/M-TX** services. What *remains* is bounded
+breadth: **M3 curved-blend residuals** (cyl↔cyl canal fillet needing a new tessellator crease
+weld, freeform-base wrap_emboss, offset_face, fillet_edges_g2 [0 app sites]) ~1–3 py; **M2/M7b
+tails** (freeform-boolean breadth + multi-turn thread) ~0.5–1 py; **M8 execution** ~0.25 py.
+**(3)** **IGES is the only clean Class-C decline** — the app must make its own IGES decision
+(drop / OCCT-shim / native). **(4)** The finish is gated on the **M6 completeness bar** (13
+native fuzz domains, 0 DISAGREED) which guarantees no silent-wrong after the fallback is gone.
+**(5)** Per the app-migration audit ([docs/APP-MIGRATION-READINESS.md](../docs/APP-MIGRATION-READINESS.md)),
+neither remaining Class-B op (`fillet_edges_g2`, `thread_apply`) is called by the app; the true
+app path is kernel *adoption* + the IGES decision + the M3 curved-blend residuals the app exercises.
 
 ---
 

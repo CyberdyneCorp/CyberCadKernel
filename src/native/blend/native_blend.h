@@ -36,6 +36,7 @@
 #define CYBERCAD_NATIVE_BLEND_H
 
 #include "native/blend/blend_geom.h"
+#include "native/blend/canal_fillet.h"
 #include "native/blend/chamfer_edges.h"
 #include "native/blend/chamfer_face.h"
 #include "native/blend/corner_chamfer_weld.h"

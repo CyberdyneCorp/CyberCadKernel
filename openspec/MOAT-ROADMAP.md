@@ -411,6 +411,29 @@ construction + the M0 mesher + M2 booleans.
   gated; the native volume is actually CLOSER to the ideal closed form than OCCT's. The
   DIHEDRAL / curved / closed-seam full round still declines → OCCT (dihedral valley-solve +
   closed-seam weld gate on M2). Residual = the freeform/curved-blend breadth above.
+- **Status — CYL↔CYL CANAL fillet LANDED (`moat-canal-cyl-cyl-fillet`) → the curved↔curved
+  crossing-crease blend NATIVE.** `cc_fillet_edges` now LANDS on the crossing crease of a
+  Steinmetz bicylinder COMMON (two EQUAL-radius, ORTHOGONAL-axis crossing cylinders):
+  `src/native/blend/canal_fillet.h` recovers the two cylinders WHOLESALE from the SSI boolean's
+  planar-facet soup (the axes are ⟂ the facet-normal families, `Rc` = the common wall radius),
+  then rebuilds the entire filleted lens as a planar-facet soup — TWO canal strips (crease
+  planes z=±x, G1-tangent to both walls) + the four trimmed lune walls, sharing the two poles.
+  The earlier decline assumed a sharp trihedral crossing; the GEOMETRY is forgiving: the
+  rolling-ball centre sits at CONSTANT distance `R0=Rc−r` from BOTH axes (an exact canal spine)
+  and each strip's cross-section TAPERS TO ZERO at the poles (dihedral→180°), so the crossing
+  is a DEGENERATE PINCH sharing the two pole vertices — NO spherical corner patch, welded
+  watertight PURELY in the assembly layer (**NO tessellator change** — byte-identical firewall
+  trivially met, zero mesher diff). Both gates green: GATE a host-analytic (a native Steinmetz
+  at r/Rc∈[0.1,0.4] fillets watertight + `isConsistentlyOriented` (χ=2) + REMOVES material,
+  converging as deflection refines; box / single-cyl / Rc<2r / multi-edge decline) + GATE b SIM
+  the OCCT `BRepFilletAPI_MakeFillet` oracle confirms the case. A MANDATORY internal self-verify
+  (consistent orientation + removed-volume bound) rejects any large-radius pole fold → OCCT. The
+  arm rounds the WHOLE crossing crease (all four arcs) — the only watertight resolution for a
+  crease whose arcs meet at the poles. SCOPE (honest): a native Steinmetz body is currently only
+  built by the native SSI boolean directly — the native COMMON of two full cylinders through the
+  `cc_boolean` facade still declines (a BOOLEAN-track breadth gap, not a fillet gap), so the app
+  reaches this arm only once that lands. Unequal-radius / non-orthogonal / TORUS / elliptical
+  (cyl↔oblique-plane) creases still decline → OCCT.
 
 ### M4 — General STEP / AP242 import (+ IGES stays dropped) · ~1.5–3 py · needs M0
 The remaining import breadth on the landed AP203+ reader: **foreign rational/general B-spline

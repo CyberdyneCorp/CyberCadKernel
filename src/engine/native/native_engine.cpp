@@ -1311,24 +1311,34 @@ ShapeResult NativeEngine::fillet_edges(EngineShape body, const int* e, int ec, d
     if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
         return track(wrapNative(std::move(result)));
 
-    // T2 (ELLIPTICAL-crease fillet, cylinder ↔ oblique plane) and T3 (CYL↔CYL-canal
-    // fillet) are HONEST DECLINES → OCCT-fallthrough, NO native builder (no dead code):
-    //   * T2 needs a native body carrying a true Cylinder face + oblique Plane face
-    //     meeting at an Ellipse edge. No OCCT-FREE constructor produces that topology:
-    //     native booleans are planar-faced only, and the SSI curved boolean recognizes
-    //     only quadric↔quadric pairs (cyl-cyl / sphere-sphere / cone-cyl), NOT a cylinder
-    //     cut by an oblique half-space. An oblique cut is therefore OCCT-built, so the
-    //     body is never a NativeShape and the elliptical path is UNREACHABLE natively; a
-    //     builder would be untestable dead code. OCCT owns it (ref: Rc=5,H=10,60° oblique,
-    //     r=1 → filleted 383.454285, Δ=−9.244796 vs MakeFillet).
-    //   * T3 (equal-radius perpendicular Steinmetz) the two crease loops CROSS at the two
-    //     poles; a single swept-r-circle canal cannot close that corner-blend watertight
-    //     and G1 fails at the crossing — a genuine model gap, not a tolerance (ref: Rc=3,
-    //     L=20,r=0.5 COMMON → 143.179260, Δ=−0.820740). Both stay OCCT-only.
+    // 6. CYL↔CYL CANAL crease (Steinmetz bicylinder COMMON — two EQUAL-radius cylinders
+    //    whose axes cross ORTHOGONALLY) → two coaxial canal strips (crease planes z=±x,
+    //    G1-tangent to both walls, tapering to zero width at the two shared poles) welded
+    //    to the trimmed lune walls PURELY in the assembly layer, REMOVES material —
+    //    verified SHRINK. The two crease arcs cross at the poles as a DEGENERATE PINCH
+    //    (dihedral→180°, strip cross-section→0), NOT a finite trihedral corner: the two
+    //    strips share the two canonical pole vertices, so no corner patch is needed and the
+    //    shell welds watertight (with an INTERNAL orientation + removed-volume self-verify so
+    //    a large-radius pole fold can never pass). The builder rounds the WHOLE crossing
+    //    crease (all four arcs) — the only watertight resolution for a topology whose arcs
+    //    meet at the poles; a single-arc fillet cannot close the poles (the original decline).
+    //    A native Steinmetz body exists only on native SSI-boolean solids, so an OCCT body
+    //    never reaches here; recognition is WHOLESALE from the boolean's planar-facet soup.
+    result = nblend::canal_fillet_edge(h->shape, e, ec, r);
+    if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
+        return track(wrapNative(std::move(result)));
+
+    // T2 (ELLIPTICAL-crease fillet, cylinder ↔ oblique plane) is an HONEST DECLINE → OCCT-
+    // fallthrough, NO native builder (no dead code): T2 needs a native body carrying a true
+    // Cylinder face + oblique Plane face meeting at an Ellipse edge. No OCCT-FREE constructor
+    // produces that topology (native booleans are planar-faced only, and the SSI curved
+    // boolean recognizes only quadric↔quadric pairs), so the body is never a NativeShape and
+    // the elliptical path is UNREACHABLE natively; OCCT owns it (ref: Rc=5,H=10,60° oblique,
+    // r=1 → filleted 383.454285, Δ=−9.244796 vs MakeFillet).
     return make_error(
         "native fillet_edges: no verified watertight result for this native body "
         "(non-circular curved crease / blind-hole rim / Rc<2r convex / ≠cyl-plane rim / "
-        "variable / cyl-cyl canal / interference → OCCT-only)");
+        "variable / non-Steinmetz cyl-cyl / interference → OCCT-only)");
 }
 ShapeResult NativeEngine::fillet_edges_variable(EngineShape body, const int* e, int ec, double r1,
                                                 double r2) {

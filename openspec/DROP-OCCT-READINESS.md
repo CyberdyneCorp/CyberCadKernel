@@ -71,7 +71,7 @@ All `file:line` are in `src/engine/native/native_engine.cpp` unless noted.
 | tapered_shank | cc_tapered_shank | 1116 | **A** | done | 4 | null only (1118) |
 | wrap_emboss | cc_wrap_emboss | 1074 | **A** | resid M3 freeform-base | 6 | cylinder base native (typical); freeform base → OCCT (1076) |
 | **FEATURE / BLEND** ||||||
-| fillet_edges | cc_fillet_edges | 1204 | **A** | resid M3 | 15 | planar + convex/concave-circular + cone-frustum cap-rim + **sphere cap-rim (truncated ball / dome)** native (prismatic + tapered + revolved-ball rims = bulk); non-circular curved crease / cyl-cyl canal / freeform → OCCT (1205) |
+| fillet_edges | cc_fillet_edges | 1204 | **A** | resid M3 | 15 | planar + convex/concave-circular + cone-frustum cap-rim + sphere cap-rim (truncated ball / dome) + **cyl↔cyl canal crease (Steinmetz bicylinder)** native (prismatic + tapered + revolved-ball rims + the crossing-crease canal = bulk; canal reached only once the native cyl-cyl boolean builds a bicylinder via the facade); non-circular curved crease / unequal-radius or torus / elliptical crease / freeform → OCCT (1205) |
 | fillet_edges_variable | cc_fillet_edges_variable | 1250 | **A** | resid M3 | 7 | convex-circular linear-law native (1252) |
 | chamfer_edges | cc_chamfer_edges | 1270 | **A** | resid M3 | 10 | planar + convex-circular native (1271) |
 | chamfer_edges_asym | cc_chamfer_edges_asym | 1292 | **A** | resid M3 | 0 | convex-circular native (1294) |
@@ -149,7 +149,7 @@ are the two C-class invocations.
 | **M-TX native transforms** — ✅ LANDED (native `Shape::located(math::Transform)`; two-gate proven) | translate_shape, rotate_shape_about, mirror_shape, scale_shape, scale_shape_about, place_on_frame, extrude_mesh | **M-TX (done)** | 27 + 10 | **0 (done)** |
 | **M-REF reference / topology** — ✅ LANDED (native, two gates green) | face_axis, ref_plane_from_face, ref_axis_from_edge, ref_axis_from_face, tangent_chain, outer_rim_chain, offset_face_boundary | **M-REF (done)** | 22 | **0 (done)** |
 | **M-DM direct modeling** — ✅ core LANDED (DM1/DM2/DM3 offset + DM4 project native) | replace_face offset (DM3) + project_point_on_face (DM4) native; only tilted/non-planar retarget breadth residual (gates M2/M3) | **M-DM (done, resid breadth)** | 6 | **~0.5 (residual)** |
-| **M3 curved-blend breadth** — ✅ MAJOR SLICES LANDED (fillet_face + full_round_fillet[_faces] + chamfer_face/chamfer_corner native via the spherical/planar corner weld; **curved-edge fillet_edges native on cylinder + cone-frustum + sphere cap-rims** — the app's @15 curved-fillet gap for every analytic-revolve substrate; **curved shell** capped-cyl/cone; all two-gate vs OCCT) | **remaining:** fillet_edges_g2 (0 app sites, needs a G2 blend family), curved offset_face, cyl↔cyl canal fillet (needs a NEW tessellator crease weld), torus/elliptical-crease fillet (no OCCT-free native substrate / OCCT-built body), freeform-base wrap_emboss (needs freeform-surface breadth + a new tessellator weld) | **M3** | 14 direct | **~1–3** (down from ~3–8; the freeform-boolean spine + corner/curved-rim welds landed) |
+| **M3 curved-blend breadth** — ✅ MAJOR SLICES LANDED (fillet_face + full_round_fillet[_faces] + chamfer_face/chamfer_corner native via the spherical/planar corner weld; **curved-edge fillet_edges native on cylinder + cone-frustum + sphere cap-rims + the cyl↔cyl CANAL crossing-crease (Steinmetz bicylinder), assembly-layer, no tessellator change** — the app's @15 curved-fillet gap for every analytic-revolve substrate + the crossing-crease canal; **curved shell** capped-cyl/cone; all two-gate vs OCCT) | **remaining:** fillet_edges_g2 (0 app sites, needs a G2 blend family), curved offset_face, torus/elliptical-crease + unequal-radius canal fillet (no OCCT-free native substrate / OCCT-built body), freeform-base wrap_emboss (needs freeform-surface breadth + a new tessellator weld); the cyl↔cyl canal arm is reached only once the native cyl-cyl boolean builds a bicylinder body via the facade (a BOOLEAN-track gap) | **M3** | 14 direct | **~1–3** (down from ~3–8; the freeform-boolean spine + corner/curved-rim/canal welds landed) |
 | **M2 freeform-boolean breadth + thread_apply** — ✅ SPINE COMPLETE (half-space, corner-clip, curved-wall CUT+COMMON, ff↔ff CUT+COMMON, ≥3-seam strip all weld vs OCCT); **M2b DISJOINT (multi-lump) CUT mechanism LANDED** (`slab_disjoint_cut.h` — a slab parting a freeform prism welds a watertight `Compound` of two `Solid`s matching OCCT `BRepAlgoAPI_Cut`'s two-body topology, both gates), with the frozen keep-face OFF-CENTRE volume over-estimate HONEST-DECLINED (measured ~29% over OCCT → OCCT owns the correct volume); thread_apply NATIVE MACHINERY LANDED (recognise+facet+planar-BSP+4-part self-verify, both gates; multi-turn declines with a measured reason → M7b) | boolean_op freeform/mixed residual (breadth on the landed spine — the ff↔ff FUSE curved-annulus weld + the off-centre-accurate freeform keep-face/cap for a disjoint WELD), thread_apply multi-turn weld (orientation-coherent thread builder + dense-soup CSG w/ T-junction repair) | **M2 / M7b** | 0 direct | **~0.5–1** (spine done; residual breadth + thread) |
 | **M7b construct tails** — ✅ M7t LANDED (twisted_sweep real twist + loft_along_rail curved rail native, both gates) | ~~twisted_sweep (real twist)~~ ✅, ~~loft_along_rail (curved rail)~~ ✅, fine-pitch thread residuals | **M7t (done) / M7b** | 12 | **~0.5 (M7b thread residual)** |
 | **M-GS GS1 curved-HLR** — ✅ LANDED (native cone/frustum + torus silhouettes, two gates green) | hlr_project cone/frustum/torus(Kind::Torus) silhouettes native; freeform + revolve-built torus (B-spline bands) → OCCT | **M-GS GS1 (done)** | 0 direct | **0 (done — freeform B-spline silhouette is the honest residual)** |
@@ -159,10 +159,14 @@ midpoint before the M0 tessellator welds (open-seam + closed-inner-seam + curved
 M2 freeform-boolean spine (half-space → corner-clip → curved-wall CUT+COMMON → ff↔ff → ≥3-seam)
 landed. **The coupled high-risk spine research that dominated the old estimate is DONE.** What
 remains is *breadth on machinery that already works for the common case*, in one bucket:
-- **M3 curved-blend residuals (~1–3 py)** — the dominant remainder: cyl↔cyl canal fillet (needs
-  a new tessellator crease weld), freeform-base wrap_emboss (freeform-surface breadth + weld),
-  curved offset_face, and fillet_edges_g2 (0 app sites). The **app-used** curved-edge fillet is
-  already native for the analytic-revolve substrates the app exercises.
+- **M3 curved-blend residuals (~1–3 py)** — the dominant remainder: freeform-base wrap_emboss
+  (freeform-surface breadth + weld), curved offset_face, torus/elliptical-crease + unequal-radius
+  canal fillet, and fillet_edges_g2 (0 app sites). The **app-used** curved-edge fillet is already
+  native for the analytic-revolve substrates the app exercises — including the **cyl↔cyl CANAL
+  crossing-crease** (Steinmetz bicylinder), which landed in the ASSEMBLY layer with NO tessellator
+  crease weld (the two canal strips pinch to zero at the poles and share the pole vertices), so
+  the earlier "needs a new tessellator crease weld" assessment was superseded. The canal arm is
+  reached once the native cyl-cyl boolean builds a bicylinder body via the facade (a BOOLEAN gap).
 - **M2/M7b tails (~0.5–1 py)** — freeform-boolean breadth on the landed spine + the multi-turn
   thread weld (0 app sites).
 - **M8 unlink execution (~0.25 py)** + the standing **M6 completeness bar** (ongoing, gates
@@ -232,9 +236,10 @@ the **M2 freeform-boolean spine** (half-space → corner-clip → curved-wall CU
 ≥3-seam, on the M0 open-seam/closed-inner-seam/curved-rim tessellator welds), **M3** fillet_face
 / full_round / chamfer / **curved-edge fillet on cylinder+cone+sphere** / curved shell, **M7t**
 twisted_sweep + loft_along_rail, and **M-GS/M-DM/M-REF/M-TX** services. What *remains* is bounded
-breadth: **M3 curved-blend residuals** (cyl↔cyl canal fillet needing a new tessellator crease
-weld, freeform-base wrap_emboss, offset_face, fillet_edges_g2 [0 app sites]) ~1–3 py; **M2/M7b
-tails** (freeform-boolean breadth + multi-turn thread) ~0.5–1 py; **M8 execution** ~0.25 py.
+breadth: **M3 curved-blend residuals** (freeform-base wrap_emboss, offset_face, torus/elliptical
+canal, fillet_edges_g2 [0 app sites] — the cyl↔cyl canal crossing-crease LANDED in the assembly
+layer, no tessellator weld) ~1–3 py; **M2/M7b tails** (freeform-boolean breadth incl. the native
+cyl-cyl bicylinder body via the facade + multi-turn thread) ~0.5–1 py; **M8 execution** ~0.25 py.
 **(3)** **IGES is the only clean Class-C decline** — the app must make its own IGES decision
 (drop / OCCT-shim / native). **(4)** The finish is gated on the **M6 completeness bar** (13
 native fuzz domains, 0 DISAGREED) which guarantees no silent-wrong after the fallback is gone.

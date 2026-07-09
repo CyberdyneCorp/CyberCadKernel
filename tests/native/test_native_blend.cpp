@@ -17,7 +17,9 @@
 //     -o /tmp/test_native_blend && /tmp/test_native_blend
 //
 #include "native/blend/native_blend.h"
+#include "native/boolean/curved.h"
 #include "native/boolean/native_boolean.h"
+#include "native/boolean/ssi_boolean.h"
 #include "native/construct/native_construct.h"
 #include "native/tessellate/native_tessellate.h"
 #include "native/topology/native_topology.h"
@@ -1147,6 +1149,109 @@ CC_TEST(concave_edge_chamfer_fillet_fallthrough) {
   CC_CHECK(!ch.isNull());
   CC_CHECK(wt);
   CC_CHECK(v > 0.0 && v < 240.0);  // L-area 48 × 5 = 240, reduced by the chamfer
+}
+
+// ── CYL↔CYL CANAL fillet (Steinmetz bicylinder COMMON) ──────────────────────────────
+namespace {
+namespace nb = cybercad::native::boolean;
+
+// A native axis-parallel cylinder segment (axis 0=X,1=Y,2=Z), radius r over [lo,hi].
+topo::Shape axisCyl(int axis, double r, double lo, double hi) {
+  nb::curved::AABox box{nmath::Point3{-100, -100, -100}, nmath::Point3{100, 100, 100}};
+  return nb::curved::buildCommonSegment(box, nb::curved::AxisCylinder{axis, 0, 0, r, lo, hi});
+}
+
+// The native Steinmetz bicylinder COMMON of two equal-radius Rc cylinders (axes Z & X),
+// long enough (L = 6·Rc) that the disc caps never touch the fillet band.
+topo::Shape steinmetz(double Rc) {
+  return nb::ssi_boolean_solid(axisCyl(2, Rc, -3.0 * Rc, 3.0 * Rc),
+                               axisCyl(0, Rc, -3.0 * Rc, 3.0 * Rc), nb::Op::Common);
+}
+
+// Consistently-oriented enclosed volume (sets co); the engine's SHRINK gate uses this.
+double volCO(const topo::Shape& s, bool& co) {
+  if (s.isNull()) { co = false; return 0.0; }
+  tess::MeshParams p;
+  p.deflection = 0.005;
+  const tess::Mesh m = tess::SolidMesher{p}.mesh(s);
+  co = tess::isConsistentlyOriented(m);
+  return std::fabs(tess::enclosedVolume(m));
+}
+
+}  // namespace
+
+// GATE A.1 — the crossing crease of a Steinmetz bicylinder fillets NATIVE: watertight,
+// consistently oriented (χ=2), enclosed volume strictly below the sharp bicylinder.
+CC_TEST(canal_fillet_steinmetz_watertight_volume_reduced) {
+  const double Rc = 1.0, r = 0.2;
+  const topo::Shape lens = steinmetz(Rc);
+  CC_CHECK(!lens.isNull());
+  bool coS = false;
+  const double vSharp = volCO(lens, coS);  // faceted bicylinder baseline
+  CC_CHECK(coS);
+  const int ids[1] = {1};  // any crease edge; the recognizer is wholesale
+  const topo::Shape fil = blend::canal_fillet_edge(lens, ids, 1, r);
+  CC_CHECK(!fil.isNull());
+  bool co = false;
+  const double v = volCO(fil, co);
+  CC_CHECK(co);                       // watertight + consistently oriented
+  CC_CHECK(v > 0.5 * vSharp);         // a fillet only rounds the crease — keeps most volume
+  CC_CHECK(v < vSharp - 1e-4);        // it REMOVES the sharp-ridge sliver
+}
+
+// GATE A.2 — the native canal fillet CONVERGES: the enclosed volume tightens (toward the
+// true curved solid) as the deflection refines, and stays watertight throughout.
+CC_TEST(canal_fillet_converges_with_deflection) {
+  const double Rc = 1.0, r = 0.2;
+  double vPrev = -1.0;
+  for (double defl : {0.02, 0.01, 0.005}) {
+    const topo::Shape lens = steinmetz(Rc);
+    CC_CHECK(!lens.isNull());
+    const int ids[1] = {1};
+    const topo::Shape fil = blend::canal_fillet_edge(lens, ids, 1, r, defl);
+    CC_CHECK(!fil.isNull());
+    tess::MeshParams p;
+    p.deflection = defl;
+    const tess::Mesh m = tess::SolidMesher{p}.mesh(fil);
+    CC_CHECK(tess::isConsistentlyOriented(m));
+    const double v = std::fabs(tess::enclosedVolume(m));
+    // The faceted body grows toward the true curved volume as facets refine (monotone up).
+    if (vPrev > 0.0) CC_CHECK(v >= vPrev - 1e-3);
+    vPrev = v;
+  }
+}
+
+// GATE A.3 — landing radius range: a rolling-ball fillet lands NATIVE across the useful
+// convex range (Rc ≥ 2r), each watertight + consistently oriented + shrinking.
+CC_TEST(canal_fillet_radius_range) {
+  const double Rc = 1.0;
+  for (double r : {0.1, 0.15, 0.2, 0.3, 0.4}) {
+    const topo::Shape lens = steinmetz(Rc);
+    CC_CHECK(!lens.isNull());
+    bool coS = false;
+    const double vSharp = volCO(lens, coS);
+    const int ids[1] = {1};
+    const topo::Shape fil = blend::canal_fillet_edge(lens, ids, 1, r);
+    CC_CHECK(!fil.isNull());
+    bool co = false;
+    const double v = volCO(fil, co);
+    CC_CHECK(co);
+    CC_CHECK(v > 0.5 * vSharp && v < vSharp - 1e-4);
+  }
+}
+
+// GATE A.4 — honest DECLINE (→ OCCT) outside the canonical Steinmetz envelope: a box, a
+// single cylinder, r ≤ 0, Rc < 2r (ring-torus), and a multi-edge pick all return NULL.
+CC_TEST(canal_fillet_scope_defers) {
+  const int ids[1] = {1};
+  CC_CHECK(blend::canal_fillet_edge(box(2, 2, 2), ids, 1, 0.2).isNull());   // no cylinders
+  CC_CHECK(blend::canal_fillet_edge(axisCyl(2, 1.0, -2, 2), ids, 1, 0.2).isNull());  // one cyl
+  const topo::Shape lens = steinmetz(1.0);
+  CC_CHECK(!lens.isNull());
+  CC_CHECK(blend::canal_fillet_edge(lens, ids, 1, 0.0).isNull());   // r ≤ 0
+  CC_CHECK(blend::canal_fillet_edge(lens, ids, 1, 0.6).isNull());   // Rc < 2r → ring-torus
+  CC_CHECK(blend::canal_fillet_edge(lens, ids, 2, 0.2).isNull());   // multi-edge pick
+  CC_CHECK(!blend::canal_fillet_edge(lens, ids, 1, 0.2).isNull());  // control: lands
 }
 
 CC_RUN_ALL()

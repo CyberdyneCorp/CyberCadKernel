@@ -589,6 +589,21 @@ std::shared_ptr<IEngine> make_native_fallback_engine() {
 #endif
 }
 
+// ── M8 scoped-unlink DRY-RUN rehearsal (NON-SHIPPING) ───────────────────────────
+// Under -DCYBERCAD_M8_REHEARSAL=ON (implies no OCCT), the build's DEFAULT active
+// engine becomes a NativeEngine whose only fallback is the stub — the exact
+// post-unlink product wiring, WITHOUT deleting src/engine/occt or touching any
+// shipped default. Every cc_* op then either serves natively or hits the stub's
+// honest engine_unsupported decline (never an OCCT arm). This override replaces
+// the no-OCCT stub create_default_engine() (guarded out in stub_engine.cpp under
+// the same macro), so tests that never call cc_set_engine(1) still measure the
+// native-only path. Measurement-only: see openspec/DROP-OCCT-READINESS.md §6.
+#if defined(CYBERCAD_M8_REHEARSAL) && !defined(CYBERCAD_HAS_OCCT)
+std::shared_ptr<IEngine> create_default_engine() {
+    return std::make_shared<NativeEngine>(make_native_fallback_engine());
+}
+#endif
+
 // ── engine-INTERNAL native-heal hook (Phase 4 #4 native-healing) ────────────────
 // Native builder → mandatory self-verify → OCCT fallback, the SAME discipline every
 // native op follows (see native_heal_hook.h). Reached internally by the engine, NOT

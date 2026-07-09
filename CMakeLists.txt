@@ -58,6 +58,22 @@ set(CYBERCAD_TETGEN_DIR "" CACHE PATH "build-tetgen.sh output dir (libtetgen_*.a
 set(CYBERCAD_TETGEN_SRC_DIR "/home/leonardo/work/tetgen"
     CACHE PATH "TetGen source root (headers referenced by absolute path, not vendored)")
 
+# ── M8 scoped-unlink DRY-RUN rehearsal (NON-SHIPPING measurement artifact) ─────
+# OFF (default) => unchanged: the shipping engine selection is untouched. In the
+# host build create_default_engine() returns the stub; a caller opts in to the
+# native engine via cc_set_engine(1).
+# ON  => a THROWAWAY measurement configuration for MOAT M8. It changes ONLY the
+# build's DEFAULT active engine: create_default_engine() returns a NativeEngine
+# whose sole fallback is the STUB (never OcctEngine), so EVERY cc_* op — even in
+# a test that never calls cc_set_engine(1) — exercises the exact post-unlink
+# native-only + stub-fallback path (native serve, else the stub's honest
+# engine_unsupported decline). This rehearses `drop-occt` WITHOUT deleting
+# src/engine/occt and WITHOUT changing any shipped default. It is mutually
+# exclusive with CYBERCAD_HAS_OCCT (the rehearsal is the no-OCCT world) and must
+# NEVER be enabled in a shipped configuration. See
+# openspec/changes/moat-m8dry-unlink-rehearsal/ and openspec/DROP-OCCT-READINESS.md §6.
+option(CYBERCAD_M8_REHEARSAL "NON-SHIPPING: default engine = NativeEngine over stub (M8 unlink rehearsal)" OFF)
+
 # OFF => unchanged (host stub or iOS cross-compile driven by the options above).
 # ON  => the PROVEN macOS desktop build: a SHARED libcybercadkernel.dylib built
 # from the same sources as the OCCT build (facade + core + engine + engine/occt),
@@ -120,6 +136,17 @@ target_include_directories(cybercadkernel
 
 find_package(Threads REQUIRED)
 target_link_libraries(cybercadkernel PUBLIC Threads::Threads)
+
+# M8 rehearsal is the no-OCCT native-default world: it must never be combined
+# with the OCCT adapter (that would defeat the "what breaks without OCCT" measure).
+if(CYBERCAD_M8_REHEARSAL AND CYBERCAD_HAS_OCCT)
+    message(FATAL_ERROR
+        "CYBERCAD_M8_REHEARSAL is a NON-SHIPPING no-OCCT measurement config and is "
+        "mutually exclusive with CYBERCAD_HAS_OCCT. Enable exactly one.")
+endif()
+if(CYBERCAD_M8_REHEARSAL)
+    target_compile_definitions(cybercadkernel PRIVATE CYBERCAD_M8_REHEARSAL=1)
+endif()
 
 if(CYBERCAD_HAS_OCCT)
     file(GLOB CYBERCAD_OCCT_SOURCES CONFIGURE_DEPENDS

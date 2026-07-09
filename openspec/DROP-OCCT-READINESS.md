@@ -230,5 +230,144 @@ to the M2/M3/M-DM moat.**
 
 ---
 
+## 6. Measured rehearsal (dated 2026-07-08) — the static audit, executed
+
+Sections 1–5 above are a **static, source-read** classification. This section records the
+first **live measurement** of the post-unlink shape, via a throwaway, non-shipping CMake
+option `CYBERCAD_M8_REHEARSAL` (OpenSpec change `moat-m8dry-unlink-rehearsal`, branch
+`moat-m8dry`). It does **not** delete `src/engine/occt` and does **not** change any
+shipping default.
+
+### 6.1 Method
+
+The host build already excludes the OCCT TUs (`CYBERCAD_HAS_OCCT=OFF`), so
+`make_native_fallback_engine()` already resolves to the stub. The *only* difference
+between the plain host build and the true post-unlink product is which engine is the
+**default** — the plain host build defaults to the STUB, so a test that never calls
+`cc_set_engine(1)` measures the stub, not the native path. The rehearsal flag flips
+`create_default_engine()` to return `NativeEngine(stub)` (in `native_engine.cpp`, guarded
+`#if CYBERCAD_M8_REHEARSAL && !CYBERCAD_HAS_OCCT`; the stub's definition guarded out under
+the same macro). That single bit makes the WHOLE suite exercise the native-only +
+stub-fallback path — the exact wiring after `src/engine/occt` is deleted. Two measures were
+run against `-DCYBERCAD_M8_REHEARSAL=ON` (with `-DCYBERCAD_HAS_NUMSCI=ON`): the full HOST
+CTest suite, and a per-op decline probe (`scratch/m8_probe.cpp`, throwaway) driving each
+Class-B/C op on a native body plus a Class-A spine spot-check.
+
+### 6.2 Build result
+
+The rehearsal library and all 56 test executables **configure, build, and link cleanly**.
+`find build-m8 -path '*occt*' -name '*.o'` is **empty** (no OCCT TU compiled) and
+`nm libcybercadkernel.a | grep OcctEngine` is **empty** (no `OcctEngine` symbol
+referenced). **The terminal "delete `src/engine/occt`" step is build-safe today** — the
+product build does not depend on the OCCT TUs being present.
+
+### 6.3 HOST suite result — 53 PASS-native / 0 clean-decline-fail / 3 sentinel-flip / 0 crash
+
+| bucket | count | tests |
+|---|---|---|
+| **PASS-native** | 53 | every geometry / construct / query / analysis / exchange suite, incl. the 5 heavy SSI numerics suites (pass with an adequate per-test timeout) |
+| **FAIL — sentinel flip** | 3 | `test_guard`, `test_abi`, `test_native_engine` |
+| **FAIL — crash / silent-wrong** | **0** | — |
+
+All 3 "failures" share ONE root cause and are **not regressions**: each asserts the
+*shipping-default* invariant that the rehearsal deliberately inverts.
+- `test_guard::brep_unavailable_in_stub_build` (`cc_brep_available()==0`) and
+  `stub_geometry_returns_zero_and_sets_error` (`cc_solid_extrude` returns 0): under the
+  rehearsal the default engine is NativeEngine, so `cc_brep_available()` reports available
+  and `cc_solid_extrude` **builds a real native solid** (returns a nonzero id). This is a
+  PASS-native outcome a stub-era test flags as a failure.
+- `test_abi::library_links_and_reports_no_brep` (`cc_brep_available()==0`): same flip.
+- `test_native_engine::default_engine_is_not_native` (`cc_active_engine()==0`): the
+  rehearsal makes the default native BY DESIGN. The other 43 cases in that suite — the
+  actual native geometry ops — all pass.
+
+### 6.4 Per-op decline probe — every B/C op cleanly declines, every A spine op serves
+
+Default engine under rehearsal: `cc_active_engine()==1` (native), `cc_brep_available()==1`.
+
+| op | class | measured | error surfaced |
+|---|---|---|---|
+| cc_fillet_face | B | **CLEAN-DECLINE** | "operation not supported on a native body yet: fillet_face …" |
+| cc_full_round_fillet | B | **CLEAN-DECLINE** | "… full_round_fillet …" |
+| cc_full_round_fillet_faces | B | **CLEAN-DECLINE** | "… full_round_fillet_faces …" |
+| cc_fillet_edges_g2 | B | **CLEAN-DECLINE** | "… fillet_edges_g2 …" |
+| cc_twisted_sweep (real twist) | B | **CLEAN-DECLINE** | "operation not supported by active engine: twisted_sweep" |
+| cc_loft_along_rail (curved rail) | B | **CLEAN-DECLINE** | "… loft_along_rail" |
+| cc_thread_apply | B | **CLEAN-DECLINE** | "… thread_apply …" |
+| cc_iges_import | C | **CLEAN-DECLINE** | "operation not supported by active engine: iges_import" |
+| cc_iges_export | C | **CLEAN-DECLINE** | "… iges_export …" |
+| cc_solid_revolve | A | **SERVED-NATIVE** | — |
+| cc_solid_loft | A | **SERVED-NATIVE** | — |
+| cc_tessellate | A | **SERVED-NATIVE** (8 v / 12 t) | — |
+| cc_mass_properties | A | **SERVED-NATIVE** (vol 1000.0) | — |
+
+Every declining op returns **id=0 with a non-empty `cc_last_error`** — the desired
+drop-OCCT clean-decline. No op hit the FINDING cases (id=0 with an empty error, or a
+fabricated non-zero handle where OCCT would have served).
+
+### 6.5 Static-vs-measured discrepancies
+
+**None material.** The static A/B/C classification is **empirically confirmed**:
+- No Class-A op crashed or returned a fabricated / silently-wrong shape.
+- No Class-B/C op declined without a reason; each surfaced an honest error.
+- The B declines route two ways, both clean and both anticipated by §1: body-consuming
+  ops with no native path (`fillet_face`, `full_round_fillet[_faces]`, `fillet_edges_g2`,
+  `thread_apply`) via the `CC_NATIVE_BODY_UNSUPPORTED` macro's own error; native ops that
+  return NULL on out-of-envelope input (`twisted_sweep` real-twist, `loft_along_rail`
+  curved-rail) forward to the stub's `engine_unsupported`. `iges_*` (C) forward to the
+  stub. Both messages differ in wording but are equally honest declines.
+- The only "surprises" are the three shipping-default sentinel tests (§6.3), which are an
+  artifact of the rehearsal flipping the default, not a classification error.
+
+### 6.6 Measured unlink checklist — what actually changes if `src/engine/occt` is deleted today
+
+Ordered by product impact. **Nothing breaks the build; nothing produces silent-wrong.**
+The delete only converts these OCCT-served ops to honest declines:
+
+1. **`fillet_face`, `full_round_fillet`, `full_round_fillet_faces`, `fillet_edges_g2`**
+   (Class-B, M3) — become clean declines on ALL bodies. **7 app sites (`fillet_face`).**
+   Failure mode today under rehearsal: `CC_NATIVE_BODY_UNSUPPORTED` honest error. Requires
+   the **M3** OCCT-only fillet work to restore.
+2. **`boolean` freeform / mixed residual** (Class-A row, but the freeform slice forwards)
+   — the planar + analytic-curved bulk is native; all-OCCT-operand and native-native
+   freeform-degenerate cases decline. Requires **M2** breadth.
+3. **`twisted_sweep` (real twist), `loft_along_rail` (curved rail)** (Class-B, M7) — the
+   degenerate slice is native; the typical use declines. **12 app sites combined.**
+   Requires **M7/M7b** (~1–2 py).
+4. **`thread_apply`** (Class-B, M2/M7b) — clean decline; 0 direct app sites.
+5. **`iges_import`, `iges_export`** (Class-C, DROPPED) — clean declines by product
+   decision. **11 app sites** → needs a companion app-side IGES decision (drop / OCCT-shim
+   / native), not kernel work.
+6. **All Class-A residual breadth** (fillet/chamfer/shell/offset_face curved cases,
+   `hlr_project` curved silhouettes, STEP out-of-scope) — the typical in-domain input is
+   already served natively; only the named out-of-envelope residual declines.
+
+**Everything else** — the Class-A construct spine (extrude/revolve/loft/sweep + M-TX
+transforms + M-REF references + M-DM core), tessellate, all query/analysis, STEP/STL —
+**serves natively today with OCCT unlinked.**
+
+### 6.7 Assessment — M2/M3/remaining-B: required for unlink vs nice-to-have
+
+- **Required to make the product BUILD OCCT-free:** *nothing further.* The rehearsal
+  proves the native-only + stub-fallback configuration builds, links, and runs the full
+  suite with zero crashes and zero silent-wrong results **today**.
+- **Required to SHIP the scoped unlink WITHOUT regressing the supported domain:** turn the
+  §6.6 declines that the supported domain actually needs back into served ops. That is the
+  **M2/M3 freeform-blend/boolean breadth (~3–8 py)** for the four M3 OCCT-only fillets +
+  the `boolean` freeform residual, plus the **M7/M7b construct tails (~1–2 py)** for
+  `twisted_sweep`/`loft_along_rail`/fine-pitch threads, plus the IGES product decision.
+- **Nice-to-have (not a blocker):** the Class-A curved-residual breadth
+  (fillet/chamfer/shell/offset_face curved, `hlr_project` curved silhouettes) — these are
+  out-of-envelope declines whose *typical* input is already native; they can be filled
+  incrementally after unlink without a fallback.
+- The **M6 completeness/fuzzing bar** remains the true gate: the rehearsal confirms the
+  clean-decline contract on the ops probed, but M6's differential fuzzing is what
+  guarantees **no silent-wrong across the whole input space**, which is the actual
+  precondition for deleting the oracle.
+
+---
+
 *This is a documentation artifact, not an OpenSpec change. The living roadmap is
-[MOAT-ROADMAP.md](MOAT-ROADMAP.md) (M8); parent [NATIVE-REWRITE.md](NATIVE-REWRITE.md).*
+[MOAT-ROADMAP.md](MOAT-ROADMAP.md) (M8); parent [NATIVE-REWRITE.md](NATIVE-REWRITE.md).
+The §6 rehearsal method is captured as the OpenSpec change
+`moat-m8dry-unlink-rehearsal`.*

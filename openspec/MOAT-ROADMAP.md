@@ -742,6 +742,30 @@ it — so a fully-OCCT-free *app* additionally requires an IGES decision: drop I
 thin OCCT-linked IGES shim (app not 100 % OCCT-free), or reimplement IGES natively (~1.5–3 py, out of
 current scope).
 
+**M8 scoped-unlink DRY-RUN rehearsal (measured 2026-07-08).** A throwaway, non-shipping CMake option
+`CYBERCAD_M8_REHEARSAL` (branch `moat-m8dry`) wires the build's DEFAULT active engine to
+`NativeEngine`-over-stub — the exact post-unlink wiring — without deleting `src/engine/occt` or changing
+any shipping default. The full HOST suite + a per-op decline probe were run against it. Findings (full
+detail in [DROP-OCCT-READINESS.md](DROP-OCCT-READINESS.md) §6):
+- **Build:** links clean with **zero** OCCT TUs and no `OcctEngine` symbol referenced — the terminal
+  "delete `src/engine/occt`" step is build-safe *today*.
+- **Suite:** 53/56 pass; **0 crashes, 0 silent-wrong**. The 3 "fails" (`test_guard`, `test_abi`,
+  `test_native_engine`) are all the SAME root cause — they assert the *shipping-default* invariant
+  ("default = stub / no B-rep / not native") that the rehearsal deliberately inverts; they are sentinel
+  flips, not regressions.
+- **Per-op probe:** every Class-B op (`fillet_face`, `full_round_fillet[_faces]`, `fillet_edges_g2`,
+  `twisted_sweep` real-twist, `loft_along_rail` curved-rail, `thread_apply`) and every Class-C op
+  (`iges_import/_export`) **CLEANLY DECLINES** (id=0 + honest `cc_last_error`); every Class-A spine op
+  (`solid_revolve/_loft/_tessellate/_mass_properties/_extrude`) **SERVES NATIVELY**.
+- **Static-vs-measured:** the static A/B/C classification **held** — no Class-A op crashed or returned a
+  fabricated shape, no B/C op declined without a reason. The static audit is empirically confirmed.
+- **Assessment:** the scoped unlink is **build-reachable now**; the residual M2/M3/remaining-B work is
+  about *product breadth* (turning B/C declines back into served ops), NOT about making the unlink build
+  or preventing silent-wrong. What is TRULY required to *build* OCCT-free = nothing further. What is
+  required to *ship* without regressing the supported domain = the M2/M3 freeform-blend/boolean breadth
+  (~3–8 py) for the 4 M3 OCCT-only fillets + `boolean` freeform residual, the M7/M7b tails for
+  `twisted_sweep`/`loft_along_rail`/fine-pitch threads (~1–2 py), and the IGES product decision.
+
 ## Sequencing
 
 ```

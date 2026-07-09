@@ -25,7 +25,11 @@ std::shared_ptr<IEngine> make_stub_engine() {
     return std::make_shared<StubEngine>();
 }
 
-#ifndef CYBERCAD_HAS_OCCT
+// The no-OCCT build's default engine is the stub — EXCEPT under the M8 unlink
+// rehearsal (CYBERCAD_M8_REHEARSAL), where native_engine.cpp instead defines
+// create_default_engine() to return NativeEngine-over-stub (the post-unlink
+// native-default world). Guarded out here to avoid a duplicate definition.
+#if !defined(CYBERCAD_HAS_OCCT) && !defined(CYBERCAD_M8_REHEARSAL)
 std::shared_ptr<IEngine> create_default_engine() {
     return make_stub_engine();
 }

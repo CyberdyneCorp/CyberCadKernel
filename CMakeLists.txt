@@ -315,6 +315,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_blend
         test_native_analytic_fillet
         test_native_corner_chamfer
+        test_native_chamfer_face
         test_native_wrap_emboss
         test_native_step_writer
         test_native_step_reader
@@ -577,6 +578,13 @@ if(CYBERCAD_BUILD_TESTS)
     # topology; no numsci link, so it lives in the always-on native suite.
     set(test_native_corner_chamfer_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_corner_chamfer.cpp")
+    # MOAT M2 FULL-FACE chamfer weld (chamfer_face): chamfer every convex edge bounding a
+    # picked planar face by assembling the landed corner weld. On a box face all four
+    # corners are 2-edge dihedrals (never a triple), so it welds watertight at the EXACT
+    # inclusion-exclusion volume (planar, tessellator-independent) + the honest declines.
+    # Header-only over blend/construct/tessellate/topology; no numsci link, always-on.
+    set(test_native_chamfer_face_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_chamfer_face.cpp")
     set(test_native_wrap_emboss_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_wrap_emboss.cpp")
     set(test_native_step_writer_SRC

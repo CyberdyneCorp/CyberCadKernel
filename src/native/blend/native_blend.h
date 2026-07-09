@@ -37,6 +37,7 @@
 
 #include "native/blend/blend_geom.h"
 #include "native/blend/chamfer_edges.h"
+#include "native/blend/chamfer_face.h"
 #include "native/blend/corner_chamfer_weld.h"
 #include "native/blend/curved_chamfer.h"
 #include "native/blend/curved_fillet.h"

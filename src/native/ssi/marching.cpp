@@ -1596,8 +1596,32 @@ void runCompletenessCritic(const SurfaceAdapter& A, const SurfaceAdapter& B,
     // dedup the traced NEW branches vs ALL kept curves, so only genuinely new loops survive.
     SeedOptions ro = seedOpts;
     ro.completenessCritic = false;   // no recursion
+    ro.criticTargetedReseed = false; // consumed here — the seeder itself never re-targets
     ro.minPatchFrac = frac;
-    const SeedSet rs = seed_intersection(A, B, ro);
+    SeedSet rs;
+    if (seedOpts.criticTargetedReseed) {
+      // M1c TARGETED re-seed: seed ONLY the uncovered A-cells (A clamped to the cell) vs B's
+      // full domain and accumulate. Recovers the second loop of a twice-piercing pose (merged
+      // into one topological cluster at the coarse grid → one representative seed) without
+      // re-subdividing the already-covered region. Never fabricates a seed (each cell's
+      // candidate must still land on BOTH surfaces) and never widens a tolerance.
+      SurfaceAdapter Asub = A;
+      const int cellCap = std::max(1, seedOpts.criticMaxCells);
+      int usedCells = 0;
+      for (const ParamBox& cell : uncovered) {
+        if (usedCells >= cellCap) break;
+        Asub.domain = cell;
+        SeedOptions rc = ro;
+        rc.initialGridU = 1;  // the cell IS the pre-split; recurse within it
+        rc.initialGridV = 1;
+        const SeedSet part = seed_intersection(Asub, B, rc);
+        for (const Seed& sd : part.seeds) rs.seeds.push_back(sd);
+        rs.candidateRegions += part.candidateRegions;
+        ++usedCells;
+      }
+    } else {
+      rs = seed_intersection(A, B, ro);
+    }
     candTotal += rs.candidateRegions;
 
     // Dedup a re-seed's traced branch by LOCUS (point-to-polyline) at a step-scaled radius, so

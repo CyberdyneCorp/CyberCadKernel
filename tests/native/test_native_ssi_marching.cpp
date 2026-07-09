@@ -723,4 +723,100 @@ CC_TEST(march_sphere_cone_offaxis) {
                           [&](const Point3& p) { return distToCone(co, p); }, 1e-9);
 }
 
+// ── M1c BREADTH: the M1b-declined tail promoted to verified ──────────────────────
+// M1b honestly declined general cone∩cone, off-axis cyl∩cone, and off-axis sphere∩cyl:
+// the OCCT oracle surfaces are INFINITE while the native adapters are FINITE patches, so an
+// unbounded quadric piercing the other operand more than once yielded a multi-loop OCCT locus
+// the finite native trace could not match, and the second loop was a seeding-recall miss.
+//
+// M1c lands them with FINITE, self-consistent poses (Gate A here) that the sim harness verifies
+// against a DOMAIN-CLIPPED oracle (Geom_RectangularTrimmedSurface to the native patch bounds).
+// These host cases lock the S3 CONTRACT self-consistently (every node on BOTH surfaces ≤ 1e-9,
+// clean closure / boundary exit, no near-tangent gap). The twice-piercing sphere∩cyl uses the
+// M1c SEEDING-RECALL BUMP (completenessCritic + criticTargetedReseed) to seed the SECOND loop.
+
+// GENERAL cone∩cone — two finite cones with OFFSET apexes and tilted axes, meeting in ONE
+// closed loop inside both finite patches (the far nappe / far cone body never reaches the
+// bounded height, so it is a single loop the finite native trace matches an equally-clipped
+// oracle on).
+CC_TEST(march_cone_cone_general_single_loop) {
+  nmath::Cone c1{frameZ({0, 0, -1.0}), 0.05, 0.4};
+  nmath::Cone c2{axFromZ({0.35, 0, 0.9}, unitVec(Vec3{0.05, 0, -1})), 0.05, 0.4};
+  ssi::ParamBox d1{0.0, 2.0 * kPi, 0.0, 2.5};
+  ssi::ParamBox d2{0.0, 2.0 * kPi, 0.0, 2.5};
+  auto A = ssi::makeConeAdapter(c1, d1);
+  auto B = ssi::makeConeAdapter(c2, d2);
+  ssi::SeedOptions sopt; sopt.initialGridU = 8; sopt.initialGridV = 8; sopt.minPatchFrac = 1.0 / 48.0;
+
+  auto tr = ssi::trace_intersection(A, B, sopt);
+  CC_CHECK(tr.curveCount() == 1);
+  CC_CHECK(tr.closedCurves == 1);
+  CC_CHECK(tr.nearTangentGaps == 0);
+  if (tr.curveCount() != 1) return;
+  const ssi::WLine& w = tr.lines[0];
+  CC_CHECK(w.isClosed());
+  checkAllNodesOnSurfaces(cc_ok_, w, [&](const Point3& p) { return distToCone(c1, p); },
+                          [&](const Point3& p) { return distToCone(c2, p); }, 1e-9);
+}
+
+// OFF-AXIS cyl∩cone — the cone axis offset + tilted from the cylinder axis; the intersection
+// arc RUNS OFF the finite patch boundaries → ONE open (BoundaryExit) arc. The whole arc lies
+// on both finite surfaces; the sim verifies it against a domain-clipped oracle.
+CC_TEST(march_cyl_cone_offaxis_open_arc) {
+  nmath::Cylinder cy{frameZ(), 0.6};
+  nmath::Cone co{axFromZ({0.2, 0, -0.3}, unitVec(Vec3{0.12, 0, 1})), 0.02, 0.45};
+  ssi::ParamBox dcy{0.0, 2.0 * kPi, -1.2, 1.2};
+  ssi::ParamBox dco{0.0, 2.0 * kPi, 0.0, 2.5};
+  auto A = ssi::makeCylinderAdapter(cy, dcy);
+  auto B = ssi::makeConeAdapter(co, dco);
+  ssi::SeedOptions sopt; sopt.initialGridU = 8; sopt.initialGridV = 8; sopt.minPatchFrac = 1.0 / 48.0;
+
+  auto tr = ssi::trace_intersection(A, B, sopt);
+  CC_CHECK(tr.curveCount() == 1);
+  CC_CHECK(tr.tracedBranches == 1);
+  CC_CHECK(tr.nearTangentGaps == 0);
+  if (tr.curveCount() != 1) return;
+  const ssi::WLine& w = tr.lines[0];
+  CC_CHECK(!w.isClosed());  // exits the finite patch boundary
+  checkAllNodesOnSurfaces(cc_ok_, w, [&](const Point3& p) { return distToCylinder(cy, p); },
+                          [&](const Point3& p) { return distToCone(co, p); }, 1e-9);
+}
+
+// OFF-AXIS sphere∩cyl (TWICE-PIERCING) — a thin cylinder offset from the sphere centre pierces
+// the sphere on BOTH sides → TWO disjoint closed loops. At practical seed densities the coarse
+// subdivision merges the two loops into ONE topological cluster (one representative seed) so the
+// FIXED-resolution trace finds only ONE loop (the M1b decline). The M1c SEEDING-RECALL BUMP —
+// completenessCritic + criticTargetedReseed — re-seeds the uncovered param cells and recovers the
+// SECOND loop, so BOTH are traced. Default-off flags → no other case changes.
+CC_TEST(march_sphere_cyl_twice_piercing_two_loops) {
+  nmath::Sphere sp{frameZ(), 1.0};
+  nmath::Cylinder cy{axFromZ({0.55, 0, 0}, unitVec(Vec3{0.05, 0, 1})), 0.3};
+  ssi::ParamBox ds{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
+  ssi::ParamBox dcy{0.0, 2.0 * kPi, -2.0, 2.0};
+  auto A = ssi::makeSphereAdapter(sp, ds);
+  auto B = ssi::makeCylinderAdapter(cy, dcy);
+
+  // FIXED-resolution baseline: the coarse grid merges the two loops → only ONE traced.
+  ssi::SeedOptions base; base.initialGridU = 6; base.initialGridV = 6; base.minPatchFrac = 1.0 / 32.0;
+  auto trBase = ssi::trace_intersection(A, B, base);
+  CC_CHECK(trBase.closedCurves == 1);  // the honest recall miss the bump fixes
+
+  // M1c SEEDING-RECALL BUMP: recover the second loop with the targeted critic re-seed.
+  ssi::SeedOptions sopt = base;
+  sopt.completenessCritic = true;
+  sopt.criticTargetedReseed = true;
+  sopt.criticRefineFactor = 0.6;
+  ssi::MarchOptions mopt; mopt.maxDeflection = A.modelScale * 2.5e-4;
+  auto tr = ssi::trace_intersection(A, B, sopt, mopt);
+  CC_CHECK(tr.curveCount() == 2);
+  CC_CHECK(tr.closedCurves == 2);
+  CC_CHECK(tr.nearTangentGaps == 0);
+  CC_CHECK(tr.criticRecoveredLoops >= 1);
+  for (const ssi::WLine& w : tr.lines) {
+    CC_CHECK(w.isClosed());
+    checkAllNodesOnSurfaces(cc_ok_, w, [&](const Point3& p) { return distToSphere(sp, p); },
+                            [&](const Point3& p) { return distToCylinder(cy, p); }, 1e-9);
+  }
+}
+
 int main() { return cctest::run_all(); }

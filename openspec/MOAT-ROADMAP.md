@@ -162,6 +162,37 @@ resolution. The curve *pipeline* exists; this is the *robustness* on adversarial
     practical seed densities (off-axis sphere∩cyl needs 16×16 to catch both). The next slice is
     **domain-clipped oracle surfaces** (`Geom_RectangularTrimmedSurface` to the native patch bounds)
     + a **seeding-recall** bump, which would promote the declined tail to verified.
+- **M1c off-axis quadric TAIL PROMOTED to verified — the M1b-declined tail is now green (change
+  `moat-m1c-ssi-tail`).** The two named fixes landed:
+  1. **Domain-clipped oracle** (harness-only): the sim parity gate wraps each infinite OCCT quadric
+     in a `Geom_RectangularTrimmedSurface` trimmed to the native adapter's finite `ParamBox`
+     (`clipOracle`), so `GeomAPI_IntSS` returns the SAME finite locus the native trace covers — an
+     apples-to-apples oracle. `src/native` untouched by this fix.
+  2. **Targeted seeding-recall bump** (`src/native/ssi/`, additive, default-off):
+     `SeedOptions::criticTargetedReseed` (+ `criticMaxCells`) makes the S4-f completeness critic
+     re-seed ONLY the uncovered param cells (each uncovered A-cell as a restricted sub-domain vs B's
+     full domain), recovering the SECOND loop of a twice-piercing pose that the coarse grid merges
+     into one topological cluster. ROOT CAUSE was measured: at grids 4/6/8 the two disjoint loops
+     merge into ONE union-find cluster (`numClusters==1`, `refinedAccepted==1`) → one representative
+     seed; the LM refine converges to BOTH loops from coarse starts (so not a refine miss) and the
+     candidates exist (so not a subdivision miss). A seeder-only 3D-proximity clustering guard was
+     tried and REJECTED (the coarse leaf boxes 3D-bridge the loops, and a fixed radius over-splits a
+     single large loop) — the correct disambiguator needs the traced curve, which the critic's
+     locus dedup provides. Both flags DEFAULT OFF → the fixed seeder and the shipped whole-domain
+     critic are byte-identical for every prior case.
+  - **Promoted families (both gates green):** general **cone∩cone** (offset apexes + tilted axes →
+    1 closed loop), off-axis **cyl∩cone** (1 open BoundaryExit arc), off-axis **sphere∩cyl
+    twice-piercing** (2 disjoint closed loops; the recall bump recovers the second).
+  - Host **Gate A 19/19** (self-consistency: every node on both surfaces ≤ 1e-9; the twice-piercing
+    case asserts baseline=1 loop → bump=2 closed loops, `criticRecoveredLoops≥1`). Sim **Gate B
+    17/0** vs the domain-clipped `GeomAPI_IntSS`: cone cone general 1/1 closed 1/1 onCurve 3.9e-6
+    onSurf 3.4e-6 lenDelta 3.3e-6; cyl cone off-axis 1/1 closed 0/0 onCurve 4.7e-7 onSurf 4.3e-7
+    lenDelta 7.9e-5; sphere cyl twice 2/2 closed 2/2 onCurve 7.6e-7 onSurf 4.4e-7 lenDelta 7.0e-6;
+    all 14 prior cases frozen. S1 `NotAnalytic` assertions unchanged; no tolerance weakened.
+  - **Next blocker (sharpened):** the remaining SSI moat core is S4-c general near-tangent breadth
+    (grazing crossings where the transversality sine dips below the crossable band) and
+    coincident/overlapping FREEFORM surfaces — both still defer to OCCT. The quadric-pair breadth is
+    now verified end-to-end; the freeform near-tangent tail is the hard slice.
 
 ### M2 — General freeform booleans · ~2–4 py · needs M0 + M1
 Lift `recogniseCurvedSolid` to accept **freeform (B-spline/NURBS) operands** (it rejects them

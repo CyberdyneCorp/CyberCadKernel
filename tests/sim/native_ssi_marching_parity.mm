@@ -101,6 +101,7 @@
 #include <Geom_SphericalSurface.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <Geom_BezierSurface.hxx>
+#include <Geom_RectangularTrimmedSurface.hxx>
 #include <Geom_Curve.hxx>
 #include <GeomAPI_IntSS.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
@@ -135,6 +136,21 @@ gp_Ax3 toOcctAx3(const Ax3& f) {
                 gp_Dir(f.x.x(), f.x.y(), f.x.z()));
 }
 gp_Pnt toOcctPnt(const Point3& p) { return gp_Pnt(p.x, p.y, p.z); }
+
+// ── M1c DOMAIN-CLIPPED ORACLE ─────────────────────────────────────────────────────
+// An OCCT Geom_Cylindrical/Conical/SphericalSurface is INFINITE (unbounded height / both
+// nappes / the full latitude band); the native adapters are FINITE patches over a ParamBox.
+// When an unbounded quadric pierces the other operand more than once along its infinite extent
+// GeomAPI_IntSS returns the full multi-loop INFINITE locus — an oracle the finite native trace
+// legitimately cannot match. Wrapping the oracle surface in a Geom_RectangularTrimmedSurface
+// trimmed to the SAME [u0,u1]×[v0,v1] the native adapter uses makes GeomAPI_IntSS produce the
+// SAME finite locus the native trace covers — an apples-to-apples oracle. This is a TEST-HARNESS
+// fix only; it does not touch src/native and never widens a tolerance. The native adapters and
+// the OCCT surfaces share the (u=angle, v=height/latitude) parameterisation, so the box maps 1:1.
+Handle(Geom_Surface) clipOracle(const Handle(Geom_Surface)& s, const ssi::ParamBox& box) {
+  return new Geom_RectangularTrimmedSurface(s, box.u0, box.u1, box.v0, box.v1, Standard_True,
+                                            Standard_True);
+}
 
 double distToOcctSurface(const Handle(Geom_Surface)& s, const Point3& p) {
   GeomAPI_ProjectPointOnSurf proj(toOcctPnt(p), s);
@@ -632,6 +648,81 @@ void pairSphereConeOffAxis() {
   ssi::SeedOptions sopt; sopt.initialGridU = 8; sopt.initialGridV = 8; sopt.minPatchFrac = 1.0 / 48.0;
   ssi::MarchOptions mopt; mopt.maxDeflection = A.modelScale * 2.5e-4;  // dense fit nodes
   reportPair("sphere cone off-axis", A, B, sa, sb, /*expectTransversal=*/1,
+             1e-4, 1e-4, 1e-2, 3e-2, sopt, mopt);
+}
+
+// ── M1c BREADTH: the M1b-declined tail promoted to verified via the domain-clipped oracle ──
+// M1b honestly declined general cone∩cone, off-axis cyl∩cone, and off-axis sphere∩cyl because
+// the INFINITE OCCT oracle surfaces returned a multi-loop locus the FINITE native patch could
+// not match. M1c wraps each oracle surface in a Geom_RectangularTrimmedSurface trimmed to the
+// native patch's ParamBox (clipOracle) so GeomAPI_IntSS produces the SAME finite locus the native
+// trace covers. The twice-piercing sphere∩cyl additionally uses the M1c SEEDING-RECALL BUMP
+// (completenessCritic + criticTargetedReseed) to seed the SECOND loop. Poses are shared with the
+// host cases (test_native_ssi_marching.cpp) so the two gates agree.
+
+// GENERAL cone∩cone — two finite cones with offset apexes + tilted axes → ONE closed loop inside
+// both finite patches. Verified against a domain-clipped oracle (both cones trimmed to v∈[0,2.5]).
+void pairConeConeGeneral() {
+  const Ax3 f1 = frameZ({0, 0, -1.0});
+  const Ax3 f2 = axFromZ({0.35, 0, 0.9}, Vec3{0.05, 0, -1});
+  nm::Cone c1{f1, 0.05, 0.4};
+  nm::Cone c2{f2, 0.05, 0.4};
+  ssi::ParamBox d1{0.0, 2.0 * kPi, 0.0, 2.5};
+  ssi::ParamBox d2{0.0, 2.0 * kPi, 0.0, 2.5};
+  auto A = ssi::makeConeAdapter(c1, d1);
+  auto B = ssi::makeConeAdapter(c2, d2);
+  Handle(Geom_Surface) sa = clipOracle(new Geom_ConicalSurface(toOcctAx3(f1), 0.4, 0.05), d1);
+  Handle(Geom_Surface) sb = clipOracle(new Geom_ConicalSurface(toOcctAx3(f2), 0.4, 0.05), d2);
+  ssi::SeedOptions sopt; sopt.initialGridU = 8; sopt.initialGridV = 8; sopt.minPatchFrac = 1.0 / 48.0;
+  ssi::MarchOptions mopt; mopt.maxDeflection = A.modelScale * 2.5e-4;
+  reportPair("cone cone general", A, B, sa, sb, /*expectTransversal=*/1,
+             1e-4, 1e-4, 1e-2, 3e-2, sopt, mopt);
+}
+
+// OFF-AXIS cyl∩cone — the intersection RUNS OFF the finite patch boundaries → ONE open
+// (BoundaryExit) arc. The domain-clipped oracle (both operands trimmed to their native boxes)
+// returns the matching finite arc; reportPair asserts the SAME single non-closed component.
+void pairCylConeOffAxis() {
+  const Ax3 fcy = frameZ();
+  const Ax3 fco = axFromZ({0.2, 0, -0.3}, Vec3{0.12, 0, 1});
+  nm::Cylinder cy{fcy, 0.6};
+  nm::Cone co{fco, 0.02, 0.45};
+  ssi::ParamBox dcy{0.0, 2.0 * kPi, -1.2, 1.2};
+  ssi::ParamBox dco{0.0, 2.0 * kPi, 0.0, 2.5};
+  auto A = ssi::makeCylinderAdapter(cy, dcy);
+  auto B = ssi::makeConeAdapter(co, dco);
+  Handle(Geom_Surface) sa = clipOracle(new Geom_CylindricalSurface(toOcctAx3(fcy), 0.6), dcy);
+  Handle(Geom_Surface) sb = clipOracle(new Geom_ConicalSurface(toOcctAx3(fco), 0.45, 0.02), dco);
+  ssi::SeedOptions sopt; sopt.initialGridU = 8; sopt.initialGridV = 8; sopt.minPatchFrac = 1.0 / 48.0;
+  ssi::MarchOptions mopt; mopt.maxDeflection = A.modelScale * 2.5e-4;
+  reportPair("cyl cone off-axis", A, B, sa, sb, /*expectTransversal=*/1,
+             1e-4, 1e-4, 1e-2, 3e-2, sopt, mopt);
+}
+
+// OFF-AXIS sphere∩cyl (TWICE-PIERCING) — a thin cylinder offset from the sphere centre pierces the
+// FINITE sphere on BOTH sides → TWO disjoint closed loops. The coarse fixed grid merges the two
+// loops into ONE topological cluster (one representative seed) → the fixed-resolution trace finds
+// only ONE loop (the M1b recall miss). The M1c SEEDING-RECALL BUMP (completenessCritic +
+// criticTargetedReseed) re-seeds the uncovered param cells and recovers the SECOND loop. Verified
+// against a domain-clipped oracle (the cylinder trimmed to its finite height) that returns exactly
+// the two finite loops. reportPair asserts branches=2, closed=2, both on the OCCT loci + surfaces.
+void pairSphereCylTwicePiercing() {
+  const Ax3 fs = frameZ();
+  const Ax3 fc = axFromZ({0.55, 0, 0}, Vec3{0.05, 0, 1});
+  nm::Sphere sp{fs, 1.0};
+  nm::Cylinder cy{fc, 0.3};
+  ssi::ParamBox ds{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
+  ssi::ParamBox dcy{0.0, 2.0 * kPi, -2.0, 2.0};
+  auto A = ssi::makeSphereAdapter(sp, ds);
+  auto B = ssi::makeCylinderAdapter(cy, dcy);
+  Handle(Geom_Surface) sa = clipOracle(new Geom_SphericalSurface(toOcctAx3(fs), 1.0), ds);
+  Handle(Geom_Surface) sb = clipOracle(new Geom_CylindricalSurface(toOcctAx3(fc), 0.3), dcy);
+  ssi::SeedOptions sopt; sopt.initialGridU = 6; sopt.initialGridV = 6; sopt.minPatchFrac = 1.0 / 32.0;
+  sopt.completenessCritic = true;         // M1c seeding-recall bump
+  sopt.criticTargetedReseed = true;       // targeted re-seed of the uncovered second-loop cells
+  sopt.criticRefineFactor = 0.6;
+  ssi::MarchOptions mopt; mopt.maxDeflection = A.modelScale * 2.5e-4;
+  reportPair("sphere cyl twice", A, B, sa, sb, /*expectTransversal=*/2,
              1e-4, 1e-4, 1e-2, 3e-2, sopt, mopt);
 }
 
@@ -1153,6 +1244,9 @@ int main() {
   pairSkewCylinders();
   pairSkewCylindersGeneral();    // M1b: general skew cyl∩cyl (gap+oblique) single quartic loop vs OCCT
   pairSphereConeOffAxis();       // M1b: off-axis sphere∩cone (sphere-bounded) vs OCCT
+  pairConeConeGeneral();         // M1c: general cone∩cone (clipped oracle) single loop vs OCCT
+  pairCylConeOffAxis();          // M1c: off-axis cyl∩cone (clipped oracle) open arc vs OCCT
+  pairSphereCylTwicePiercing();  // M1c: off-axis sphere∩cyl twice-piercing (clipped oracle + recall bump) 2 loops vs OCCT
   pairCrossingSpheres();
   pairSphereBezier();
   pairNearTangentCrossedS4c();   // S4-c: graze marched through, full curve vs OCCT

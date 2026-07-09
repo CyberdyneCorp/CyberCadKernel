@@ -90,6 +90,19 @@ struct SeedOptions {
   int criticDryRounds = 2;         ///< K: stop after this many CONSECUTIVE rounds finding NO new branch
   int criticMaxRounds = 6;         ///< hard cap on re-seed rounds (cost bound)
   int criticMaxCandidates = 4096;  ///< hard cap on total re-seed candidate regions across all rounds (cost bound)
+
+  // ── M1c SEEDING-RECALL BUMP (default OFF → the shipped whole-domain critic re-seed,
+  // byte-identical). When on (and completenessCritic is also on) the critic re-seeds ONLY the
+  // param cells NO traced curve covers — each uncovered A-cell is seeded as a RESTRICTED
+  // sub-domain (A clamped to the cell) against B's full domain, and the recovered seeds are
+  // accumulated. This is the residual/coverage-guided TARGETED re-seed: it reliably recovers the
+  // SECOND loop of a twice-piercing off-axis quadric pose (which the coarse fixed grid merges into
+  // one topological cluster → one representative seed) at practical grid densities, and is cheaper
+  // than re-scanning the whole domain because it never re-subdivides the already-covered region.
+  // It NEVER fabricates a seed (each cell's candidate must still land on BOTH surfaces) and NEVER
+  // widens a tolerance; it only changes WHERE the finer re-seed looks. Bounded by criticMaxCells. ──
+  bool criticTargetedReseed = false; ///< M1c: critic re-seeds only the uncovered A-cells (needs completenessCritic)
+  int criticMaxCells = 64;           ///< M1c: hard cap on uncovered cells re-seeded per round (cost bound)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

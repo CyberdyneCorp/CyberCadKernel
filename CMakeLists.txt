@@ -477,6 +477,18 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_freeform_freeform_cut)
         set(test_native_freeform_freeform_cut_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_freeform_freeform_cut.cpp")
+        # MOAT M2b freeform↔analytic DISJOINT (MULTI-LUMP) CUT — host GATE (a), the
+        # OCCT-free proof that freeformSlabDisjointCut composes the landed inter-solid-seam
+        # weld into the FIRST native freeform boolean whose result is TWO disconnected
+        # bodies (a Compound of two watertight Solids — a bowl-lidded prism parted by a
+        # central slab), and that its mandatory TWO-SIDED self-verify HONEST-DECLINES the
+        # byte-frozen keep-face machinery's off-centre volume over-estimate (never a
+        # wrong/leaky solid). The composition traces the real M1 seam per slab face, so this
+        # host suite builds only under CYBERCAD_HAS_NUMSCI. Additive header-only verb
+        # (slab_disjoint_cut.h); no lib change, no cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_slab_disjoint_cut)
+        set(test_native_slab_disjoint_cut_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_slab_disjoint_cut.cpp")
         # MOAT (Class-B) native cc_thread_apply — host GATE (a), the OCCT-free proof that
         # the recognise[cylinder] → facet → planar-BSP boolean_solid → four-part self-verify
         # (watertight + Euler χ=2 + consistently-oriented + two-sided closed-form-volume band)

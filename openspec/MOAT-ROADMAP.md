@@ -340,6 +340,32 @@ whole SSI arc was built for.
   sharpened next blocker is **M7b**: an ORIENTATION-COHERENT thread builder (fix `build_thread`
   `sd=6`) + robust DENSE-SOUP CSG with T-junction repair. No tessellator / `construct/thread.h`
   change; `cc_*` ABI unchanged; the self-verify never returns a leaky/misoriented/wrong solid.
+- **Status — M2b DISJOINT (multi-lump) CUT mechanism LANDED (`moat-m2b-boolean-breadth`),
+  off-centre volume HONEST-DECLINED.** The additive OCCT-free verb `freeformSlabDisjointCut`
+  (`src/native/boolean/slab_disjoint_cut.h`) parts a recognised freeform-walled solid `A`
+  with a finite all-planar SLAB `B` (two opposite faces slicing fully across `A`'s wall) into
+  TWO disconnected bodies — the FIRST native freeform boolean whose RESULT is a disjoint
+  multi-lump solid (the outcome OCCT returns as a two-solid compound; the landed
+  planar/curved verbs treat it as a degenerate NULL, `native_boolean.h`: "a cut that removes
+  everything"). It composes recognise[B1] → opposite-parallel slab-pair-find → per-lump weld
+  through the LANDED off-centre-reliable inter-solid-seam machinery (`buildInterSolidSeam` +
+  `hscdetail::planarFaceFromLoop`, the SAME weld the two-operand FUSE uses) → disjoint-check →
+  TWO-SIDED self-verify. MEASURED (both gates green): the DISJOINT MECHANISM welds a
+  WATERTIGHT `Compound` of EXACTLY TWO `Solid`s matching OCCT `BRepAlgoAPI_Cut`'s two-body
+  topology, while the two-sided self-verify HONEST-DECLINES `VolumeInconsistent` because the
+  byte-frozen keep-face machinery over-estimates the OFF-CENTRE cross-section volume
+  (measured **+29.2%** over OCCT: native 0.177 vs OCCT/closed-form 0.137 at the ±0.10 slab;
+  three independent oracles — closed-form integrator, dense grid, and the two-operand FUSE
+  union — agree the true value) → NULL → OCCT owns the correct-volume result. The FUSE
+  candidate was diagnosed NOT tractable (the ff↔ff union needs a curved-annulus↔curved-
+  annulus closed-seam weld that does not close, watertight=0 in every cap-flip — the same
+  tessellator-weld blocker the ff↔ff CUT declines on). The sharpened next blocker is an
+  OFF-CENTRE-ACCURATE freeform keep-face/cap synthesis (a `boolean/` enabler upgrade,
+  independent of the tessellator; the frozen `hscdetail` keep-face is volume-exact only for a
+  cut through the operand's symmetric centre — measured relerr 0.5% at x=0, 7% at ±0.03, 29%
+  at ±0.10), which would turn the disjoint CUT from a decline into a WELD and also fix a
+  single off-centre `freeformHalfSpaceCut`. No tessellator change (`git diff
+  src/native/tessellate` empty); `cc_*` ABI unchanged; 0 OCCT includes under `src/native/**`.
 
 ### M3 — General freeform blends + wrap-emboss · ~2–4 py · needs M2
 The curved-curved blends and freeform-base features that sit on booleans: cyl↔cyl-canal /

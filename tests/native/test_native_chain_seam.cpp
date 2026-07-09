@@ -16,8 +16,11 @@
 // A non-chain box (the two-face corner box) and a non-freeform operand DECLINE.
 // Requires CYBERCAD_HAS_NUMSCI (the arcs are the real S3 trace).
 //
+#include "native/boolean/face_split.h"
 #include "native/boolean/freeform_operand.h"
+#include "native/boolean/multi_face_strip_weld.h"
 #include "native/boolean/seam_graph_chain.h"
+#include "native/boolean/strip_split.h"
 #include "native/tessellate/surface_eval.h"
 
 #include "native/chain_seam_fixture.h"
@@ -113,6 +116,115 @@ CC_TEST(chain_seam_strip_oracle_partition_identity) {
   CC_CHECK(vCommon < 0.6 * vFull);          // but not the whole solid (survivor remains)
   CC_CHECK(std::fabs((vCommon + vCut) - vFull) <= 1e-12);   // partition identity
   CC_CHECK(std::fabs(csx::volUnion() - (vFull + csx::kBoxVolume - vCommon)) <= 1e-12);
+}
+
+// ── The 2-junction WALL SPLIT lands where byte-frozen B2 declines on the chain seam ──
+CC_TEST(strip_split_lands_where_byte_frozen_b2_declines_two_junction) {
+  const auto A = ffx::buildOperand();
+  const auto B = csx::edgeBox();
+  const auto op = bo::recogniseFreeformSolid(A);
+  CC_CHECK(op.has_value());
+  if (!op) return;
+  const auto g = bo::buildChainSeamGraph(*op, B);
+  CC_CHECK(g.has_value());
+  if (!g) return;
+  const bo::OperandFace& wall = op->faces[op->freeform.front()];
+
+  // BASELINE: byte-frozen B2 splitFace finds the two boundary crossings (crossings==2)
+  // but DECLINES on the bent chain seam — both crossings land on ONE boundary edge (the
+  // strip pokes through the top edge), so B2's whole-vertex boundary-arc walk cannot
+  // separate the strip from the survivor (its two sub-loops collapse to the same strip
+  // area, a TilingGap). B2 stays byte-frozen; the strip verb resolves this by
+  // construction (a full-ring wrap + J1/J2 as exact vertices).
+  const bo::SplitResult b2 = bo::splitFace(wall.face, g->chainSeam);
+  CC_CHECK(b2.crossings == 2);
+  CC_CHECK(!b2.ok());
+  CC_CHECK(b2.decline == bo::SplitDecline::TilingGap);
+
+  // THE ADVANCE: the two-junction split introduces J1, J2 as EXACT shared valence-3
+  // vertices (three seam edges) and SUCCEEDS at the SAME strict rebuild tolerance.
+  const bo::StripSplitResult ss =
+      bo::splitFaceStrip(wall.face, g->chainSeam, g->junctionUV[0], g->junction3d[0],
+                         g->junctionUV[1], g->junction3d[1]);
+  CC_CHECK(ss.ok());
+  CC_CHECK(ss.decline == bo::StripSplitDecline::Ok);
+  CC_CHECK(ss.crossings == 2);
+  if (!ss.ok()) return;
+  const auto& s = *ss.split;
+
+  const double parea = s.parentArea > 1.0 ? s.parentArea : 1.0;
+  CC_CHECK(ss.tilingGap <= 1e-9 * parea);
+  CC_CHECK(s.rebuildResidual <= 1e-6 * parea);   // B2's own rebuildTolFrac, satisfied EXACTLY
+  CC_CHECK(s.rebuildResidual <= 1e-12);          // in fact machine-precision (straight-in-UV parts)
+  CC_CHECK(std::fabs(s.parentArea - (s.areaStrip + s.areaSurvivor)) <= 1e-12);
+
+  // The strip sub-face UV area equals the closed-form Q∩{u0≤u≤u1,v≥v0} projection.
+  CC_CHECK(std::fabs(s.areaStrip - csx::uvStripArea()) <= 1e-12);
+  CC_CHECK(s.areaStrip > 0.0 && s.areaSurvivor > s.areaStrip);
+
+  // J1, J2 are EXACT shared interior vertices in the seam chord.
+  CC_CHECK(s.j1Idx > 0 && s.j1Idx < s.j2Idx && s.j2Idx + 1 < static_cast<int>(s.seam.size()));
+  CC_CHECK(s.seam[s.j1Idx].u == g->junctionUV[0].u && s.seam[s.j1Idx].v == g->junctionUV[0].v);
+  CC_CHECK(s.seam[s.j2Idx].u == g->junctionUV[1].u && s.seam[s.j2Idx].v == g->junctionUV[1].v);
+}
+
+// ── The 2-junction STRIP WELD lands watertight CUT/COMMON at the closed-form volumes ──
+CC_TEST(strip_weld_lands_watertight_cut_common_at_closed_form_volumes) {
+  const auto A = ffx::buildOperand();
+  const auto B = csx::edgeBox();
+  const auto op = bo::recogniseFreeformSolid(A);
+  CC_CHECK(op.has_value());
+  if (!op) return;
+  const auto g = bo::buildChainSeamGraph(*op, B);
+  CC_CHECK(g.has_value());
+  if (!g) return;
+  const bo::OperandFace& wall = op->faces[op->freeform.front()];
+  const bo::StripSplitResult ss =
+      bo::splitFaceStrip(wall.face, g->chainSeam, g->junctionUV[0], g->junction3d[0],
+                         g->junctionUV[1], g->junction3d[1]);
+  CC_CHECK(ss.ok());
+  if (!ss.ok()) return;
+
+  struct Case { bo::StripWeldOp op; double oracle; const char* name; };
+  const Case cases[2] = {{bo::StripWeldOp::Cut, csx::volCut(), "CUT"},
+                         {bo::StripWeldOp::Common, csx::volCommon(), "COMMON"}};
+  for (const Case& c : cases) {
+    bo::StripWeldReport rep;
+    const auto r = bo::multiFaceStripClip(*op, *g, *ss.split, c.op, 0.01, &rep);
+    // A real watertight result solid (never NULL for this reachable strip pose).
+    CC_CHECK(!r.isNull());
+    CC_CHECK(rep.decline == bo::StripWeldDecline::Ok);
+    CC_CHECK(rep.watertight);
+    CC_CHECK(rep.faceCount >= 5);
+    // Enclosed volume matches the CLOSED-FORM strip oracle to the curved-tessellation band
+    // (deflection 0.01); no tolerance weakened — the mesh converges from above.
+    CC_CHECK(std::fabs(rep.volume - c.oracle) <= 2e-2 * c.oracle);
+  }
+}
+
+// ── The strip-weld CUT volume converges monotonically to the closed-form oracle ──
+CC_TEST(strip_weld_cut_volume_converges_across_deflection) {
+  const auto A = ffx::buildOperand();
+  const auto B = csx::edgeBox();
+  const auto op = bo::recogniseFreeformSolid(A);
+  if (!op) { CC_CHECK(false); return; }
+  const auto g = bo::buildChainSeamGraph(*op, B);
+  if (!g) { CC_CHECK(false); return; }
+  const bo::OperandFace& wall = op->faces[op->freeform.front()];
+  const bo::StripSplitResult ss =
+      bo::splitFaceStrip(wall.face, g->chainSeam, g->junctionUV[0], g->junction3d[0],
+                         g->junctionUV[1], g->junction3d[1]);
+  if (!ss.ok()) { CC_CHECK(false); return; }
+  double prevErr = 1e30;
+  for (double d : {0.02, 0.01, 0.005}) {
+    bo::StripWeldReport rep;
+    const auto r = bo::multiFaceStripClip(*op, *g, *ss.split, bo::StripWeldOp::Cut, d, &rep);
+    CC_CHECK(!r.isNull() && rep.watertight);
+    const double err = std::fabs(rep.volume - csx::volCut());
+    CC_CHECK(err <= prevErr + 1e-9);   // monotone-converging (curved tessellation)
+    prevErr = err;
+  }
+  CC_CHECK(prevErr <= 1e-2 * csx::volCut());
 }
 
 // ── A two-face corner box is NOT the chain pose (only 2 cutting faces) → decline ──

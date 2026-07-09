@@ -75,6 +75,41 @@ inline double volCommon() {
 inline double volCut() { return volFull() - volCommon(); }
 inline double volUnion() { return kBoxVolume + volCut(); }
 
+// ── closed-form UV strip-area oracle (the removed strip's wall projection) ────────
+// The bowl wall is parameterised over UV = [0,1]², trimmed to Q(uv). The removed strip
+// `A ∩ {kX0 ≤ x ≤ kX1, y ≥ kY0}` maps to `Q(uv) ∩ {u0 ≤ u ≤ u1, v ≥ v0}` with
+// u = x + ½, v = y + ½, so u0 = kX0+½, u1 = kX1+½, v0 = kY0+½. Its UV-domain area is
+// the shoelace of that clipped polygon — the ground truth for the strip sub-face UV
+// area. Mesh-free, OCCT-free.
+inline double uvStripArea() {
+  struct Q2 { double u, v; };
+  std::vector<Q2> poly;
+  for (const auto& c : ffx::fx::quadUV()) poly.push_back({c.x, c.y});
+  auto clip = [](std::vector<Q2> in, int axis, double val, bool keepGreater) {
+    std::vector<Q2> out;
+    const int n = static_cast<int>(in.size());
+    auto coord = [&](const Q2& q) { return axis == 0 ? q.u : q.v; };
+    for (int i = 0; i < n; ++i) {
+      const Q2 a = in[i], b = in[(i + 1) % n];
+      const bool ai = keepGreater ? coord(a) >= val : coord(a) <= val;
+      const bool bi = keepGreater ? coord(b) >= val : coord(b) <= val;
+      if (ai) out.push_back(a);
+      if (ai != bi) {
+        const double ca = coord(a), cb = coord(b), t = (val - ca) / (cb - ca);
+        out.push_back({a.u + t * (b.u - a.u), a.v + t * (b.v - a.v)});
+      }
+    }
+    return out;
+  };
+  std::vector<Q2> c = clip(poly, 0, kX0 + 0.5, true);    // u ≥ kX0+½
+  c = clip(c, 0, kX1 + 0.5, false);                       // u ≤ kX1+½
+  c = clip(c, 1, kY0 + 0.5, true);                        // v ≥ kY0+½
+  double A = 0.0;
+  const int n = static_cast<int>(c.size());
+  for (int i = 0, j = n - 1; i < n; j = i++) A += c[j].u * c[i].v - c[i].u * c[j].v;
+  return std::fabs(0.5 * A);
+}
+
 }  // namespace chain_seam_fixture
 
 #endif  // CYBERCAD_TESTS_NATIVE_CHAIN_SEAM_FIXTURE_H

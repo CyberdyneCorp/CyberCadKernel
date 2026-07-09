@@ -743,6 +743,161 @@ CC_TEST(concave_fillet_scope_defers) {
   CC_CHECK(blend::concave_fillet_edge(capped, capids, 1, 1.5, 0.01).isNull());
 }
 
+// ── cone-frustum cap fillet (torus band on a CONE↔coaxial-cap circular rim) ───────--
+
+namespace {
+// A capped cone frustum: profile (0,0)→(Rb,0)→(Rt,H)→(0,H) revolved a full turn about
+// the in-plane axis (→ world +Y axis). Bottom cap radius Rb at h=0, top cap radius Rt at
+// h=H, one Cone lateral wall (angular sectors). Rb≠Rt ⇒ a true Cone face.
+topo::Shape cappedFrustum(double Rb, double Rt, double H) {
+  const double prof[] = {0, 0, Rb, 0, Rt, H, 0, H};
+  return cst::build_revolution(prof, 4, cst::RevolveAxis{0, 0, 0, 1}, 2.0 * M_PI);
+}
+// Closed-form removed volume for a rolling-ball fillet r on the top rim (radius Rt) of a
+// capped frustum (Pappus of the corner-minus-arc region, revolved about the axis). Matches
+// the derivation in the header (verified numerically vs a fine solid-of-revolution).
+double frustumRemoved(double Rb, double Rt, double H, double r) {
+  const double dr = Rt - Rb, dz = H;
+  double nwr = dz, nwz = -dr;
+  const double nn = std::sqrt(nwr * nwr + nwz * nwz);
+  nwr /= nn; nwz /= nn;
+  if (nwr < 0) { nwr = -nwr; nwz = -nwz; }
+  const double c = nwz;  // nW·nC with nC=(0,1)
+  const double Cr = Rt - r * nwr / (1.0 + c);
+  const double Cz = H - r * (nwz + 1.0) / (1.0 + c);
+  const double Twr = Cr + r * nwr, Twz = Cz + r * nwz;
+  const double Tcr = Cr, Tcz = Cz + r;
+  const double angCap = M_PI / 2.0, angWall = std::atan2(nwz, nwr);
+  // Polygon (Twall, rim, Tcap, arc cap→wall); shoelace area + centroid_r; Pappus volume.
+  const int Na = 2000;
+  std::vector<double> X{Twr, Rt, Tcr}, Y{Twz, H, Tcz};
+  for (int i = 0; i < Na; ++i) {
+    const double v = angCap + (angWall - angCap) * i / (Na - 1);
+    X.push_back(Cr + r * std::cos(v));
+    Y.push_back(Cz + r * std::sin(v));
+  }
+  double A = 0, cx = 0;
+  const int n = static_cast<int>(X.size());
+  for (int i = 0; i < n; ++i) {
+    const int j = (i + 1) % n;
+    const double cr = X[i] * Y[j] - X[j] * Y[i];
+    A += cr; cx += (X[i] + X[j]) * cr;
+  }
+  A *= 0.5; cx /= (6.0 * A);
+  return 2.0 * M_PI * std::fabs(A) * cx;
+}
+double frustumSharpVolume(double Rb, double Rt, double H) {
+  return M_PI * H / 3.0 * (Rb * Rb + Rb * Rt + Rt * Rt);
+}
+}  // namespace
+
+CC_TEST(cone_fillet_narrowing_frustum_watertight_volume_reduced) {
+  // Narrowing frustum Rb=6→Rt=4 over H=10; roll a ball r=1 into the top rim → a coaxial
+  // torus band tangent to the tilted cone wall and the cap. Watertight, volume BELOW the
+  // sharp frustum by the closed-form removed volume (deflection-bounded).
+  const double Rb = 6, Rt = 4, H = 10, r = 1.0;
+  topo::Shape s = cappedFrustum(Rb, Rt, H);
+  const nmath::Vec3 axisY{0, 1, 0};
+  const double vSharp = frustumSharpVolume(Rb, Rt, H);  // exact sharp volume (closed form)
+  const int rim = findRimAtAxial(s, axisY, H, Rt);
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  topo::Shape f = blend::cone_fillet_edge(s, ids, 1, r, 0.005);
+  bool wt = false;
+  const double v = vol(f, wt);
+  CC_CHECK(!f.isNull());
+  CC_CHECK(wt);              // torus band welds watertight to the cone wall + trimmed cap
+  CC_CHECK(v < vSharp);      // a convex fillet REDUCES the volume vs the sharp frustum
+  const double expected = vSharp - frustumRemoved(Rb, Rt, H, r);
+  CC_CHECK(nearRel(v, expected, 5e-3));  // deflection-bounded facet approximation
+}
+
+CC_TEST(cone_fillet_widening_frustum_watertight_volume_reduced) {
+  // Widening frustum Rb=4→Rt=6 over H=10 (the cone wall tilts OUTWARD toward the cap, so
+  // the wall-seam minor angle is NEGATIVE). Same closed-form check.
+  const double Rb = 4, Rt = 6, H = 10, r = 1.0;
+  topo::Shape s = cappedFrustum(Rb, Rt, H);
+  const nmath::Vec3 axisY{0, 1, 0};
+  const double vSharp = frustumSharpVolume(Rb, Rt, H);
+  const int rim = findRimAtAxial(s, axisY, H, Rt);
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  topo::Shape f = blend::cone_fillet_edge(s, ids, 1, r, 0.005);
+  bool wt = false;
+  const double v = vol(f, wt);
+  CC_CHECK(!f.isNull());
+  CC_CHECK(wt);
+  CC_CHECK(v < vSharp);
+  const double expected = vSharp - frustumRemoved(Rb, Rt, H, r);
+  CC_CHECK(nearRel(v, expected, 5e-3));
+}
+
+CC_TEST(cone_fillet_g1_tangent_at_both_seams) {
+  // ANALYTIC G1 (no OCCT, no mesh): the torus band normal at each seam equals the adjacent
+  // primary-face normal. The band normal in the (radial, sAxial) cross section is
+  //   n(vAbs) = (cos vAbs, sin vAbs), vAbs ∈ [angWall, π/2].
+  //   * cap seam vAbs=π/2:   n = (0,1) → the CAP outward normal (axial). ✓
+  //   * wall seam vAbs=angWall: n = (cos angWall, sin angWall) = the cone wall outward
+  //     normal (the tangent-cut direction), matching (1,−dR/dz)/‖·‖ by construction. ✓
+  // We check the wall-seam normal equals the cone wall's (r,z) outward normal for a
+  // narrowing (dR<0) and a widening (dR>0) frustum.
+  for (const double dR : {-2.0, +2.0}) {
+    const double dz = 10.0;
+    const double wn = std::sqrt(dz * dz + dR * dR);
+    // cone wall outward (r,z) = (dz, −dR)/‖·‖ with +r; here s=+1 (cap above), so
+    // dRdz = dR/dz and the header's nW2 = (1,−dRdz)/√(1+dRdz²) = (dz,−dR)/√(dz²+dR²).
+    const double nWr = dz / wn, nWz = -dR / wn;
+    const double angWall = std::atan2(nWz, nWr);
+    // band normal at the wall seam
+    const double nbandR = std::cos(angWall), nbandZ = std::sin(angWall);
+    CC_CHECK(nearRel(nbandR, nWr, 1e-12));
+    CC_CHECK(nearRel(nbandZ, nWz, 1e-12));
+    // cap seam
+    CC_CHECK(nearRel(std::cos(M_PI / 2.0), 0.0, 1e-12));
+    CC_CHECK(nearRel(std::sin(M_PI / 2.0), 1.0, 1e-12));
+  }
+}
+
+CC_TEST(cone_fillet_scope_defers) {
+  const nmath::Vec3 axisY{0, 1, 0};
+  // A pure CYLINDER (Rb==Rt, no Cone face) is the σ=0 case owned by curved_fillet_edge;
+  // the cone builder declines it wholesale (no Cone face present).
+  topo::Shape cyl = cappedFrustum(5, 5, 10);  // Rb==Rt → a cylinder, no Cone face
+  const int crim = findRimAtAxial(cyl, axisY, 10, 5);
+  if (crim != 0) {
+    int cids[] = {crim};
+    CC_CHECK(blend::cone_fillet_edge(cyl, cids, 1, 1.0, 0.01).isNull());
+  }
+  // Ring-torus guard: a steep frustum whose ball-centre radius Rmaj < r → NULL (spindle).
+  topo::Shape steep = cappedFrustum(8, 3, 12);
+  const int srim = findRimAtAxial(steep, axisY, 12, 3);
+  CC_CHECK(srim != 0);
+  int sids[] = {srim};
+  CC_CHECK(blend::cone_fillet_edge(steep, sids, 1, 2.0, 0.01).isNull());  // Rmaj≈1.67<2
+  // Zero / negative radius → NULL.
+  topo::Shape s = cappedFrustum(6, 4, 10);
+  const int rim = findRimAtAxial(s, axisY, 10, 4);
+  int ids[] = {rim};
+  CC_CHECK(blend::cone_fillet_edge(s, ids, 1, 0.0, 0.01).isNull());
+  // More than one picked edge → NULL (single rim only).
+  int ids2[] = {rim, 1};
+  CC_CHECK(blend::cone_fillet_edge(s, ids2, 2, 1.0, 0.01).isNull());
+  // A pure planar box has no Cone face → NULL.
+  topo::Shape b = box(10, 10, 10);
+  const int le = findEdgeId(b, {0, 10, 10}, {10, 10, 10});
+  int idsb[] = {le};
+  CC_CHECK(blend::cone_fillet_edge(b, idsb, 1, 1.0, 0.01).isNull());
+  // A multi-frustum (two cones with DIFFERENT slopes → different σ) → NULL (wholesale
+  // mismatch: the second cone's σ/Rref differ, so the body is not a single frustum).
+  // Segments (6,0)→(5,5) slope −1/5 and (5,5)→(2,10) slope −3/5 are NON-collinear.
+  const double twoCone[] = {0, 0, 6, 0, 5, 5, 2, 10, 0, 10};
+  topo::Shape tc = cst::build_revolution(twoCone, 5, cst::RevolveAxis{0, 0, 0, 1}, 2.0 * M_PI);
+  const int tcrim = findRimAtAxial(tc, axisY, 10, 2);
+  CC_CHECK(tcrim != 0);
+  int tcids[] = {tcrim};
+  CC_CHECK(blend::cone_fillet_edge(tc, tcids, 1, 0.5, 0.01).isNull());
+}
+
 // ── offset_face ────────────────────────────────────────────────────────────────--
 
 CC_TEST(offset_top_face_grows_slab) {

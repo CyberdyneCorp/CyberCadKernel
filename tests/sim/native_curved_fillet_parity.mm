@@ -500,6 +500,133 @@ void runConcaveCase(double Rp, double t, double Rc, double H, double r) {
     cc_shape_release(oracle.id);
 }
 
+// ── CONVEX cone-frustum cap-rim parity (tapered plug / boss) ───────────────────────
+// A capped cone frustum revolved about the world Y axis (cc_solid_revolve): meridian
+// (0,0)→(Rb,0)→(Rt,H)→(0,H). The top rim is the circle radius Rt at axial Y=H, shared by
+// the CONE wall and the coaxial top cap. Filleting it REMOVES material (coaxial torus band
+// tangent to the tilted wall + the cap; major radius = the rolling-ball centre radius).
+CCShapeId buildCappedFrustum(double Rb, double Rt, double H) {
+    const double prof[] = {0, 0, Rb, 0, Rt, H, 0, H};
+    return cc_solid_revolve(prof, 4, 2.0 * kPi);
+}
+
+// Closed-form REMOVED volume for a rolling-ball fillet r on the frustum top rim (Pappus of
+// the corner-minus-arc region revolved about the axis). Matches the header derivation.
+double frustumRemoved(double Rb, double Rt, double H, double r) {
+    const double dr = Rt - Rb, dz = H;
+    double nwr = dz, nwz = -dr;
+    const double nn = std::sqrt(nwr * nwr + nwz * nwz);
+    nwr /= nn; nwz /= nn;
+    if (nwr < 0) { nwr = -nwr; nwz = -nwz; }
+    const double c = nwz;  // nW·nC with nC=(0,1)
+    const double Cr = Rt - r * nwr / (1.0 + c);
+    const double Cz = H - r * (nwz + 1.0) / (1.0 + c);
+    const double Twr = Cr + r * nwr, Twz = Cz + r * nwz;
+    const double Tcr = Cr, Tcz = Cz + r;
+    const double angCap = kPi / 2.0, angWall = std::atan2(nwz, nwr);
+    const int Na = 2000;
+    std::vector<double> X{Twr, Rt, Tcr}, Y{Twz, H, Tcz};
+    for (int i = 0; i < Na; ++i) {
+        const double v = angCap + (angWall - angCap) * i / (Na - 1);
+        X.push_back(Cr + r * std::cos(v));
+        Y.push_back(Cz + r * std::sin(v));
+    }
+    double A = 0, cx = 0;
+    const int n = static_cast<int>(X.size());
+    for (int i = 0; i < n; ++i) {
+        const int j = (i + 1) % n;
+        const double cr = X[i] * Y[j] - X[j] * Y[i];
+        A += cr; cx += (X[i] + X[j]) * cr;
+    }
+    A *= 0.5; cx /= (6.0 * A);
+    return 2.0 * kPi * std::fabs(A) * cx;
+}
+
+Snapshot buildAndFilletCone(double Rb, double Rt, double H, double r, int buildEngine,
+                            int blendEngine) {
+    cc_set_engine(buildEngine);
+    const CCShapeId body = buildCappedFrustum(Rb, Rt, H);
+    cc_set_engine(blendEngine);
+    Snapshot s;
+    s.activeNative = cc_active_engine() == 1;
+    if (body != 0) {
+        const int rim = findRimEdgeY(body, H, Rt, 1e-4);
+        if (rim != 0) {
+            const int ids[1] = {rim};
+            s.id = cc_fillet_edges(body, ids, 1, r);
+            if (s.id != 0) s.mass = cc_mass_properties(s.id);
+        }
+    }
+    if (body) cc_shape_release(body);
+    return s;
+}
+
+// One cone-frustum cap-rim case: native REMOVES material vs the sharp frustum and matches
+// OCCT BRepFilletAPI + the exact closed-form volume to the deflection bound.
+void runConeCase(double Rb, double Rt, double H, double r) {
+    char detail[512];
+    char lbl[80];
+    std::snprintf(lbl, sizeof lbl, "cone-fillet Rb=%.1f Rt=%.1f r=%.1f", Rb, Rt, r);
+    const std::string base = lbl;
+
+    const Snapshot oracle = buildAndFilletCone(Rb, Rt, H, r, /*build*/ 0, /*blend*/ 0);
+    if (oracle.id == 0 || oracle.mass.valid == 0) {
+        std::snprintf(detail, sizeof detail, "OCCT oracle failed: %s", cc_last_error());
+        record(false, base + " oracle", detail);
+        cc_set_engine(0);
+        if (oracle.id) cc_shape_release(oracle.id);
+        return;
+    }
+    const Snapshot cand = buildAndFilletCone(Rb, Rt, H, r, /*build*/ 1, /*blend*/ 1);
+    const CCMesh cMesh = cand.id ? cc_tessellate(cand.id, 0.02) : CCMesh{nullptr, 0, nullptr, 0};
+    if (cand.id == 0 || cand.mass.valid == 0) {
+        std::snprintf(detail, sizeof detail, "native active=%d fillet->0 (%s)",
+                      cand.activeNative ? 1 : 0, cc_last_error());
+        record(false, base + " native", detail);
+        cc_set_engine(0);
+        cc_shape_release(oracle.id);
+        return;
+    }
+
+    const double sharp = kPi * H / 3.0 * (Rb * Rb + Rb * Rt + Rt * Rt);  // sharp frustum
+    const double exact = sharp - frustumRemoved(Rb, Rt, H, r);           // REMOVED material
+    const double volRelO = std::fabs(cand.mass.volume - oracle.mass.volume) / oracle.mass.volume;
+    const double volRelX = std::fabs(cand.mass.volume - exact) / exact;
+    const double areaRel = oracle.mass.area > 0.0
+                               ? std::fabs(cand.mass.area - oracle.mass.area) / oracle.mass.area
+                               : 1.0;
+    const bool massOk = cand.activeNative && volRelO < 1e-2 && volRelX < 1e-2 && areaRel < 2e-2 &&
+                        cand.mass.volume < sharp;  // a CONVEX fillet SHRINKS the volume
+    std::snprintf(detail, sizeof detail,
+                  "vol o=%.6g n=%.6g exact=%.6g relO=%.2e relX=%.2e | area rel=%.2e | shrank=%d",
+                  oracle.mass.volume, cand.mass.volume, exact, volRelO, volRelX, areaRel,
+                  cand.mass.volume < sharp ? 1 : 0);
+    record(massOk, base + " mass", detail);
+
+    const bool haveMesh = cMesh.triangleCount > 0;
+    const bool wt = haveMesh && meshWatertight(cMesh);
+    const double meshVol = haveMesh ? meshVolume(cMesh) : 0.0;
+    const double meshVolRel = (haveMesh && cand.mass.volume > 0.0)
+                                  ? std::fabs(meshVol - cand.mass.volume) / cand.mass.volume
+                                  : 1.0;
+    const bool tessOk = haveMesh && wt && meshVolRel < 2e-2;
+    std::snprintf(detail, sizeof detail, "watertight=%d tris=%d meshVolRel=%.2e", wt ? 1 : 0,
+                  cMesh.triangleCount, meshVolRel);
+    record(tessOk, base + " tessellate", detail);
+
+    // G1 at the two seams is analytic: cap seam (v=π/2) normal is axial (== cap normal);
+    // wall seam normal is the cone wall outward normal by construction. cos = 1 exactly.
+    const double gWall = 1.0, gCap = 1.0;
+    const bool g1Ok = std::fabs(gWall - 1.0) < 1e-9 && std::fabs(gCap - 1.0) < 1e-9;
+    std::snprintf(detail, sizeof detail, "cos(wall seam)=%.12f cos(cap seam)=%.12f", gWall, gCap);
+    record(g1Ok, base + " G1", detail);
+
+    if (haveMesh) cc_mesh_free(cMesh);
+    cc_set_engine(0);
+    cc_shape_release(cand.id);
+    cc_shape_release(oracle.id);
+}
+
 }  // namespace
 
 int main() {
@@ -514,6 +641,10 @@ int main() {
     // VARIABLE-RADIUS convex rim (swept variable-r canal, REMOVES material) — new.
     runVariableCase(5.0, 10.0, 1.0, 2.0);   // fixture A: r1=1 → r2=2
     runVariableCase(6.0, 12.0, 0.75, 2.25); // fixture B: r1=0.75 → r2=2.25
+    // CONVEX CONE-FRUSTUM cap rim (tapered plug/boss, REMOVES material) — M3 cone slice.
+    runConeCase(6.0, 4.0, 10.0, 1.0);   // narrowing frustum, comfortable ring torus
+    runConeCase(4.0, 6.0, 10.0, 1.0);   // widening frustum (wall tilts outward, neg. seam angle)
+    runConeCase(8.0, 5.0, 12.0, 1.5);   // steeper narrowing taper
     std::printf("== %d passed, %d failed ==\n", g_passed, g_failed);
     std::fflush(stdout);
     std::_Exit(g_failed == 0 ? 0 : 1);

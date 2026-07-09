@@ -1270,6 +1270,14 @@ ShapeResult NativeEngine::fillet_edges(EngineShape body, const int* e, int ec, d
     if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/true))
         return track(wrapNative(std::move(result)));
 
+    // 4. CONVEX circular crease on a CONE FRUSTUM ↔ coaxial planar cap → coaxial torus
+    //    band swept the tilted minor angle from the cone-wall seam to the cap seam,
+    //    REMOVES material — verified SHRINK. (Cone faces exist only on native bodies of
+    //    revolution, so an OCCT body never reaches here; the cylinder is σ=0 above.)
+    result = nblend::cone_fillet_edge(h->shape, e, ec, r);
+    if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
+        return track(wrapNative(std::move(result)));
+
     // T2 (ELLIPTICAL-crease fillet, cylinder ↔ oblique plane) and T3 (CYL↔CYL-canal
     // fillet) are HONEST DECLINES → OCCT-fallthrough, NO native builder (no dead code):
     //   * T2 needs a native body carrying a true Cylinder face + oblique Plane face

@@ -735,6 +735,274 @@ inline std::vector<nb::Polygon> buildVariableFilletedCylinder(const RimGeom& g, 
   return polys;
 }
 
+// ── CONVEX circular-rim fillet on a CONE frustum ↔ coaxial planar cap ────────────────
+// Extends the cylinder-cap rolling-ball fillet (buildFilletedCylinder) to a TILTED wall:
+// a truncated-cone (frustum) lateral face meeting a coaxial planar cap at a circular rim.
+// The cone half-angle from the axis is σ (radius grows +tanσ per unit axial height toward
+// the cap); the cylinder is the σ=0 special case.
+//
+// A ball of radius r rolled into the CONVEX crease between the cone wall (outward normal
+// in the axial cross-section nW = radial·cosσ − axial·(s·sinσ), where s = sign toward the
+// cap) and the cap (outward nC = s·axial) sits tangent to BOTH. Its centre traces a CIRCLE
+// coaxial with the cone; the blend is therefore a coaxial TORUS (major radius = the centre
+// radius Rmaj, minor radius r) swept over the MINOR angle from the wall seam to the cap
+// seam. Working the r-z cross section with the dihedral offset (as fillet_edges does for a
+// planar dihedral): centre C = rim − r·(nW+nC)/(1+nW·nC); wall tangent Twall = C + r·nW;
+// cap tangent Tcap = C + r·nC. In (radial, axial) coordinates the centre is
+//   Cr = Rmaj (radial),  Cz = hCap − s·r (axial, r below the cap — nC is axial).
+// The swept minor angle runs from the wall-seam direction (angle of nW from +radial) to
+// the cap-seam direction (angle of nC, = s·π/2). The cylinder builder is the σ=0 case
+// (nW = radial, sweep 0→π/2). The blend REMOVES material; enclosed volume SHRINKS.
+//
+// Both seams lie EXACTLY on the neighbour surfaces by construction (G1): the wall seam is
+// the tangent circle on the cone (radius Rmaj + r·cos(angWall), height Cz + s·r·sin(angWall))
+// and the cap seam is the tangent circle on the cap (radius Rmaj, height hCap). The whole
+// capped frustum is rebuilt as a planar-facet soup sharing the SAME N angular samples across
+// every seam (far cap, cone wall up to the tangent circle, torus band, trimmed cap), so it
+// welds watertight through assembleSolid. Ring-torus guard: Rmaj ≥ r; the wall seam must
+// stay on the frustum wall (between the far end and the rim).
+struct ConeCapGeom {
+  math::Ax3 axis;        // cone frame (z = axis), radius grows toward the cap
+  double semiAngle = 0.0; // σ, signed so radius = Rref + h·tanσ along +axis
+  double Rref = 0.0;     // cone reference radius at the frame origin (axial coord 0)
+  double capH = 0.0;     // axial coord of the filleted cap plane
+  double farH = 0.0;     // axial coord of the opposite (far) cap plane
+  double s = 1.0;        // sign toward the cap along +axis
+  math::Vec3 capNormal;  // outward normal of the filleted cap (= s·axis)
+};
+
+// World frame + reference radius + half-angle of a Cone face (folds the face location).
+struct ConeInfo {
+  math::Ax3 frame;
+  double radius = 0.0;     // reference radius at frame origin (axial coord 0)
+  double semiAngle = 0.0;
+};
+inline std::optional<ConeInfo> coneInfo(const topo::Shape& solid, int faceId) {
+  const topo::ShapeMap map = topo::mapShapes(solid, topo::ShapeType::Face);
+  if (faceId < 1 || static_cast<std::size_t>(faceId) > map.size()) return std::nullopt;
+  const auto surf = topo::surfaceOf(map.shape(faceId));
+  if (!surf || surf->surface->kind != topo::FaceSurface::Kind::Cone) return std::nullopt;
+  math::Ax3 f = surf->surface->frame;
+  if (!surf->location.isIdentity()) {
+    const math::Transform& t = surf->location.transform();
+    f.origin = t.applyToPoint(f.origin);
+    f.x = math::Dir3{t.applyToVector(f.x.vec())};
+    f.y = math::Dir3{t.applyToVector(f.y.vec())};
+    f.z = math::Dir3{t.applyToVector(f.z.vec())};
+  }
+  return ConeInfo{f, surf->surface->radius, surf->surface->semiAngle};
+}
+
+// Cone radius at axial coord h (measured from the folded frame origin along +axis).
+inline double coneRadiusAtH(const ConeInfo& ci, double h) {
+  return ci.radius + h * std::tan(ci.semiAngle);
+}
+
+// Recognise the picked circular rim as the CONVEX crease between a coaxial CONE frustum
+// wall and a coaxial planar cap, validating the body WHOLESALE (a full revolve fragments
+// the wall/cap into angular sectors, so single-face matching cannot be used): every face
+// must be a coaxial Cone (same σ / reference radius) or an axis-normal Plane, at exactly
+// TWO distinct cap heights (the rim cap and the far cap), and the rim radius must match
+// the cone radius at the rim height. Returns nullopt for anything else (cylinder / stepped
+// shaft / tilted cap / mixed cones / freeform → convex-cyl builder or OCCT).
+inline std::optional<ConeCapGeom> coneCapGeom(const topo::Shape& solid, int edgeId) {
+  const auto rim = circleOf(solid, edgeId);
+  if (!rim) return std::nullopt;
+  const math::Dir3 axisDir{rim->axis};
+  if (!axisDir.valid()) return std::nullopt;
+
+  // Locate ONE coaxial Cone face whose surface passes through the rim (radius at the rim
+  // height ≈ rim radius). All cone sectors share the frame, so the first match defines it.
+  const topo::ShapeMap fmap = topo::mapShapes(solid, topo::ShapeType::Face);
+  std::optional<ConeInfo> cone;
+  const math::Vec3 az0 = axisDir.vec();
+  for (std::size_t fi = 1; fi <= fmap.size(); ++fi) {
+    const auto ci = coneInfo(solid, static_cast<int>(fi));
+    if (!ci) continue;
+    if (std::fabs(std::fabs(math::dot(ci->frame.z.vec(), az0)) - 1.0) > 1e-6) continue;
+    // rim centre on the cone axis
+    const math::Vec3 d = rim->centre - ci->frame.origin;
+    if (math::norm(d - ci->frame.z.vec() * math::dot(d, ci->frame.z.vec())) > 1e-6) continue;
+    const double hRim = math::dot(rim->centre - ci->frame.origin, ci->frame.z.vec());
+    if (std::fabs(coneRadiusAtH(*ci, hRim) - rim->radius) > 1e-5) continue;
+    cone = ci;
+    break;
+  }
+  if (!cone) return std::nullopt;
+  const math::Ax3 ax = cone->frame;
+  const math::Vec3 az = ax.z.vec();
+
+  // WHOLESALE validation: every face is a coaxial Cone (matching this σ/Rref) or an
+  // axis-normal Plane at one of exactly TWO distinct heights. Collect the plane heights.
+  std::vector<double> capHeights;
+  for (std::size_t fi = 1; fi <= fmap.size(); ++fi) {
+    const auto surf = topo::surfaceOf(fmap.shape(static_cast<int>(fi)));
+    if (!surf) return std::nullopt;
+    if (surf->surface->kind == topo::FaceSurface::Kind::Cone) {
+      const auto ci = coneInfo(solid, static_cast<int>(fi));
+      if (!ci) return std::nullopt;
+      if (std::fabs(std::fabs(math::dot(ci->frame.z.vec(), az)) - 1.0) > 1e-6) return std::nullopt;
+      if (std::fabs(ci->radius - cone->radius) > 1e-5 ||
+          std::fabs(ci->semiAngle - cone->semiAngle) > 1e-6)
+        return std::nullopt;  // a DIFFERENT cone (multi-frustum) → defer
+    } else if (surf->surface->kind == topo::FaceSurface::Kind::Plane) {
+      const auto pl = facePlane(solid, static_cast<int>(fi));
+      if (!pl) return std::nullopt;
+      if (std::fabs(std::fabs(math::dot(pl->normal, az)) - 1.0) > 1e-6) return std::nullopt;
+      const double h = (pl->w - math::dot(pl->normal, ax.origin.asVec())) /
+                       math::dot(pl->normal, az);
+      bool found = false;
+      for (double e : capHeights)
+        if (std::fabs(e - h) < 1e-6) { found = true; break; }
+      if (!found) capHeights.push_back(h);
+    } else {
+      return std::nullopt;  // cylinder / sphere / freeform → not a pure capped frustum
+    }
+  }
+  if (capHeights.size() != 2) return std::nullopt;  // exactly a rim cap + a far cap
+
+  const double hRim = math::dot(rim->centre - ax.origin, az);
+  // The cap at the rim height is the filleted cap; the other is the far end.
+  double capH = 0.0, farH = 0.0;
+  if (std::fabs(capHeights[0] - hRim) < 1e-6) { capH = capHeights[0]; farH = capHeights[1]; }
+  else if (std::fabs(capHeights[1] - hRim) < 1e-6) { capH = capHeights[1]; farH = capHeights[0]; }
+  else return std::nullopt;  // rim not on a cap plane (a shoulder step) → defer
+
+  ConeCapGeom g;
+  g.axis = ax;
+  g.semiAngle = cone->semiAngle;
+  g.Rref = cone->radius;
+  g.capH = capH;
+  g.farH = farH;
+  g.s = (capH >= farH) ? 1.0 : -1.0;
+  g.capNormal = az * g.s;
+  return g;
+}
+
+// Assemble the filleted capped cone frustum as a planar-facet soup (empty on any
+// degeneracy). Same weld idiom as buildFilletedCylinder: far cap + cone wall up to the
+// wall-tangent circle + torus band (wall seam → cap seam) + trimmed cap, all sharing N
+// angular samples. σ=0 reduces EXACTLY to the cylinder builder.
+inline std::vector<nb::Polygon> buildFilletedCone(const ConeCapGeom& g, double r, double defl) {
+  const math::Ax3& ax = g.axis;
+  const double s = g.s;
+  const double sigma = g.semiAngle;
+  const double Rrim = g.Rref + g.capH * std::tan(sigma);   // cone radius at the rim
+  if (!(Rrim > kCurveEps) || !(r > kCurveEps)) return {};
+
+  // r-z cross section (radial, axial toward +cap = s·axis). Wall outward normal nW and
+  // cap outward normal nC in (radial, sAxial) coords. The cone wall going toward the cap
+  // has (r,z)-direction (sinσ', cosσ') with σ' the half-angle; its outward normal
+  // (pointing +radial) is (cosσ', −sinσ') — but the radius may DECREASE toward the cap
+  // (σ<0), so use the signed slope dR/d(sAxial) = s·tanσ. Wall tangent (r,z)=(dR,1)/|..|,
+  // outward normal = (1,−dR)/|..| (rotate −90°, +radial).
+  const double dRdz = s * std::tan(sigma);              // dRadius per unit +cap-axial
+  const double wn = std::sqrt(1.0 + dRdz * dRdz);
+  const math::Vec3 nW2{1.0 / wn, -dRdz / wn, 0.0};       // (radial, sAxial) wall outward
+  const math::Vec3 nC2{0.0, 1.0, 0.0};                  // (radial, sAxial) cap outward
+  const double c = nW2.x * nC2.x + nW2.y * nC2.y;
+  if (c <= -1.0 + kCurveEps) return {};
+  // centre C in (radial, sAxial): rim=(Rrim,0), C = rim − r·(nW2+nC2)/(1+c).
+  const double Cr = Rrim - r * (nW2.x + nC2.x) / (1.0 + c);
+  const double Cz = 0.0 - r * (nW2.y + nC2.y) / (1.0 + c);   // sAxial (negative = below cap)
+  const double Rmaj = Cr;
+  if (!(Rmaj >= r - 1e-9)) return {};                    // ring-torus guard
+  // Wall-seam / cap-seam minor angles (measured from +radial about the tube centre).
+  const double angWall = std::atan2(nW2.y, nW2.x);       // wall tangent direction
+  const double angCap = std::atan2(nC2.y, nC2.x);        // = +π/2
+  // Tangent points (radial, sAxial): wall seam and cap seam.
+  const double TwallR = Cr + r * std::cos(angWall), TwallZ = Cz + r * std::sin(angWall);
+  const double TcapR = Cr + r * std::cos(angCap);        // = Rmaj (cap seam radius)
+
+  // Axial heights (along +cap axis from the frame origin) of the seam / cap / far end.
+  const double hCap = g.capH;
+  const double hSeamWall = hCap + s * TwallZ;             // wall tangent circle height
+  const double hFar = g.farH;
+  // Far end must be beyond the wall-tangent circle (seam stays on the frustum wall).
+  if (s * (hSeamWall - hFar) <= 1e-9) return {};
+
+  const int N = sagittaSteps(Rrim, kTwoPi, defl, 8, 256);
+  const double sweep = std::fabs(angCap - angWall);
+  const int M = sagittaSteps(r, sweep, defl, 3, 64);
+
+  // capH / farH / hSeamWall are ax.z-axial coords (dot with the cone axis); ringPoint's
+  // `h` is along ax.z, so they are used directly. The torus tube-centre sits at sAxial Cz
+  // (below the cap), i.e. ax.z coord hCap + s·Cz; a surface point adds s·r·sin(vAbs).
+  auto torusPoint = [&](double u, double vAbs) -> math::Point3 {
+    const double rad = Cr + r * std::cos(vAbs);
+    const double hax = hCap + s * (Cz + r * std::sin(vAbs));
+    return ringPoint(ax, rad, u, hax);
+  };
+  auto torusNormal = [&](double u, double vAbs) -> math::Vec3 {
+    const math::Vec3 radial = ax.x.vec() * std::cos(u) + ax.y.vec() * std::sin(u);
+    // outward (radial, sAxial) = (cos vAbs, sin vAbs); sAxial maps to s·ax.z.
+    return radial * std::cos(vAbs) + ax.z.vec() * (s * std::sin(vAbs));
+  };
+
+  std::vector<nb::Polygon> polys;
+  polys.reserve(static_cast<std::size_t>(N) * (M + 2) + 4);
+
+  auto emit = [&](std::vector<math::Point3> loop, const math::Vec3& outward) {
+    const math::Dir3 nd{outward};
+    if (!nd.valid() || loop.size() < 3) return;
+    math::Vec3 area{0, 0, 0};
+    for (std::size_t i = 0; i < loop.size(); ++i)
+      area += math::cross(loop[i].asVec(), loop[(i + 1) % loop.size()].asVec());
+    if (math::dot(area, nd.vec()) < 0.0) std::reverse(loop.begin(), loop.end());
+    polys.emplace_back(std::move(loop), nb::Plane::fromPointNormal(loop.front(), nd.vec()));
+  };
+  auto emitTri = [&](const math::Point3& a, const math::Point3& b, const math::Point3& cc,
+                     const math::Vec3& outward) {
+    math::Vec3 nrm = math::cross(b - a, cc - a);
+    if (math::dot(nrm, outward) < 0.0) nrm = nrm * -1.0;
+    emit({a, b, cc}, nrm);
+  };
+  auto emitQuad = [&](const math::Point3& p00, const math::Point3& p10, const math::Point3& p11,
+                      const math::Point3& p01, const math::Vec3& outward) {
+    emitTri(p00, p10, p11, outward);
+    emitTri(p00, p11, p01, outward);
+  };
+  auto uAt = [&](int i) { return kTwoPi * i / N; };
+
+  const double Rfar2 = g.Rref + hFar * std::tan(sigma);
+
+  // 1. Far cap: full disk radius Rfar at hFar, outward = −capNormal.
+  {
+    std::vector<math::Point3> ring;
+    for (int i = 0; i < N; ++i) ring.push_back(ringPoint(ax, Rfar2, uAt(i), hFar));
+    emit(std::move(ring), g.capNormal * -1.0);
+  }
+  // 2. Cone wall: hFar → hSeamWall, N quads (radius varies linearly along the cone).
+  for (int i = 0; i < N; ++i) {
+    const double u0 = uAt(i), u1 = uAt(i + 1), um = 0.5 * (u0 + u1);
+    const double Rlo = g.Rref + hFar * std::tan(sigma);
+    const double Rhi = TwallR;  // cone radius at hSeamWall = Cr + r·cos(angWall)
+    // outward normal of the cone wall: (radial·cosψ − sAxial·sinψ)?  use wall (r,z) normal.
+    const math::Vec3 radial = ax.x.vec() * std::cos(um) + ax.y.vec() * std::sin(um);
+    const math::Vec3 outN = radial * (1.0 / wn) + ax.z.vec() * (s * (-dRdz / wn));
+    emitQuad(ringPoint(ax, Rlo, u0, hFar), ringPoint(ax, Rlo, u1, hFar),
+             ringPoint(ax, Rhi, u1, hSeamWall), ringPoint(ax, Rhi, u0, hSeamWall), outN);
+  }
+  // 3. Torus band: v ∈ [angWall, angCap] × full turn, N·M quads.
+  for (int i = 0; i < N; ++i) {
+    const double u0 = uAt(i), u1 = uAt(i + 1), um = 0.5 * (u0 + u1);
+    for (int j = 0; j < M; ++j) {
+      const double v0 = angWall + (angCap - angWall) * j / M;
+      const double v1 = angWall + (angCap - angWall) * (j + 1) / M;
+      const double vm = 0.5 * (v0 + v1);
+      emitQuad(torusPoint(u0, v0), torusPoint(u1, v0), torusPoint(u1, v1), torusPoint(u0, v1),
+               torusNormal(um, vm));
+    }
+  }
+  // 4. Trimmed cap: disk radius TcapR (=Rmaj) at hCap, outward = capNormal.
+  {
+    std::vector<math::Point3> ring;
+    for (int i = 0; i < N; ++i) ring.push_back(ringPoint(ax, TcapR, uAt(i), hCap));
+    emit(std::move(ring), g.capNormal);
+  }
+  return polys;
+}
+
 }  // namespace detail
 
 // Fillet a single CIRCULAR crease (cylinder lateral face ↔ coaxial planar cap) of
@@ -839,6 +1107,32 @@ inline topo::Shape variable_fillet_edge(const topo::Shape& solid, const int* edg
   if (!g) return {};
 
   std::vector<nb::Polygon> polys = detail::buildVariableFilletedCylinder(*g, r1, r2, deflection);
+  if (polys.size() < 4) return {};
+  return nb::assembleSolid(polys);
+}
+
+// Fillet a single CONVEX CIRCULAR crease between a coaxial CONE-FRUSTUM lateral face and a
+// coaxial planar cap (a truncated-cone / tapered plug or boss, capped at one end) with
+// constant radius `r`. The blend is a coaxial TORUS band (major radius = rolling-ball centre
+// radius, minor r) swept the tilted minor angle from the cone-wall seam to the cap seam,
+// G1-tangent to both. Returns the filleted solid (deflection-bounded planar-facet soup,
+// watertight) or a NULL Shape (→ OCCT) when the edge is not a convex cone↔cap circular rim,
+// when the centre radius < r (ring-torus guard), when the wall seam would leave the frustum
+// wall, or on any degeneracy. The whole body must be a pure capped frustum (every face a
+// coaxial cone of the SAME σ / reference radius, or an axis-normal plane at one of exactly
+// two heights) — a cylinder (σ=0 handled by curved_fillet_edge), a stepped shaft, a
+// multi-frustum, a tilted cap, or a freeform face → NULL. Multiple picked edges → NULL.
+inline topo::Shape cone_fillet_edge(const topo::Shape& solid, const int* edgeIds, int edgeCount,
+                                    double r, double deflection = 0.01) {
+  if (edgeIds == nullptr || edgeCount != 1 || !(r > kBlendEps)) return {};
+  const topo::ShapeMap emap = topo::mapShapes(solid, topo::ShapeType::Edge);
+  if (edgeIds[0] < 1 || static_cast<std::size_t>(edgeIds[0]) > emap.size()) return {};
+  const auto ce = topo::curveOf(emap.shape(edgeIds[0]));
+  if (!ce || ce->curve->kind != topo::EdgeCurve::Kind::Circle) return {};
+
+  const auto g = detail::coneCapGeom(solid, edgeIds[0]);
+  if (!g) return {};
+  std::vector<nb::Polygon> polys = detail::buildFilletedCone(*g, r, deflection);
   if (polys.size() < 4) return {};
   return nb::assembleSolid(polys);
 }

@@ -101,7 +101,7 @@ All `file:line` are in `src/engine/native/native_engine.cpp` unless noted.
 | measure_angle | cc_measure_angle | 913 | **A** | done GS3 | 0 | `!isNative` guard (913) |
 | surface_curvature | cc_surface_curvature | 883 | **A** | done GS4 | 0 | `!isNative` guard (883) |
 | edge_curvature | cc_edge_curvature | 900 | **A** | done GS4 | 0 | `!isNative` guard (900) |
-| hlr_project | cc_hlr_project | 1572 | **A** | resid M-GS GS1 | 0 | polyhedral + cyl/sphere silhouette native; cone/torus/freeform → OCCT (1572) |
+| hlr_project | cc_hlr_project | 1572 | **A** | done M-GS GS1 | 0 | polyhedral + cyl/sphere/cone/frustum/torus(Kind::Torus) silhouette native; freeform + revolve-built torus (B-spline bands) → OCCT (1572) |
 | section_plane | cc_section_plane | 1834 | **A** | resid small GS2 | 1 | native analytic; oblique-cyl / freeform → OCCT (1834) |
 | **REFERENCE GEOMETRY** (NATIVE — MOAT M-REF; `src/native/reference/reference.h`, two gates green) ||||||
 | face_axis | cc_face_axis | 1931 | **A** | done M-REF | 6 | native cyl/cone axis; plane/sphere/torus → decline → OCCT |
@@ -151,7 +151,7 @@ and `thread_apply`; `iges_export`/`iges_import` are the two C-class invocations.
 | **M3 OCCT-only + curved-blend breadth** | fillet_face, full_round_fillet, full_round_fillet_faces, fillet_edges_g2 + curved/freeform residuals of the A-class blends (fillet/chamfer/shell/offset_face) | **M3** (in M2/M3 breadth bucket) | 14 direct | **~3–8** (shared M2/M3) |
 | **M2 freeform-boolean breadth + thread_apply** | boolean_op freeform/mixed residual, thread_apply | **M2** (same bucket) | 0 direct | (in the ~3–8) |
 | **M7 / M7b construct tails** | twisted_sweep (real twist), loft_along_rail (curved rail), fine-pitch thread residuals | **M7 / M7b** | 12 | **~1–2** |
-| **M-GS GS1 curved-HLR** | hlr_project cone/torus/freeform silhouettes | **M-GS GS1** | 0 direct | (substantial GS residual; gates OCCT-free 2D drawings, not solid primitives) |
+| **M-GS GS1 curved-HLR** — ✅ LANDED (native cone/frustum + torus silhouettes, two gates green) | hlr_project cone/frustum/torus(Kind::Torus) silhouettes native; freeform + revolve-built torus (B-spline bands) → OCCT | **M-GS GS1 (done)** | 0 direct | **0 (done — freeform B-spline silhouette is the honest residual)** |
 
 **MUST-GO-NATIVE remaining-py total: ≈ 4.5–11 py (midpoint ≈ 7 py)**, now almost entirely the
 **M2/M3 freeform breadth bucket (~3–8 py)** plus the small **M7/M7b construct tails (~1–2 py)**.

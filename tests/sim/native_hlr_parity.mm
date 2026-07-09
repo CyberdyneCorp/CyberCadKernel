@@ -210,8 +210,9 @@ void runCase(const HlrCase& c) {
     cc_shape_release(occtId);
 }
 
-// ── CURVED-SILHOUETTE parity (cylinder + sphere) ────────────────────────────────
-// A cylinder/sphere solid's visible outline includes a CURVED silhouette (n·view=0),
+// ── CURVED-SILHOUETTE parity (cylinder + sphere + cone/frustum) ─────────────────
+// A cylinder/sphere/cone solid's visible outline includes a CURVED silhouette (a
+// cone/frustum's is the two straight contour rulings) (n·view=0),
 // now traced in closed form by the native core (drafting/silhouette.h). Comparing
 // native vs the OCCT HLRBRep_Algo oracle here uses a CURVE-appropriate tolerance —
 // NOT the polyhedral cases' exact 1e-5 partition, which assumes both engines sample
@@ -231,6 +232,16 @@ struct CurvedCase {
 
 CCShapeId buildSolidCylinder() {  // disk [0,2]×[0,3] revolved 360° about Y → R=2, h=3
     const double prof[] = {0.0, 0.0, 2.0, 0.0, 2.0, 3.0, 0.0, 3.0};
+    return cc_solid_revolve(prof, 4, 2.0 * 3.14159265358979323846);
+}
+CCShapeId buildSolidCone() {  // FULL cone: apex (0,3) → rim (2,0) → axis, revolved 360° about Y
+    // Profile (r,h): (0,0)-(2,0)-(0,3) is a triangle; revolving the slanted (2,0)->(0,3)
+    // segment sweeps a full cone (one native Cone face), the (0,0)->(2,0) a base disk.
+    const double prof[] = {0.0, 0.0, 2.0, 0.0, 0.0, 3.0};
+    return cc_solid_revolve(prof, 3, 2.0 * 3.14159265358979323846);
+}
+CCShapeId buildSolidFrustum() {  // TRUNCATED cone: trapezoid (1,0)-(2,0)-(1,3)-(0,3) about Y
+    const double prof[] = {1.0, 0.0, 2.0, 0.0, 1.0, 3.0, 0.0, 3.0};
     return cc_solid_revolve(prof, 4, 2.0 * 3.14159265358979323846);
 }
 CCShapeId buildSphere() {  // semicircle arc (0,-2)->(0,2) about Y, closed on the axis
@@ -309,38 +320,58 @@ void runCurved(const CurvedCase& c) {
     cc_shape_release(oId);
 }
 
-// ── honest-decline: a CONE solid stays DECLINED by the native core ───────────────
-// This wave traces cylinder + sphere silhouettes; a cone (apex singularity / partial-
-// quadric ambiguity) is NOT traced, so under the native engine cc_hlr_project must
-// return an EMPTY drawing with cc_last_error set — never a wrong or guessed outline.
-// (The OCCT oracle CAN draw the cone; this asserts only the native decline contract.)
+// ── honest-decline: a NATIVE B-SPLINE-FACED solid stays DECLINED by the native core ─
+// The analytic silhouette tracer now handles cylinder / sphere / cone / frustum and a
+// Kind::Torus face. A FREEFORM (B-spline / Bézier) face has no closed-form silhouette
+// and is honestly DECLINED. A native REVOLVE of a SPLINE meridian builds a genuine
+// native watertight solid whose LATERAL faces are rational-B-spline bands
+// (Kind::BSpline) — the exact freeform case: cc_hlr_project under the native engine
+// must return an EMPTY drawing with cc_last_error set, never a fabricated outline.
+//
+// (This is also why a REVOLVE-BUILT TORUS never reaches this decline: the native
+// revolve REJECTS an off-axis / full-circle generatrix at BUILD time and forwards the
+// whole solid to OCCT, so a revolve-built torus is an OCCT body drawn by the OCCT
+// oracle — correct, not a native decline. Only a Kind::Torus face, e.g. STEP-imported,
+// is traced natively; the freeform B-spline band below is the honest native decline.)
 void runDecline() {
     char detail[512];
-    // A truncated cone: trapezoid [1,0]-[2,0]-[1,3]-[0,3] revolved 360° about Y.
-    const double prof[] = {1.0, 0.0, 2.0, 0.0, 1.0, 3.0, 0.0, 3.0};
+    // A spline-meridian revolve: a kind-3 B-spline meridian through 4 off-axis points
+    // closed by an on-axis line, full 2π turn → 3 native BSpline surface-of-revolution
+    // bands (verified: build_revolution_profile_spline yields Kind::BSpline faces).
+    CCProfileSeg segs[2] = {};
+    segs[0].kind = 3;  // B-spline meridian through the 4 spline points (endpoints ON axis)
+    segs[0].ptOffset = 0; segs[0].ptCount = 4;
+    segs[1].kind = 0;  // closing on-axis line (last pt) → (first pt): (0,4) → (0,0)
+    segs[1].x0 = 0.0; segs[1].y0 = 4.0; segs[1].x1 = 0.0; segs[1].y1 = 0.0;
+    // Spline endpoints are ON the revolution axis (x=0) so the meridian closes with
+    // the on-axis line into a valid outer wire; the mid poles bulge off-axis (x=2),
+    // sweeping rational-B-spline surface-of-revolution bands (Kind::BSpline faces).
+    const double spline[] = {0.0, 0.0, 2.0, 1.0, 2.0, 3.0, 0.0, 4.0};
     const double view[3] = {-1.0, -0.4, -1.0};
     const double up[3] = {0.0, 1.0, 0.0};
 
     cc_set_engine(1);
-    const CCShapeId cone = cc_solid_revolve(prof, 4, 2.0 * 3.14159265358979323846);
-    if (cone == 0) {
-        std::snprintf(detail, sizeof detail, "native cone build failed: %s", cc_last_error());
-        record(false, "cone decline", detail);
+    const CCShapeId body = cc_solid_revolve_profile(segs, 2, 0.0, 0.0, 0.0, 1.0, spline, 8,
+                                                    2.0 * 3.14159265358979323846);
+    if (body == 0) {
+        std::snprintf(detail, sizeof detail,
+                      "native spline-meridian revolve not built err='%s'", cc_last_error());
+        record(false, "bspline-face decline", detail);
         cc_set_engine(0);
         return;
     }
     CCHlrOptions opts{};
     opts.deflection = 0.05;
-    const CCDrawing d = cc_hlr_project(cone, view, up, opts);
+    const CCDrawing d = cc_hlr_project(body, view, up, opts);
     const bool declined = (d.visibleCount == 0) && (d.hiddenCount == 0) &&
                           (d.visible == nullptr) && (d.hidden == nullptr);
     std::snprintf(detail, sizeof detail, "declined=%d (visible=%d hidden=%d) err='%s'",
                   declined ? 1 : 0, d.visibleCount, d.hiddenCount, cc_last_error());
-    record(declined, "cone decline", detail);
+    record(declined, "bspline-face decline", detail);
 
     cc_drawing_free(d);
     cc_set_engine(0);
-    cc_shape_release(cone);
+    cc_shape_release(body);
 }
 
 }  // namespace
@@ -366,14 +397,16 @@ int main() {
 
     for (const HlrCase& c : cases) runCase(c);
 
-    // Curved silhouettes (cylinder + sphere) — the quadric slice, vs the OCCT oracle.
+    // Curved silhouettes (cylinder + sphere + cone/frustum) vs the OCCT oracle.
     const std::vector<CurvedCase> curved = {
         {"cylinder-oblique", buildSolidCylinder, {-1.0, -0.5, -0.8}, {0.0, 0.0, 1.0}},
         {"sphere-oblique", buildSphere, {-1.0, -0.5, -0.8}, {0.0, 1.0, 0.0}},
+        {"cone-oblique", buildSolidCone, {-1.0, -0.5, -0.8}, {0.0, 1.0, 0.0}},
+        {"frustum-oblique", buildSolidFrustum, {-1.0, -0.4, -1.0}, {0.0, 1.0, 0.0}},
     };
     for (const CurvedCase& c : curved) runCurved(c);
 
-    // Honest decline: a cone stays declined (not traced this wave).
+    // Honest decline: a revolve-built torus (B-spline bands) stays declined.
     runDecline();
 
     cc_set_engine(0);

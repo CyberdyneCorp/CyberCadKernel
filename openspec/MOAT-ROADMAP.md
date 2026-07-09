@@ -553,12 +553,22 @@ tests. Substages:
     (via `scripts/run-sim-native-hlr.sh`) drives `cc_hlr_project` under both engines for box (iso +
     oblique), triangle prism, and non-convex L-prism and matches visible/hidden COUNT, total
     projected LENGTH, and endpoint PARTITION to machine epsilon (13/13 PASS; length rel ≤ 2.2e-16,
-    partition tol 1e-5). The cylinder (curved silhouette) is asserted DECLINED, not compared.
-    **Scoped out — the documented NEXT GS1 slice:** curved-surface silhouette tracing — emit the
-    closed-form `n·viewDir=0` outline (lines for cylinder/cone flanks, ellipses for
-    sphere/cone-base) as first-class projected edges, then reuse the existing occlusion+split path;
-    this unblocks the cylinder/cone/sphere solids that are honestly DECLINED today. Freeform faces
-    remain declined outright. No wrong visible/hidden classification is emitted for any accepted case.
+    partition tol 1e-5).
+  - *Status (CURVED slice — TWO-GATE COMPLETE, changes `moat-hlrc-curved-silhouette` +
+    `moat-gs1c-curved-hlr`):* the closed-form `n·viewDir=0` silhouette is traced in
+    `src/native/drafting/silhouette.h` (OCCT-free, header-only) and fed through the SAME
+    occlusion+split path for **cylinder** (two axial generators), **sphere** (great circle),
+    **cone / cone-frustum** (two straight contour rulings), and **torus** (`Kind::Torus`; two
+    closed turning-point contours). Gate (a) host analytic asserts each silhouette's on-surface
+    residual and the `n·viewDir=0` tangency to machine ε (contour point counts, straight-ruling
+    vs closed-loop shape), plus the honest declines (axis-parallel cylinder/cone, cone end-on,
+    torus axis-view). Gate (b) `native_hlr_parity.mm` compares native vs `HLRBRep_Algo` for
+    cylinder/sphere/cone/frustum solids (count + length band + visible⊆oracle-visible
+    classification). **Sharpened decline:** a native `cc_solid_revolve` builds a torus as
+    rational-B-spline surface-of-revolution BANDS (`Kind::BSpline`), NOT a `Kind::Torus` face, so a
+    revolve-built torus DECLINES via the freeform path (a `Kind::Torus` STEP-imported face is
+    traced). Freeform (B-spline/Bézier) faces remain declined outright; no wrong visible/hidden
+    classification is emitted for any accepted case.
 - **GS2 — Section curves** — extract the section *curves* (not just the solid) where a plane cuts a
   solid, incl. capped section geometry (OCCT `BRepAlgoAPI_Section`). Largely reachable via the landed
   M2 half-space / SSI seam machinery. ~0.5–1 py.

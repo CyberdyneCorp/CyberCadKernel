@@ -17,6 +17,7 @@
 #include "native/drafting/native_drafting.h"
 
 #include "native/math/elementary.h"
+#include "native/math/torus.h"
 
 #include "harness.h"
 
@@ -337,6 +338,117 @@ CC_TEST(silhouette_sphere_limb_offset_defeats_self_grazing) {
   // The full great circle is visible: total visible ≈ its 2πR arc length.
   CC_CHECK(nearlyEq(visCured, totalLen(rTiny.visible) + totalLen(rTiny.hidden), 1e-9) ||
            visCured > 0.0);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONE / CONE-FRUSTUM silhouette (drafting/silhouette.h) — host analytic gate (a).
+// The lateral silhouette of a cone is the two straight CONTOUR GENERATORS (rulings)
+// where the tilted cone normal ⟂ view. Verify: two straight 2-point rulings, each
+// point ON the cone surface, and n·view = 0 to machine ε (using the analytic cone
+// normal recovered from the point's (u,h)); plus the honest end-on / axis declines.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// A cone-frustum side-on: two straight rulings, each on the surface, n·view = 0.
+CC_TEST(silhouette_cone_frustum_generators_closed_form) {
+  const math::Ax3 frame;  // identity: axis = Z, apex-ward down the axis
+  const double refR = 1.0;              // radius at h = 0
+  const double alpha = std::atan(0.5);  // half-angle: radius grows 0.5 per unit height
+  const double hMin = 0.0, hMax = 3.0;
+  const math::Vec3 vd{-1, 0, -0.2};  // oblique, not parallel to the axis
+
+  const draft::SilhouetteResult sil =
+      draft::coneSilhouette(frame, refR, alpha, hMin, hMax, vd);
+  CC_CHECK(sil.traced);
+  CC_CHECK_EQ(sil.outlines.size(), static_cast<std::size_t>(2));
+
+  const math::Cone cone{frame, refR, alpha};
+  double maxND = 0.0, maxOnSurf = 0.0;
+  for (const auto& g : sil.outlines) {
+    CC_CHECK_EQ(g.points.size(), static_cast<std::size_t>(2));  // straight ruling
+    for (const auto& p : g.points) {
+      const double h = p.z;              // axial height (identity frame)
+      const double u = std::atan2(p.y, p.x);
+      const double v = h / std::cos(alpha);  // slant param recovering the cone point
+      // On-surface residual: distance from p to the analytic cone point at (u,v).
+      const math::Point3 s = cone.value(u, v);
+      maxOnSurf = std::max(maxOnSurf, distance(p, s));
+      // Silhouette tangency: analytic outward normal ⟂ view.
+      maxND = std::max(maxND, std::fabs(dot(cone.normal(u, v).vec(), vd)) / norm(vd));
+    }
+  }
+  CC_CHECK(maxOnSurf < 1e-12);  // every ruling point lies on the cone
+  CC_CHECK(maxND < 1e-12);      // n·view = 0 to machine ε
+}
+
+// A view PARALLEL to the cone axis is an honest decline (whole side is silhouette).
+CC_TEST(silhouette_cone_axis_parallel_declines) {
+  const math::Ax3 frame;
+  const draft::SilhouetteResult sil =
+      draft::coneSilhouette(frame, 1.0, std::atan(0.5), 0.0, 3.0, math::Vec3{0, 0, 1});
+  CC_CHECK(!sil.traced);
+  CC_CHECK(sil.outlines.empty());
+  CC_CHECK(sil.declineReason != nullptr);
+}
+
+// A view END-ON a cone (looking along a ruling so no lateral contour ⟂ view exists)
+// is an honest decline — never a fabricated ruling.
+CC_TEST(silhouette_cone_end_on_declines) {
+  const math::Ax3 frame;
+  const double alpha = std::atan(0.5);
+  // View along the ruling direction: for a cone of half-angle α the ruling makes
+  // angle α with the axis; a view aligned with (sinα, 0, cosα) sees the +X ruling
+  // edge-on. |tanα·Zd| = tanα·cosα = sinα; hypot(Xd,Yd)=sinα → rhs = 1 (grazing),
+  // so tilt slightly MORE toward the axis to push |rhs| > 1 (true end-on decline).
+  const math::Vec3 vd{std::sin(alpha) * 0.5, 0.0, std::cos(alpha)};
+  const draft::SilhouetteResult sil = draft::coneSilhouette(frame, 1.0, alpha, 0.0, 3.0, vd);
+  CC_CHECK(!sil.traced);
+  CC_CHECK(sil.declineReason != nullptr);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TORUS turning-contour silhouette (drafting/silhouette.h) — host analytic gate (a).
+// The silhouette is the locus where the outward torus normal ⟂ view. Verify: two
+// closed contours, every point ON the torus surface, and n·view = 0 to machine ε
+// (analytic torus normal recovered from (u,v)); plus the axis-view decline.
+// ─────────────────────────────────────────────────────────────────────────────
+
+CC_TEST(silhouette_torus_turning_contour_closed_form) {
+  const math::Ax3 frame;  // axis = Z, centre at origin
+  const double R = 4.0, r = 1.0;
+  const math::Vec3 vd{-1, -0.3, -0.7};  // oblique
+
+  const draft::SilhouetteResult sil = draft::torusSilhouette(frame, R, r, vd, 0.05);
+  CC_CHECK(sil.traced);
+  CC_CHECK_EQ(sil.outlines.size(), static_cast<std::size_t>(2));  // outer + inner limbs
+
+  const math::Torus tor{frame, R, r};
+  double maxND = 0.0, maxOnSurf = 0.0;
+  for (const auto& loop : sil.outlines) {
+    CC_CHECK(loop.closed);
+    CC_CHECK(loop.points.size() > 8);
+    for (const auto& p : loop.points) {
+      // Recover (u,v) from the point: u = major angle in the X-Y plane; v from the
+      // in-plane radial offset (R + r·cos v) and axial height (r·sin v).
+      const double u = std::atan2(p.y, p.x);
+      const double inPlane = std::hypot(p.x, p.y);  // = R + r·cos v
+      const double v = std::atan2(p.z / r, (inPlane - R) / r);
+      const math::Point3 s = tor.value(u, v);
+      maxOnSurf = std::max(maxOnSurf, distance(p, s));
+      maxND = std::max(maxND, std::fabs(dot(tor.normal(u, v).vec(), vd)) / norm(vd));
+    }
+  }
+  CC_CHECK(maxOnSurf < 1e-9);  // on the torus surface
+  CC_CHECK(maxND < 1e-9);      // n·view = 0 (turning-point tangency)
+}
+
+// A view down the torus axis makes the turning contour degenerate to the rim
+// circles — an honest decline (never a near-degenerate contour).
+CC_TEST(silhouette_torus_axis_view_declines) {
+  const math::Ax3 frame;
+  const draft::SilhouetteResult sil =
+      draft::torusSilhouette(frame, 4.0, 1.0, math::Vec3{0, 0, -1}, 0.05);
+  CC_CHECK(!sil.traced);
+  CC_CHECK(sil.declineReason != nullptr);
 }
 
 CC_RUN_ALL()

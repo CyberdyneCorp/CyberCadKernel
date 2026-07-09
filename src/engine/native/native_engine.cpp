@@ -1632,6 +1632,30 @@ inline nmath::Vec3 analyticFaceNormal(const ntopo::FaceSurface& fs, const ntopo:
         }
         case K::Sphere:
             return nmath::Dir3{wp - placeP(fs.frame.origin)}.vec();  // radial from centre
+        case K::Cone: {
+            // Outward normal (constant along a ruling): tilt the radial direction by
+            // the half-angle away from the axis. n = cosα·radial − sinα·axis.
+            const nmath::Point3 O = placeP(fs.frame.origin);
+            const nmath::Vec3 ax = nmath::Dir3{placeV(fs.frame.z.vec())}.vec();
+            const nmath::Vec3 rel = wp - O;
+            const nmath::Vec3 radial = rel - ax * nmath::dot(rel, ax);
+            if (nmath::norm(radial) <= 0.0) return nmath::Vec3{0, 0, 0};  // apex — ambiguous
+            const nmath::Vec3 rhat = nmath::Dir3{radial}.vec();
+            const double ca = std::cos(fs.semiAngle), sa = std::sin(fs.semiAngle);
+            return nmath::Dir3{rhat * ca - ax * sa}.vec();
+        }
+        case K::Torus: {
+            // Outward normal points radially out of the tube: from the tube-centre
+            // circle point at this world point toward the point.
+            const nmath::Point3 O = placeP(fs.frame.origin);
+            const nmath::Vec3 ax = nmath::Dir3{placeV(fs.frame.z.vec())}.vec();
+            const nmath::Vec3 rel = wp - O;
+            const nmath::Vec3 radialV = rel - ax * nmath::dot(rel, ax);  // in-plane offset
+            if (nmath::norm(radialV) <= 0.0) return nmath::Vec3{0, 0, 0};
+            const nmath::Vec3 rhat = nmath::Dir3{radialV}.vec();
+            const nmath::Point3 tubeCentre = O + rhat * fs.radius;  // on the major circle
+            return nmath::Dir3{wp - tubeCentre}.vec();
+        }
         default:
             return nmath::Vec3{0, 0, 0};
     }
@@ -1664,10 +1688,13 @@ Result<DrawingData> NativeEngine::hlr_project(EngineShape body, const double vie
         return make_error("hlr_project: up hint parallel to view direction (declined)");
 
     // Face-kind gate. A PLANE face has no silhouette (its outline is a topological
-    // edge, already drawn). CYLINDER / SPHERE faces carry a curved silhouette this
-    // slice traces in closed form (drafting/silhouette.h); collect them. Any OTHER
-    // curved/freeform kind (Cone / Torus / BSpline / Bezier) is DECLINED — its
-    // silhouette is not robustly traceable this wave, so we never guess it.
+    // edge, already drawn). CYLINDER / SPHERE / CONE / TORUS faces carry an ANALYTIC
+    // silhouette this service traces in closed form (drafting/silhouette.h); collect
+    // them. A FREEFORM kind (BSpline / Bezier) is DECLINED — its silhouette is not
+    // robustly traceable analytically, so we never guess it. NOTE: a native REVOLVE
+    // builds a torus as rational-B-spline bands (Kind::BSpline), NOT a Kind::Torus
+    // face, so a revolve-built torus lands in the freeform decline below with a
+    // sharpened reason; a Kind::Torus face (STEP-imported) is traced.
     std::vector<ntopo::Shape> curvedFaces;
     for (ntopo::Explorer ex(shape, ntopo::ShapeType::Face); ex.more(); ex.next()) {
         const auto srf = ntopo::surfaceOf(ex.current());
@@ -1676,13 +1703,15 @@ Result<DrawingData> NativeEngine::hlr_project(EngineShape body, const double vie
         using K = ntopo::FaceSurface::Kind;
         const K k = srf->surface->kind;
         if (k == K::Plane) continue;
-        if (k == K::Cylinder || k == K::Sphere) {
+        if (k == K::Cylinder || k == K::Sphere || k == K::Cone || k == K::Torus) {
             curvedFaces.push_back(ex.current());
             continue;
         }
         return make_error(
-            "hlr_project: cone/torus/freeform silhouette declined (quadric slice traces "
-            "cylinder + sphere only)");
+            "hlr_project: freeform (B-spline/Bezier) silhouette declined — the analytic "
+            "silhouette tracer handles plane/cylinder/sphere/cone/torus faces; a native "
+            "revolve builds a torus as B-spline bands, so a revolve-built torus declines "
+            "here (STEP-imported analytic tori are traced)");
     }
 
     // Occluder = the M0 boundary mesh at the caller-chosen deflection (never a hidden
@@ -1752,8 +1781,24 @@ Result<DrawingData> NativeEngine::hlr_project(EngineShape body, const double vie
             for (ntopo::Explorer eex(fx.current(), ntopo::ShapeType::Edge); eex.more(); eex.next()) {
                 const auto& de = cache.discretize(eex.current());
                 if (de.points.size() < 2) continue;
-                const nmath::Vec3 n =
-                    analyticFaceNormal(*fsr->surface, fsr->location, de.points[de.points.size() / 2]);
+                // Sample the analytic normal at an INTERIOR sample of the edge, NOT at
+                // a discretization vertex: a STRAIGHT seam discretizes to just its two
+                // endpoints, so de.points[size/2] is an ENDPOINT — and for a cone/torus
+                // seam that endpoint can be the APEX (radial 0 → null normal), which
+                // silently dropped the seam and left it drawn. Probe a few interior
+                // points (chord fractions + discretization interiors) and take the first
+                // with a well-defined normal so a cone/torus seam is correctly compared.
+                nmath::Vec3 n{0, 0, 0};
+                const nmath::Point3 a = de.points.front(), b = de.points.back();
+                for (double t : {0.5, 0.375, 0.625, 0.25, 0.75}) {
+                    const nmath::Point3 mid{a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t,
+                                            a.z + (b.z - a.z) * t};
+                    n = analyticFaceNormal(*fsr->surface, fsr->location, mid);
+                    if (nmath::norm(n) > 0.5) break;
+                }
+                if (nmath::norm(n) <= 0.5 && de.points.size() > 2)
+                    n = analyticFaceNormal(*fsr->surface, fsr->location,
+                                           de.points[de.points.size() / 2]);
                 if (nmath::norm(n) > 0.5) edgeFaceNormals[edgeKey(de)].push_back(n);
             }
         }
@@ -1809,11 +1854,11 @@ Result<DrawingData> NativeEngine::hlr_project(EngineShape body, const double vie
             wf.y = nmath::Dir3{placeV(fs.frame.y.vec())};
             wf.z = nmath::Dir3{placeV(fs.frame.z.vec())};
 
-            ndraft::SilhouetteResult sil;
-            if (fs.kind == ntopo::FaceSurface::Kind::Cylinder) {
-                // Trim extent along the axis from the face's bounding edge samples.
-                double vLo = std::numeric_limits<double>::infinity();
-                double vHi = -std::numeric_limits<double>::infinity();
+            // Axial trim extent [vLo,vHi] along Z from the face's bounding edge
+            // samples — needed by the ruled kinds (cylinder / cone).
+            auto axialTrim = [&](double& vLo, double& vHi) -> bool {
+                vLo = std::numeric_limits<double>::infinity();
+                vHi = -std::numeric_limits<double>::infinity();
                 const nmath::Vec3 zc = wf.z.vec();
                 for (ntopo::Explorer eex(face, ntopo::ShapeType::Edge); eex.more(); eex.next()) {
                     const auto& de = cache.discretize(eex.current());
@@ -1823,9 +1868,27 @@ Result<DrawingData> NativeEngine::hlr_project(EngineShape body, const double vie
                         vHi = std::max(vHi, vv);
                     }
                 }
-                if (!(vHi > vLo))
+                return vHi > vLo;
+            };
+
+            ndraft::SilhouetteResult sil;
+            using K = ntopo::FaceSurface::Kind;
+            if (fs.kind == K::Cylinder) {
+                double vLo, vHi;
+                if (!axialTrim(vLo, vHi))
                     return make_error("hlr_project: cylinder face has no trim extent (declined)");
                 sil = ndraft::cylinderSilhouette(wf, fs.radius, vLo, vHi, vd);
+            } else if (fs.kind == K::Cone) {
+                double vLo, vHi;
+                if (!axialTrim(vLo, vHi))
+                    return make_error("hlr_project: cone face has no trim extent (declined)");
+                // fs.radius is the CONE reference radius at v=0 (native segmentSurface),
+                // fs.semiAngle its half-angle. The ruling runs between the rim radii at
+                // vLo/vHi measured along the axis (frame origin = axial origin, not apex).
+                sil = ndraft::coneSilhouette(wf, fs.radius, fs.semiAngle, vLo, vHi, vd);
+            } else if (fs.kind == K::Torus) {
+                // fs.radius = MAJOR radius, fs.minorRadius = tube radius.
+                sil = ndraft::torusSilhouette(wf, fs.radius, fs.minorRadius, vd, meshDefl);
             } else {  // Sphere
                 sil = ndraft::sphereSilhouette(wf.origin, fs.radius, vd, meshDefl);
             }

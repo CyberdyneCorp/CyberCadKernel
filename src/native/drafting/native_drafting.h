@@ -8,10 +8,13 @@
 //   * orthographic_hlr.h — polyhedral/analytic-edge HLR over a triangle occluder
 //     (visible/hidden classification with edge splitting at visibility
 //     transitions).
-//   * silhouette.h — closed-form QUADRIC-face silhouette tracing (cylinder
-//     generators + sphere great circle) emitted as world polylines that feed the
-//     SAME occlusion + split path. Cone / partial-quadric / torus / freeform
-//     silhouettes are declined honestly and handled in a later slice.
+//   * silhouette.h — closed-form ANALYTIC-face silhouette tracing (cylinder
+//     generators + sphere great circle + cone/frustum contour generators + torus
+//     turning contours) emitted as world polylines that feed the SAME occlusion +
+//     split path. Partial-quadric and freeform (B-spline/Bézier) silhouettes are
+//     declined honestly. A native REVOLVE builds a torus as rational-B-spline
+//     bands (not a Kind::Torus face), so a revolve-built torus still declines;
+//     a Kind::Torus face (STEP-imported) is traced.
 //
 #ifndef CYBERCAD_NATIVE_DRAFTING_NATIVE_DRAFTING_H
 #define CYBERCAD_NATIVE_DRAFTING_NATIVE_DRAFTING_H

@@ -460,6 +460,19 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_curved_wall_cut)
         set(test_native_curved_wall_cut_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_curved_wall_cut.cpp")
+        # MOAT M2 freeform↔freeform CLOSED-SEAM CUT / COMMON — host GATE (a), the
+        # OCCT-free proof that the recognise[B1] → trace[M1] → split[B2 smooth-trim] →
+        # classify[B3] pipeline composes for TWO curved operands over a shared CLOSED
+        # curved seam, and that the weld verb HONEST-DECLINES to NULL (never a leaky
+        # solid) because the two-CURVED-side closed-seam weld is gated on the byte-frozen
+        # M0 tessellator (curved↔flat welds via the M0w pin; curved↔curved does not). Two
+        # coaxial paraboloid bowl-cups whose curved walls meet in ONE closed circle ρ =
+        # √(H/2a); the seam is the real S3 trace, so this host suite builds only under
+        # CYBERCAD_HAS_NUMSCI. Additive header-only verb (freeform_freeform_cut.h); no lib
+        # change, no cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_freeform_freeform_cut)
+        set(test_native_freeform_freeform_cut_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_freeform_freeform_cut.cpp")
         # MOAT M-GS GS3/GS4 analysis services (src/native/analysis) — host GATE (a),
         # the OCCT-free closed-form/brute-force proof of minimum distance, angle and
         # surface/edge curvature (+ honest declines). The freeform seed-and-refine

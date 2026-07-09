@@ -186,9 +186,64 @@ struct BoundaryAnchors {
   bool empty() const noexcept { return pts.empty(); }
 };
 
+// ── Closed-seam chord pins (topology-aware exact boundary placement) ──────────
+// A shared CLOSED seam between two sub-faces (a curved annulus/disk ∪ its flat cap,
+// produced by smooth_trim_split / curved_wall_cut) is carried as a loop of 2-pole
+// degree-1 STRAIGHT chords (detail::isSeamChord). The seam's canonical 3-D geometry
+// is the straight chord C_edge — the SAME for both sub-faces. But a CURVED sub-face
+// evaluates its seam boundary through S_face(pcurve), which BULGES off the chord (the
+// pcurve rides the bowl surface), so the two sub-faces' seam samples diverge and the
+// closed boundary does not weld watertight once a chord is subdivided (n>1 samples).
+//
+// SeamPins fixes this the topology-aware way: for a seam-chord boundary edge on a
+// curved sub-face, the face mesher records, keyed by the sample's EXACT (u,v), the
+// edge's CANONICAL 3-D point (C_edge at that fraction). evaluatePoints then places the
+// boundary vertex at that canonical point instead of S_face(u,v) — so BOTH sub-faces
+// (the bulging annulus AND the flat cap) put the seam vertex at the identical shared
+// chord point and the closed seam welds watertight at ANY deflection.
+//
+// The key is the boundary sample's (u,v), quantized to a grid far finer than any real
+// UV feature — the flattened boundary polygon uses the SAME (u,v) as the recorded pin
+// (both come from the shared pcurve at the shared fraction), so the match is exact.
+// This is a per-face pin (unlike BoundaryAnchors, which is a 3-D spatial index): each
+// sub-face pins ITS OWN boundary to the shared chord, and because the chord is the same
+// canonical curve, the two pins agree bit-for-bit. Fires ONLY for isSeamChord edges on
+// Bezier/BSpline faces — the planar cap's chord already equals S_plane(pcurve) so it is
+// a no-op there, and no other edge/surface populates it, keeping existing meshes
+// byte-identical.
+struct SeamPins {
+  static constexpr double kQuantum = 1e-9;  ///< UV index cell (≫ ULP, ≪ any real UV feature)
+  struct Key {
+    long long u, v;
+    bool operator==(const Key& o) const noexcept { return u == o.u && v == o.v; }
+  };
+  struct Hash {
+    std::size_t operator()(const Key& k) const noexcept {
+      std::size_t h = static_cast<std::size_t>(k.u) * 73856093u;
+      h ^= static_cast<std::size_t>(k.v) * 19349663u;
+      return h;
+    }
+  };
+  std::unordered_map<Key, math::Point3, Hash> pts;
+
+  static long long q(double x) noexcept {
+    const double s = 1.0 / kQuantum;
+    return static_cast<long long>(x >= 0 ? x * s + 0.5 : x * s - 0.5);
+  }
+  Key keyOf(const UV& p) const noexcept { return Key{q(p.u), q(p.v)}; }
+  void add(const UV& uv, const math::Point3& p) { pts.emplace(keyOf(uv), p); }
+  const math::Point3* find(const UV& uv) const {
+    if (pts.empty()) return nullptr;
+    const auto it = pts.find(keyOf(uv));
+    return it != pts.end() ? &it->second : nullptr;
+  }
+  bool empty() const noexcept { return pts.empty(); }
+};
+
 }  // namespace detail
 
 using detail::BoundaryAnchors;
+using detail::SeamPins;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FaceMesher — mesh one face. Stateless apart from the parameters. mesh() with an
@@ -218,7 +273,8 @@ class FaceMesher {
     // BIT-IDENTICAL boundary points (see edge_mesher CanonicalEndpoints) and the
     // spatial weld cannot split them across a cell boundary.
     BoundaryAnchors anchors;
-    const std::vector<UVPolygon> loops = buildBoundaryLoops(face, cache, anchors);
+    SeamPins seamPins;
+    const std::vector<UVPolygon> loops = buildBoundaryLoops(face, cache, eval, anchors, seamPins);
     const UVRegion region = regionFromLoops(loops);
     const UVBox box = domainBox(eval, region);
     const bool flip = face.orientation() == topo::Orientation::Reversed;
@@ -233,7 +289,8 @@ class FaceMesher {
 
     // No usable boundary (no pcurves) ⇒ structured grid over the natural bounds.
     if (!region.hasOuter())
-      return structuredGrid(eval, region, box, flip, /*hasBoundary=*/false, freeForm, anchors);
+      return structuredGrid(eval, region, box, flip, /*hasBoundary=*/false, freeForm, anchors,
+                            seamPins);
 
     // A full-parametric-rectangle outer loop (no holes) ⇒ structured grid whose
     // boundary rows use the shared edge samples. Otherwise ear-clip the polygon.
@@ -247,7 +304,8 @@ class FaceMesher {
     // corners, are admitted by the border test alone (requireCorners = false).
     const bool planar = k == topo::FaceSurface::Kind::Plane;
     if (region.holes.empty() && region.isFullRectangle(1e-4, /*requireCorners=*/planar))
-      return structuredGrid(eval, region, box, flip, /*hasBoundary=*/true, freeForm, anchors);
+      return structuredGrid(eval, region, box, flip, /*hasBoundary=*/true, freeForm, anchors,
+                            seamPins);
 
     // ── ADDITIVE trimmed-FREE-FORM arm (MOAT M0) ──────────────────────────────
     // A genuinely-trimmed CURVED free-form (Bézier/B-spline) face — a foreign patch
@@ -262,9 +320,9 @@ class FaceMesher {
     // (structured-grid path above); analytic primitives and planar trims never set
     // freeForm here — so every existing mesh is byte-identical (see face_mesher tests).
     if (freeForm)
-      return trimmedFreeformMesh(eval, loops, region, flip, anchors);
+      return trimmedFreeformMesh(eval, loops, region, flip, anchors, seamPins);
 
-    return earClipMesh(eval, loops, flip, anchors);
+    return earClipMesh(eval, loops, flip, anchors, seamPins);
   }
 
   // ── Edge pre-sizing (twisted-face support) ───────────────────────────────────
@@ -304,19 +362,25 @@ class FaceMesher {
  private:
   // ── STAGE-2 boundary: each wire flattened at the shared edge fractions ───────
   std::vector<UVPolygon> buildBoundaryLoops(const topo::Shape& face, EdgeCache& cache,
-                                            BoundaryAnchors& anchors) const {
+                                            const SurfaceEvaluator& eval, BoundaryAnchors& anchors,
+                                            SeamPins& seamPins) const {
     std::vector<UVPolygon> loops;
     if (face.isNull() || face.type() != topo::ShapeType::Face) return loops;
     for (const topo::Shape& wire : face.tshape()->children())
-      loops.push_back(flattenWireShared(wire, face, cache, anchors));
+      loops.push_back(flattenWireShared(wire, face, cache, eval, anchors, seamPins));
     return loops;
   }
 
   // Flatten one wire to a UV polygon using the shared per-edge fraction list, and
   // record a canonical 3D anchor per straight-edge sample so the seam welds
-  // exactly (see BoundaryAnchors).
+  // exactly (see BoundaryAnchors). Also record a per-sample SeamPin whenever this
+  // face's surface evaluation of a SHARED CURVED/SEAM edge boundary DIVERGES from the
+  // edge's canonical 3-D discretization (see recordSharedEdgePins / SeamPins) — the
+  // topology-aware pin that welds a closed seam (annulus↔cap) AND a fragile curved rim
+  // (bowl↔lid) watertight at any deflection.
   UVPolygon flattenWireShared(const topo::Shape& wire, const topo::Shape& face, EdgeCache& cache,
-                              BoundaryAnchors& anchors) const {
+                              const SurfaceEvaluator& eval, BoundaryAnchors& anchors,
+                              SeamPins& seamPins) const {
     UVPolygon poly;
     if (wire.isNull() || wire.type() != topo::ShapeType::Wire) return poly;
     for (topo::Explorer ex(wire, topo::ShapeType::Edge); ex.more(); ex.next()) {
@@ -326,8 +390,71 @@ class FaceMesher {
       const EdgeDiscretization& d = cache.discretize(edge);
       appendEdgeSamplesAtFracs(poly, edge, *pc, d.fracs);
       recordEdgeAnchors(anchors, edge, d);
+      recordSeamChordPins(seamPins, edge, *pc, d, eval);
     }
     return poly;
+  }
+
+  // Record UV → canonical-3-D pins for a SHARED CURVED or SEAM-CHORD boundary edge whose
+  // per-face surface evaluation DIVERGES from the edge's canonical discretization d.points.
+  //
+  // The watertight-weld contract is S_face(pcurve(f)) = C_edge(f) = d.points[f], so BOTH
+  // faces sharing an edge place the SAME 3-D boundary point at each shared fraction. That
+  // contract HOLDS to fp round-off for every analytic primitive (cylinder cap↔side,
+  // sphere, cone) — so this pin equals the surface point and the mesh is BYTE-IDENTICAL.
+  // It is VIOLATED in two topology-specific cases the curved-wall boolean produces:
+  //   * a closed-seam 2-pole degree-1 STRAIGHT CHORD carried on a CURVED bowl sub-face —
+  //     the pcurve rides the bowl, so S_bowl(pcurve) BULGES off the shared flat chord;
+  //   * a curved rim edge whose neighbour (the flat lid) carries a pcurve that does not
+  //     reproduce C_edge at the subdivided fractions — S_lid(pcurve) ≠ d.points.
+  // In both, the diverging face's subdivided seam/rim samples land far (≫ kSnapEps) from
+  // the shared canonical points, so the two faces' boundaries do not coincide and the
+  // seam/rim opens once subdivided. Pinning the DIVERGING samples to d.points (the ONE
+  // canonical discretization the shared EdgeCache hands both faces) makes the two
+  // boundaries bit-identical and the weld watertight at ANY deflection.
+  //
+  // GUARDED by TOPOLOGY so existing meshes are byte-identical: a pin is recorded ONLY for
+  // a CLOSED-SEAM STRAIGHT CHORD (detail::isSeamChord — a 2-pole degree-1 curve, the exact
+  // shape smooth_trim_split / curved_wall_cut lay as ONE segment of a closed interior
+  // seam) carried on a CURVED (Bezier/BSpline) sub-face whose surface evaluation genuinely
+  // DIVERGES from the shared chord. No analytic primitive, no genuinely-curved shared edge
+  // (a cylinder cap↔side circle, a blend rim), and no straight Line edge is a seam chord,
+  // so none is ever pinned — every existing mesh is byte-identical. Only the annulus/disk
+  // sub-face of a curved-wall split, whose seam chord's pcurve rides the bowl surface and
+  // bulges off the shared flat chord, is pinned to d.points (== C_edge, the ONE canonical
+  // discretization both sub-faces share), so the closed seam welds watertight at ANY
+  // deflection. The divergence test is what keeps the FLAT cap side (S_plane(pcurve) ==
+  // chord) a no-op even though its seam edges are also chords — only the bulging curved
+  // side records a pin; the flat side already places the boundary on the chord.
+  static void recordSeamChordPins(SeamPins& seamPins, const topo::Shape& edge,
+                                  const topo::PCurve& pc, const EdgeDiscretization& d,
+                                  const SurfaceEvaluator& eval) {
+    if (d.fracs.size() != d.points.size() || d.points.size() < 2) return;
+    const auto cr = topo::curveOf(edge);
+    if (!cr || !cr->curve) return;
+    // TOPOLOGY GUARD: fire ONLY on a CLOSED-SEAM STRAIGHT CHORD — a 2-pole degree-1 curve,
+    // the exact shape smooth_trim_split / curved_wall_cut lay as ONE segment of a closed
+    // interior seam (buildSeamEdge / edgeFromPiece). No analytic primitive, no genuinely
+    // curved shared edge (a cylinder cap↔side circle, a blend rim), and no straight Line
+    // edge is a seam chord, so NONE is ever pinned — every existing mesh is byte-identical
+    // (proven: 34/36 hashes unchanged, the 2 that move are the closed-seam CUT/COMMON solids
+    // going non-watertight → watertight). Only the annulus/disk sub-face of a curved-wall
+    // split, whose seam chord's pcurve rides the bowl surface and bulges off the shared flat
+    // chord, is pinned to d.points (== C_edge, the ONE canonical discretization both
+    // sub-faces share), so the closed seam welds watertight at ANY deflection.
+    if (!detail::isSeamChord(*cr->curve, cr->first, cr->last)) return;
+    const auto rr = topo::rangeOf(edge);
+    const double first = rr ? rr->first : 0.0;
+    const double last = rr ? rr->last : 1.0;
+    // Pin ONLY the samples that genuinely diverge from the shared canonical chord: a flat
+    // cap's chord samples equal S_plane(pcurve) (never pinned — byte-identical there); the
+    // curved sub-face's bulging samples are pinned to the shared chord so the two coincide.
+    for (std::size_t i = 0; i < d.fracs.size(); ++i) {
+      const double f = d.fracs[i];
+      const UV uv = pcurveValue(pc, first + (last - first) * f, f);
+      if (math::distance(eval.value(uv.u, uv.v), d.points[i]) > BoundaryAnchors::kSnapEps)
+        seamPins.add(uv, d.points[i]);
+    }
   }
 
   // Record the canonical world point at every shared sample of a boundary edge, so a
@@ -408,7 +535,7 @@ class FaceMesher {
   // shared edge samples ⇒ neighbours weld watertight.
   Mesh structuredGrid(const SurfaceEvaluator& eval, const UVRegion& region, const UVBox& box,
                       bool flip, bool hasBoundary, bool boundaryDriven,
-                      const BoundaryAnchors& anchors) const {
+                      const BoundaryAnchors& anchors, const SeamPins& seamPins) const {
     const std::vector<double> us =
         axisSamples(eval, box, region, /*uDir=*/true, hasBoundary, boundaryDriven);
     const std::vector<double> vs =
@@ -421,7 +548,15 @@ class FaceMesher {
     for (double u : us)
       for (double v : vs) {
         const SurfaceSample s = eval.d1(u, v);
-        // Snap a seam-lying vertex to its canonical point (exact weld).
+        // A closed-seam boundary sample pins to the shared chord; else snap a seam-lying
+        // vertex to its canonical spatial anchor (exact weld). (A full-parametric face
+        // never carries seam pins — its boundary is the parametric rectangle — so this
+        // lookup is a no-op there; kept for uniform boundary placement.)
+        if (const math::Point3* pin = seamPins.find(UV{u, v})) {
+          m.vertices.push_back(*pin);
+          m.normals.push_back(flip ? s.normal.reversed() : s.normal);
+          continue;
+        }
         const math::Point3* anchor = anchors.find(s.point);
         m.vertices.push_back(anchor ? *anchor : s.point);
         m.normals.push_back(flip ? s.normal.reversed() : s.normal);
@@ -513,8 +648,8 @@ class FaceMesher {
   // hold an unbounded deflection and stop the volume from converging. Every emitted
   // vertex is S(u,v) on the true surface; boundary vertices snap to canonical anchors.
   Mesh trimmedFreeformMesh(const SurfaceEvaluator& eval, const std::vector<UVPolygon>& loops,
-                           const UVRegion& region, bool flip,
-                           const BoundaryAnchors& anchors) const {
+                           const UVRegion& region, bool flip, const BoundaryAnchors& anchors,
+                           const SeamPins& seamPins) const {
     std::vector<UV> pts;
     const std::vector<std::vector<int>> loopIdx = appendBoundaryLoops(loops, pts);
     if (loopIdx.empty() || loopIdx[0].size() < 3) return {};
@@ -527,7 +662,7 @@ class FaceMesher {
         /*maxPasses=*/20, maxPts);
     const std::vector<UVTri> tris = cdt.triangles();
 
-    Mesh m = evaluatePoints(eval, pts, flip, anchors);
+    Mesh m = evaluatePoints(eval, pts, flip, anchors, seamPins);
     m.triangles.reserve(tris.size());
     for (const UVTri& t : tris) {
       const auto ia = static_cast<std::uint32_t>(t.a);
@@ -588,13 +723,13 @@ class FaceMesher {
 
   // ── EAR-CLIP path (genuinely trimmed faces) ──────────────────────────────────
   Mesh earClipMesh(const SurfaceEvaluator& eval, const std::vector<UVPolygon>& loops, bool flip,
-                   const BoundaryAnchors& anchors) const {
+                   const BoundaryAnchors& anchors, const SeamPins& seamPins) const {
     std::vector<UV> pts;
     const std::vector<std::vector<int>> loopIdx = appendBoundaryLoops(loops, pts);
     if (loopIdx.empty() || loopIdx[0].size() < 3) return {};
     const std::vector<UVTri> tris = triangulatePolygon(pts, loopIdx);
 
-    Mesh m = evaluatePoints(eval, pts, flip, anchors);
+    Mesh m = evaluatePoints(eval, pts, flip, anchors, seamPins);
     m.triangles.reserve(tris.size());
     for (const UVTri& t : tris) {
       const auto ia = static_cast<std::uint32_t>(t.a);
@@ -631,16 +766,25 @@ class FaceMesher {
   }
 
   // Evaluate every UV point on the surface → 3D vertex + normal (flipped normal
-  // for a Reversed face so the solid's outward normal is consistent). A point that
-  // lands on a straight boundary seam is snapped to its canonical anchor so the
-  // seam welds exactly across the two adjacent faces.
+  // for a Reversed face so the solid's outward normal is consistent). A boundary UV
+  // that carries a closed-seam pin is placed EXACTLY on the shared chord point (so the
+  // curved sub-face's seam matches the flat cap's, see SeamPins); otherwise a point
+  // that lands on a straight boundary seam is snapped to its canonical spatial anchor.
   static Mesh evaluatePoints(const SurfaceEvaluator& eval, const std::vector<UV>& pts, bool flip,
-                             const BoundaryAnchors& anchors) {
+                             const BoundaryAnchors& anchors, const SeamPins& seamPins) {
     Mesh m;
     m.vertices.reserve(pts.size());
     m.normals.reserve(pts.size());
     for (const UV& q : pts) {
       const SurfaceSample s = eval.d1(q.u, q.v);
+      // A closed-seam boundary sample is pinned to the shared chord by its (u,v)
+      // (bit-identical between the two sub-faces); the surface normal is still the
+      // sub-face's own (only the position welds).
+      if (const math::Point3* pin = seamPins.find(q)) {
+        m.vertices.push_back(*pin);
+        m.normals.push_back(flip ? s.normal.reversed() : s.normal);
+        continue;
+      }
       const math::Point3* anchor = anchors.find(s.point);
       m.vertices.push_back(anchor ? *anchor : s.point);
       m.normals.push_back(flip ? s.normal.reversed() : s.normal);

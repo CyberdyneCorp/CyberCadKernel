@@ -177,6 +177,32 @@ inline bool edgeStraight3d(const topo::EdgeCurve& c, double first, double last) 
   return worstEdgeCurvature(c, first, last) <= 1e-12;
 }
 
+// True iff `edge` is a CLOSED-SEAM STRAIGHT CHORD: a degree-1 curve with exactly two
+// poles whose 3-D geometry is straight (‖C″‖≈0). This is precisely the shape
+// `smooth_trim_split`/`curved_wall_cut` lay as ONE segment of a closed interior seam
+// (buildSeamEdge / edgeFromPiece: a 2-pole degree-1 chord between two adjacent traced
+// seam nodes). Such a chord's 3-D geometry is the STRAIGHT segment, but its pcurve
+// rides the (possibly CURVED) surface of the face it bounds — so a curved sub-face
+// (the bowl annulus/disk) that evaluates its seam boundary through S_face(pcurve) lands
+// on the bulging surface, NOT on the shared chord the flat cap places its boundary on,
+// and the closed seam does not weld watertight. The face mesher uses this predicate to
+// PIN such a boundary vertex to the edge's canonical 3-D chord point (C_edge, shared by
+// both sub-faces) instead of the per-face surface evaluation — the closed-loop analogue
+// of the shared-curved-edge single-sampling fix. A Line-kind edge, a genuinely curved
+// edge (Circle/blend/multi-pole spline), or a chord with ≠2 poles returns false, so the
+// straight-endpoint and curved-edge paths are untouched and every existing mesh is
+// byte-identical.
+inline bool isSeamChord(const topo::EdgeCurve& c, double /*first*/, double /*last*/) noexcept {
+  if (c.kind != topo::EdgeCurve::Kind::BSpline && c.kind != topo::EdgeCurve::Kind::Bezier)
+    return false;
+  if (c.poles.size() != 2) return false;  // exactly a 2-node segment of the seam
+  if (c.degree != 1) return false;         // faithful straight-chord representation
+  // A 2-pole degree-1 curve is straight BY CONSTRUCTION (linear between its two poles):
+  // no numeric curvature test — a central-difference ‖C″‖ of an exact line is ~1e-8
+  // fp-noise (amplified by 1/h²), which would spuriously reject a genuine seam chord.
+  return true;
+}
+
 // Number of segments to hold the chord (sagitta) error of the edge's 3D curve
 // under `deflection`: Δ ≤ √(8·defl/‖C″‖); n = ceil(span/Δ), clamped to [min,max].
 // A line (‖C″‖≈0) collapses to `minSegs`; a circle/blend subdivides.

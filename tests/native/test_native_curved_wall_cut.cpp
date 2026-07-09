@@ -168,6 +168,32 @@ CC_TEST(curved_wall_common_rim_weld_fragility_is_measured_decline) {
   CC_CHECK(declines >= 1);   // the fragility is real and MEASURED (not hidden)
 }
 
+// ── CLOSED-SEAM WELD (MOAT M0w): the disk↔flat-cap shared CLOSED seam welds ────
+// The topology-aware M0 tessellator seam pin (SeamPins, face_mesher.h): the closed
+// interior seam shared by the curved disk sub-face and the flat cap is carried as ONE
+// canonical straight-chord discretization consumed by both, so the curved side's seam
+// boundary is PINNED to the shared chord instead of the bulging bowl surface. This flips
+// the previously deflection-fragile dome CUT seam to WATERTIGHT at a FINE deflection that
+// declined before the fix (d = 0.004: baseline NotWatertight → now a closed 2-manifold at
+// the closed-form cap volume). Guarded to fire ONLY on the closed-seam chord topology, so
+// every other mesh is byte-identical (proven by the FNV hash battery).
+CC_TEST(curved_wall_closed_seam_welds_watertight_fine_deflection) {
+  const topo::Shape op = cwx::buildOperand();
+  const fmath::Plane P = cwx::cutPlane();
+  bo::CurvedWallCutDecline why = bo::CurvedWallCutDecline::Ok;
+  const double d = 0.004;  // the fine deflection that declined pre-fix
+  const topo::Shape cut = bo::curvedWallHalfSpaceCut(op, P, bo::KeepSide::Below, d, &why);
+  CC_CHECK(why == bo::CurvedWallCutDecline::Ok);
+  CC_CHECK(!cut.isNull());
+  if (cut.isNull()) return;
+  tess::MeshParams mp; mp.deflection = d;
+  const tess::Mesh m = tess::SolidMesher(mp).mesh(cut);
+  CC_CHECK(tess::isWatertight(m));   // the closed seam welds (was NotWatertight pre-fix)
+  CC_CHECK(eulerChar(m) == 2);       // single closed 2-manifold
+  const double cf = cwx::cutVolume();
+  CC_CHECK(std::fabs(tess::enclosedVolume(m) - cf) / cf < 0.05);  // at the closed-form cap volume
+}
+
 // ── Honest decline: a NON-CUTTING plane (above the rim) → NULL ────────────────
 CC_TEST(curved_wall_declines_non_cutting_plane) {
   const topo::Shape op = cwx::buildOperand();
@@ -229,6 +255,9 @@ CC_TEST(midwall_cut_below_watertight_converges_to_closed_form) {
   for (topo::Explorer fx(cut, topo::ShapeType::Face); fx.more(); fx.next()) ++nFaces;
   CC_CHECK(nFaces == 7);
 
+  // Full deflection ladder, INCLUDING the fine range that was seam-fragile before the
+  // MOAT M0w closed-seam pin: the annular cap (outer = wall chords, inner HOLE = the closed
+  // seam) welds watertight at EVERY step, converging monotonically to the closed form.
   const double cf = mwx::cutVolume();  // (H0+c)·A_Q − c·π·ρ²/2
   const double deflections[] = {0.02, 0.012, 0.008, 0.005, 0.0025};
   double prevRel = 1e9;

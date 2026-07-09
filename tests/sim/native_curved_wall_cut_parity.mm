@@ -300,8 +300,11 @@ int main() {
   const TopoDS_Shape occtBelow = cutBelow.Shape();
   const TopoDS_Shape occtAbove = cutAbove.Shape();
 
-  // ── CUT (Below) — the LANDED robust keep-side, at multiple resonance-free deflections.
-  for (double d : {0.0102, 0.00532, 0.00278}) {
+  // ── CUT (Below) — the disk↔flat-cap CLOSED-SEAM keep-side, native-vs-OCCT across the
+  // deflection ladder INCLUDING the fine d=0.004 that declined before the MOAT M0w
+  // closed-seam tessellator pin (SeamPins): the seam now welds watertight there and
+  // matches the OCCT BRepAlgoAPI_Common oracle on volume/area/topology.
+  for (double d : {0.0102, 0.00532, 0.004, 0.00278}) {
     char tag[24]; std::snprintf(tag, sizeof(tag), "CUT d=%.4f", d);
     bo::CurvedWallCutDecline why = bo::CurvedWallCutDecline::Ok;
     const nt::Shape cut = bo::curvedWallHalfSpaceCut(operand, cwx::cutPlane(), bo::KeepSide::Below, d, &why);

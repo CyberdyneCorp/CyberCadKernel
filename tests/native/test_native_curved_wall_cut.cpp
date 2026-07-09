@@ -23,6 +23,7 @@
 #include "native/tessellate/solid_mesher.h"
 
 #include "native/curved_wall_cut_fixture.h"
+#include "native/walled_bowl_midwall_fixture.h"
 #include "harness.h"
 
 #include <cmath>
@@ -32,6 +33,7 @@ namespace tess = cybercad::native::tessellate;
 namespace topo = cybercad::native::topology;
 namespace fmath = cybercad::native::math;
 namespace cwx = curved_wall_cut_fixture;
+namespace mwx = walled_bowl_midwall_fixture;
 
 namespace {
 
@@ -184,6 +186,91 @@ CC_TEST(curved_wall_declines_non_operand) {
   const topo::Shape cut = bo::curvedWallHalfSpaceCut(nul, cwx::cutPlane(), bo::KeepSide::Below, 0.0102, &why);
   CC_CHECK(cut.isNull());
   CC_CHECK(why == bo::CurvedWallCutDecline::NotAdmitted);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MID-WALL slice: the "walled bowl / dome cut MID-WALL" pose — a bowl-lidded prism
+// (STEEP Bézier bowl over a convex quad + 4 PLANAR side walls + a flat base) cut by a
+// HORIZONTAL plane z = c whose seam is a CLOSED interior circle on the freeform bowl AND
+// which genuinely crosses the 4 analytic side walls (the analytic Split fires). The
+// cross-section cap is therefore an ANNULUS (outer = the 4 wall-section chords, inner
+// HOLE = the freeform seam circle) — distinct from the dome pose's simple disk cap.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── The operand is B1-admitted: one freeform bowl + 5 analytic faces (4 walls + base) ─
+CC_TEST(midwall_operand_admits_bowl_and_walls) {
+  const topo::Shape op = mwx::buildOperand();
+  bo::OperandDecline why = bo::OperandDecline::Ok;
+  const auto fo = bo::recogniseFreeformSolid(op, &why);
+  CC_CHECK(fo.has_value());
+  if (!fo) return;
+  CC_CHECK(fo->freeform.size() == 1);   // the bowl
+  CC_CHECK(fo->analytic.size() == 5);   // 4 walls + base
+  CC_CHECK(fo->watertight);
+  // the cut height is strictly below the interior-circle bound a·d_e² (⟺ seam interior).
+  CC_CHECK(mwx::kCutZ < mwx::kA * mwx::minEdgeDistance() * mwx::minEdgeDistance());
+  CC_CHECK(mwx::rho() < mwx::minEdgeDistance());
+}
+
+// ── PRIMARY GATE: MID-WALL CUT (Below) welds watertight (χ=2) at the closed form, ─────
+//    CONVERGING — the annular-cap weld is robust at every deflection tested.
+CC_TEST(midwall_cut_below_watertight_converges_to_closed_form) {
+  const topo::Shape op = mwx::buildOperand();
+  const fmath::Plane P = mwx::cutPlane();
+  bo::CurvedWallCutDecline why = bo::CurvedWallCutDecline::Ok;
+  const topo::Shape cut = bo::curvedWallHalfSpaceCut(op, P, bo::KeepSide::Below, 0.02, &why);
+  CC_CHECK(why == bo::CurvedWallCutDecline::Ok);
+  CC_CHECK(!cut.isNull());
+  if (cut.isNull()) return;
+
+  // the kept solid has 7 faces: the freeform disk + 4 lower wall trapezoids + the base
+  // + the ANNULAR cap (the mid-wall signature — an analytic Split fired on each wall).
+  int nFaces = 0;
+  for (topo::Explorer fx(cut, topo::ShapeType::Face); fx.more(); fx.next()) ++nFaces;
+  CC_CHECK(nFaces == 7);
+
+  const double cf = mwx::cutVolume();  // (H0+c)·A_Q − c·π·ρ²/2
+  const double deflections[] = {0.02, 0.012, 0.008, 0.005, 0.0025};
+  double prevRel = 1e9;
+  for (double d : deflections) {
+    tess::MeshParams mp; mp.deflection = d;
+    const tess::Mesh m = tess::SolidMesher(mp).mesh(cut);
+    CC_CHECK(tess::isWatertight(m));    // the annular-cap weld never leaks
+    CC_CHECK(eulerChar(m) == 2);        // single closed 2-manifold
+    const double v = tess::enclosedVolume(m);
+    const double rel = std::fabs(v - cf) / cf;
+    CC_CHECK(rel < 0.02);               // within the deflection band
+    CC_CHECK(rel <= prevRel + 1e-4);    // and CONVERGES monotonically to the closed form
+    prevRel = rel;
+  }
+  CC_CHECK(prevRel < 0.005);            // the finest deflection is within 0.5% of the closed form
+}
+
+// ── The annular cap really is annular: the cut removes the CORRECT bowl cap volume ────
+// (distinct from the full disk cap of the dome pose — asserts the −c·π·ρ²/2 hole term).
+CC_TEST(midwall_removed_volume_matches_bowl_cap) {
+  const topo::Shape op = mwx::buildOperand();
+  bo::CurvedWallCutDecline why = bo::CurvedWallCutDecline::Ok;
+  const topo::Shape cut = bo::curvedWallHalfSpaceCut(op, mwx::cutPlane(), bo::KeepSide::Below, 0.005, &why);
+  CC_CHECK(!cut.isNull());
+  if (cut.isNull()) return;
+  tess::MeshParams mp; mp.deflection = 0.005;
+  const double vCut = tess::enclosedVolume(tess::SolidMesher(mp).mesh(cut));
+  const double removed = mwx::fullVolume() - vCut;           // measured removed cap
+  const double removedCf = mwx::fullVolume() - mwx::cutVolume();
+  CC_CHECK(removedCf > 0.01);                                 // a SUBSTANTIAL, discriminating cut
+  CC_CHECK(std::fabs(removed - removedCf) / removedCf < 0.05);
+}
+
+// ── Honest decline: a non-cutting plane above the whole operand → NULL ────────────────
+CC_TEST(midwall_declines_non_cutting_plane) {
+  const topo::Shape op = mwx::buildOperand();
+  fmath::Plane P = mwx::cutPlane();
+  P.pos.origin = fmath::Point3{0.0, 0.0, 10.0};  // entirely above the operand
+  bo::CurvedWallCutDecline why = bo::CurvedWallCutDecline::Ok;
+  const topo::Shape cut = bo::curvedWallHalfSpaceCut(op, P, bo::KeepSide::Below, 0.02, &why);
+  CC_CHECK(cut.isNull());
+  CC_CHECK(why != bo::CurvedWallCutDecline::Ok);
 }
 
 int main() { return cctest::run_all(); }

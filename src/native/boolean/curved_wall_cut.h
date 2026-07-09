@@ -202,17 +202,33 @@ inline bool recogniseTraceSplit(const FreeformOperand& op, const math::Plane& P,
 // Collect the kept analytic (planar) faces for the given keep side: each is split /
 // kept-whole / dropped by byte-frozen `hscdetail::cutAnalyticFace`. Returns false (and
 // sets `why`) on a declined analytic cut. Isolated so the driver stays in the backend
-// band. (For the reachable dome pose no Split fires — every analytic face is on one
-// side — but the machinery is kept so a mid-wall cut still routes correctly.)
+// band.
+//
+// When a planar analytic face is SPLIT (the cut plane genuinely crosses it — the
+// "walled bowl / dome cut MID-WALL" pose), its two `Face ∩ P` crossing points are
+// recorded in `capChords`: each split contributes ONE straight chord of the
+// cross-section boundary ON `P`. Those chords chain into the OUTER loop of the flat
+// cap (the wall section), and the closed freeform seam becomes the cap's inner HOLE —
+// so the cap is an ANNULUS, not a disk. The keep-side wall sub-face's own cut edge is
+// built from the SAME crossing points (`hscdetail::cutAnalyticFace` closes its keep
+// loop with the chord between the two crossings), so the wall sub-face and the cap's
+// outer boundary share bit-identical 3-D endpoints and weld watertight.
+//
+// When NO analytic face is split (`capChords` stays empty — the reachable dome pose,
+// where the only other face, the flat base, is entirely on the keep side), the driver
+// keeps the byte-identical single-disk cap path.
 inline bool collectKeptAnalyticFaces(const FreeformOperand& op, const math::Plane& P,
                                      KeepSide side, double band, double weldTol,
                                      std::vector<topo::Shape>& faces,
+                                     std::vector<hscdetail::Piece>& capChords,
                                      CurvedWallCutDecline& why) {
   for (std::size_t idx : op.analytic) {
     const hscdetail::AnalyticCut ac = hscdetail::cutAnalyticFace(op.faces[idx], P, side, band, weldTol);
     if (ac.kind == hscdetail::AnalyticCut::Kind::KeepWhole) faces.push_back(op.faces[idx].face);
-    else if (ac.kind == hscdetail::AnalyticCut::Kind::Split) faces.push_back(ac.keepFace);
-    else if (ac.kind == hscdetail::AnalyticCut::Kind::Fail) {
+    else if (ac.kind == hscdetail::AnalyticCut::Kind::Split) {
+      faces.push_back(ac.keepFace);
+      capChords.push_back(hscdetail::Piece{ac.cross0, ac.cross1});  // one wall-section chord on P
+    } else if (ac.kind == hscdetail::AnalyticCut::Kind::Fail) {
       why = CurvedWallCutDecline::AnalyticCutFailed;
       return false;
     }
@@ -257,6 +273,67 @@ inline topo::Shape synthCircularCap(const std::vector<math::Point3>& loop3d,
   return planarFaceFromLoop(loop, capFrame, outwardCap);
 }
 
+// Build the outer-wire edges of a planar face from an ordered loop of pieces, on plane
+// frame `fr`. Mirrors `planarFaceFromLoop`'s edge synthesis (byte-frozen
+// `edgeFromPiece`), but returns the edge list so the caller can add a hole wire.
+inline std::vector<topo::Shape> loopEdges(const std::vector<Piece>& loop, const math::Ax3& fr) {
+  std::vector<topo::Shape> edges;
+  edges.reserve(loop.size());
+  for (const Piece& pc : loop) edges.push_back(hscdetail::edgeFromPiece(pc, fr));
+  return edges;
+}
+
+// Synthesize the flat ANNULAR cross-section cap on `P` for the "walled bowl / dome cut
+// MID-WALL" pose: the OUTER boundary is the wall-section polygon (the ordered `capChords`
+// = the `Face ∩ P` chords of the split analytic walls), and the closed freeform seam
+// (`seam3d`) is the inner HOLE. The outer loop reuses the SAME crossing endpoints the
+// kept wall sub-faces closed on; the hole reuses the SAME seam nodes the freeform disk
+// sub-face's seam loop was laid on — so both boundaries weld bit-for-bit. The cap normal
+// faces the DISCARD side (outward for the keep solid). Returns a null Shape if the chords
+// do not chain into one simple closed loop (→ AnalyticCutFailed).
+inline topo::Shape synthAnnularCap(const std::vector<Piece>& capChords,
+                                   const std::vector<math::Point3>& seam3d, const math::Plane& P,
+                                   KeepSide side, double weldTol) {
+  // The cap's outward normal faces the DISCARD side (outward for the keep solid). For a
+  // planar face the M0 mesher's geometric normal is `frame.z` flipped by the face
+  // orientation (Forward ⇒ +frame.z, Reversed ⇒ −frame.z) — INDEPENDENT of the wire
+  // winding — so choose the orientation whose signed normal equals the outward direction.
+  // (The convex-loop area heuristic of `planarFaceFromLoop` is winding-sensitive and
+  // mis-orients an annular cap whose OUTER-loop winding is set by the wall-chord ordering,
+  // not by the surface; keying off `frame.z` alone removes that ambiguity.)
+  const math::Ax3 capFrame = P.pos;  // z = plane normal (as traced)
+  const math::Vec3 outwardCap = (side == KeepSide::Below ? 1.0 : -1.0) * P.pos.z.vec();
+  const topo::Orientation o = math::dot(capFrame.z.vec(), outwardCap) >= 0.0
+                                  ? topo::Orientation::Forward
+                                  : topo::Orientation::Reversed;
+
+  auto uvArea = [&](const std::vector<Piece>& loop) {
+    return hscdetail::loopSignedArea(loop, capFrame);
+  };
+
+  // OUTER: chain the wall-section chords into ONE closed simple loop.
+  std::vector<Piece> outer;
+  if (!hscdetail::orderLoop(capChords, weldTol, outer)) return {};
+  if (!hscdetail::loopSimple(outer, capFrame)) return {};
+  std::vector<topo::Shape> outerEdges = loopEdges(outer, capFrame);
+  const topo::Shape outerWire = topo::ShapeBuilder::makeWire(std::move(outerEdges));
+
+  // HOLE: the closed freeform seam as straight chords between the SAME seam nodes the
+  // disk sub-face used, wound OPPOSITE the outer loop so it bounds a REMOVED disk.
+  const std::size_t n = seam3d.size();
+  std::vector<Piece> holeLoop;
+  holeLoop.reserve(n);
+  for (std::size_t i = 0; i < n; ++i) holeLoop.push_back(Piece{seam3d[i], seam3d[(i + 1) % n]});
+  if (uvArea(holeLoop) * uvArea(outer) > 0.0) std::reverse(holeLoop.begin(), holeLoop.end());
+  std::vector<topo::Shape> holeEdges = loopEdges(holeLoop, capFrame);
+  const topo::Shape holeWire = topo::ShapeBuilder::makeWire(std::move(holeEdges));
+
+  topo::FaceSurface s{};
+  s.kind = topo::FaceSurface::Kind::Plane;
+  s.frame = capFrame;
+  return topo::ShapeBuilder::makeFace(s, outerWire, {holeWire}, o);
+}
+
 }  // namespace cwcdetail
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -287,21 +364,35 @@ inline topo::Shape curvedWallHalfSpaceCut(const topo::Shape& operand, const math
   const auto freeKeepOpt = pickKeepFreeform(split, fs, ctx.loc, P, side, band);
   if (!freeKeepOpt) return fail(CurvedWallCutDecline::SmoothSplitFailed);
 
-  // (5) collect the freeform keep-face + every kept analytic face.
+  // (5) collect the freeform keep-face + every kept analytic face. A SPLIT analytic
+  // wall (the plane crosses it — the mid-wall pose) contributes its `Face ∩ P` chord to
+  // `capChords`; when none is split (the reachable dome pose) `capChords` stays empty.
   std::vector<topo::Shape> faces;
   faces.push_back(*freeKeepOpt);
+  std::vector<Piece> capChords;
   CurvedWallCutDecline anWhy = CurvedWallCutDecline::Ok;
-  if (!collectKeptAnalyticFaces(*op, P, side, band, ctx.weldTol, faces, anWhy)) return fail(anWhy);
+  if (!collectKeptAnalyticFaces(*op, P, side, band, ctx.weldTol, faces, capChords, anWhy))
+    return fail(anWhy);
 
-  // (6) synthesize the flat circular cross-section cap on P by REUSING the disk's own
-  // seam edges (faceInside's outer wire IS the seam loop, for BOTH keep sides): sharing
-  // the edge NODES makes the M0 mesher discretize each seam edge ONCE and pin the disk
-  // AND the cap to bit-identical samples (a resonance-free watertight weld).
+  // (6) synthesize the flat cross-section cap on P by REUSING the disk's own seam nodes
+  // (bit-identical to `splitFaceSmoothTrim`'s seam loop) so the M0 mesher pins the disk
+  // AND the cap to the same samples (a resonance-free watertight weld).
+  //   * NO analytic wall split (dome pose): a single-DISK cap bounded by the seam.
+  //   * ANY analytic wall split (walled bowl cut MID-WALL): an ANNULAR cap whose OUTER
+  //     boundary is the wall-section polygon (the split walls' `Face ∩ P` chords) and
+  //     whose inner HOLE is the seam — welding to both the kept wall sub-faces and the
+  //     freeform disk sub-face.
   const std::vector<math::Point3> seam3d = seamLoop3d(fs, ctx.loc, split.seam);
   if (seam3d.size() < 3) return fail(CurvedWallCutDecline::CapDegenerate);
   if (loopAreaOnPlane(seam3d, P.pos) < band * std::max(ctx.diag, 1.0))
     return fail(CurvedWallCutDecline::CapDegenerate);
-  faces.push_back(synthCircularCap(seam3d, P, side));
+  if (capChords.empty()) {
+    faces.push_back(synthCircularCap(seam3d, P, side));
+  } else {
+    const topo::Shape cap = synthAnnularCap(capChords, seam3d, P, side, ctx.weldTol);
+    if (cap.isNull()) return fail(CurvedWallCutDecline::AnalyticCutFailed);
+    faces.push_back(cap);
+  }
 
   // (7) weld → Solid. A curved disk + a flat cap already bound a closed solid (the
   // dome/bowl-cut-below pose has just those two faces); ≥ 2 survivors is the floor.

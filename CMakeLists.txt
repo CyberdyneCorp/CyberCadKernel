@@ -438,6 +438,11 @@ if(CYBERCAD_BUILD_TESTS)
         # Non-cutting-plane + non-freeform declines to NULL→OCCT. Its seam is the real S3
         # trace, so this host suite builds only under CYBERCAD_HAS_NUMSCI. Additive
         # header-only verb (curved_wall_cut.h); no lib change, no cc_* ABI change.
+        # Also covers the M2 MID-WALL pose (walled_bowl_midwall_fixture.h): a steep bowl
+        # over a convex quad + 4 planar walls + a base cut by a horizontal plane whose
+        # seam is a closed interior circle AND which splits the walls, so the cross-section
+        # cap is an ANNULUS (outer = wall-section polygon, inner HOLE = seam) — welding
+        # watertight (χ=2) and converging to (H0+c)·A_Q − c·π·ρ²/2.
         list(APPEND CYBERCAD_TESTS test_native_curved_wall_cut)
         set(test_native_curved_wall_cut_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_curved_wall_cut.cpp")

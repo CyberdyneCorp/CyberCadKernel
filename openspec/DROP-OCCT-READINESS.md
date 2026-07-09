@@ -81,9 +81,9 @@ All `file:line` are in `src/engine/native/native_engine.cpp` unless noted.
 | replace_face | cc_replace_face | 1332 | **A** | DM3 done (resid tilt breadth) | 6 | pure-offset planar retarget native via DM2 grow-then-trim (`replace_face_general.h`, both gates); non-zero tilt (foreign OCCT X-axis) / non-planar / curved neighbour → OCCT |
 | replace_face_to_plane | cc_replace_face_to_plane | 1336 | **A** | DM2 done (resid DM breadth) | 4 | planar push/pull native via grow-then-trim (98a2011); non-planar / non-prismatic target → OCCT (1338) |
 | project_point_on_face | cc_project_point_on_face | facade | **A** | DM4 done (resid non-analytic) | 0 | plane / cylinder / sphere closed-form foot native (`project.h`, both gates vs GeomAPI_ProjectPointOnSurf); cone / torus / freeform / ambiguous → OCCT |
-| fillet_face | cc_fillet_face | 1341 | **B** | M3 | 7 | hard decline (1342) |
-| full_round_fillet | cc_full_round_fillet | 1378 | **B** | M3 | 0 | hard decline (1379) |
-| full_round_fillet_faces | cc_full_round_fillet_faces | 1382 | **B** | M3 | 0 | hard decline (1383) |
+| fillet_face | cc_fillet_face | 1440 | **B** | M3 (corner weld → M2) | 7 | native PATH wired + self-verified (`fillet_face.h`, both gates); full-face fillet on a planar solid needs the corner-sphere weld between adjacent edge-fillets (gates on M2) → measured `WeldGatesM2` decline → OCCT; lands automatically on M2 with no engine change |
+| full_round_fillet | cc_full_round_fillet | 1477 | **A** (analytic prismatic) | resid M3 dihedral/closed-seam | 0 | prismatic rib (parallel walls, r=w/2 tangent-cylinder cap) native via `full_round.h` on the two opposite seams (both gates: analytic `(w²/2)(1−π/4)L` + OCCT full-round parity); dihedral (M2 valley-solve) / curved wall / closed-seam annulus (M2 weld) → OCCT |
+| full_round_fillet_faces | cc_full_round_fillet_faces | 1481 | **A** (analytic prismatic) | resid M3 dihedral/closed-seam | 0 | explicit left/middle/right prismatic cap native via `full_round.h` (== auto entry, both gates); dihedral / curved / closed-seam / no-shared-seams → OCCT |
 | fillet_edges_g2 | cc_fillet_edges_g2 | 1386 | **B** | M3 (G2) | 0 | hard decline (1387) |
 | **BOOLEAN** ||||||
 | boolean_op | cc_boolean | 1411 | **A** | resid M2 freeform | 13 | native planar-polyhedron + analytic-curved SSI (bulk of CAD booleans); all-OCCT operands → OCCT (1416); mixed native/OCCT → honest error; native-native curved/degenerate → honest error (NEVER faked) |
@@ -287,9 +287,9 @@ Default engine under rehearsal: `cc_active_engine()==1` (native), `cc_brep_avail
 
 | op | class | measured | error surfaced |
 |---|---|---|---|
-| cc_fillet_face | B | **CLEAN-DECLINE** | "operation not supported on a native body yet: fillet_face …" |
-| cc_full_round_fillet | B | **CLEAN-DECLINE** | "… full_round_fillet …" |
-| cc_full_round_fillet_faces | B | **CLEAN-DECLINE** | "… full_round_fillet_faces …" |
+| cc_fillet_face | B | **CLEAN-DECLINE** | "native fillet_face: no verified watertight result … (corner weld gates M2) → OCCT-only" |
+| cc_full_round_fillet | A (prismatic) | **SERVED-NATIVE** (prismatic rib) / clean-decline (dihedral/curved/closed-seam) | "native full_round_fillet: … dihedral / curved wall / closed-seam annulus → OCCT-only" |
+| cc_full_round_fillet_faces | A (prismatic) | **SERVED-NATIVE** (prismatic rib) / clean-decline | "native full_round_fillet_faces: … → OCCT-only" |
 | cc_fillet_edges_g2 | B | **CLEAN-DECLINE** | "… fillet_edges_g2 …" |
 | cc_twisted_sweep (real twist) | B | **CLEAN-DECLINE** | "operation not supported by active engine: twisted_sweep" |
 | cc_loft_along_rail (curved rail) | B | **CLEAN-DECLINE** | "… loft_along_rail" |

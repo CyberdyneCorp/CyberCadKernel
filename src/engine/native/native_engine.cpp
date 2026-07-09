@@ -1437,9 +1437,32 @@ ShapeResult NativeEngine::replace_face_to_plane(EngineShape body, int f, double 
     return make_error("operation not supported on a native body yet: replace_face_to_plane"
                       " (native scope: convex planar-polyhedron move-face → OCCT-only)");
 }
+// ── NATIVE M3 fillet_face (additive; reuses the landed multi-edge dihedral fillet) ──
+// The app's `cc_fillet_face(body, faceId, radius)` — round EVERY edge bounding the
+// picked face at constant radius (mirrors OcctEngine::fillet_face, which Adds a fillet
+// on every edge of the face). An OCCT body forwards to the OCCT BRepFilletAPI oracle.
+// A NATIVE all-planar body is served by nblend::fillet_face, which collects the CONVEX
+// planar-dihedral bounding edges of the picked planar face (probed with the SAME
+// filletArc guard the dihedral fillet uses) and re-solves them through the byte-frozen
+// nblend::fillet_edges tangent-cylinder blend (open-seam weld). The candidate is
+// accepted ONLY under the engine's SHRINK self-verify (0 < Vr < Vo — a face fillet
+// REMOVES material), the SAME gate fillet_edges uses. A curved solid / non-planar
+// picked face / concave-or-curved bounding edge / interfering radius yields NULL and
+// the SAME honest decline the prior hard-decline produced (a native void is NEVER
+// handed to OCCT).
 ShapeResult NativeEngine::fillet_face(EngineShape body, int f, double r) {
-    CC_NATIVE_BODY_UNSUPPORTED("fillet_face", body);
-    return fallback().fillet_face(body, f, r);
+    if (!isNative(body)) return fallback().fillet_face(body, f, r);
+    const auto* h = static_cast<const NativeShape*>(body.get());
+    if (!h->isMesh && r > 0.0) {
+        ntopo::Shape result = nblend::fillet_face(h->shape, f, r);
+        if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
+            return track(wrapNative(std::move(result)));
+    }
+    // Honest decline: identical to the pre-M3 native-body behaviour (never → OCCT).
+    return make_error(
+        "native fillet_face: no verified watertight result for this native body "
+        "(curved face / non-planar picked face / concave-or-curved bounding edge / "
+        "interfering radius → OCCT-only)");
 }
 // ── NATIVE DM1 plane split (additive; the ONLY DM1 change) ────────────────────────
 // An OCCT body is UNCHANGED — it forwards to the OCCT split_plane oracle byte-for-byte.
@@ -1474,13 +1497,45 @@ ShapeResult NativeEngine::split_plane(EngineShape body, double ox, double oy, do
     return make_error("operation not supported on a native body yet: split_plane"
                       " (native scope: extrude/revolve + tessellate/mass/bbox)");
 }
+// ── NATIVE M3 full-round fillet (additive; the r = w/2 prismatic tangent-cylinder cap) ──
+// The app's `cc_full_round_fillet[_faces]` — replace a narrow middle face with a full
+// round tangent to its two neighbour walls, consuming the middle face. An OCCT body
+// forwards to the OCCT full-round oracle. A NATIVE all-planar body is served by
+// nblend::full_round_fillet[_faces] for the ANALYTIC PRISMATIC case (two PARALLEL
+// planar walls a distance w apart, a straight middle strip): the rolling ball of
+// radius r = w/2 is the special case of the tangent-cylinder blend, so the cap is
+// built by re-solving the two seam edges through the byte-frozen nblend::fillet_edges
+// at radius w/2 — the two arcs meet tangentially on the strip mid-plane and the
+// middle face is consumed. Accepted ONLY under the engine's SHRINK self-verify
+// (0 < Vr < Vo — a convex full round REMOVES material). A DIHEDRAL (non-parallel)
+// middle, a curved wall, a non-planar middle, or a closed-seam/annulus (which need the
+// M2 valley-solve / closed-seam weld) yields NULL and the SAME honest decline the prior
+// hard-decline produced (a native void is NEVER handed to OCCT).
 ShapeResult NativeEngine::full_round_fillet(EngineShape body, int f) {
-    CC_NATIVE_BODY_UNSUPPORTED("full_round_fillet", body);
-    return fallback().full_round_fillet(body, f);
+    if (!isNative(body)) return fallback().full_round_fillet(body, f);
+    const auto* h = static_cast<const NativeShape*>(body.get());
+    if (!h->isMesh) {
+        ntopo::Shape result = nblend::full_round_fillet(h->shape, f);
+        if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
+            return track(wrapNative(std::move(result)));
+    }
+    return make_error(
+        "native full_round_fillet: no verified watertight result for this native body "
+        "(dihedral / curved wall / non-planar middle / closed-seam annulus → OCCT-only; "
+        "gates on M2 valley-solve + closed-seam weld)");
 }
 ShapeResult NativeEngine::full_round_fillet_faces(EngineShape body, int l, int m, int r) {
-    CC_NATIVE_BODY_UNSUPPORTED("full_round_fillet_faces", body);
-    return fallback().full_round_fillet_faces(body, l, m, r);
+    if (!isNative(body)) return fallback().full_round_fillet_faces(body, l, m, r);
+    const auto* h = static_cast<const NativeShape*>(body.get());
+    if (!h->isMesh) {
+        ntopo::Shape result = nblend::full_round_fillet_faces(h->shape, l, m, r);
+        if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
+            return track(wrapNative(std::move(result)));
+    }
+    return make_error(
+        "native full_round_fillet_faces: no verified watertight result for this native "
+        "body (dihedral / curved wall / non-planar middle / closed-seam annulus / no "
+        "shared seams → OCCT-only; gates on M2 valley-solve + closed-seam weld)");
 }
 ShapeResult NativeEngine::fillet_edges_g2(EngineShape body, const int* e, int ec, double r) {
     CC_NATIVE_BODY_UNSUPPORTED("fillet_edges_g2", body);

@@ -313,6 +313,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_ssi_s4_classification
         test_native_heal
         test_native_blend
+        test_native_analytic_fillet
         test_native_wrap_emboss
         test_native_step_writer
         test_native_step_reader
@@ -549,6 +550,12 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_heal.cpp")
     set(test_native_blend_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_blend.cpp")
+    # MOAT M3 analytic face-fillet — host GATE (a), the OCCT-free proof of the native
+    # full-round (prismatic tangent-cylinder cap) + the MEASURED fillet_face corner-weld
+    # decline (gates on M2). Reuses only blend/construct/tessellate/topology (no S3
+    # tracer), so it lives in the always-on native suite. Header-only ops; no lib change.
+    set(test_native_analytic_fillet_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_analytic_fillet.cpp")
     set(test_native_wrap_emboss_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_wrap_emboss.cpp")
     set(test_native_step_writer_SRC

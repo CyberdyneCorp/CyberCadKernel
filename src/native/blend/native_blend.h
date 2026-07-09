@@ -40,6 +40,8 @@
 #include "native/blend/curved_chamfer.h"
 #include "native/blend/curved_fillet.h"
 #include "native/blend/fillet_edges.h"
+#include "native/blend/fillet_face.h"
+#include "native/blend/full_round.h"
 #include "native/blend/offset_face.h"
 #include "native/blend/shell.h"
 

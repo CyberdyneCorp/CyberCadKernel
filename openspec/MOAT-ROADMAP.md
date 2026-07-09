@@ -285,6 +285,20 @@ elliptical-crease / variable-on-freeform fillets, general chamfers, and wrap-emb
 sphere/cone/freeform base (all declined this session for lack of M0/M2). General canal-surface
 construction + the M0 mesher + M2 booleans.
 - *Oracle:* `BRepFilletAPI` / `BRepOffsetAPI` / `cc_wrap_emboss` (volume/area/watertight/continuity).
+- **Status — analytic FACE-fillet slice LANDED (`moat-m3af-analytic-fillet`).** The
+  **prismatic full-round** — `cc_full_round_fillet[_faces]` on a rib between two PARALLEL
+  planar walls — is now NATIVE: a tangent half-cylinder cap of radius r = strip-width/2,
+  built as the r = w/2 special case of the landed rolling-ball blend on the two OPPOSITE
+  seam edges (`src/native/blend/full_round.h`), consuming the middle face. Both gates
+  green — host analytic `V_removed = (w²/2)(1−π/4)·L` + SIM parity vs the OCCT full-round
+  oracle (watertight, χ=2, vol/area/bbox/deflection-bounded-Hausdorff). `cc_fillet_face`
+  has its native PATH wired + self-verified (`fillet_face.h`) but the full-face fillet on
+  a planar solid still **honestly DECLINES this wave** — rounding a closed corner-sharing
+  edge loop needs the SPHERICAL corner weld between adjacent edge-fillets, which gates on
+  **M2** (MEASURED: the landed multi-edge fillet welds only NON-adjacent edge sets); it
+  lands automatically on the M2 corner weld with no engine change. The DIHEDRAL / curved /
+  closed-seam full round declines → OCCT (dihedral valley-solve + closed-seam weld gate on
+  M2). Residual = the freeform/curved-blend breadth above.
 
 ### M4 — General STEP / AP242 import (+ IGES stays dropped) · ~1.5–3 py · needs M0
 The remaining import breadth on the landed AP203+ reader: **foreign rational/general B-spline

@@ -54,12 +54,26 @@
 // The nested walk DECLINES → OCCT (never a mis-placed solid) on a CYCLE in the parent-edge
 // forest, an AMBIGUOUS child (one shape-representation placed into two distinct parents = a
 // shared sub-assembly instanced twice), a DANGLING / unreadable level transform, or a
-// NON-CONFORMAL composed W. A Form-B MAPPED_ITEM / REPRESENTATION_MAP is still declined.
+// NON-CONFORMAL composed W.
+//
+// ASSEMBLY INSTANCING (Form B: MAPPED_ITEM / REPRESENTATION_MAP) — the standard AP242
+// assembly-REUSE mechanism — is ALSO admitted: a REPRESENTATION_MAP(#origin, #mappedRep) names a
+// SHARED shape-representation reaching exactly one MANIFOLD_SOLID_BREP, and each MAPPED_ITEM('',
+// #repMap, #target) instances it once at world placement T = frameToWorld(target) ∘
+// frameToWorld(origin)⁻¹ (an AXIS2_PLACEMENT_3D target) or T = the CARTESIAN_TRANSFORMATION_OPERATOR_3D
+// target (uniform-scale / mirror). T is classified conformal (rigid / uniform-scale / mirror) by the
+// SAME classifyPlacement gate, the shared brep is mapped ONCE and re-instanced through the shared node
+// via Shape::located, a mirror's faces are orientation-complemented, and the instances yield a placed
+// Compound (a single MAPPED_ITEM yields a single located Solid). Form B DECLINES → OCCT on a mapped
+// representation reaching ≠ 1 brep, a non-conformal / unreadable target transform, a lone
+// REPRESENTATION_MAP with no MAPPED_ITEM, or a file that MIXES Form-A (a brep-reaching CDSR) with
+// Form-B (never composes two mechanisms in one file).
 //
 // DECLINE (returns a NULL Shape → engine falls to OCCT, never fabricates
 // geometry): any unsupported entity/surface keyword, rational/weighted B-spline, a
-// NON-uniform-scale / shear component transform, a Form-B MAPPED_ITEM or lone
-// assembly-usage with no composable placement, non-mm unit context, malformed record,
+// NON-uniform-scale / shear component transform, a Form-B MAPPED_ITEM whose map reaches
+// ≠ 1 brep or whose target is non-conformal, a lone REPRESENTATION_MAP / assembly-usage
+// with no composable placement, a mixed Form-A + Form-B file, non-mm unit context, malformed record,
 // or a reconstruction that does not self-verify watertight. A GENERAL revolution whose
 // generatrix is an ELLIPSE or a (non-rational) B_SPLINE_CURVE touching the axis at both
 // ends now imports NATIVELY: the profile meridian is revolved into the EXACT rational

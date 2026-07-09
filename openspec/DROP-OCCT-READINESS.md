@@ -120,7 +120,7 @@ All `file:line` are in `src/engine/native/native_engine.cpp` unless noted.
 | place_on_frame | cc_place_on_frame | 2100 | **A** | M-TX done | 5 | native rigid frame placement; degenerate frame declines |
 | **EXCHANGE** ||||||
 | step_export | cc_step_export | 2017 | **A** | resid small | 12 | native writer scope (plane/cyl/cone/sphere/bspline); out-of-scope → OCCT (2017) |
-| step_import | cc_step_import | 2035 | **A** | resid M4 tail | 10 | native AP203 + B-spline admission (rational + trims + nested); malformed / PMI-semantics / `MAPPED_ITEM` → OCCT (2035) |
+| step_import | cc_step_import | 2035 | **A** | resid M4 tail | 8 | native AP203 + B-spline admission (rational + trims + nested Form-A + **Form-B `MAPPED_ITEM`/`REPRESENTATION_MAP` instancing**); malformed / PMI-semantics / non-conformal / mixed-Form-A+B → OCCT (2035) |
 | pmi_scan | cc_step_pmi_scan | 2041 | **A** | done | 0 | read-only native, no fall-through |
 | stl_import | cc_stl_import | 2070 | **A** | done | 0 | OCCT-free native reader, **no fall-through** (2070) |
 | iges_export | cc_iges_export | 2062 | **C** | DECLINE (IGES dropped) | 6 | native→error, else OCCT (2062); product-scope drop |
@@ -173,8 +173,11 @@ app-surface ops.
   at unlink both ops become a clean "IGES not supported" error.
 - **Already honest declines, no native work needed:** arbitrary-broken B-rep healing beyond
   the landed M5 slices; exotic freeform booleans / blends in full generality (declined at
-  recognition, never faked — the same discipline as the landed M2 declines); foreign STEP
-  `MAPPED_ITEM` (Form-B) assemblies and full PMI *semantics* (the census scan is native).
+  recognition, never faked — the same discipline as the landed M2 declines); full PMI
+  *semantics* (the census scan is native; GD&T tolerance-zone / feature-control-frame /
+  datum-reference-frame modelling stays OCCT). Foreign STEP `MAPPED_ITEM` /
+  `REPRESENTATION_MAP` (Form-B) assembly INSTANCING now imports NATIVELY (M4-tail,
+  `moat-m4t-assembly-import`); only a non-conformal / ≠1-brep / mixed-Form-A+B mapped file declines.
 
 ---
 

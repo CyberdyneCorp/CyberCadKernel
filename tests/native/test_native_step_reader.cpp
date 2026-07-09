@@ -2405,4 +2405,205 @@ CC_TEST(rect_trimmed_inverted_box_declines) {
   CC_CHECK(ex::readStepString(wrapped).isNull());  // inverted box → decline
 }
 
+// ── ASSEMBLY INSTANCING (Form B: MAPPED_ITEM / REPRESENTATION_MAP) ─────────────
+// The standard AP242 assembly-reuse mechanism: ONE shared representation (a box) is
+// instanced N times via a REPRESENTATION_MAP + N MAPPED_ITEMs, each with its own target
+// AXIS2_PLACEMENT_3D. The writer already emits an ADVANCED_BREP_SHAPE_REPRESENTATION
+// listing the box's MANIFOLD_SOLID_BREP — point the REPRESENTATION_MAP's mapped_representation
+// straight at it. The origin frame is identity; each target frame is a known placement.
+namespace {
+// Return the #id of the shape-representation (ADVANCED_BREP_ or plain SHAPE_REPRESENTATION)
+// whose item list contains the brep, in a native-written body.
+long shapeRepId(const std::string& body) {
+  const std::size_t k = body.find("_SHAPE_REPRESENTATION(");
+  const std::size_t k2 = (k == std::string::npos) ? body.find(" SHAPE_REPRESENTATION(") : k;
+  const std::size_t use = (k2 == std::string::npos) ? k : k2;
+  if (use == std::string::npos) return 0;
+  const std::size_t h = body.rfind('#', use);
+  std::size_t j = h + 1; std::string num;
+  while (j < body.size() && std::isdigit(static_cast<unsigned char>(body[j]))) num += body[j++];
+  return num.empty() ? 0 : std::stol(num);
+}
+}  // namespace
+
+// N MAPPED_ITEMs at KNOWN translations → an N-solid placed Compound; each instance is the
+// shared box's exact volume, each world bbox is the box translated by its target frame.
+CC_TEST(mapped_item_instances_shared_box_at_known_translations) {
+  const std::string sa = ex::writeStepString(box10(), "shared");  // 10-cube, vol 1000
+  const long srId = shapeRepId(sa);
+  CC_CHECK(srId != 0);
+  if (srId == 0) return;
+
+  // Three target placements: origin, (30,0,0), (0,20,5).
+  const double tx[3] = {0.0, 30.0, 0.0};
+  const double ty[3] = {0.0, 0.0, 20.0};
+  const double tz[3] = {0.0, 0.0, 5.0};
+
+  std::string asm_;
+  asm_ += "#900001 = CARTESIAN_POINT('',(0.,0.,0.));\n";
+  asm_ += "#900002 = DIRECTION('',(0.,0.,1.));\n";
+  asm_ += "#900003 = DIRECTION('',(1.,0.,0.));\n";
+  asm_ += "#900004 = AXIS2_PLACEMENT_3D('',#900001,#900002,#900003);\n";  // origin frame
+  asm_ += "#900005 = REPRESENTATION_MAP(#900004,#" + std::to_string(srId) + ");\n";
+  int id = 900010;
+  for (int i = 0; i < 3; ++i) {
+    const int pt = id++, ax = id++, mi = id++;
+    asm_ += "#" + std::to_string(pt) + " = CARTESIAN_POINT('',(" +
+            std::to_string(tx[i]) + "," + std::to_string(ty[i]) + "," +
+            std::to_string(tz[i]) + "));\n";
+    asm_ += "#" + std::to_string(ax) + " = AXIS2_PLACEMENT_3D('',#" + std::to_string(pt) +
+            ",#900002,#900003);\n";
+    asm_ += "#" + std::to_string(mi) + " = MAPPED_ITEM('',#900005,#" + std::to_string(ax) +
+            ");\n";
+  }
+
+  std::string merged = sa;
+  const std::size_t insert = merged.find('\n', merged.find("DATA;")) + 1;
+  merged.insert(insert, asm_);
+
+  const topo::Shape shape = ex::readStepString(merged);
+  CC_CHECK(!shape.isNull());
+  if (shape.isNull()) return;
+  CC_CHECK(shape.type() == topo::ShapeType::Compound);
+
+  int solids = 0;
+  double volSum = 0.0;
+  bool allWatertight = true, sawOrigin = false, saw30 = false, saw20 = false;
+  for (topo::Explorer e(shape, topo::ShapeType::Solid); e.more(); e.next()) {
+    const topo::Shape s = e.current();
+    if (!watertight(s)) allWatertight = false;
+    const double v = volumeOf(s);
+    volSum += v;
+    CC_CHECK(std::fabs(v - 1000.0) < 1e-6);  // each instance is the shared box
+    const Box wb = worldBox(s);
+    if (std::fabs(wb.lo[0]) < 1e-6 && std::fabs(wb.lo[1]) < 1e-6 && std::fabs(wb.lo[2]) < 1e-6)
+      sawOrigin = true;
+    if (std::fabs(wb.lo[0] - 30.0) < 1e-6) saw30 = true;
+    if (std::fabs(wb.lo[1] - 20.0) < 1e-6 && std::fabs(wb.lo[2] - 5.0) < 1e-6) saw20 = true;
+    ++solids;
+  }
+  CC_CHECK(solids == 3);
+  CC_CHECK(allWatertight);
+  CC_CHECK(std::fabs(volSum - 3000.0) < 1e-6);  // 3 × 1000 (exact, planar)
+  CC_CHECK(sawOrigin && saw30 && saw20);        // all three placements present
+}
+
+// A ROTATED MAPPED_ITEM target composes exactly (rigid, det≈+1). Origin frame identity;
+// target frame is rotated 90° about +Z (X=+Y) and translated to (5,5,0). A unit box [0,1]³
+// instanced there lands at x∈[4,5], y∈[5,6], z∈[0,1] (same math as the Form-A rotated case).
+CC_TEST(mapped_item_rotated_target_composes) {
+  const double p[] = {0, 0, 1, 0, 1, 1, 0, 1};
+  const std::string sa = ex::writeStepString(cst::build_prism(p, 4, 1.0), "shared");
+  const long srId = shapeRepId(sa);
+  CC_CHECK(srId != 0);
+  if (srId == 0) return;
+
+  std::string asm_;
+  asm_ += "#900001 = CARTESIAN_POINT('',(0.,0.,0.));\n";
+  asm_ += "#900002 = DIRECTION('',(0.,0.,1.));\n";
+  asm_ += "#900003 = DIRECTION('',(1.,0.,0.));\n";
+  asm_ += "#900004 = AXIS2_PLACEMENT_3D('',#900001,#900002,#900003);\n";  // origin identity
+  asm_ += "#900005 = REPRESENTATION_MAP(#900004,#" + std::to_string(srId) + ");\n";
+  asm_ += "#900006 = CARTESIAN_POINT('',(5.,5.,0.));\n";
+  asm_ += "#900007 = DIRECTION('',(0.,1.,0.));\n";  // target X axis = +Y (90° about Z)
+  asm_ += "#900008 = AXIS2_PLACEMENT_3D('',#900006,#900002,#900007);\n";  // target rotated
+  asm_ += "#900009 = MAPPED_ITEM('',#900005,#900008);\n";
+
+  std::string merged = sa;
+  const std::size_t insert = merged.find('\n', merged.find("DATA;")) + 1;
+  merged.insert(insert, asm_);
+
+  const topo::Shape shape = ex::readStepString(merged);
+  CC_CHECK(!shape.isNull());
+  if (shape.isNull()) return;
+  // A single MAPPED_ITEM yields a single located Solid.
+  CC_CHECK(shape.type() == topo::ShapeType::Solid);
+  CC_CHECK(watertight(shape));
+  const Box wb = worldBox(shape);
+  CC_CHECK(std::fabs(wb.lo[0] - 4.0) < 1e-6 && std::fabs(wb.hi[0] - 5.0) < 1e-6);
+  CC_CHECK(std::fabs(wb.lo[1] - 5.0) < 1e-6 && std::fabs(wb.hi[1] - 6.0) < 1e-6);
+  CC_CHECK(std::fabs(wb.lo[2] - 0.0) < 1e-6 && std::fabs(wb.hi[2] - 1.0) < 1e-6);
+  CC_CHECK(std::fabs(volumeOf(shape) - 1.0) < 1e-6);  // rigid → volume preserved
+}
+
+// DECLINE: a MAPPED_ITEM whose REPRESENTATION_MAP's mapped_representation lists NO brep.
+CC_TEST(mapped_item_no_brep_in_mapped_rep_declines) {
+  const std::string sa = ex::writeStepString(box10(), "shared");
+  // Point the mapped_representation at a shape-representation with an EMPTY item list.
+  std::string asm_;
+  asm_ += "#900001 = CARTESIAN_POINT('',(0.,0.,0.));\n";
+  asm_ += "#900002 = DIRECTION('',(0.,0.,1.));\n";
+  asm_ += "#900003 = DIRECTION('',(1.,0.,0.));\n";
+  asm_ += "#900004 = AXIS2_PLACEMENT_3D('',#900001,#900002,#900003);\n";
+  asm_ += "#900020 = GEOMETRIC_REPRESENTATION_CONTEXT(3);\n";
+  asm_ += "#900006 = SHAPE_REPRESENTATION('',(),#900020);\n";  // no brep
+  asm_ += "#900005 = REPRESENTATION_MAP(#900004,#900006);\n";
+  asm_ += "#900007 = CARTESIAN_POINT('',(30.,0.,0.));\n";
+  asm_ += "#900008 = AXIS2_PLACEMENT_3D('',#900007,#900002,#900003);\n";
+  asm_ += "#900009 = MAPPED_ITEM('',#900005,#900008);\n";
+
+  std::string merged = sa;
+  const std::size_t insert = merged.find('\n', merged.find("DATA;")) + 1;
+  merged.insert(insert, asm_);
+  CC_CHECK(ex::readStepString(merged).isNull());  // mapped rep reaches 0 breps → decline
+}
+
+// DECLINE: a lone REPRESENTATION_MAP with NO MAPPED_ITEM instancing it (an assembly-usage
+// carrier with no composable instance) → NULL → OCCT.
+CC_TEST(lone_representation_map_declines) {
+  const std::string sa = ex::writeStepString(box10(), "shared");
+  const long srId = shapeRepId(sa);
+  std::string asm_;
+  asm_ += "#900001 = CARTESIAN_POINT('',(0.,0.,0.));\n";
+  asm_ += "#900002 = DIRECTION('',(0.,0.,1.));\n";
+  asm_ += "#900003 = DIRECTION('',(1.,0.,0.));\n";
+  asm_ += "#900004 = AXIS2_PLACEMENT_3D('',#900001,#900002,#900003);\n";
+  asm_ += "#900005 = REPRESENTATION_MAP(#900004,#" + std::to_string(srId) + ");\n";
+
+  std::string merged = sa;
+  const std::size_t insert = merged.find('\n', merged.find("DATA;")) + 1;
+  merged.insert(insert, asm_);
+  CC_CHECK(ex::readStepString(merged).isNull());  // no MAPPED_ITEM → decline
+}
+
+// DECLINE: a file that MIXES a Form-A brep-reaching CONTEXT_DEPENDENT_SHAPE_REPRESENTATION
+// with a Form-B MAPPED_ITEM — two mechanisms in one file are out of the bounded slice.
+CC_TEST(mixed_form_a_and_form_b_declines) {
+  const double pa[] = {0, 0, 10, 0, 10, 10, 0, 10};
+  const double pb[] = {0, 0, 6, 0, 6, 6, 0, 6};
+  const std::string sa = ex::writeStepString(cst::build_prism(pa, 4, 10.0), "A");
+  const std::string sb = ex::writeStepString(cst::build_prism(pb, 4, 6.0), "B");
+  const long srA = shapeRepId(sa);
+  const std::string bodyB = renumberedDataBody(sb, 100000);
+  const long brepB = firstBrepId(bodyB);
+  CC_CHECK(srA != 0 && brepB != 0);
+
+  std::string asm_;
+  // Form-A placement onto box B (a real brep-reaching CDSR).
+  asm_ += "#900001 = CARTESIAN_POINT('',(0.,0.,0.));\n";
+  asm_ += "#900002 = DIRECTION('',(0.,0.,1.));\n";
+  asm_ += "#900003 = DIRECTION('',(1.,0.,0.));\n";
+  asm_ += "#900004 = AXIS2_PLACEMENT_3D('',#900001,#900002,#900003);\n";
+  asm_ += "#900005 = CARTESIAN_POINT('',(30.,5.,0.));\n";
+  asm_ += "#900006 = AXIS2_PLACEMENT_3D('',#900005,#900002,#900003);\n";
+  asm_ += "#900007 = ITEM_DEFINED_TRANSFORMATION('','',#900004,#900006);\n";
+  asm_ += "#900008 = SHAPE_REPRESENTATION('',(#" + std::to_string(brepB) + "),#900020);\n";
+  asm_ += "#900009 = SHAPE_REPRESENTATION('',(),#900020);\n";
+  asm_ += "#900010 = ( REPRESENTATION_RELATIONSHIP('','',#900008,#900009) "
+          "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#900007) "
+          "SHAPE_REPRESENTATION_RELATIONSHIP() );\n";
+  asm_ += "#900011 = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#900010,#900012);\n";
+  asm_ += "#900012 = PRODUCT_DEFINITION_SHAPE('','',#900013);\n";
+  asm_ += "#900013 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#900014,#900015,$);\n";
+  asm_ += "#900020 = GEOMETRIC_REPRESENTATION_CONTEXT(3);\n";
+  // Form-B MAPPED_ITEM onto box A (the mix).
+  asm_ += "#900030 = REPRESENTATION_MAP(#900004,#" + std::to_string(srA) + ");\n";
+  asm_ += "#900031 = MAPPED_ITEM('',#900030,#900006);\n";
+
+  std::string merged = sa;
+  const std::size_t insert = merged.find('\n', merged.find("DATA;")) + 1;
+  merged.insert(insert, bodyB + asm_);
+  CC_CHECK(ex::readStepString(merged).isNull());  // mixed Form-A + Form-B → decline
+}
+
 CC_RUN_ALL()

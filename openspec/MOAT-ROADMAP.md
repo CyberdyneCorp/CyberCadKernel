@@ -264,9 +264,18 @@ patches** (needs M0 to mesh them), AP242 **PMI semantics** (not just skip), gene
 surfaces**. **DEEP-NESTED (multi-level) rigid/conformal assemblies now LAND** (M4-tail): the
 Form-A CDSR relationship graph is modelled as a parent-edge forest over shape-representations
 and each leaf composes its full world placement `W = T_root ∘ … ∘ T_leaf` via a leaf→root
-chain walk (single-level is the length-1 special case, byte-identical). `MAPPED_ITEM` /
-`REPRESENTATION_MAP` (Form-B) remains the deferred assembly tail (honest DECLINE → OCCT), as do
-cyclic / ambiguous-shared / non-conformal graphs. IGES is **descoped** (STEP-only; `cc_iges_*`
+chain walk (single-level is the length-1 special case, byte-identical). **`MAPPED_ITEM` /
+`REPRESENTATION_MAP` (Form-B) assembly INSTANCING now LANDS too** (M4-tail, `moat-m4t-assembly-import`):
+the standard AP242 assembly-reuse mechanism — a `REPRESENTATION_MAP` over a shared brep, instanced by
+N `MAPPED_ITEM`s each at `T = frameToWorld(target) ∘ frameToWorld(origin)⁻¹` (AXIS2 target) or a
+`CARTESIAN_TRANSFORMATION_OPERATOR_3D` (scale/mirror), reusing the SAME `classifyPlacement` /
+`Shape::located` substrate as Form-A; the shared brep is mapped ONCE and re-instanced through the shared
+node → a placed Compound (GATE a host-analytic + GATE b SIM parity vs `STEPControl_Reader`, both green).
+A mapped rep reaching ≠1 brep, a non-conformal target, a lone `REPRESENTATION_MAP`, or a MIXED Form-A+B
+file still honestly DECLINE → OCCT, as do cyclic / ambiguous-shared / non-conformal Form-A graphs. **PMI
+SEMANTICS remain the deferred tail** (honest DECLINE — only the read-only `pmi_scan` census recognises
+GD&T/tolerance/datum entities; no tolerance-zone / feature-control-frame / datum-reference-frame model is
+built). IGES is **descoped** (STEP-only; `cc_iges_*`
 stays OCCT until removed/stubbed at drop-occt — never reimplemented).
 - *Oracle:* `STEPControl_Reader` re-import (count/volume/watertight/topology) + foreign files.
 - *Bounded* (mechanical parser breadth, once M0 meshes the surfaces).
@@ -721,7 +730,7 @@ slices used). Both are captured below.
 | **M5** shape-healing robustness | `heal/` | — | ✅ **Wave-1 slice LANDED** — tail continues (asymptotic) |
 | **M6** completeness / fuzzing harness | test infra + `ssi/` | — | ✅ **Wave-1 + breadth×8 LANDED** — curved-boolean + STEP round-trip + construction loft/sweep + blend fillet/chamfer + wrap-emboss + mass-properties + **geometry-services (GS3 distance / GS4 curvature / GS2 section incl. OBLIQUE / GS5 inertia / GS6 validity / GS1 HLR vs OCCT, incl. tilted regimes; 0 DISAGREED across 2 seeds, 480 trials)** + **transform-chains (three-way native/OCCT/closed-form similarity; translate/rotate/uscale/mirror, N=160×2 seeds, 0 DISAGREED, mirror handedness-flip confirmed; found + gated an OCCT zero-scale hang)** fuzzers (0 DISAGREED, **8 native domains**); concave-shaft blends + healing remain (gates M8) |
 | **M7a** guided sweep · hard loft | `construct/` | — | ✅ **Wave-1 slice LANDED** — N-section loft ABI (`cc_solid_loft_sections`); guided sweep (measured trap) + non-planar-cap loft remain OCCT |
-| **M4** general STEP/AP242 import | `exchange/` | M0 | ✅ **Wave-2 LANDED** — non-rational + `RATIONAL_B_SPLINE_SURFACE` + `RATIONAL_B_SPLINE_CURVE` (edge/trim) admission native (parity 90/90); PMI + `MAPPED_ITEM` assemblies remain OCCT |
+| **M4** general STEP/AP242 import | `exchange/` | M0 | ✅ **Wave-2 LANDED** — non-rational + `RATIONAL_B_SPLINE_SURFACE` + `RATIONAL_B_SPLINE_CURVE` (edge/trim) admission native (parity 90/90). ✅ **M4-tail `MAPPED_ITEM` / `REPRESENTATION_MAP` (Form-B) assembly INSTANCING LANDED** (`moat-m4t-assembly-import`): a `REPRESENTATION_MAP` over a shared brep instanced by N `MAPPED_ITEM`s (AXIS2 or CARTESIAN_TRANSFORMATION_OPERATOR_3D target), reusing the Form-A `classifyPlacement`/`Shape::located` substrate → placed Compound; the shared brep mapped ONCE, re-instanced through the shared node. GATE (a) HOST-analytic (`test_native_step_reader.cpp` +5, 67/67): N shared-box instances at known translations/rotation match closed-form vol/bbox; ≠1-brep / lone-REP_MAP / mixed-Form-A+B DECLINE. GATE (b) SIM vs `STEPControl_Reader` (`native_step_mapped_item_parity.mm`, booted sim, 5/5): 3 instances, vol/area/centroid rel ~1e-16, bbox Δ=0, faces 18=18; no-brep mapped rep declines→OCCT. Structural: `git diff src/native` OCCT-free & additive, writer + `mapManifoldBrep` byte-frozen, 0 `cc_*` change. **PMI SEMANTICS remain OCCT** (census-only `pmi_scan`; no GD&T semantic model) |
 | **M2b (B2)** freeform face-split | `boolean/` · `ssi/` | M0 ✅ + M1 ✅ | ✅ **Wave-2 slice LANDED** — `boolean/face_split.h` `splitFace` (tiles vs OCCT 12/12); non-convex/multi-crossing tail declines. **SMOOTH-TRIM ✅ LANDED** — `boolean/smooth_trim_split.h` `splitFaceSmoothTrim` (additive sibling; closed/circular interior seam → disk + annulus-hole; host gate 7/7, tiling ε, closed-form `π·ρ²`); B2 convex path byte-frozen |
 | **M2c (B3)** freeform point-in-solid | `boolean/` | M0 ✅ | ✅ **Wave-2 slice LANDED** — `boolean/freeform_membership.h` `classifyPointInMesh` (crispDISAGREE=0 vs `BRepClass3d`); near-tangent band → On/Unknown |
 | **M2a (B1)** freeform operand descriptor | `boolean/` | `shape.h` | ✅ **Wave-2 slice LANDED** — `boolean/freeform_operand.h` `recogniseFreeformSolid` (host gate 14/14; admit + round-trip + 8-way decline battery); **completes the M2 substrate**. End-to-end assembly honest-declined (B2 needs smooth-trim split + a B4 analytic-face-split/cap-synth verb) |

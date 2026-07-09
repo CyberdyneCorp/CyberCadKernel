@@ -365,6 +365,7 @@ class Mapper {
     const AsmKind ak = assemblyDisposition();
     if (ak == AsmKind::Decline) { decline(); return {}; }
     if (ak == AsmKind::Compose) return assembly();
+    if (ak == AsmKind::MappedItem) return mappedAssembly();
 
     const std::vector<int> brepIds = findManifoldBreps();
     if (brepIds.empty() || fail_) return {};
@@ -452,22 +453,30 @@ class Mapper {
   }
 
   // How the file's transform / relationship graph dispositions the import.
-  enum class AsmKind { None, Compose, Decline };
+  enum class AsmKind { None, Compose, MappedItem, Decline };
 
   // Classify the file's product-structure / relationship graph WITHOUT reading it as a
   // blanket "any relationship → assembly" trigger (which declined an AP242 file the
   // moment its PMI carried a REPRESENTATION_RELATIONSHIP). The decision keys on whether
-  // a CONTEXT_DEPENDENT_SHAPE_REPRESENTATION actually reaches a MANIFOLD_SOLID_BREP:
-  //   * Compose — at least one CDSR's child shape-representation lists a brep → a real
-  //     product placement to compose (assembly()).
-  //   * Decline — no brep-reaching placement, but a Form-B MAPPED_ITEM / REPRESENTATION_MAP
-  //     (out of slice) or a lone NEXT_ASSEMBLY_USAGE_OCCURRENCE (an assembly usage with
-  //     no composable transform) is present → NULL → OCCT (unchanged honesty).
-  //   * None    — only ANNOTATION / PMI relationship entities that never reach a brep →
+  // a CONTEXT_DEPENDENT_SHAPE_REPRESENTATION (Form A) or a MAPPED_ITEM (Form B) actually
+  // reaches a MANIFOLD_SOLID_BREP:
+  //   * Compose    — at least one CDSR's child shape-representation lists a brep → a real
+  //     Form-A product placement to compose (assembly()).
+  //   * MappedItem — no brep-reaching CDSR, but at least one MAPPED_ITEM whose
+  //     REPRESENTATION_MAP reaches exactly one brep → the standard AP242 assembly-reuse
+  //     mechanism (mappedAssembly()). A file MIXING a brep-reaching CDSR with a MAPPED_ITEM
+  //     is out of this bounded slice → Decline (Compose takes precedence only when no
+  //     MAPPED_ITEM is present).
+  //   * Decline    — no brep-reaching placement, but a Form-B MAPPED_ITEM / REPRESENTATION_MAP
+  //     that does NOT reach a brep (an out-of-slice mapped rep), or a lone
+  //     NEXT_ASSEMBLY_USAGE_OCCURRENCE (an assembly usage with no composable transform) is
+  //     present → NULL → OCCT (unchanged honesty).
+  //   * None       — only ANNOTATION / PMI relationship entities that never reach a brep →
   //     SKIP; the flat multi-solid / single-solid path imports the geometry.
   // A FLAT multi-solid / single-solid file (no relationships at all) is also None.
   AsmKind assemblyDisposition() {
-    bool brepReachingCDSR = false, hasMappedItem = false, hasNauo = false;
+    bool brepReachingCDSR = false, hasMappedItem = false, brepReachingMapped = false,
+         hasNauo = false;
     for (const auto& [id, r] : recs_) {
       if (r.combined) continue;
       const std::string& kw = r.keyword;
@@ -475,13 +484,24 @@ class Mapper {
           r.args[0].isRef()) {
         const auto [childSr, opId] = relationshipAndTransform(r.args[0].ref);
         if (childSr != 0 && brepOfRepresentation(childSr) != 0) brepReachingCDSR = true;
-      } else if (kw == "MAPPED_ITEM" || kw == "REPRESENTATION_MAP") {
+      } else if (kw == "MAPPED_ITEM") {
         hasMappedItem = true;
+        // arg[1] = mapping_source (the REPRESENTATION_MAP); a MAPPED_ITEM whose map reaches
+        // exactly one brep is an admissible Form-B instance.
+        if (r.args.size() >= 2 && r.args[1].isRef() &&
+            representationMapBrep(r.args[1].ref) != 0)
+          brepReachingMapped = true;
+      } else if (kw == "REPRESENTATION_MAP") {
+        hasMappedItem = true;  // a lone REPRESENTATION_MAP still marks Form-B presence
       } else if (kw == "NEXT_ASSEMBLY_USAGE_OCCURRENCE") {
         hasNauo = true;
       }
     }
+    // A file that MIXES Form-A (brep-reaching CDSR) and Form-B (any MAPPED_ITEM /
+    // REPRESENTATION_MAP) is out of the bounded slice — never compose two mechanisms.
+    if (brepReachingCDSR && hasMappedItem) return AsmKind::Decline;
     if (brepReachingCDSR) return AsmKind::Compose;
+    if (brepReachingMapped) return AsmKind::MappedItem;
     if (hasMappedItem || hasNauo) return AsmKind::Decline;
     return AsmKind::None;
   }
@@ -739,8 +759,11 @@ class Mapper {
     const std::vector<int> brepIds = findManifoldBreps();
     if (brepIds.empty()) { decline(); return {}; }
 
-    // Form B (MAPPED_ITEM / REPRESENTATION_MAP) is out of this slice — decline the
-    // whole file rather than place breps at the wrong (identity) location.
+    // Form-B (MAPPED_ITEM / REPRESENTATION_MAP) instancing has its OWN path
+    // (mappedAssembly()); a MIXED Form-A + Form-B file already declined at
+    // assemblyDisposition(). This defensive guard keeps assembly() strictly Form-A: if a
+    // MAPPED_ITEM co-exists with a brep-reaching CDSR it declines rather than place breps
+    // at the wrong (identity) location.
     for (const auto& [id, r] : recs_)
       if (!r.combined && (r.keyword == "MAPPED_ITEM" || r.keyword == "REPRESENTATION_MAP")) {
         decline();
@@ -814,6 +837,114 @@ class Mapper {
         if (mirrored.at(id)) placedSolid = placedSolid.reversedShape();
       }
       solids.push_back(placedSolid);
+    }
+    if (solids.size() == 1) return solids.front();
+    return topo::ShapeBuilder::makeCompound(std::move(solids));
+  }
+
+  // ── Assembly instancing (Form B: MAPPED_ITEM / REPRESENTATION_MAP) ────────────
+  //
+  // The STANDARD AP242 assembly-REUSE mechanism (ISO 10303-42): one shared representation
+  // is instanced many times, each instance a MAPPED_ITEM carrying its own placement. The
+  // entity chain (confirmed against OCCT RWStepRepr_RW{MappedItem,RepresentationMap}):
+  //
+  //   #mi     = MAPPED_ITEM('', #repMap, #target);        -- (name, mapping_source, mapping_target)
+  //   #repMap = REPRESENTATION_MAP(#origin, #mappedRep);  -- (mapping_origin, mapped_representation)
+  //   #origin = AXIS2_PLACEMENT_3D(...);                  -- the shared rep's source frame
+  //   #mappedRep = SHAPE_REPRESENTATION('', (#brep, ...), #ctx);  -- the SHARED geometry
+  //   #target = AXIS2_PLACEMENT_3D(...)  |  CARTESIAN_TRANSFORMATION_OPERATOR_3D(...);
+  //
+  // The instance world placement is T = frameToWorld(target) ∘ frameToWorld(origin)⁻¹ for an
+  // AXIS2 target (matching OCCT's SetTransformation(target, origin)); a CARTESIAN operator
+  // target is applied directly (uniform-scale / mirror). This is the SAME placement math and
+  // the SAME frameToWorld / classifyPlacement / located / reversedShape substrate as Form A.
+  // The shared brep is mapped ONCE (memoized by #id) and re-instanced through the shared node.
+
+  // Resolve REPRESENTATION_MAP(#origin, #mappedRep) → the single MANIFOLD_SOLID_BREP #id in
+  // the mapped representation's item list, or 0 (none / >1 / unreadable → the caller declines).
+  long representationMapBrep(long repMapId) {
+    const Record* r = recOfKind(repMapId, "REPRESENTATION_MAP");
+    if (!r || r->args.size() != 2 || !r->args[1].isRef()) return 0;
+    return brepOfRepresentation(r->args[1].ref);  // mapped_representation → single brep
+  }
+
+  // The mapping_origin AXIS2_PLACEMENT_3D #id of REPRESENTATION_MAP(#origin, #mappedRep), or
+  // 0 if unreadable.
+  long representationMapOrigin(long repMapId) {
+    const Record* r = recOfKind(repMapId, "REPRESENTATION_MAP");
+    if (!r || r->args.empty() || !r->args[0].isRef()) return 0;
+    return r->args[0].ref;
+  }
+
+  // The composed world placement + MIRROR flag of one MAPPED_ITEM, or nullopt to DECLINE.
+  // An AXIS2_PLACEMENT_3D target yields T = frameToWorld(target) ∘ frameToWorld(origin)⁻¹;
+  // a CARTESIAN_TRANSFORMATION_OPERATOR_3D target is resolved through the shared operator
+  // path (uniform-scale / mirror). classifyPlacement gates conformality (non-uniform / shear
+  // / singular declines) exactly as the Form-A path.
+  std::optional<std::pair<math::Transform, bool>> mappedItemPlacement(const Record& mi) {
+    if (mi.args.size() < 3 || !mi.args[1].isRef() || !mi.args[2].isRef()) return std::nullopt;
+    const long repMapId = mi.args[1].ref;
+    const long targetId = mi.args[2].ref;
+
+    math::Transform t;
+    // Case 1: a CARTESIAN_TRANSFORMATION_OPERATOR_3D target — the operator IS the placement
+    // (no origin frame). Try this first; it declines cleanly if the target is not such an
+    // operator, in which case the AXIS2 frame-pair form is used.
+    if (const auto op = cartesianOperator(targetId)) {
+      t = *op;
+    } else {
+      // Case 2: an AXIS2_PLACEMENT_3D target with the REPRESENTATION_MAP's origin frame.
+      const long originId = representationMapOrigin(repMapId);
+      if (originId == 0) return std::nullopt;
+      const auto origin = axis2placement(originId);
+      const auto target = axis2placement(targetId);
+      if (!origin || !target) return std::nullopt;
+      const auto originInv = frameToWorld(*origin).inverse();
+      if (!originInv) return std::nullopt;
+      t = frameToWorld(*target).composedWith(*originInv);
+    }
+    const auto cls = classifyPlacement(t);
+    if (!cls) return std::nullopt;
+    return std::make_pair(t, *cls == PlacementClass::Mirror);
+  }
+
+  // Build a placed Compound from the Form-B MAPPED_ITEM instances. Each MAPPED_ITEM (in
+  // ascending #id order — deterministic) resolves its shared brep through its
+  // REPRESENTATION_MAP, computes its world placement, maps the shared brep ONCE (memoized by
+  // brep #id), and locates it (a mirror also complements the faces so world normals stay
+  // outward). Any MAPPED_ITEM whose map reaches ≠1 brep or whose placement is non-conformal /
+  // unreadable declines the WHOLE file → OCCT (never a partial or mis-placed assembly).
+  topo::Shape mappedAssembly() {
+    // Collect the MAPPED_ITEM records in ascending #id order for a deterministic result.
+    std::vector<int> miIds;
+    for (const auto& [id, r] : recs_)
+      if (!r.combined && r.keyword == "MAPPED_ITEM") miIds.push_back(id);
+    std::sort(miIds.begin(), miIds.end());
+    if (miIds.empty()) { decline(); return {}; }
+
+    // The shared brep is mapped ONCE per distinct brep #id and re-instanced through the
+    // shared geometry node (Shape::located clones only the handle + Location).
+    std::unordered_map<int, topo::Shape> mappedBrepCache;
+
+    std::vector<topo::Shape> solids;
+    solids.reserve(miIds.size());
+    for (const int miId : miIds) {
+      const Record& mi = recs_.at(miId);
+      if (mi.args.size() < 3 || !mi.args[1].isRef()) { decline(); return {}; }
+      const long brepId = representationMapBrep(mi.args[1].ref);
+      if (brepId == 0) { decline(); return {}; }  // mapped rep reaches ≠1 brep
+      const auto placement = mappedItemPlacement(mi);
+      if (!placement) { decline(); return {}; }   // unreadable / non-conformal target
+
+      auto it = mappedBrepCache.find(static_cast<int>(brepId));
+      if (it == mappedBrepCache.end()) {
+        const topo::Shape solid = mapManifoldBrep(brepId);
+        if (fail_ || solid.isNull()) return {};
+        it = mappedBrepCache.emplace(static_cast<int>(brepId), solid).first;
+      }
+      topo::Shape inst = it->second.located(topo::Location{placement->first});
+      if (placement->second) inst = inst.reversedShape();  // mirror: outward-facing faces
+      solids.push_back(inst);
     }
     if (solids.size() == 1) return solids.front();
     return topo::ShapeBuilder::makeCompound(std::move(solids));

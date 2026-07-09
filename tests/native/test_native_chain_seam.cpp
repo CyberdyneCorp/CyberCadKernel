@@ -186,8 +186,9 @@ CC_TEST(strip_weld_lands_watertight_cut_common_at_closed_form_volumes) {
   if (!ss.ok()) return;
 
   struct Case { bo::StripWeldOp op; double oracle; const char* name; };
-  const Case cases[2] = {{bo::StripWeldOp::Cut, csx::volCut(), "CUT"},
-                         {bo::StripWeldOp::Common, csx::volCommon(), "COMMON"}};
+  const Case cases[3] = {{bo::StripWeldOp::Cut, csx::volCut(), "CUT"},
+                         {bo::StripWeldOp::Common, csx::volCommon(), "COMMON"},
+                         {bo::StripWeldOp::Fuse, csx::volUnion(), "FUSE"}};
   for (const Case& c : cases) {
     bo::StripWeldReport rep;
     const auto r = bo::multiFaceStripClip(*op, *g, *ss.split, c.op, 0.01, &rep);
@@ -200,6 +201,68 @@ CC_TEST(strip_weld_lands_watertight_cut_common_at_closed_form_volumes) {
     // (deflection 0.01); no tolerance weakened — the mesh converges from above.
     CC_CHECK(std::fabs(rep.volume - c.oracle) <= 2e-2 * c.oracle);
   }
+}
+
+// ── The 2-junction STRIP-WELD FUSE lands watertight at V(A∪B), fixing the two-attach- ──
+//    column box notch (the prior wave's measured next blocker: the naive 3-notched-box
+//    FUSE left open + non-manifold edges at the J1/J2 vertical columns). The MIDDLE cutting
+//    face's cap spans the full box width and attaches along BOTH junction columns, so it is
+//    split into a TOP + BOTTOM piece (`splitMiddleBoxFace`); the two END faces keep the
+//    single-column corner-clip notch. Additive: CUT/COMMON are byte-unchanged.
+CC_TEST(strip_weld_fuse_lands_watertight_at_union_volume) {
+  const auto A = ffx::buildOperand();
+  const auto B = csx::edgeBox();
+  const auto op = bo::recogniseFreeformSolid(A);
+  CC_CHECK(op.has_value());
+  if (!op) return;
+  const auto g = bo::buildChainSeamGraph(*op, B);
+  CC_CHECK(g.has_value());
+  if (!g) return;
+  const bo::OperandFace& wall = op->faces[op->freeform.front()];
+  const bo::StripSplitResult ss =
+      bo::splitFaceStrip(wall.face, g->chainSeam, g->junctionUV[0], g->junction3d[0],
+                         g->junctionUV[1], g->junction3d[1]);
+  CC_CHECK(ss.ok());
+  if (!ss.ok()) return;
+
+  bo::StripWeldReport rep;
+  const auto r = bo::multiFaceStripClip(*op, *g, *ss.split, bo::StripWeldOp::Fuse, 0.01, &rep);
+  CC_CHECK(!r.isNull());                                 // the FUSE now welds (was NULL before)
+  CC_CHECK(rep.decline == bo::StripWeldDecline::Ok);
+  CC_CHECK(rep.watertight);                              // the J1/J2 columns are now closed 2-manifold
+  // V(A∪B) is the DISCRIMINATING union: strictly larger than both operands (it is NOT a
+  // subset op), and equals the closed-form V(A) + V(box) − V(A∩B).
+  CC_CHECK(csx::volUnion() > rep.volA + 1e-6);
+  CC_CHECK(csx::volUnion() > rep.volB + 1e-6);
+  CC_CHECK(std::fabs(rep.volume - csx::volUnion()) <= 2e-2 * csx::volUnion());
+  // and it sits inside the inclusion–exclusion bound max(V(A),V(B)) ≤ V ≤ V(A)+V(B).
+  CC_CHECK(rep.volume >= std::max(rep.volA, rep.volB) - 1e-6);
+  CC_CHECK(rep.volume <= rep.volA + rep.volB + 1e-6);
+}
+
+// ── The FUSE union volume converges to the closed-form oracle as deflection → 0 ──
+CC_TEST(strip_weld_fuse_volume_converges_across_deflection) {
+  const auto A = ffx::buildOperand();
+  const auto B = csx::edgeBox();
+  const auto op = bo::recogniseFreeformSolid(A);
+  if (!op) { CC_CHECK(false); return; }
+  const auto g = bo::buildChainSeamGraph(*op, B);
+  if (!g) { CC_CHECK(false); return; }
+  const bo::OperandFace& wall = op->faces[op->freeform.front()];
+  const bo::StripSplitResult ss =
+      bo::splitFaceStrip(wall.face, g->chainSeam, g->junctionUV[0], g->junction3d[0],
+                         g->junctionUV[1], g->junction3d[1]);
+  if (!ss.ok()) { CC_CHECK(false); return; }
+  double prevErr = 1e30;
+  for (double d : {0.02, 0.01, 0.005}) {
+    bo::StripWeldReport rep;
+    const auto r = bo::multiFaceStripClip(*op, *g, *ss.split, bo::StripWeldOp::Fuse, d, &rep);
+    CC_CHECK(!r.isNull() && rep.watertight);
+    const double err = std::fabs(rep.volume - csx::volUnion());
+    CC_CHECK(err <= prevErr + 1e-9);   // monotone-converging (curved tessellation)
+    prevErr = err;
+  }
+  CC_CHECK(prevErr <= 1e-2 * csx::volUnion());
 }
 
 // ── The strip-weld CUT volume converges monotonically to the closed-form oracle ──

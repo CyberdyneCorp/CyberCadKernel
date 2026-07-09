@@ -404,29 +404,112 @@ inline bool appendCaps(StripWeldOp op, const ChainSeamGraph& g, const StripSeamG
   return true;
 }
 
+/// The MIDDLE cutting face (`Pm: y=y0`) needs a TWO-column notch — the strip's middle
+/// cap `arcM` (J1→J2) spans the FULL WIDTH of the box middle face (J1 on the x=x0 side
+/// edge, J2 on the x=x1 side edge), so its footprint attaches to BOTH box side edges
+/// along BOTH junction columns [J1,J1b] and [J2,J2b] simultaneously. The corner-clip
+/// `notchedBoxFace` drops only ONE attach column, leaving the other column's box edge
+/// unmatched (the measured J1-column open/non-manifold defect). Removing a full-width cap
+/// splits the middle box face into TWO disjoint planar pieces:
+///
+///   * TOP    — above the cap: `arcM(J1→J2)` + up the x=x1 edge to the top-right box
+///              corner + across the top box edge + down the x=x0 edge back to J1.
+///   * BOTTOM — below the cap's bottom `J1b→J2b`: `J1b→J2b` + down the x=x1 edge to the
+///              bottom-right box corner + across the bottom box edge + up to J1b.
+///
+/// The TOP piece shares `arcM` with A's bowl survivor sub-face and its two side edges
+/// (above J1/J2) with the two END notched box faces; the BOTTOM piece shares `J1b→J2b`
+/// with A's rerouted bottom notch and its side edges (below J1b/J2b) with the same two
+/// end faces — so every column edge is used by exactly two faces (watertight). Returns
+/// false (→ LoopOpen) if either piece cannot be built. `poly` is the box middle face
+/// (outward normal `poly.plane.normal`); the two pieces reuse `poly`'s plane frame.
+inline bool splitMiddleBoxFace(const Polygon& poly, const Piece& arcM, const math::Point3& J1,
+                               const math::Point3& J1b, const math::Point3& J2,
+                               const math::Point3& J2b, double weldTol,
+                               std::vector<topo::Shape>& out) {
+  // The box middle face's plane frame (mirrors `mfwdetail::notchedBoxFace`).
+  const math::Dir3 nz{poly.plane.normal};
+  const math::Vec3 ref = std::fabs(nz.z()) < 0.9 ? math::Vec3{0, 0, 1} : math::Vec3{1, 0, 0};
+  const math::Ax3 frame = math::Ax3::fromAxisAndRef(poly.vertices.front(), nz, math::Dir3{ref});
+  // Column basis, axis-agnostic: `colDir` = the junction-column direction (J1→J1b, the
+  // vertical drop into the box) and `edgeDir` = the in-plane perpendicular (which side edge).
+  // A box corner is on J's side edge iff its `edgeDir` coord matches J's; it is ABOVE the
+  // cap iff its `colDir` coord is beyond the wall point J (away from J1b), BELOW iff beyond
+  // J1b (away from J1). This never assumes which frame axis is vertical.
+  math::Vec3 colV = J1b - J1;
+  const double colLen = math::norm(colV);
+  if (colLen < weldTol) return false;
+  const math::Vec3 colDir = colV / colLen;                       // points DOWN the column (J1→J1b)
+  const math::Vec3 edgeDir = math::cross(nz.vec(), colDir);       // in-plane, across to the other edge
+  auto along = [&](const math::Point3& p) { return math::dot(p - J1, colDir); };
+  auto across = [&](const math::Point3& p) { return math::dot(p - J1, edgeDir); };
+  const double sJ1 = across(J1), sJ2 = across(J2);
+  // colDir points J1→J1b, so a corner is ABOVE the cap (past the wall point) at along < 0,
+  // and BELOW (past the bottom projection J1b) at along > along(J1b).
+  const double aJ1b = along(J1b), aJ2b = along(J2b);
+  auto corner = [&](double sCol, bool above, double belowRef) -> const math::Point3* {
+    const math::Point3* best = nullptr;
+    double bestA = above ? 1e30 : -1e30;  // above ⇒ smallest along (most negative); below ⇒ largest
+    for (const math::Point3& c : poly.vertices) {
+      if (std::fabs(across(c) - sCol) > 1e-6 * std::max(1.0, std::fabs(sCol) + 1.0)) continue;
+      const double a = along(c);
+      if (above) { if (a < -weldTol && a < bestA) { bestA = a; best = &c; } }
+      else       { if (a > belowRef + weldTol && a > bestA) { bestA = a; best = &c; } }
+    }
+    return best;
+  };
+  const math::Point3* topL = corner(sJ1, true, 0.0);
+  const math::Point3* topR = corner(sJ2, true, 0.0);
+  const math::Point3* botL = corner(sJ1, false, aJ1b);
+  const math::Point3* botR = corner(sJ2, false, aJ2b);
+  if (!topL || !topR || !botL || !botR) return false;  // cap does not span both side edges
+
+  // TOP piece: arcM(J1→J2) + J2→topR + topR→topL + topL→J1.
+  std::vector<Piece> topPcs = {arcM, Piece{J2, *topR}, Piece{*topR, *topL}, Piece{*topL, J1}};
+  std::vector<Piece> topLoop;
+  if (!hscdetail::orderLoop(topPcs, weldTol, topLoop)) return false;
+  const topo::Shape topFace = hscdetail::planarFaceFromLoop(topLoop, frame, poly.plane.normal);
+  if (topFace.isNull()) return false;
+
+  // BOTTOM piece: J1b→J2b + J2b→botR + botR→botL + botL→J1b.
+  std::vector<Piece> botPcs = {Piece{J1b, J2b}, Piece{J2b, *botR}, Piece{*botR, *botL},
+                               Piece{*botL, J1b}};
+  std::vector<Piece> botLoop;
+  if (!hscdetail::orderLoop(botPcs, weldTol, botLoop)) return false;
+  const topo::Shape botFace = hscdetail::planarFaceFromLoop(botLoop, frame, poly.plane.normal);
+  if (botFace.isNull()) return false;
+
+  out.push_back(topFace);
+  out.push_back(botFace);
+  return true;
+}
+
 /// Append the FUSE shell: `B`'s three NON-cutting faces WHOLE + its three CUTTING faces
-/// (x=x0, x=x1, y=y0) NOTCHED by their cap footprint (the box rectangle minus the cap
-/// region, whose curved side is the shared seam arc). Reuses the byte-frozen corner-clip
-/// `mfwdetail::notchedBoxFace` (one notch per cutting face). The caps are now INTERIOR to
-/// A∪B and dropped; A's CUT survivor faces (added by the caller) close the rest.
+/// (x=x0, x=x1, y=y0) clipped to OUTSIDE `A` (the cap footprints are interior to A∪B and
+/// dropped). The two END faces (x=x0, x=x1) each attach the cap along ONE box side edge
+/// (the y=y0 column) so they reuse the byte-frozen corner-clip `mfwdetail::notchedBoxFace`.
+/// The MIDDLE face (y=y0) attaches the cap along BOTH junction columns simultaneously and
+/// is split into TWO pieces by `splitMiddleBoxFace` (the two-attach-column fix). A's CUT
+/// survivor faces (added by the caller) close the rest.
 inline bool appendFuseShell(const ChainSeamGraph& g, const StripSeamGeom& sg, double weldTol,
                             std::vector<topo::Shape>& faces) {
   VertexPool pool;
   for (std::size_t i = 0; i < g.bPolys.size(); ++i)
     if (i != g.cutIdx[0] && i != g.cutIdx[1] && i != g.cutIdx[2])
       detail::triangulatePolygonToFaces(g.bPolys[i], pool, faces);  // whole non-cutting faces
-  // Notch each cutting box face by its cap: left (arc0 E→J1), right (arc1 J2→X), middle
-  // (arcM J1→J2). `notchedBoxFace(poly, arc, E, Eb, J, Jb)` drops the [J,Jb] attach segment.
+  // END faces: single-column notch (arc0 E→J1 on x=x0; arc1 J2→X on x=x1). J1/J2 lie on the
+  // box's y=y0 side edge, so the cap attaches along exactly [J,Jb] there.
   const topo::Shape nL =
       mfwdetail::notchedBoxFace(g.bPolys[g.cutIdx[0]], sg.arc0, sg.E, sg.Eb, sg.J1, sg.J1b, weldTol);
   const topo::Shape nR =
       mfwdetail::notchedBoxFace(g.bPolys[g.cutIdx[1]], sg.arc1, sg.X, sg.Xb, sg.J2, sg.J2b, weldTol);
-  const topo::Shape nM =
-      mfwdetail::notchedBoxFace(g.bPolys[g.cutIdx[2]], sg.arcM, sg.J1, sg.J1b, sg.J2, sg.J2b, weldTol);
-  if (nL.isNull() || nR.isNull() || nM.isNull()) return false;
+  if (nL.isNull() || nR.isNull()) return false;
   faces.push_back(nL);
   faces.push_back(nR);
-  faces.push_back(nM);
+  // MIDDLE face: the full-width cap attaches along BOTH columns → split into TOP + BOTTOM.
+  if (!splitMiddleBoxFace(g.bPolys[g.cutIdx[2]], sg.arcM, sg.J1, sg.J1b, sg.J2, sg.J2b, weldTol,
+                          faces))
+    return false;
   return true;
 }
 

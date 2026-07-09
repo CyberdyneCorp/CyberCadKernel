@@ -9,14 +9,17 @@
 // seam graph (`seam_graph_chain.h`), the two-junction wall split (`strip_split.h`), the
 // analytic-face clips (exact-crossing `cutAnalyticFace` for the curved-topped walls + the
 // bottom notch reroute) + the THREE synthesised box CAP faces — into ONE watertight result
-// solid for CUT (A−B) and COMMON (A∩B) of the bowl-lidded convex-quad prism A against the
-// EDGE-straddling box B (`x∈[−0.15,0.15], y∈[0,0.8], z∈[−0.6,0.2]`) whose three faces slice
-// A's Bézier wall (the strip pose). FUSE is not yet reachable (the two-attach-column box
-// notch), so it HONESTLY declines to NULL → OCCT — asserted here as the fallback contract.
+// solid for CUT (A−B), COMMON (A∩B) AND FUSE (A∪B) of the bowl-lidded convex-quad prism A
+// against the EDGE-straddling box B (`x∈[−0.15,0.15], y∈[0,0.8], z∈[−0.6,0.2]`) whose three
+// faces slice A's Bézier wall (the strip pose). FUSE now welds watertight: the middle box
+// cutting face's cap spans the full box width and attaches along BOTH junction columns
+// (J1,J2), so it is split into a TOP + BOTTOM piece (`splitMiddleBoxFace`) — the fix for the
+// prior wave's measured two-attach-column blocker (the naive 3-notched-box FUSE left open +
+// non-manifold edges at the J1/J2 columns).
 //
 // This harness reconstructs the SAME A in OCCT (Geom_BezierSurface bowl + Bézier-topped
 // walls + planar bottom, sewn) and the SAME edge box B as a BRepPrimAPI box, runs
-// BRepAlgoAPI_Cut/Common (the ORACLE), and compares the native result (measured by the
+// BRepAlgoAPI_Cut/Common/Fuse (the ORACLE), and compares the native result (measured by the
 // native M0 tessellator) on VOLUME (rel ≤ 2e-2, cross-checked vs the closed-form strip
 // oracle), AREA (rel ≤ 2e-2), WATERTIGHT, TOPOLOGY (Euler χ = 2), BBOX + one-sided
 // HAUSDORFF (≤ 1.5·defl), and a CLASSIFY batch vs BRepClass3d_SolidClassifier (zero crisp
@@ -73,6 +76,7 @@
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Common.hxx>
+#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepLib.hxx>
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
@@ -219,13 +223,16 @@ int main() {
 
   BRepAlgoAPI_Cut cutter(occtA, occtB); cutter.Build();
   BRepAlgoAPI_Common commoner(occtA, occtB); commoner.Build();
+  BRepAlgoAPI_Fuse fuser(occtA, occtB); fuser.Build();
   report("occt", "cut-built", cutter.IsDone(), "BRepAlgoAPI_Cut");
   report("occt", "common-built", commoner.IsDone(), "BRepAlgoAPI_Common");
+  report("occt", "fuse-built", fuser.IsDone(), "BRepAlgoAPI_Fuse");
 
   struct OpCase { const char* name; bo::StripWeldOp op; TopoDS_Shape occt; double closed; };
-  const OpCase cases[2] = {
+  const OpCase cases[3] = {
       {"CUT", bo::StripWeldOp::Cut, cutter.Shape(), csx::volCut()},
-      {"COMMON", bo::StripWeldOp::Common, commoner.Shape(), csx::volCommon()}};
+      {"COMMON", bo::StripWeldOp::Common, commoner.Shape(), csx::volCommon()},
+      {"FUSE", bo::StripWeldOp::Fuse, fuser.Shape(), csx::volUnion()}};
 
   auto parityAt = [&](const OpCase& c, double defl) {
     char tag[40];
@@ -325,16 +332,11 @@ int main() {
     }
   };
 
+  // FUSE (A∪B) now welds watertight via the two-attach-column middle-face split
+  // (`splitMiddleBoxFace`), so it is a FULL native-vs-OCCT parity case alongside CUT/COMMON
+  // — no longer an honest-NULL fallback. (0.008 is an isolated mesh-density decline shared
+  // by all three ops; 0.01/0.005 are the robust parity deflections.)
   for (const OpCase& c : cases) { parityAt(c, 0.01); parityAt(c, 0.005); }
-
-  // ── fallback contract: FUSE is not yet reachable → HONEST NULL (→ OCCT) ──────────
-  {
-    bo::StripWeldReport why;
-    const nt::Shape r = bo::multiFaceStripClip(*op, *g, *ss.split, bo::StripWeldOp::Fuse, 0.01, &why);
-    char buf[72];
-    std::snprintf(buf, sizeof(buf), "decline=%s", bo::stripWeldDeclineName(why.decline));
-    report("fallback", "fuse-null", r.isNull(), buf);
-  }
 
   std::printf("== %d passed, %d failed ==\n", g_pass, g_fail);
   std::fflush(stdout);

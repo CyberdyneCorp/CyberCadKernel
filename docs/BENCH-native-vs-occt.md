@@ -10,6 +10,14 @@ Two measurements, both reproducible from this repo:
 |---|---|---|---|
 | 1 | **latency** — native ms vs OCCT ms per op | `tests/sim/native_vs_occt_bench.cpp` | `scripts/bench-native-vs-occt.sh` |
 | 2 | **binary size** — OCCT-linked vs native-only footprint | (build-driven) | `scripts/bench-binary-size.sh` |
+| 3 | **runtime memory** — native peak RSS vs OCCT per op + whole-process | `tests/sim/native_vs_occt_mem.cpp` | `scripts/bench-memory-native-vs-occt.sh` |
+
+> The **runtime-memory** third leg (peak RSS / footprint, native vs OCCT — the tightest iPad
+> constraint) is measured in a companion doc:
+> [docs/BENCH-memory-native-vs-occt.md](BENCH-memory-native-vs-occt.md). Headline: doing the
+> **same** representative script, native peaks at **35.3 MB vs OCCT's 46.8 MB (1.33× / ~11.5 MB
+> less)**; per-op, native peak RSS is lower at essentially every op, with **tessellate** the
+> standout (footprint 4–10× smaller).
 
 Product code (`src/native/**`, `src/engine/**`, `include/**`, the `cc_*` ABI) is
 **byte-unchanged** by this track — it adds a measurement harness + two runners + this doc.

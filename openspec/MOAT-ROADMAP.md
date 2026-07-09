@@ -968,6 +968,21 @@ Full method + tables in [docs/BENCH-native-vs-occt.md](../docs/BENCH-native-vs-o
   for a **28 MB dead-stripped in-binary reduction** on a representative reachable set (OCCT exe 29.8 MB vs
   native-only 1.7 MB) — the concrete iPad shipping win. Native-only kernel `.a` is 2.66 MB.
 
+**drop-OCCT payoff — MEMORY (measured, branch `moat-mem`).** The third leg — runtime RAM, the tightest
+iPad constraint. Harness `tests/sim/native_vs_occt_mem.cpp` + runner `scripts/bench-memory-native-vs-occt.sh`
+drive the same `cc_*` ops under both engines and measure peak RSS (`ru_maxrss`, one op per process for a
+clean high-water mark) + `phys_footprint` deltas. Full method + tables in
+[docs/BENCH-memory-native-vs-occt.md](../docs/BENCH-memory-native-vs-occt.md). Headline (HOST, macOS arm64,
+Homebrew OCCT — ratio is the portable signal; device absolute differs):
+- **Process-level, same representative script:** native peaks at **35.3 MB vs OCCT's 46.8 MB — 1.33× /
+  ~11.5 MB less**, reproducibly, and settles ~7 MB lighter. Identical ~2.4 MB baseline before either engine
+  touches data, so the gap is entirely working set + OCCT's static/global footprint.
+- **Per-op peak RSS** is lower under native at essentially every op/size; **tessellate** is the standout
+  (native ~16–18 MB flat vs OCCT 22–35 MB rising; footprint Δ **4–10× smaller**). Booleans are comparable
+  per-op (win is in the lower process peak, not the transient); `mass_properties` OCCT Δ reads 0 (transient
+  alloc/free inside the sample window — peak RSS is still lower native). `section` native-only (OCCT-adapter
+  declines); `fillet_edges` forwards to OCCT (no native number) — reported honestly, not as wins.
+
 ## Sequencing
 
 ```

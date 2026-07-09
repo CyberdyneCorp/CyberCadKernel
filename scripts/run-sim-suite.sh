@@ -110,6 +110,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_mass_props_fuzz.mm native_transform_fuzz.mm \
       native_geometry_services_fuzz.mm \
       native_reference_geometry_fuzz.mm \
+      native_directmodel_fuzz.mm \
       native_ssi_s4f_completeness_parity.mm \
       native_first_freeform_boolean_parity.mm \
       native_multi_seam_freeform_boolean_parity.mm \

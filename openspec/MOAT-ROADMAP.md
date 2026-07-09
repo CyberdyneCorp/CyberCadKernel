@@ -496,8 +496,37 @@ fuzzing vs OCCT).
   never-widened rigid tol (dir 1e-9, point 1e-7, offset 1e-6). Determinism re-verified (same seed →
   byte-identical 538-line batch). `src/native` byte-unchanged; on run-sim-suite.sh SKIP list (own
   main(), `std::_Exit`). OpenSpec change `moat-m6i-reference-geometry-fuzz`.
+- **Breadth — 10th native domain: DIRECT-MODELING (direct-edit ops through the `cc_*` facade
+  under BOTH engines).** `tests/sim/native_directmodel_fuzz.mm` +
+  `scripts/run-sim-native-directmodel-fuzz.sh`: a DETERMINISTIC seeded generator (splitmix64→
+  xoshiro256**, seeded ONLY by FUZZ_SEED) builds a random VALID base solid (BOX / NGON prism /
+  CYLINDER / CONE frustum) IDENTICALLY under both engines via `cc_solid_extrude` /
+  `cc_solid_revolve`, then drives one random direct-model op — `cc_split_plane` (axis-aligned +
+  OBLIQUE, random keep side), `cc_replace_face` (parallel planar-cap grow/trim offset), or
+  `cc_project_point_on_face` (random exterior point) — through BOTH `cc_set_engine(1)`
+  (NativeEngine, the OCCT-free DM core; split/offset seam trace is `CYBERCAD_HAS_NUMSCI`-gated,
+  so the harness links numsci) AND `cc_set_engine(0)` (the OCCT adapter oracle), comparing the
+  results by `cc_mass_properties` / `cc_bounding_box` (each shape measured under the engine that
+  built it — guarding a real cross-engine unwrap crash) AND against a THIRD engine-independent
+  CLOSED-FORM arbiter in fp64 (exact half-space keep-volume + partition closure V+ + V− == V for
+  splits; `ΔV == capArea·offset` for constant-section cap offsets; planar / cylinder-radial foot
+  for projections). Unlike the eight internal-C++ fuzzers this drives the SHIPPING `cc_*` path
+  (like native_hlr_parity). This is the FIRST fuzz domain for direct-modeling (the three DM ops
+  had per-op parity but no fuzz). Two seeds (0xD3ADBEE710 N=80 → 39 AGREED / 29 HONESTLY-DECLINED
+  / 0 DISAGREED / 11 ORACLE-INACCURATE / 0 ORACLE_UNRELIABLE / 1 BOTH-DECLINED; 0x5EC0FFEE42 N=80
+  → 48 / 26 / 0 / 5 / 0 / 1): **0 DISAGREED** on both seeds, each of the 4 base families AND each
+  of SPLIT/OFFSET/PROJECT with ≥1 AGREED, planar cuts/offsets native==OCCT==exact-math to ~1e-16
+  and projections foot-exact, under a FIXED never-widened tol (vol 2e-2 / area 3e-2 / bbox 1.5e-2
+  / math 5e-3 / foot 1e-6). SURFACED an OCCT-facade limitation the curated DM parity hides: raw
+  `cc_replace_face` on OCCT is a half-space CUT (trim-only), so a cap GROW leaves the OCCT solid
+  un-grown while native matches exact `capArea·offset` → logged ORACLE-INACCURATE (native
+  vindicated), never a bar failure; cone-lateral projection + cone cap offset are first-class
+  HONESTLY-DECLINED (native NULL → OCCT). Determinism re-verified (same seed → byte-identical
+  batch). `src/native` / `src/engine` / `include` / the `cc_*` ABI byte-unchanged; on
+  run-sim-suite.sh SKIP list (own main(), `std::_Exit`). OpenSpec change
+  `moat-m6j-directmodel-fuzz`.
 - REMAINING (asymptotic, gates M8): extend the generator across the remaining blend families
-  (concave stepped-shaft, offset/shell), healing, and direct-modeling / section curves;
+  (concave stepped-shaft, offset/shell), healing, and section curves;
   loop-until-dry critics; the standing zero-silent-wrong-results bar.
 
 ### M7 — Tier-4 construction robustness · ~1–3 py · independent
@@ -857,7 +886,7 @@ slices used). Both are captured below.
 | **M0** freeform mesher/trimmer | `tessellate/` | — | ✅ **Wave-1 slice LANDED** — mesher ready; unblocks M2/M4. ✅ **Weld robustness LANDED (deflection-fragility RESOLVED):** shared-curved-edge single-sampling (`edge_mesher.h`+`face_mesher.h`, additive, OCCT-free) welds the freeform boolean seam + bowl-lid quad edges watertight at ANY deflection — the freeform CUT/COMMON no longer oscillate watertight↔decline across `{0.03…0.002}`. Zero regression PROVEN byte-identical (FNV of verts+tris+wt+area+vol) for every existing surface kind; host `41/41`, sim parity `20/20` at d=0.01 AND 0.004 |
 | **M1** SSI S4 general robustness | `ssi/marching` | — | ✅ **Wave-1 slice LANDED** — breadth continues (asymptotic) |
 | **M5** shape-healing robustness | `heal/` | — | ✅ **Wave-1 slice LANDED** — tail continues (asymptotic) |
-| **M6** completeness / fuzzing harness | test infra + `ssi/` | — | ✅ **Wave-1 + breadth×9 LANDED** — curved-boolean + STEP round-trip + construction loft/sweep + blend fillet/chamfer + wrap-emboss + mass-properties + **geometry-services (GS3 distance / GS4 curvature / GS2 section incl. OBLIQUE / GS5 inertia / GS6 validity / GS1 HLR vs OCCT, incl. tilted regimes; 0 DISAGREED across 2 seeds, 480 trials)** + **transform-chains (three-way native/OCCT/closed-form similarity; translate/rotate/uscale/mirror, N=160×2 seeds, 0 DISAGREED, mirror handedness-flip confirmed; found + gated an OCCT zero-scale hang)** + **reference/datum-geometry (axis/plane/edge-line/rim/offset/tangent datum queries on random solids at random rigid poses vs OCCT topology queries + closed-form datum image; N=96×2 seeds, 480 AGREED / 0 DISAGREED / 0 ORACLE_UNRELIABLE each)** fuzzers (0 DISAGREED, **9 native domains**); concave-shaft blends + healing + direct-modeling/section remain (gates M8) |
+| **M6** completeness / fuzzing harness | test infra + `ssi/` | — | ✅ **Wave-1 + breadth×10 LANDED** — curved-boolean + STEP round-trip + construction loft/sweep + blend fillet/chamfer + wrap-emboss + mass-properties + **geometry-services (GS3 distance / GS4 curvature / GS2 section incl. OBLIQUE / GS5 inertia / GS6 validity / GS1 HLR vs OCCT, incl. tilted regimes; 0 DISAGREED across 2 seeds, 480 trials)** + **transform-chains (three-way native/OCCT/closed-form similarity; translate/rotate/uscale/mirror, N=160×2 seeds, 0 DISAGREED, mirror handedness-flip confirmed; found + gated an OCCT zero-scale hang)** + **reference/datum-geometry (axis/plane/edge-line/rim/offset/tangent datum queries on random solids at random rigid poses vs OCCT topology queries + closed-form datum image; N=96×2 seeds, 480 AGREED / 0 DISAGREED / 0 ORACLE_UNRELIABLE each)** + **direct-modeling (`cc_split_plane` / `cc_replace_face` cap offset / `cc_project_point_on_face` through the `cc_*` facade under BOTH engines vs a closed-form arbiter; N=80×2 seeds, 0 DISAGREED / 0 ORACLE_UNRELIABLE each; surfaced the OCCT half-space-cut grow limitation as ORACLE-INACCURATE, native vindicated)** fuzzers (0 DISAGREED, **10 native domains**); concave-shaft blends + healing + section curves remain (gates M8) |
 | **M7a** guided sweep · hard loft | `construct/` | — | ✅ **Wave-1 slice LANDED** — N-section loft ABI (`cc_solid_loft_sections`); guided sweep (measured trap) + non-planar-cap loft remain OCCT |
 | **M4** general STEP/AP242 import | `exchange/` | M0 | ✅ **Wave-2 LANDED** — non-rational + `RATIONAL_B_SPLINE_SURFACE` + `RATIONAL_B_SPLINE_CURVE` (edge/trim) admission native (parity 90/90). ✅ **M4-tail `MAPPED_ITEM` / `REPRESENTATION_MAP` (Form-B) assembly INSTANCING LANDED** (`moat-m4t-assembly-import`): a `REPRESENTATION_MAP` over a shared brep instanced by N `MAPPED_ITEM`s (AXIS2 or CARTESIAN_TRANSFORMATION_OPERATOR_3D target), reusing the Form-A `classifyPlacement`/`Shape::located` substrate → placed Compound; the shared brep mapped ONCE, re-instanced through the shared node. GATE (a) HOST-analytic (`test_native_step_reader.cpp` +5, 67/67): N shared-box instances at known translations/rotation match closed-form vol/bbox; ≠1-brep / lone-REP_MAP / mixed-Form-A+B DECLINE. GATE (b) SIM vs `STEPControl_Reader` (`native_step_mapped_item_parity.mm`, booted sim, 5/5): 3 instances, vol/area/centroid rel ~1e-16, bbox Δ=0, faces 18=18; no-brep mapped rep declines→OCCT. Structural: `git diff src/native` OCCT-free & additive, writer + `mapManifoldBrep` byte-frozen, 0 `cc_*` change. **PMI SEMANTICS remain OCCT** (census-only `pmi_scan`; no GD&T semantic model) |
 | **M2b (B2)** freeform face-split | `boolean/` · `ssi/` | M0 ✅ + M1 ✅ | ✅ **Wave-2 slice LANDED** — `boolean/face_split.h` `splitFace` (tiles vs OCCT 12/12); non-convex/multi-crossing tail declines. **SMOOTH-TRIM ✅ LANDED** — `boolean/smooth_trim_split.h` `splitFaceSmoothTrim` (additive sibling; closed/circular interior seam → disk + annulus-hole; host gate 7/7, tiling ε, closed-form `π·ρ²`); B2 convex path byte-frozen |

@@ -929,6 +929,22 @@ detail in [DROP-OCCT-READINESS.md](DROP-OCCT-READINESS.md) §6):
   (~3–8 py) for the 4 M3 OCCT-only fillets + `boolean` freeform residual, the M7/M7b tails for
   `twisted_sweep`/`loft_along_rail`/fine-pitch threads (~1–2 py), and the IGES product decision.
 
+**M8 drop-OCCT payoff — MEASURED (branch `moat-bench`).** The rehearsal above proves the unlink is
+*build-safe*; this measures *why it is worth doing*. Harness `tests/sim/native_vs_occt_bench.cpp` +
+runners `scripts/bench-native-vs-occt.sh` (latency) and `scripts/bench-binary-size.sh` (size) drive the
+same `cc_*` ops under both engines (`cc_set_engine`) and compare the OCCT-linked vs native-only builds.
+Full method + tables in [docs/BENCH-native-vs-occt.md](../docs/BENCH-native-vs-occt.md). Headline numbers:
+- **Latency (HOST, median-of-25, ratio = OCCT/native — the portable signal; device absolute differs):**
+  planar **boolean** fuse/cut/common **8–20×** faster native (biggest on small/medium interactive models);
+  **tessellate 11–15×**; **mass_properties 7–8×** — all on identical self-verified-correct results (native
+  BSP-CSG fuse volume == OCCT to fp round-off). `section` is **native-only** (the OCCT adapter declines
+  `cc_section_plane`); `fillet_edges` **forwards to OCCT** (no native win — a clean decline after unlink,
+  reported honestly, not as a speedup).
+- **Binary size (iossim arm64):** dropping OCCT removes **112 MB** of statically-archived OCCT toolkits
+  (140 MB full trimmed install) + a **1.08 MB** kernel-side adapter (**16 TUs, 259 symbols** eliminated),
+  for a **28 MB dead-stripped in-binary reduction** on a representative reachable set (OCCT exe 29.8 MB vs
+  native-only 1.7 MB) — the concrete iPad shipping win. Native-only kernel `.a` is 2.66 MB.
+
 ## Sequencing
 
 ```

@@ -134,6 +134,34 @@ resolution. The curve *pipeline* exists; this is the *robustness* on adversarial
   both lobes, arc 6.27, `branchPoints=1`) or (b) a **seeder-dedup** fix so each disjoint spline lobe
   gets a seed → two `Closed` loops. The M1-tail's real next slice is one of those (seeding / branch-
   routing), not self-crossing completeness.
+- **M1b analytic-quadric breadth LANDED (verified vs OCCT, test+spec only) — and RE-SCOPED the
+  skew-cyl "NotAnalytic" decline.** The roadmap's recorded `skew cylinder∩cylinder = NotAnalytic`
+  decline was found to be **S1-closed-form-only**: the S1 conic dispatch (`quadric_pairs.h`)
+  correctly has no closed form for the quartic, but the **S2 seeder + S3 marcher already trace the
+  general poses** (host-probed: skew cyl∩cyl gap+oblique, sphere∩cone off-axis, and more all trace
+  with `nearTangentGaps==0` and on-both-surfaces ≈ 1e-11). The gap was verification/regression
+  coverage, not tracer capability. This slice locks two general non-coaxial analytic-quadric
+  families as **verified, regression-covered breadth**, both gates green, `src/native` byte-identical
+  (change `moat-m1b-ssi-breadth`, diff confined to `test_native_ssi_marching.cpp` +
+  `native_ssi_marching_parity.mm`):
+  - **general skew cyl∩cyl → single connected quartic loop** (axes with a nonzero min-distance gap
+    AND 60° oblique tilt; distinct from the existing symmetric orthogonal-intersecting two-loop
+    case). Gate B vs `GeomAPI_IntSS`: 1/1 branch, closed 1/1, onCurve 9.4e-5, onSurf 5.2e-5,
+    lenDelta 2.7e-6 (nat 10.1611 / occt 10.1612).
+  - **off-axis sphere∩cone → single loop** (finite sphere admits the near cone nappe once). Gate B:
+    1/1, closed 1/1, onCurve 3.4e-5, onSurf 1.2e-5, lenDelta 1.8e-6 (nat 7.2619 / occt 7.2620).
+  - Host Gate A 16/16; sim Gate B **14/0** (12 prior cases frozen + 2 new). S1 `NotAnalytic`
+    assertions unchanged (`test_native_ssi.cpp` 11/11).
+  - **Honestly DECLINED tail (sharpened next blocker):** general cone∩cone, off-axis cyl∩cone, and
+    off-axis sphere∩cyl. Root cause is a MEASURED oracle-setup mismatch: OCCT
+    `Geom_ConicalSurface`/`Geom_CylindricalSurface` are **infinite** (both nappes / unbounded
+    height) while the native adapters are **finite patches**, so when an unbounded quadric pierces
+    the other operand more than once along its infinite extent the oracle returns a multi-loop locus
+    (cyl∩cone off-axis arc-length ≈ 66; cone∩cone 2 nappe-components; off-axis sphere∩cyl 2 loops)
+    that the finite native trace cannot match — AND the second loop is a **seeding-recall** miss at
+    practical seed densities (off-axis sphere∩cyl needs 16×16 to catch both). The next slice is
+    **domain-clipped oracle surfaces** (`Geom_RectangularTrimmedSurface` to the native patch bounds)
+    + a **seeding-recall** bump, which would promote the declined tail to verified.
 
 ### M2 — General freeform booleans · ~2–4 py · needs M0 + M1
 Lift `recogniseCurvedSolid` to accept **freeform (B-spline/NURBS) operands** (it rejects them

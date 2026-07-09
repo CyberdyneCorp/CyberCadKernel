@@ -555,6 +555,86 @@ void pairSkewCylinders() {
              1e-6, 1e-4, 1e-2, 3e-2, sopt, mopt);
 }
 
+// ── M1b BREADTH: general non-coaxial / skew analytic quadric poses vs OCCT ────────────
+// The S1 closed-form dispatch defers all of these as NotAnalytic (no elementary closed
+// form); the S2 seeder + S3 marcher trace them. These cases verify each pose against
+// GeomAPI_IntSS via the shipped reportPair harness (count/type/closed/on-curve/on-surface/
+// arc-length). Poses are shared with the host cases (test_native_ssi_marching.cpp) so the
+// two gates agree.
+//
+// ORACLE-SETUP NOTE (which families are DECISIVELY verified here, and the declined tail).
+// An OCCT Geom_CylindricalSurface / Geom_ConicalSurface is INFINITE (both cone nappes,
+// unbounded height); the native adapters are BOUNDED patches (v ∈ [v0,v1], one nappe). When
+// an unbounded quadric can pierce the other operand MORE THAN ONCE along its infinite extent,
+// GeomAPI_IntSS returns the full multi-loop INFINITE locus that the finite native trace
+// legitimately cannot match without domain-clipped oracle surfaces
+// (Geom_RectangularTrimmedSurface). Measured on the sim: cyl∩cone off-axis → oracle arc-length
+// ≈ 66 across the unbounded cone; cone∩cone → 2 components on the two nappes; off-axis
+// sphere∩cyl → the infinite cylinder pierces the sphere on BOTH sides (2 loops, and at coarse
+// seeding the second loop is a SEEDING-RECALL miss). These are the DECLINED tail — the
+// sharpened next blocker for this breadth track (clipped-oracle surfaces + seeding recall).
+//
+// The two families below pair against a FINITE operand whose intersection is a SINGLE loop
+// regardless of the infinite extent: (1) skew cyl∩cyl bounded by the smaller finite
+// cylinder's single penetration region, and (2) off-axis sphere∩cone where the FINITE sphere
+// admits only the near cone nappe once. For these the native finite trace and the OCCT locus
+// coincide and the parity is decisive (matching count/type/closed-count, ≈1e-5 deltas).
+
+// Orthonormal Ax3 from origin + main axis (Gram-Schmidt on a non-parallel reference X) —
+// the native side; the OCCT side is built with the SAME frame via toOcctAx3.
+static Ax3 axFromZ(Point3 o, Vec3 z) {
+  const double zn = std::sqrt(z.x * z.x + z.y * z.y + z.z * z.z);
+  z = Vec3{z.x / zn, z.y / zn, z.z / zn};
+  const Vec3 ref = (std::fabs(z.x) < 0.9) ? Vec3{1, 0, 0} : Vec3{0, 1, 0};
+  Vec3 x = nm::cross(ref, z);
+  const double xn = std::sqrt(x.x * x.x + x.y * x.y + x.z * x.z);
+  x = Vec3{x.x / xn, x.y / xn, x.z / xn};
+  const Vec3 y = nm::cross(z, x);
+  return Ax3{o, Dir3{x.x, x.y, x.z}, Dir3{y.x, y.y, y.z}, Dir3{z.x, z.y, z.z}};
+}
+
+// GENERAL SKEW cyl∩cyl — axes neither parallel nor intersecting (gap 0.4 along +y) AND
+// oblique (60° tilt); the smaller cylinder fully penetrates the big one in a SINGLE crossing
+// region → ONE connected quartic loop (distinct from the symmetric orthogonal-intersecting
+// two-loop case above). The intersection is bounded by the penetration, so the finite native
+// trace matches the OCCT locus. A TIGHT deflection budget (like bspline×plane) packs the fit
+// nodes dense enough that the fitted B-spline hugs the curved surfaces to < the on-surf gate.
+void pairSkewCylindersGeneral() {
+  const Ax3 fz = frameZ();
+  const Ax3 fx = axFromZ({0, 0.4, 0}, Vec3{std::sin(kPi / 3), 0, std::cos(kPi / 3)});
+  nm::Cylinder cz{fz, 1.0};
+  nm::Cylinder cx{fx, 0.7};
+  ssi::ParamBox dom{0.0, 2.0 * kPi, -3.0, 3.0};
+  auto A = ssi::makeCylinderAdapter(cz, dom);
+  auto B = ssi::makeCylinderAdapter(cx, dom);
+  Handle(Geom_Surface) sa = new Geom_CylindricalSurface(toOcctAx3(fz), 1.0);
+  Handle(Geom_Surface) sb = new Geom_CylindricalSurface(toOcctAx3(fx), 0.7);
+  ssi::SeedOptions sopt; sopt.initialGridU = 6; sopt.initialGridV = 6;
+  ssi::MarchOptions mopt; mopt.maxDeflection = A.modelScale * 2.5e-4;  // dense fit nodes
+  reportPair("skew cyl general", A, B, sa, sb, /*expectTransversal=*/1,
+             1e-4, 1e-4, 1e-2, 3e-2, sopt, mopt);
+}
+
+// OFF-AXIS sphere∩cone — cone axis offset from the sphere centre. The intersection is bounded
+// by the FINITE sphere (only the near cone nappe reaches it) → one closed loop; native and the
+// OCCT locus coincide. Tight deflection for the on-surf fit gate.
+void pairSphereConeOffAxis() {
+  const Ax3 fs = frameZ();
+  const Ax3 fk = axFromZ({0.3, 0, -2}, Vec3{0.1, 0, 1});
+  nm::Sphere sp{fs, 1.0};
+  nm::Cone co{fk, 0.05, 0.3};
+  ssi::ParamBox ds{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
+  ssi::ParamBox dk{0.0, 2.0 * kPi, 0.0, 5.0};
+  auto A = ssi::makeSphereAdapter(sp, ds);
+  auto B = ssi::makeConeAdapter(co, dk);
+  Handle(Geom_Surface) sa = new Geom_SphericalSurface(toOcctAx3(fs), 1.0);
+  Handle(Geom_Surface) sb = new Geom_ConicalSurface(toOcctAx3(fk), 0.3, 0.05);
+  ssi::SeedOptions sopt; sopt.initialGridU = 8; sopt.initialGridV = 8; sopt.minPatchFrac = 1.0 / 48.0;
+  ssi::MarchOptions mopt; mopt.maxDeflection = A.modelScale * 2.5e-4;  // dense fit nodes
+  reportPair("sphere cone off-axis", A, B, sa, sb, /*expectTransversal=*/1,
+             1e-4, 1e-4, 1e-2, 3e-2, sopt, mopt);
+}
+
 // sphere ∩ sphere — crossing equal-radius spheres → 1 transversal circle (a CLOSED loop).
 // OCCT may arc-split the circle; the weld re-joins it into 1 closed component; native
 // must trace it as a single Closed WLine.
@@ -1071,6 +1151,8 @@ int main() {
   pairBSplineBSpline();
   pairBSplinePlane();
   pairSkewCylinders();
+  pairSkewCylindersGeneral();    // M1b: general skew cyl∩cyl (gap+oblique) single quartic loop vs OCCT
+  pairSphereConeOffAxis();       // M1b: off-axis sphere∩cone (sphere-bounded) vs OCCT
   pairCrossingSpheres();
   pairSphereBezier();
   pairNearTangentCrossedS4c();   // S4-c: graze marched through, full curve vs OCCT

@@ -42,6 +42,18 @@ Ax3 frameZ(Point3 o = {0, 0, 0}) {
   return Ax3{o, Dir3{1, 0, 0}, Dir3{0, 1, 0}, Dir3{0, 0, 1}};
 }
 
+Vec3 unitVec(Vec3 v) { return v * (1.0 / nmath::norm(v)); }
+
+// Build an orthonormal Ax3 from an origin and a (not-necessarily-unit) main axis.
+// The reference X is chosen non-parallel to the axis, then Gram-Schmidt orthonormalised.
+Ax3 axFromZ(Point3 o, Vec3 z) {
+  z = unitVec(z);
+  const Vec3 ref = (std::fabs(z.x) < 0.9) ? Vec3{1, 0, 0} : Vec3{0, 1, 0};
+  const Vec3 x = unitVec(nmath::cross(ref, z));
+  const Vec3 y = nmath::cross(z, x);
+  return Ax3{o, Dir3{x.x, x.y, x.z}, Dir3{y.x, y.y, y.z}, Dir3{z.x, z.y, z.z}};
+}
+
 double distToCylinder(const nmath::Cylinder& c, const Point3& x) {
   const Vec3 w = x - c.pos.origin;
   const double axial = nmath::dot(w, c.pos.z.vec());
@@ -50,6 +62,16 @@ double distToCylinder(const nmath::Cylinder& c, const Point3& x) {
 }
 double distToSphere(const nmath::Sphere& s, const Point3& x) {
   return std::fabs(nmath::distance(x, s.pos.origin) - s.radius);
+}
+// Perpendicular distance from a point to a cone surface: the radial gap between the
+// point's actual radius at its axial height and the cone's radius there, scaled by
+// cos(semiAngle) to give the true (perpendicular) surface distance.
+double distToCone(const nmath::Cone& c, const Point3& x) {
+  const Vec3 w = x - c.pos.origin;
+  const double axial = nmath::dot(w, c.pos.z.vec());
+  const double rad = nmath::norm(w - c.pos.z.vec() * axial);
+  const double rAxis = c.radius + axial / std::cos(c.semiAngle) * std::sin(c.semiAngle);
+  return std::fabs(rad - rAxis) * std::cos(c.semiAngle);
 }
 double distToPlane(const nmath::Plane& p, const Point3& x) {
   return std::fabs(nmath::dot(x - p.pos.origin, p.pos.z.vec()));
@@ -636,6 +658,69 @@ CC_TEST(march_freeform_bump_definite_never_branches_s4d) {
   CC_CHECK(tr.routedArms == 0);          // no arms sprouted
   CC_CHECK(tr.curveCount() == 0);        // the curve ends — no fabricated arc
   CC_CHECK(tr.deferredTangent >= 1);     // honest S4 gap echoed, not faked
+}
+
+// ── M1b BREADTH: general non-coaxial / skew analytic quadric poses ───────────────
+// The S1 closed-form dispatch defers all of these as NotAnalytic (no elementary closed
+// form). The S2 seeder + S3 marcher trace them anyway. These host cases lock the S3
+// CONTRACT self-consistently (every node on BOTH surfaces, clean closure, no near-tangent
+// gap); Gate B (native_ssi_marching_parity.mm) verifies the SAME poses vs OCCT
+// GeomAPI_IntSS. Poses are shared with the sim cases so the two gates agree.
+//
+// The two families here each pair against a FINITE operand whose intersection is a SINGLE
+// loop regardless of the other operand's infinite extent (skew cyl∩cyl bounded by the
+// smaller cylinder's single penetration; off-axis sphere∩cone bounded by the finite sphere),
+// so the finite native trace matches the (infinite-quadric) OCCT locus on the sim. cone∩cone,
+// cyl∩cone off-axis and off-axis sphere∩cyl (the infinite cylinder pierces twice → 2 loops +
+// seeding-recall) are the DECLINED tail — see the oracle-setup note in
+// native_ssi_marching_parity.mm.
+
+constexpr double kSin60 = 0.86602540378443864676;  // sin 60°
+constexpr double kCos60 = 0.5;                      // cos 60°
+
+// GENERAL SKEW cyl∩cyl — axes neither parallel nor intersecting (gap 0.4 along +y) AND
+// oblique (60° tilt). The small cylinder fully penetrates the big one in a single
+// crossing region → ONE connected quartic loop (unlike the symmetric orthogonal-
+// intersecting pose, which is two disjoint loops).
+CC_TEST(march_skew_cylinders_general_single_loop) {
+  nmath::Cylinder cz{frameZ(), 1.0};                                        // axis +Z, R=1
+  nmath::Cylinder cx{axFromZ({0, 0.4, 0}, Vec3{kSin60, 0, kCos60}), 0.7};   // skew, tilt 60°
+  ssi::ParamBox dom{0.0, 2.0 * kPi, -3.0, 3.0};
+  auto A = ssi::makeCylinderAdapter(cz, dom);
+  auto B = ssi::makeCylinderAdapter(cx, dom);
+  ssi::SeedOptions sopt; sopt.initialGridU = 6; sopt.initialGridV = 6;
+
+  auto tr = ssi::trace_intersection(A, B, sopt);
+  CC_CHECK(tr.curveCount() == 1);
+  CC_CHECK(tr.closedCurves == 1);
+  CC_CHECK(tr.nearTangentGaps == 0);
+  if (tr.curveCount() != 1) return;
+  const ssi::WLine& w = tr.lines[0];
+  CC_CHECK(w.isClosed());
+  checkAllNodesOnSurfaces(cc_ok_, w, [&](const Point3& p) { return distToCylinder(cz, p); },
+                          [&](const Point3& p) { return distToCylinder(cx, p); }, 1e-9);
+}
+
+
+// OFF-AXIS sphere∩cone — cone axis offset from the sphere centre. One loop.
+CC_TEST(march_sphere_cone_offaxis) {
+  nmath::Sphere sp{frameZ(), 1.0};
+  nmath::Cone co{axFromZ({0.3, 0, -2}, unitVec(Vec3{0.1, 0, 1})), 0.05, 0.3};
+  ssi::ParamBox ds{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
+  ssi::ParamBox dk{0.0, 2.0 * kPi, 0.0, 5.0};
+  auto A = ssi::makeSphereAdapter(sp, ds);
+  auto B = ssi::makeConeAdapter(co, dk);
+  ssi::SeedOptions sopt; sopt.initialGridU = 8; sopt.initialGridV = 8; sopt.minPatchFrac = 1.0 / 48.0;
+
+  auto tr = ssi::trace_intersection(A, B, sopt);
+  CC_CHECK(tr.curveCount() == 1);
+  CC_CHECK(tr.closedCurves == 1);
+  CC_CHECK(tr.nearTangentGaps == 0);
+  if (tr.curveCount() != 1) return;
+  const ssi::WLine& w = tr.lines[0];
+  CC_CHECK(w.isClosed());
+  checkAllNodesOnSurfaces(cc_ok_, w, [&](const Point3& p) { return distToSphere(sp, p); },
+                          [&](const Point3& p) { return distToCone(co, p); }, 1e-9);
 }
 
 int main() { return cctest::run_all(); }

@@ -11,9 +11,10 @@
 //     closed-form V(z≤c) = π·ρ²·c/2 and CONVERGES monotonically to it across a full
 //     deflection sweep — the LANDED keep-side, robust at every deflection tested;
 //   * `curvedWallHalfSpaceCut(Above)` = COMMON welds WATERTIGHT (Euler χ = 2) at the
-//     closed-form V(z≥c) = V(full) − V(z≤c) at its robust deflection, and the partition
-//     identity V(z≤c) + V(z≥c) = V(full) holds — but the annulus+lid rim weld is
-//     deflection-fragile away from it and honestly DECLINES to NULL there (never a leak);
+//     closed-form V(z≥c) = V(full) − V(z≤c) across the FULL deflection ladder (MOAT M0-rim:
+//     the outer curved-rim tessellator weld pins the flat lid's diverging rim samples to the
+//     bowl's canonical rim curve and drops the coarse-regime coincident sliver), and the
+//     partition identity V(z≤c) + V(z≥c) = V(full) holds;
 //   * a NON-CUTTING plane (above the rim) and a non-operand each DECLINE to NULL.
 // Requires CYBERCAD_HAS_NUMSCI (the fixture's seam is the real S3 trace).
 //
@@ -113,8 +114,8 @@ CC_TEST(curved_wall_common_above_watertight_at_closed_form) {
   const topo::Shape op = cwx::buildOperand();
   const fmath::Plane P = cwx::cutPlane();
   bo::CurvedWallCutDecline why = bo::CurvedWallCutDecline::Ok;
-  // COMMON keeps the annulus + the top lid + the cap; the annulus↔lid rim weld is
-  // robust at this deflection (fragile elsewhere — the measured next blocker).
+  // COMMON keeps the annulus + the top lid + the cap; the annulus↔lid CURVED RIM weld is
+  // now robust at EVERY deflection (MOAT M0-rim — see the full-ladder test below).
   const topo::Shape com = bo::curvedWallHalfSpaceCut(op, P, bo::KeepSide::Above, 0.0102, &why);
   CC_CHECK(why == bo::CurvedWallCutDecline::Ok);
   CC_CHECK(!com.isNull());
@@ -144,28 +145,50 @@ CC_TEST(curved_wall_partition_closure) {
   CC_CHECK(std::fabs(sum - cwx::fullVolume()) / cwx::fullVolume() < 0.10);
 }
 
-// ── The COMMON annulus↔lid rim weld is deflection-fragile — a MEASURED decline ─
-// The sharpened next blocker: COMMON welds watertight only at isolated deflections
-// (the annulus reuses the parent rim wire AND carries the seam hole; its interior mesh
-// resonates with the lid's rim samples). Away from the robust band it honestly DECLINES
-// to NULL (→ OCCT) — NEVER a leaky/partial solid. This asserts the honest decline, so
-// the fragility is a documented, first-class outcome rather than a hidden failure.
-CC_TEST(curved_wall_common_rim_weld_fragility_is_measured_decline) {
+// ── The COMMON annulus↔lid CURVED RIM weld is watertight across the FULL ladder ─
+// MOAT M0-rim (the outer curved-rim tessellator weld). The bowl annulus (freeform) and the
+// flat top lid (analytic) SHARE the bowl's OUTER RIM — a genuinely CURVED per-segment
+// degree-2 Bézier arc carried on SEPARATE edge nodes. Before the fix the two faces subdivided
+// that shared rim to the SAME fraction list but placed the interior samples at DIFFERENT 3-D
+// points (the bowl tracks the true rim curve C_edge; the flat lid's planar pcurve stays IN the
+// plane and does NOT track it — S_lid(pcurve) ≠ C_edge diverged up to ~6e-4), so the rim
+// opened once subdivided AND a coarse-regime near-degenerate coincident sliver (a rim edge used
+// by four triangles) survived. COMMON therefore honestly DECLINED to NULL at fine deflections.
+//
+// The curved-rim tessellator weld (face_mesher recordSeamChordPins / edge_mesher
+// isCurvedSharedRim + the weld's coincident-duplicate drop) pins the DIVERGING lid rim samples
+// to the ONE canonical C_edge discretization both faces share and removes the degenerate
+// coincident sliver — WITHOUT touching any other mesh (proven byte-identical by the FNV hash
+// battery: only these previously-failing rim cases move, non-watertight → watertight). COMMON
+// now welds a single closed 2-manifold (χ = 2) at EVERY deflection of the full ladder and
+// converges monotonically to the closed-form COMMON volume V(z≥c) = V(full) − V(z≤c).
+CC_TEST(curved_wall_common_rim_weld_watertight_across_full_ladder) {
   const topo::Shape op = cwx::buildOperand();
-  int declines = 0, lands = 0;
-  for (double d : {0.012, 0.006, 0.004, 0.002}) {
+  const double cf = cwx::commonVolume();            // V(z ≥ c) = V(full) − V(z ≤ c)
+  // The FULL fine-deflection ladder that DECLINED before the curved-rim weld.
+  const double deflections[] = {0.012, 0.0102, 0.008, 0.006, 0.004, 0.002, 0.001};
+  double coarsestRel = 0.0, finestRel = 1e9;
+  for (double d : deflections) {
     bo::CurvedWallCutDecline why = bo::CurvedWallCutDecline::Ok;
     const topo::Shape com = bo::curvedWallHalfSpaceCut(op, cwx::cutPlane(), bo::KeepSide::Above, d, &why);
-    if (com.isNull()) {
-      ++declines;
-      CC_CHECK(why == bo::CurvedWallCutDecline::NotWatertight);  // the measured blocker
-    } else {
-      ++lands;  // when it lands it is watertight (the verb only returns watertight solids)
-      tess::MeshParams mp; mp.deflection = d;
-      CC_CHECK(tess::isWatertight(tess::SolidMesher(mp).mesh(com)));
-    }
+    CC_CHECK(why == bo::CurvedWallCutDecline::Ok);  // no longer declines — the rim welds
+    CC_CHECK(!com.isNull());
+    if (com.isNull()) continue;
+    tess::MeshParams mp; mp.deflection = d;
+    const tess::Mesh m = tess::SolidMesher(mp).mesh(com);
+    CC_CHECK(tess::isWatertight(m));                // the curved rim never leaks now
+    CC_CHECK(eulerChar(m) == 2);                    // single closed 2-manifold (no orphan/sliver)
+    const double rel = std::fabs(tess::enclosedVolume(m) - cf) / cf;
+    CC_CHECK(rel < 0.03);                           // at the closed-form COMMON volume, every step
+    if (d == deflections[0]) coarsestRel = rel;
+    finestRel = rel;
   }
-  CC_CHECK(declines >= 1);   // the fragility is real and MEASURED (not hidden)
+  // Converges toward the closed form as the deflection tightens: the finest is meaningfully
+  // closer than the coarsest. (The annulus+lid+cap COMMON assembly is not strictly monotone
+  // step-to-step at the coarse end — a tiny cap/annulus sampling interplay — but the trend is
+  // firmly convergent, unlike the single-disk CUT which is strictly monotone.)
+  CC_CHECK(finestRel < coarsestRel);
+  CC_CHECK(finestRel < 0.01);                        // the finest deflection is within 1% of V(z≥c)
 }
 
 // ── CLOSED-SEAM WELD (MOAT M0w): the disk↔flat-cap shared CLOSED seam welds ────

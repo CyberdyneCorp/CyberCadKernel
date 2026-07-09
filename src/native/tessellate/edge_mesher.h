@@ -203,6 +203,41 @@ inline bool isSeamChord(const topo::EdgeCurve& c, double /*first*/, double /*las
   return true;
 }
 
+// True iff `edge` is a GENUINELY-CURVED SHARED RIM edge: a degree≥2 FREE-FORM (Bézier /
+// B-spline) arc whose 3-D geometry is actually curved (‖C″‖ ≫ 0) — analytic Circle/Ellipse
+// seams are EXCLUDED by kind (see below). This is precisely the shape a curved-wall freeform
+// operand lays as the OUTER rim shared between the FREEFORM wall and an ADJACENT ANALYTIC
+// face (the bowl↔flat-lid rim — a per-segment degree-2 Bézier arc). Such a rim's 3-D curve
+// dips off the analytic neighbour's plane, so the neighbour's
+// pcurve (which stays IN the plane) does NOT reproduce C_edge once the rim is subdivided —
+// the rim opens. The face mesher uses this predicate (alongside isSeamChord, mutually
+// exclusive) to PIN the diverging face's rim samples to the edge's canonical 3-D
+// discretization (d.points == C_edge, the ONE list both faces share) — the CURVED-edge
+// analogue of the straight seam-chord pin.
+//
+// Returns false for a straight Line edge, a 2-pole degree-1 seam chord (isSeamChord owns it),
+// any degree-1 polyline, and any edge straight-in-3-D (‖C″‖≈0). The pin itself is additionally
+// divergence-gated (only samples ≫ kSnapEps off C_edge are pinned), so a CURVED shared edge
+// that already satisfies S_face(pcurve)=C_edge on BOTH faces — every analytic primitive's
+// cap↔side circle — records no pin and stays byte-identical; this predicate only makes such
+// an edge ELIGIBLE, the divergence test decides.
+inline bool isCurvedSharedRim(const topo::EdgeCurve& c, double first, double last) noexcept {
+  using K = topo::EdgeCurve::Kind;
+  // A curved-wall freeform operand's rim is a FREE-FORM (Bézier/B-spline) arc of degree ≥ 2
+  // (the bowl edge over a straight UV chord is exactly degree-2). It is NEVER an analytic
+  // Circle/Ellipse: those are the shared seams of ANALYTIC primitives (a cylinder cap↔side,
+  // a sphere/cone latitude, a torus rim, a revolve's latitude circles), whose two incident
+  // faces are BOTH analytic and BOTH reproduce C_edge through their own pcurves — the weld
+  // contract already holds, so those must NOT be eligible for the rim pin. Restricting to
+  // degree ≥ 2 free-form arcs excludes every analytic seam by KIND (the strong topology
+  // guard), leaving only the freeform-boolean rim eligible; the divergence gate then fires
+  // the pin solely on the analytic neighbour whose planar pcurve fails to track the arc.
+  if (c.kind != K::Bezier && c.kind != K::BSpline) return false;  // analytic circle/ellipse/line excluded
+  if (c.degree <= 1) return false;                                 // degree-1 polyline / seam chord
+  if (c.poles.size() < 3) return false;                            // needs ≥3 poles to curve
+  return !edgeStraight3d(c, first, last);                          // confirmed genuinely curved in 3-D
+}
+
 // Number of segments to hold the chord (sagitta) error of the edge's 3D curve
 // under `deflection`: Δ ≤ √(8·defl/‖C″‖); n = ceil(span/Δ), clamped to [min,max].
 // A line (‖C″‖≈0) collapses to `minSegs`; a circle/blend subdivides.
@@ -295,6 +330,37 @@ class EdgeCache {
     if (!endpointKey(edge, k)) return;
     int& cur = segsByEndpoints_[k];
     cur = std::max(cur, std::min(segs, maxSegs_));
+  }
+
+  // ── FREEFORM-BACKED curved-rim registry (curved-rim weld pin gate) ────────────
+  // Mark the CURVED shared rim edge with the given endpoints as FREEFORM-BACKED: a
+  // FREE-FORM (Bézier / B-spline) face has been found whose surface evaluation of this
+  // edge's boundary REPRODUCES the edge's canonical 3-D discretization d.points (the weld
+  // contract S_freeform(pcurve) = C_edge holds on the free-form side). This is the exact
+  // condition under which pinning the DIVERGING flat (Plane) neighbour's rim samples to
+  // d.points is SAFE — the free-form face genuinely lies on d.points, so pinning the lid to
+  // it fuses the two boundaries onto the ONE shared curve (the bowl↔lid rim). Without this
+  // guarantee (a synthesized boolean cut-cap curved seam whose free-form neighbour does NOT
+  // reproduce d.points — the first-freeform / split-plane / chain-seam family) d.points is a
+  // WRONG pin target and pinning the Plane would open the seam; that edge is NEVER marked, so
+  // the Plane pin never fires there. Keyed by the order-independent, quantized endpoint pair
+  // PLUS a quantized 3-D midpoint, so two DIFFERENT arcs between the same endpoints never
+  // collide. Populated by the SolidMesher pre-pass before any face is meshed.
+  void markFreeformBackedRim(const topo::Shape& edge) {
+    EndpointKey k;
+    math::Point3 mid;
+    if (!rimKey(edge, k, mid)) return;
+    freeformBackedRims_[k].push_back(mid);
+  }
+  bool isFreeformBackedRim(const topo::Shape& edge) const {
+    EndpointKey k;
+    math::Point3 mid;
+    if (!rimKey(edge, k, mid)) return false;
+    const auto it = freeformBackedRims_.find(k);
+    if (it == freeformBackedRims_.end()) return false;
+    for (const math::Point3& m : it->second)
+      if (math::distance(mid, m) <= kCurveMidTol) return true;  // same arc → backed
+    return false;
   }
 
   // Shared discretization for `edge` (keyed by TShape identity). Curved edges get
@@ -405,6 +471,18 @@ class EdgeCache {
     return true;
   }
 
+  // Endpoint key + 3-D midpoint for the freeform-backed-rim registry (order-independent,
+  // arc-disambiguated). True only for a genuinely-curved edge (matches the pin's eligibility).
+  bool rimKey(const topo::Shape& edge, EndpointKey& ekOut, math::Point3& midOut) const {
+    const auto cr = topo::curveOf(edge);
+    if (!cr || !cr->curve) return false;
+    if (detail::edgeStraight3d(*cr->curve, cr->first, cr->last)) return false;
+    if (!endpointKey(edge, ekOut)) return false;
+    midOut = detail::placePoint(cr->location,
+                                detail::edgeCurveLocal(*cr->curve, 0.5 * (cr->first + cr->last)));
+    return true;
+  }
+
   EdgeDiscretization build(const topo::Shape& edge) const {
     EdgeDiscretization d;
     const auto cr = topo::curveOf(edge);
@@ -435,6 +513,7 @@ class EdgeCache {
   std::unordered_map<const topo::TShape*, EdgeDiscretization> cache_;
   std::unordered_map<EndpointKey, int, EndpointKeyHash> segsByEndpoints_;
   std::unordered_map<EndpointKey, std::vector<CanonicalCurve>, EndpointKeyHash> curvedByEndpoints_;
+  std::unordered_map<EndpointKey, std::vector<math::Point3>, EndpointKeyHash> freeformBackedRims_;
   double deflection_;
   int minSegs_;
   int maxSegs_;

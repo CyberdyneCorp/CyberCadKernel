@@ -25,11 +25,13 @@
 //     * BBOX       — native vertex min/max vs BRepBndLib per-axis (spatial band).
 //     * HAUSDORFF  — max native→OCCT vertex distance via BRepExtrema (spatial band).
 //
-// The CUT (KeepSide::Below — the deep cup) is the LANDED, robust keep-side: parity is
-// asserted at MULTIPLE resonance-free deflections. The COMMON (KeepSide::Above) annulus↔
-// lid rim weld is deflection-fragile (the measured next blocker); parity is asserted at
-// its robust deflection, and the harness records that the native verb honestly DECLINES
-// (NULL) at a fragile deflection — never a leaky solid.
+// The CUT (KeepSide::Below — the deep cup) and the COMMON (KeepSide::Above — the annulus +
+// lid + cap) are BOTH robust keep-sides now: parity is asserted at MULTIPLE resonance-free
+// deflections for each. The COMMON annulus↔lid OUTER CURVED-RIM weld (MOAT M0-rim) welds
+// watertight across the full ladder — the curved-rim tessellator pin pins the flat lid's
+// diverging rim samples to the bowl's canonical rim curve and drops the coarse-regime
+// coincident sliver — so COMMON matches OCCT at every asserted deflection (no longer an
+// honest decline). A case that still cannot weld returns NULL → OCCT, never a leaky solid.
 //
 // OCCT is the ORACLE ONLY, never linked into src/native. Build:
 // scripts/run-sim-native-curved-wall-cut.sh.
@@ -313,23 +315,18 @@ int main() {
     if (!cut.isNull()) parity(tag, cut, occtBelow, cwx::cutVolume(), d);
   }
 
-  // ── COMMON (Above) — at its robust deflection (rim weld robust here).
-  {
-    const double d = 0.0102;
+  // ── COMMON (Above) — the annulus↔lid OUTER CURVED-RIM keep-side, native-vs-OCCT across
+  // the deflection ladder INCLUDING the fine d=0.004 that declined before the MOAT M0-rim
+  // curved-rim tessellator pin (recordSeamChordPins on isCurvedSharedRim + the weld's
+  // coincident-duplicate drop): the curved rim now welds watertight there and matches the
+  // OCCT BRepAlgoAPI_Common oracle on volume/area/topology (no longer an honest decline).
+  for (double d : {0.0102, 0.00532, 0.004, 0.00278}) {
     char tag[24]; std::snprintf(tag, sizeof(tag), "COMMON d=%.4f", d);
     bo::CurvedWallCutDecline why = bo::CurvedWallCutDecline::Ok;
     const nt::Shape com = bo::curvedWallHalfSpaceCut(operand, cwx::cutPlane(), bo::KeepSide::Above, d, &why);
     char cb[64]; std::snprintf(cb, sizeof(cb), "%s decline=%s", tag, bo::curvedWallDeclineName(why));
     report("native-common", "composed", !com.isNull(), cb);
     if (!com.isNull()) parity(tag, com, occtAbove, cwx::commonVolume(), d);
-  }
-
-  // ── the COMMON rim weld fragility is an HONEST DECLINE (NULL → OCCT), not a leak.
-  {
-    bo::CurvedWallCutDecline why = bo::CurvedWallCutDecline::Ok;
-    const nt::Shape com = bo::curvedWallHalfSpaceCut(operand, cwx::cutPlane(), bo::KeepSide::Above, 0.004, &why);
-    char cb[72]; std::snprintf(cb, sizeof(cb), "d=0.0040 %s (NULL->OCCT, never leaky)", bo::curvedWallDeclineName(why));
-    report("native-common", "fragile-declines", com.isNull() && why == bo::CurvedWallCutDecline::NotWatertight, cb);
   }
 
   std::printf("== %d passed, %d failed ==\n", g_pass, g_fail);

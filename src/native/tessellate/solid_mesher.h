@@ -79,6 +79,36 @@ class VertexWelder {
       remap[i] = mapVertex(in, i, normals, out, cellToNew);
 
     reindexTriangles(in, remap, out);
+    return dropOrphanVertices(std::move(out));
+  }
+
+  // Remove vertices referenced by NO surviving triangle and re-index. This is a no-op for a
+  // mesh in which every welded vertex is used by a triangle — every existing mesh, so its
+  // output is BIT-IDENTICAL (the remap is the identity, indices and vertex order unchanged).
+  // It fires ONLY when a triangle was dropped and left a vertex unreferenced — the sole such
+  // case is the curved-wall COMMON rim mesh whose coincident-duplicate sliver was removed
+  // above, leaving the sliver's apex orphaned. Compacting it keeps the raw vertex count equal
+  // to the referenced-vertex count, so the mesh's Euler characteristic is the clean χ = 2 of a
+  // single closed 2-manifold (an orphan vertex would otherwise inflate V and read as χ = 3).
+  static Mesh dropOrphanVertices(Mesh m) {
+    std::vector<bool> used(m.vertices.size(), false);
+    for (const Triangle& t : m.triangles) { used[t.a] = used[t.b] = used[t.c] = true; }
+    bool anyOrphan = false;
+    for (bool u : used)
+      if (!u) { anyOrphan = true; break; }
+    if (!anyOrphan) return m;  // byte-identical fast path (no reindex)
+
+    const bool normals = m.hasNormals();
+    std::vector<std::uint32_t> remap(m.vertices.size());
+    Mesh out;
+    out.triangles = std::move(m.triangles);
+    for (std::size_t i = 0; i < m.vertices.size(); ++i)
+      if (used[i]) {
+        remap[i] = static_cast<std::uint32_t>(out.vertices.size());
+        out.vertices.push_back(m.vertices[i]);
+        if (normals) out.normals.push_back(m.normals[i]);
+      }
+    for (Triangle& t : out.triangles) { t.a = remap[t.a]; t.b = remap[t.b]; t.c = remap[t.c]; }
     return out;
   }
 
@@ -124,13 +154,65 @@ class VertexWelder {
   }
 
   static void reindexTriangles(const Mesh& in, const std::vector<std::uint32_t>& remap, Mesh& out) {
-    out.triangles.reserve(in.triangles.size());
+    // First pass: re-index onto the merged vertex set and drop triangles that COLLAPSE
+    // (two indices equal after the merge — a genuine zero-triangle). Tally each surviving
+    // triangle by its ORDER-INDEPENDENT vertex triple so an exactly-COINCIDENT duplicate
+    // can be recognised in the second pass.
+    std::vector<Triangle> kept;
+    kept.reserve(in.triangles.size());
+    std::unordered_map<TriKey, int, TriKeyHash> multiplicity;
+    multiplicity.reserve(in.triangles.size() * 2);
     for (const Triangle& t : in.triangles) {
       const std::uint32_t a = remap[t.a], b = remap[t.b], c = remap[t.c];
       if (a == b || b == c || a == c) continue;  // collapsed → drop
-      out.triangles.push_back(Triangle{a, b, c});
+      kept.push_back(Triangle{a, b, c});
+      ++multiplicity[TriKey::of(a, b, c)];
     }
+    // Second pass: drop EVERY copy of any triangle whose merged vertex triple occurs more
+    // than once — a pair of COINCIDENT triangles on the SAME three welded vertices.
+    //
+    // Two faces sharing a genuinely-CURVED, non-planar shared edge (the curved-wall bowl↔
+    // flat-lid RIM, once its samples are pinned to the shared C_edge) each triangulate the
+    // near-collinear shared boundary, and near a rim corner BOTH emit a thin triangle on the
+    // SAME three boundary vertices — coincident duplicates of OPPOSITE winding. Their shared
+    // rim edge is then used by four triangles (two real + two slivers) → non-manifold, so the
+    // rim cannot weld watertight even though the two boundaries now coincide. A watertight
+    // 2-manifold shell NEVER legitimately carries two triangles on one vertex triple, so
+    // removing all copies is a pure DEFECT repair: it deletes the degenerate coincident pair
+    // and restores the exactly-two-uses rim edge. The pair maps to ZERO 3-D area (coincident
+    // ⇒ identical three points), so area and enclosed volume are unchanged.
+    //
+    // BYTE-IDENTITY: this fires ONLY when a coincident duplicate EXISTS. The FNV hash battery
+    // confirms NO existing mesh (box / cylinder / cone / sphere / Bézier / B-spline / thread /
+    // sweep / loft / step / the M0w closed-seam solids / midwall / first-freeform) contains a
+    // coincident duplicate triangle — thread carries a few zero-3-D-area triangles but ZERO
+    // duplicates — so every existing mesh is untouched. The only mesh with a coincident
+    // duplicate is the curved-wall COMMON rim case this weld is intended to make watertight.
+    out.triangles.reserve(kept.size());
+    for (const Triangle& t : kept)
+      if (multiplicity[TriKey::of(t.a, t.b, t.c)] == 1) out.triangles.push_back(t);
   }
+
+  // Order-independent key for a triangle's three merged vertex indices (sorted), so two
+  // coincident triangles of opposite winding hash to the same slot.
+  struct TriKey {
+    std::uint32_t a, b, c;
+    static TriKey of(std::uint32_t x, std::uint32_t y, std::uint32_t z) noexcept {
+      if (x > y) std::swap(x, y);
+      if (y > z) std::swap(y, z);
+      if (x > y) std::swap(x, y);
+      return TriKey{x, y, z};
+    }
+    bool operator==(const TriKey& o) const noexcept { return a == o.a && b == o.b && c == o.c; }
+  };
+  struct TriKeyHash {
+    std::size_t operator()(const TriKey& k) const noexcept {
+      std::size_t h = static_cast<std::size_t>(k.a) * 73856093u;
+      h ^= static_cast<std::size_t>(k.b) * 19349663u;
+      h ^= static_cast<std::size_t>(k.c) * 83492791u;
+      return h;
+    }
+  };
 
   double tol_;
   double inv_;
@@ -146,33 +228,55 @@ class SolidMesher {
   explicit SolidMesher(MeshParams params = {}) noexcept : p_(params) {}
 
   Mesh mesh(const topo::Shape& shape) const {
-    Mesh accumulated = meshAllFaces(shape);
-    // Weld tolerance: a fraction of the deflection, so it merges the coincident
-    // boundary vertices two faces put on a shared edge without collapsing genuine
-    // nearby features. (Shared-edge agreement makes those vertices land within
-    // fp round-off; a generous 0.5·deflection floor guards curved-edge sampling.)
+    // Weld tolerance: a fraction of the deflection, so it merges the coincident boundary
+    // vertices two faces put on a shared edge without collapsing genuine nearby features.
     const double weldTol = std::max(p_.deflection * 0.5, 1e-7);
-    return VertexWelder{weldTol}.weld(accumulated);
+
+    // BASELINE PASS — the curved-rim pin is DISABLED (no freeform-backed rims marked), so
+    // this is EXACTLY the pre-MOAT-M0-rim behaviour for EVERY shape. If the baseline welds
+    // watertight (every existing mesh does), return it → BYTE-IDENTICAL. The curved-rim pin
+    // is a VERIFIED, FALLBACK-ONLY repair: it is tried ONLY when the baseline fails to weld.
+    const Mesh baseline = VertexWelder{weldTol}.weld(meshAllFaces(shape, /*enableRimPin=*/false));
+    if (isWatertight(baseline)) return baseline;
+
+    // FALLBACK PASS — the baseline is NOT watertight. Enable the curved-rim pin (mark the
+    // freeform-backed rims a flat neighbour diverges from) and re-mesh. This is the curved-wall
+    // bowl↔lid rim case: pinning the flat lid's diverging rim samples to the bowl's canonical
+    // rim curve closes the open rim. Return the pinned result ONLY if it is now watertight;
+    // otherwise return the baseline (an honest non-watertight mesh — the caller's self-verify
+    // then declines → OCCT, never a leak). Because the pinned result is used ONLY when the
+    // baseline was non-watertight, NO already-watertight mesh is ever replaced → byte-identity
+    // holds for every existing mesh; the pin can only turn a non-watertight mesh watertight.
+    const Mesh pinned = VertexWelder{weldTol}.weld(meshAllFaces(shape, /*enableRimPin=*/true));
+    return isWatertight(pinned) ? pinned : baseline;
   }
 
  private:
-  // Mesh every face and append into one (pre-weld) mesh, sharing ONE EdgeCache
-  // across all faces. STAGE 1 (the cache) discretizes each unique topological edge
-  // ONCE into a shared fraction list; STAGE 2 (each FaceMesher::mesh) pins that
-  // face's boundary to those fractions. Two faces sharing an edge therefore place
-  // boundary vertices at IDENTICAL 3D points (each maps the same fraction through
-  // its own pcurve: S_face(pcurve(f)) = C_edge(f)), so welding fuses them and the
-  // seam is watertight — including CURVED shared edges (cylinder cap↔side circle,
-  // fillet blend seams), the gap the old independent-grid path left open.
-  Mesh meshAllFaces(const topo::Shape& shape) const {
+  // Mesh every face and append into one (pre-weld) mesh, sharing ONE EdgeCache across all
+  // faces. STAGE 1 (the cache) discretizes each unique topological edge ONCE; STAGE 2 (each
+  // FaceMesher::mesh) pins that face's boundary to those fractions, so two faces sharing an
+  // edge place IDENTICAL 3D boundary points and welding fuses them.
+  //
+  // `enableRimPin` controls the MOAT-M0-rim curved-rim pin ONLY: when false the freeform-
+  // backed-rim registry is left EMPTY, so the curved-rim pin gate (isFreeformBackedRim) never
+  // fires and the mesh is byte-identical to the pre-change tessellator; when true the pre-pass
+  // marks freeform-backed rims and a flat neighbour's diverging rim samples are pinned to the
+  // shared rim curve. The straight seam-chord pin (MOAT M0w) and every other path are
+  // unaffected by this flag.
+  Mesh meshAllFaces(const topo::Shape& shape, bool enableRimPin) const {
     FaceMesher fm(p_);
     EdgeCache cache(p_.deflection, p_.edgeMinSegs, p_.edgeMaxSegs);
-    // PRE-PASS: let each face raise the minimum segment count of its boundary edges
-    // (a twisted ruled/free-form face forces its straight edges to subdivide so the
-    // shared discretization resolves the twist for BOTH adjacent faces). Runs before
-    // any discretize()/mesh() so every edge is built once at its final segment count.
+    // PRE-PASS: let each face raise the minimum segment count of its boundary edges (a twisted
+    // ruled/free-form face forces its straight edges to subdivide). Runs before any
+    // discretize()/mesh() so every edge is built once at its final segment count.
     for (topo::Explorer ex(shape, topo::ShapeType::Face); ex.more(); ex.next())
       fm.requireEdgeSegments(ex.current(), cache);
+    // PRE-PASS 2 (rim pin only): mark every CURVED shared rim edge a FREE-FORM face reproduces,
+    // so the curved-rim pin may fire for its diverging flat neighbour. Skipped on the baseline
+    // pass, keeping that pass byte-identical.
+    if (enableRimPin)
+      for (topo::Explorer ex(shape, topo::ShapeType::Face); ex.more(); ex.next())
+        fm.markFreeformBackedRims(ex.current(), cache);
     Mesh all;
     for (topo::Explorer ex(shape, topo::ShapeType::Face); ex.more(); ex.next())
       all.append(fm.mesh(ex.current(), cache));

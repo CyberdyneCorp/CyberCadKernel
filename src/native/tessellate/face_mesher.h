@@ -359,6 +359,47 @@ class FaceMesher {
       }
   }
 
+  // ── Freeform-backed curved-rim marking (curved-rim weld pin gate) ────────────
+  // If THIS face is FREE-FORM (Bézier / B-spline) and its surface evaluation of a
+  // genuinely-curved boundary edge REPRODUCES the edge's canonical discretization
+  // d.points (the weld contract S_freeform(pcurve) = C_edge holds to ≤ kSnapEps at every
+  // shared sample), mark that edge FREEFORM-BACKED in the cache. This is the precise, GLOBAL
+  // (cross-face) guarantee that makes pinning a DIVERGING flat neighbour's rim to d.points
+  // safe: a free-form face genuinely lies on d.points, so the pin fuses the flat lid onto the
+  // ONE shared curve (the bowl↔lid rim). A synthesized boolean cut-cap curved seam whose
+  // free-form neighbour does NOT reproduce d.points is NEVER marked, so the Plane pin cannot
+  // fire on it (the first-freeform / split-plane / chain-seam family stays byte-identical).
+  // Must run (for every face) before any face is meshed. Analytic faces mark nothing.
+  void markFreeformBackedRims(const topo::Shape& face, EdgeCache& cache) const {
+    const auto sr = topo::surfaceOf(face);
+    if (!sr || !sr->surface) return;
+    const topo::FaceSurface::Kind k = sr->surface->kind;
+    if (k != topo::FaceSurface::Kind::Bezier && k != topo::FaceSurface::Kind::BSpline) return;
+    SurfaceEvaluator eval(*sr->surface, sr->location);
+    for (const topo::Shape& wire : face.tshape()->children())
+      for (topo::Explorer ex(wire, topo::ShapeType::Edge); ex.more(); ex.next()) {
+        const topo::Shape& edge = ex.current();
+        const auto cr = topo::curveOf(edge);
+        if (!cr || !cr->curve) continue;
+        if (!detail::isCurvedSharedRim(*cr->curve, cr->first, cr->last)) continue;
+        const topo::PCurve* pc = pcurveForFace(edge, face);
+        if (!pc) continue;
+        const EdgeDiscretization& d = cache.discretize(edge);
+        if (d.fracs.size() != d.points.size() || d.points.size() < 2) continue;
+        const auto rr = topo::rangeOf(edge);
+        const double first = rr ? rr->first : 0.0;
+        const double last = rr ? rr->last : 1.0;
+        bool reproduces = true;
+        for (std::size_t i = 0; i < d.fracs.size() && reproduces; ++i) {
+          const double f = d.fracs[i];
+          const UV uv = pcurveValue(*pc, first + (last - first) * f, f);
+          if (math::distance(eval.value(uv.u, uv.v), d.points[i]) > BoundaryAnchors::kSnapEps)
+            reproduces = false;
+        }
+        if (reproduces) cache.markFreeformBackedRim(edge);
+      }
+  }
+
  private:
   // ── STAGE-2 boundary: each wire flattened at the shared edge fractions ───────
   std::vector<UVPolygon> buildBoundaryLoops(const topo::Shape& face, EdgeCache& cache,
@@ -383,6 +424,9 @@ class FaceMesher {
                               SeamPins& seamPins) const {
     UVPolygon poly;
     if (wire.isNull() || wire.type() != topo::ShapeType::Wire) return poly;
+    const auto fsr = topo::surfaceOf(face);
+    const topo::FaceSurface::Kind faceKind =
+        fsr && fsr->surface ? fsr->surface->kind : topo::FaceSurface::Kind::Plane;
     for (topo::Explorer ex(wire, topo::ShapeType::Edge); ex.more(); ex.next()) {
       const topo::Shape& edge = ex.current();
       const topo::PCurve* pc = pcurveForFace(edge, face);
@@ -390,7 +434,8 @@ class FaceMesher {
       const EdgeDiscretization& d = cache.discretize(edge);
       appendEdgeSamplesAtFracs(poly, edge, *pc, d.fracs);
       recordEdgeAnchors(anchors, edge, d);
-      recordSeamChordPins(seamPins, edge, *pc, d, eval);
+      const bool freeformBackedRim = cache.isFreeformBackedRim(edge);
+      recordSeamChordPins(seamPins, edge, *pc, d, eval, faceKind, freeformBackedRim);
     }
     return poly;
   }
@@ -428,29 +473,72 @@ class FaceMesher {
   // side records a pin; the flat side already places the boundary on the chord.
   static void recordSeamChordPins(SeamPins& seamPins, const topo::Shape& edge,
                                   const topo::PCurve& pc, const EdgeDiscretization& d,
-                                  const SurfaceEvaluator& eval) {
+                                  const SurfaceEvaluator& eval, topo::FaceSurface::Kind faceKind,
+                                  bool freeformBackedRim) {
     if (d.fracs.size() != d.points.size() || d.points.size() < 2) return;
     const auto cr = topo::curveOf(edge);
     if (!cr || !cr->curve) return;
-    // TOPOLOGY GUARD: fire ONLY on a CLOSED-SEAM STRAIGHT CHORD — a 2-pole degree-1 curve,
-    // the exact shape smooth_trim_split / curved_wall_cut lay as ONE segment of a closed
-    // interior seam (buildSeamEdge / edgeFromPiece). No analytic primitive, no genuinely
-    // curved shared edge (a cylinder cap↔side circle, a blend rim), and no straight Line
-    // edge is a seam chord, so NONE is ever pinned — every existing mesh is byte-identical
-    // (proven: 34/36 hashes unchanged, the 2 that move are the closed-seam CUT/COMMON solids
-    // going non-watertight → watertight). Only the annulus/disk sub-face of a curved-wall
-    // split, whose seam chord's pcurve rides the bowl surface and bulges off the shared flat
-    // chord, is pinned to d.points (== C_edge, the ONE canonical discretization both
-    // sub-faces share), so the closed seam welds watertight at ANY deflection.
-    if (!detail::isSeamChord(*cr->curve, cr->first, cr->last)) return;
+    // TOPOLOGY GUARD — two mutually-exclusive shared-edge shapes are pinned, both of which
+    // the curved-wall boolean produces and which VIOLATE the S_face(pcurve) = C_edge weld
+    // contract for one incident face. Everything else returns early and is NEVER pinned.
+    //
+    //   (A) CLOSED-SEAM STRAIGHT CHORD (detail::isSeamChord — a 2-pole degree-1 curve): the
+    //       exact shape smooth_trim_split / curved_wall_cut lay as ONE segment of a closed
+    //       INTERIOR seam. Its 3-D geometry is straight, but on a CURVED sub-face the pcurve
+    //       rides the bowl surface and bulges off the shared flat chord (MOAT M0w). Pinned on
+    //       ANY face whose surface evaluation diverges (the curved sub-face).
+    //   (B) SHARED CURVED RIM (detail::isCurvedSharedRim — a genuinely-curved degree≥2
+    //       free-form arc, NOT a straight seam chord) — pinned ONLY on a PLANE face AND ONLY
+    //       when the edge is FREEFORM-BACKED (`freeformBackedRim`, the SolidMesher pre-pass
+    //       proved a FREE-FORM face reproduces this edge's d.points to ≤ kSnapEps). This is
+    //       the exact shape the curved-wall operand lays as the OUTER rim shared by a FREEFORM
+    //       bowl wall and an ADJACENT FLAT analytic LID: both subdivide the rim to the SAME
+    //       shared fraction list, but the flat lid's PLANAR pcurve stays IN the plane and does
+    //       NOT reproduce the 3-D rim arc (which dips off the plane), so S_lid(pcurve) ≠ C_edge
+    //       and the subdivided rim opens (MOAT M0-rim). Pinning the diverging lid samples to
+    //       d.points fuses them onto the ONE curve the free-form bowl already lies on. The
+    //       FREEFORM-BACKED gate is the correctness GUARANTEE (not a heuristic): the pin fires
+    //       only where a free-form face is KNOWN to lie on d.points, so pinning the flat
+    //       neighbour to it is always right. A synthesized boolean cut-cap curved seam whose
+    //       free-form neighbour does NOT reproduce d.points is never marked, so it is never
+    //       pinned (the first-freeform / split-plane / chain-seam / two-operand / multi-seam
+    //       family stays byte-identical). The curved-rim pin also SKIPS the two ENDPOINT
+    //       samples (f = 0, f = 1): those are the rim's shared CORNER vertices where it meets
+    //       straight side edges and must stay bit-identical to those edges' endpoints.
+    //
+    // In BOTH cases the DIVERGING face's pinned samples land far (≫ kSnapEps) from the shared
+    // canonical C_edge points d.points, so the two faces' boundaries diverge and the seam/rim
+    // opens once subdivided. Pinning the diverging samples to d.points (the ONE canonical
+    // EdgeCache discretization BOTH faces read) makes the two boundaries bit-identical and the
+    // weld watertight at ANY deflection.
+    //
+    // WHY EVERY EXISTING MESH STAYS BYTE-IDENTICAL. The recorded pin is DIVERGENCE-GATED
+    // (‖S_face(pcurve) − C_edge‖ > kSnapEps): it fires ONLY where the weld contract is
+    // genuinely violated. For the curved rim it is ALSO KIND-gated (free-form arc only, never an
+    // analytic Circle/Ellipse), FACE-gated (Plane face only), FREEFORM-BACKED-gated (a free-form
+    // face provably lies on d.points), and skips the corner endpoints. Every analytic
+    // primitive's shared curved edge (a cylinder cap↔side circle, a sphere/cone seam, a torus
+    // rim) is a Circle/Ellipse — excluded by kind; a curved edge shared through ONE node
+    // reproduces C_edge on both faces — never diverges; a free-form boolean seam that no
+    // free-form face backs is never marked — never pinned. The ONLY shapes that match a
+    // predicate AND satisfy every gate AND diverge are the curved-wall boolean's closed seam and
+    // its bowl↔flat-lid rim — precisely the meshes intended to change (non-watertight →
+    // watertight); the FNV hash battery confirms every other mesh is byte-identical.
+    const bool seamChord = detail::isSeamChord(*cr->curve, cr->first, cr->last);
+    const bool curvedRim = !seamChord && freeformBackedRim &&
+                           faceKind == topo::FaceSurface::Kind::Plane &&
+                           detail::isCurvedSharedRim(*cr->curve, cr->first, cr->last);
+    if (!seamChord && !curvedRim) return;
     const auto rr = topo::rangeOf(edge);
     const double first = rr ? rr->first : 0.0;
     const double last = rr ? rr->last : 1.0;
-    // Pin ONLY the samples that genuinely diverge from the shared canonical chord: a flat
-    // cap's chord samples equal S_plane(pcurve) (never pinned — byte-identical there); the
-    // curved sub-face's bulging samples are pinned to the shared chord so the two coincide.
+    // Pin ONLY the samples that genuinely diverge from the shared canonical curve. For the
+    // curved rim, skip the two ENDPOINT samples (shared corner vertices) so a rim that meets
+    // straight side edges keeps those junctions bit-identical; the closed seam chord has no
+    // such corners (its endpoints coincide with the next chord's) so it pins the full range.
     for (std::size_t i = 0; i < d.fracs.size(); ++i) {
       const double f = d.fracs[i];
+      if (curvedRim && (i == 0 || i + 1 == d.fracs.size())) continue;  // keep rim corner vertices
       const UV uv = pcurveValue(pc, first + (last - first) * f, f);
       if (math::distance(eval.value(uv.u, uv.v), d.points[i]) > BoundaryAnchors::kSnapEps)
         seamPins.add(uv, d.points[i]);

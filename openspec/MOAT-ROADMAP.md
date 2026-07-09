@@ -408,9 +408,32 @@ fuzzing vs OCCT).
   (DECLINE fires, never DISAGREE), max native-vs-oracle bias vol=7.641e-3 (~2.6× under the
   FIXED vol=2e-2 area=3e-2 tol, NEVER widened). Determinism re-verified (same seed → identical
   classification counts). `src/native` untouched; on run-sim-suite.sh SKIP list (own main()).
+- **Breadth — 9th native domain: REFERENCE / DATUM GEOMETRY (datum queries on posed solids).**
+  `tests/sim/native_reference_geometry_fuzz.mm` + `scripts/run-sim-native-reference-geometry-fuzz.sh`:
+  a DETERMINISTIC seeded generator (splitmix64→xoshiro256**, seeded ONLY by FUZZ_SEED) builds a
+  random VALID base solid (BOX / NGON prism / CYLINDER / CONE frustum) via the OCCT-FREE native
+  construct builders, applies a random RIGID pose (rotate any axis + translate, NO scale/mirror →
+  every datum transforms EXACTLY) via `Shape::located(math::Transform)`, and drives every M-REF
+  reference service (`faceAxis`/`refAxisFromFace`, `refPlaneFromFace`, `refAxisFromEdge`,
+  `outerRimChain`, `offsetFaceBoundary`, `tangentChain`) on the posed native solid through BOTH the
+  OCCT topology-query oracle (`gp_Cylinder`/`gp_Cone::Axis`, `gp_Pln`, `gp_Lin`, `BRepTools::
+  OuterWire`, `BRepOffsetAPI_MakeOffset`, `BRepAdaptor_Curve::D1`) AND a THIRD engine-independent
+  closed-form datum image (the KNOWN construction axis +Y / cap normal / edge dir / cap polygon
+  transformed by the same pose in plain fp64) as the PRIMARY arbiter. The reference.h scoped
+  declines (a circular-cap offset, a freeform edge in a tangent walk) are FIRST-CLASS declines the
+  closed form confirms; the circular-cap `outerRimChain` is arbitrated STRUCTURALLY (rim id set ==
+  the native cap face's own outer wire, confirmed circular by the OCCT circle) because the native
+  periodic revolution cap stores its rim as arc edges vs OCCT's single seam edge (a legitimate
+  representational difference, not a datum defect). Two seeds (0x9EF12A0055 N=96 → 480 AGREED / 58
+  HONESTLY-DECLINED / 0 DISAGREED / 0 ORACLE_UNRELIABLE; 0xC0DEDA7A11 N=96 → 480 / 41 / 0 / 0):
+  **0 DISAGREED** on both seeds, each of the 4 base families AND each of the 6 ops with ≥1 AGREED,
+  analytic-exact datums (axis dir/origin 0–2.2e-16, offset area dA ≤ ~1e-14) under a FIXED
+  never-widened rigid tol (dir 1e-9, point 1e-7, offset 1e-6). Determinism re-verified (same seed →
+  byte-identical 538-line batch). `src/native` byte-unchanged; on run-sim-suite.sh SKIP list (own
+  main(), `std::_Exit`). OpenSpec change `moat-m6i-reference-geometry-fuzz`.
 - REMAINING (asymptotic, gates M8): extend the generator across the remaining blend families
-  (concave stepped-shaft, offset/shell) and healing; loop-until-dry critics; the standing
-  zero-silent-wrong-results bar.
+  (concave stepped-shaft, offset/shell), healing, and direct-modeling / section curves;
+  loop-until-dry critics; the standing zero-silent-wrong-results bar.
 
 ### M7 — Tier-4 construction robustness · ~1–3 py · independent
 **M7a first slice LANDED (verified native-vs-OCCT at both gates):** the N-section (≥3)
@@ -745,7 +768,7 @@ slices used). Both are captured below.
 | **M0** freeform mesher/trimmer | `tessellate/` | — | ✅ **Wave-1 slice LANDED** — mesher ready; unblocks M2/M4. ✅ **Weld robustness LANDED (deflection-fragility RESOLVED):** shared-curved-edge single-sampling (`edge_mesher.h`+`face_mesher.h`, additive, OCCT-free) welds the freeform boolean seam + bowl-lid quad edges watertight at ANY deflection — the freeform CUT/COMMON no longer oscillate watertight↔decline across `{0.03…0.002}`. Zero regression PROVEN byte-identical (FNV of verts+tris+wt+area+vol) for every existing surface kind; host `41/41`, sim parity `20/20` at d=0.01 AND 0.004 |
 | **M1** SSI S4 general robustness | `ssi/marching` | — | ✅ **Wave-1 slice LANDED** — breadth continues (asymptotic) |
 | **M5** shape-healing robustness | `heal/` | — | ✅ **Wave-1 slice LANDED** — tail continues (asymptotic) |
-| **M6** completeness / fuzzing harness | test infra + `ssi/` | — | ✅ **Wave-1 + breadth×8 LANDED** — curved-boolean + STEP round-trip + construction loft/sweep + blend fillet/chamfer + wrap-emboss + mass-properties + **geometry-services (GS3 distance / GS4 curvature / GS2 section incl. OBLIQUE / GS5 inertia / GS6 validity / GS1 HLR vs OCCT, incl. tilted regimes; 0 DISAGREED across 2 seeds, 480 trials)** + **transform-chains (three-way native/OCCT/closed-form similarity; translate/rotate/uscale/mirror, N=160×2 seeds, 0 DISAGREED, mirror handedness-flip confirmed; found + gated an OCCT zero-scale hang)** fuzzers (0 DISAGREED, **8 native domains**); concave-shaft blends + healing remain (gates M8) |
+| **M6** completeness / fuzzing harness | test infra + `ssi/` | — | ✅ **Wave-1 + breadth×9 LANDED** — curved-boolean + STEP round-trip + construction loft/sweep + blend fillet/chamfer + wrap-emboss + mass-properties + **geometry-services (GS3 distance / GS4 curvature / GS2 section incl. OBLIQUE / GS5 inertia / GS6 validity / GS1 HLR vs OCCT, incl. tilted regimes; 0 DISAGREED across 2 seeds, 480 trials)** + **transform-chains (three-way native/OCCT/closed-form similarity; translate/rotate/uscale/mirror, N=160×2 seeds, 0 DISAGREED, mirror handedness-flip confirmed; found + gated an OCCT zero-scale hang)** + **reference/datum-geometry (axis/plane/edge-line/rim/offset/tangent datum queries on random solids at random rigid poses vs OCCT topology queries + closed-form datum image; N=96×2 seeds, 480 AGREED / 0 DISAGREED / 0 ORACLE_UNRELIABLE each)** fuzzers (0 DISAGREED, **9 native domains**); concave-shaft blends + healing + direct-modeling/section remain (gates M8) |
 | **M7a** guided sweep · hard loft | `construct/` | — | ✅ **Wave-1 slice LANDED** — N-section loft ABI (`cc_solid_loft_sections`); guided sweep (measured trap) + non-planar-cap loft remain OCCT |
 | **M4** general STEP/AP242 import | `exchange/` | M0 | ✅ **Wave-2 LANDED** — non-rational + `RATIONAL_B_SPLINE_SURFACE` + `RATIONAL_B_SPLINE_CURVE` (edge/trim) admission native (parity 90/90). ✅ **M4-tail `MAPPED_ITEM` / `REPRESENTATION_MAP` (Form-B) assembly INSTANCING LANDED** (`moat-m4t-assembly-import`): a `REPRESENTATION_MAP` over a shared brep instanced by N `MAPPED_ITEM`s (AXIS2 or CARTESIAN_TRANSFORMATION_OPERATOR_3D target), reusing the Form-A `classifyPlacement`/`Shape::located` substrate → placed Compound; the shared brep mapped ONCE, re-instanced through the shared node. GATE (a) HOST-analytic (`test_native_step_reader.cpp` +5, 67/67): N shared-box instances at known translations/rotation match closed-form vol/bbox; ≠1-brep / lone-REP_MAP / mixed-Form-A+B DECLINE. GATE (b) SIM vs `STEPControl_Reader` (`native_step_mapped_item_parity.mm`, booted sim, 5/5): 3 instances, vol/area/centroid rel ~1e-16, bbox Δ=0, faces 18=18; no-brep mapped rep declines→OCCT. Structural: `git diff src/native` OCCT-free & additive, writer + `mapManifoldBrep` byte-frozen, 0 `cc_*` change. **PMI SEMANTICS remain OCCT** (census-only `pmi_scan`; no GD&T semantic model) |
 | **M2b (B2)** freeform face-split | `boolean/` · `ssi/` | M0 ✅ + M1 ✅ | ✅ **Wave-2 slice LANDED** — `boolean/face_split.h` `splitFace` (tiles vs OCCT 12/12); non-convex/multi-crossing tail declines. **SMOOTH-TRIM ✅ LANDED** — `boolean/smooth_trim_split.h` `splitFaceSmoothTrim` (additive sibling; closed/circular interior seam → disk + annulus-hole; host gate 7/7, tiling ε, closed-form `π·ρ²`); B2 convex path byte-frozen |

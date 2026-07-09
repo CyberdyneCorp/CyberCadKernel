@@ -111,6 +111,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_geometry_services_fuzz.mm \
       native_reference_geometry_fuzz.mm \
       native_directmodel_fuzz.mm \
+      native_hlr_fuzz.mm \
       native_transformed_boolean_fuzz.mm \
       native_section_fuzz.mm \
       native_ssi_s4f_completeness_parity.mm \

@@ -436,10 +436,27 @@ bbox/Hausdorff SPATIAL check (the explicit anti-M7a-trap safeguard), NULL→OCCT
 Verified vs OCCT (`native_sweep_parity` 19/19) with the spatial gate: offset guide vol rel 1.8e-16 /
 bboxΔ 1e-7; rotating guide (the M7a trap) vol rel 2.95e-3 / **bboxΔ 2.49e-4** (vs M7a's 0.54).
 
-Still deferred (honest decline): **rail** sweep + curved-spine guided sweep (per-station tangent
-varies); **non-planar-cap loft** (needs a filling surface, no closed-form volume); **fine-pitch
-self-intersecting threads** (intersecting-helicoid trimming — needs M1/M2). Independent of the
-freeform-boolean chain except fine-pitch (needs M2).
+**M7t LANDED — real-twist `twisted_sweep` + curved-rail `loft_along_rail` native (both gates):**
+the last two Class-B construct tails. The recorded twist decline ("a densified twisted saddle
+ruled tube does not weld watertight") was empirically *false* — the real error was a missing
+densification. `build_twisted_sweep` now DENSIFIES the straight spine so each ruled band's twist
+stays under a per-band bound (`kMaxBandTwist`), reusing the landed Frenet section frame +
+`assembleRingTube`; the tube welds watertight at every deflection and its volume converges to the
+area-preserving analytic value (a pure twist preserves the cross-section area). `build_loft_along_rail`
+now serves a smooth curved rail via an RMF-transported section morph densified to a per-band turn
+bound (`kMaxBandTurn`), converging to the Pappus torus-sector volume. Both keep the engine
+`robustlyWatertight` self-verify → OCCT. Gate 1 (host, no OCCT): `test_native_sweep` +
+`test_native_engine` green (twist → area·L, rail → Pappus). Gate 2 (sim vs OCCT
+`ThruSections` / `MakePipeShell`): `native_construct_tails_parity` **8/8** — real-twist vol rel
+1.82e-3 / bboxΔ 1.0e-7 / χ=2, curved-rail vol rel 3.87e-4 / χ=2. Sharpened declines: a
+twist COMBINED WITH a scale (twist+shrink saddle, not robustly weldable) and a tight-kink rail /
+coarse section that won't weld → engine self-verify discards → OCCT (rel 0, active=1). Additive,
+`src/native/**` OCCT-free, `cc_*` unchanged, tessellator untouched.
+
+Still deferred (honest decline): a twist+scale saddle and a tight-kink / coarse-section rail
+(engine self-verify discards → OCCT); **non-planar-cap loft** (needs a filling surface, no
+closed-form volume); **fine-pitch self-intersecting threads** (intersecting-helicoid trimming —
+needs M1/M2). Independent of the freeform-boolean chain except fine-pitch (needs M2).
 - *Oracle:* `BRepOffsetAPI_MakePipeShell` / `ThruSections` / thread fixtures (volume/watertight).
 
 ### M-REF — Reference / datum geometry + topology reads · **LANDED** (bounded, was Class-B)
@@ -799,7 +816,7 @@ freeform-boolean chain's *enablers* are done; the *payoff breadth* is what's ahe
 | **M4 tail** | ~~rational-*curve* trims~~ **LANDED** (M4-tail-2, combined `RATIONAL_B_SPLINE_CURVE` edge/trim admission, verified vs OCCT, SIM parity 90/90) · AP242 **PMI semantics** · ~~deep-nested rigid/conformal assemblies~~ **LANDED** (Form-A CDSR chain walk, verified vs OCCT) · `MAPPED_ITEM` (Form-B) still deferred | bounded (parser breadth) | M0 ✅ | ✅ **now** (`exchange/`) |
 | **M5 tail** | self-intersecting-wire repair · pcurve reconstruction · **arbitrary broken industrial B-rep** | **ASYMPTOTIC** (`ShapeFix` moat) | — | ✅ **now** (`heal/`) |
 | **M6 bar** | fuzz the remaining domains (blends, healing) + **HOLD** zero-silent-wrong across the whole surface | **ASYMPTOTIC** — the *gate*, never "done" | tracks it guards | ✅ **now** (test infra) |
-| **M7 tail** | guided-sweep **orientation law** (the measured self-verify trap needs a correct law) · curved-rail morph · fine-pitch thread | bounded-ish | some need M2 | partly now (`construct/`) |
+| **M7 tail** | ~~guided-sweep orientation law~~ ✅ (M7-tail) · ~~curved-rail morph~~ ✅ + ~~real-twist sweep~~ ✅ (M7t) · fine-pitch thread (M7b) | bounded-ish | fine-pitch needs M2 | mostly LANDED (`construct/`) |
 | **M8** `drop-occt` | delete `src/engine/occt` · drop the OCCT link · stub `cc_iges_*` | terminal | **ALL native at the bar + M6 holds** | terminal, single |
 
 ```

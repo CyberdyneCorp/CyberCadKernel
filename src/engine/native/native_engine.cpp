@@ -1032,20 +1032,25 @@ ShapeResult NativeEngine::solid_sweep(const double* p, int pc, const double* pat
     if (solid.isNull()) return fallback().solid_sweep(p, pc, path, pathc);
     return track(wrapNative(std::move(solid)));
 }
-// twisted_sweep: NATIVE only when it reduces to the plain sweep (twist ≈ 0, scale ≈
-// 1); any real twist/scale (an extra per-section rotation the RMF sweep does not
-// model) → NULL → OCCT twisted_sweep.
+// twisted_sweep: NATIVE for the plain reduction (twist ≈ 0, scale ≈ 1) AND for a REAL
+// twist/scale — build_twisted_sweep densifies the spine to a bounded per-band twist and
+// builds the Frenet-framed ruled ThruSections tube. The result is SELF-VERIFIED robustly
+// watertight with a positive enclosed volume before being kept native; a self-folding
+// tube (build returns NULL) or a candidate that fails the gate → forward the SAME args to
+// OCCT twisted_sweep (honest coexistence, never a faked or leaky solid).
 ShapeResult NativeEngine::twisted_sweep(const double* p, int pc, const double* path, int pathc,
                                         double tw, double se) {
     ntopo::Shape solid = ncst::build_twisted_sweep(p, pc, path, pathc, tw, se);
-    if (solid.isNull()) return fallback().twisted_sweep(p, pc, path, pathc, tw, se);
+    if (solid.isNull() || !robustlyWatertight(solid) || !(watertightVolume(solid) > 0.0))
+        return fallback().twisted_sweep(p, pc, path, pathc, tw, se);
     return track(wrapNative(std::move(solid)));
 }
 // ── Tier-2#4 (#4b) NATIVE general sweep: loft_along_rail + guided_sweep ──────────
 // loft_along_rail is NATIVE for a STRAIGHT rail (a ruled loft between the two
 // equal-count sections placed perpendicular to the rail tangent, matching
-// MakePipeShell on a straight rail); a CURVED / kinked rail (genuine pipe-shell
-// morph) or mismatched section counts → build_loft_along_rail returns NULL → OCCT.
+// MakePipeShell on a straight rail) AND for a SMOOTH CURVED rail (an RMF-transported
+// section morph densified to a bounded per-band turn); mismatched section counts →
+// NULL, and a rail too tight to weld fails the self-verify below → OCCT MakePipeShell.
 // guided_sweep is NATIVE when the guide-scaled per-station Frenet ThruSections tube
 // welds watertight and does not self-fold; a coincident guide start, degenerate
 // input, or a SELF-INTERSECTING tube (which needs surface-surface intersection —

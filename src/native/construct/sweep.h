@@ -150,12 +150,24 @@ namespace topo = cybercad::native::topology;
 
 namespace detail {
 
-// A REAL twist above this magnitude (radians) defers the section-ThruSections sweep to
-// the OCCT twisted_sweep oracle: the native ruled tube cannot match OCCT's smoothly-
-// twisted loft AND weld robustly watertight (see build_section_thrusections). A pure
-// SCALE with ~zero twist (guided sweep) stays native — a scaled, untwisted ruled tube is
-// not a saddle and welds cleanly.
-inline constexpr double kTwistDeferThreshold = 1e-6;
+// The maximum accumulated twist (radians) per ruled band of a densified twisted sweep.
+// build_twisted_sweep densifies a straight spine so each band rotates the section by at
+// most this bound; at a gentle per-band rotation the twisted (saddle) ruled tube welds
+// robustly watertight (the same regime the landed guided_orient_sweep uses, kMaxPerBand
+// ≈ 0.05) and its volume converges to the area-preserving analytic value. Measured: a
+// square section twisted π over a 10-long spine welds watertight from ~16 bands upward.
+inline constexpr double kMaxBandTwist = 0.05;  // ≈ 2.9° per band
+
+// The maximum tangent turn (radians) per band of a densified curved-rail loft — the
+// analogous weld bound for build_loft_along_rail's RMF-transported tube. A rail whose
+// per-band turn cannot drop under this within the station cap fails the engine self-
+// verify → OCCT. Measured: a quarter-arc rail welds watertight from ~16 stations upward.
+inline constexpr double kMaxBandTurn = 0.05;
+
+// The hard cap on internally-densified stations (shared twist/rail bound), so a
+// pathological input cannot blow up the tiling; a case needing more than this to weld
+// honestly defers to OCCT.
+inline constexpr std::size_t kMaxDensifyStations = 512;
 
 // A moving orthonormal section frame at one spine station: the world origin C(v)
 // (the spine point) plus the transported local axes x, y (the profile plane) and
@@ -183,6 +195,33 @@ inline std::vector<math::Point3> cleanPath(const double* pathXYZ, int pathCount)
     if (pts.empty() || math::distance(pts.back(), p) > kProfileTol) pts.push_back(p);
   }
   return pts;
+}
+
+// Resample an OPEN polyline at `count` points evenly spaced by cumulative arc length
+// (endpoints preserved). Used to DENSIFY a spine / rail so each ruled band's incremental
+// twist / tangent turn stays under the weld bound. A degenerate (zero-length) polyline
+// or count < 2 returns the input unchanged. The geometry is preserved exactly on the
+// original segments (linear interpolation between the bracketing vertices).
+inline std::vector<math::Point3> resamplePolylineByArcLength(const std::vector<math::Point3>& p,
+                                                             std::size_t count) {
+  const std::size_t n = p.size();
+  if (n < 2 || count < 2) return p;
+  std::vector<double> cum(n, 0.0);
+  for (std::size_t k = 1; k < n; ++k) cum[k] = cum[k - 1] + math::distance(p[k - 1], p[k]);
+  const double total = cum.back();
+  if (total < kProfileTol) return p;  // all coincident → leave to caller's guard
+  std::vector<math::Point3> out;
+  out.reserve(count);
+  std::size_t seg = 0;
+  for (std::size_t s = 0; s < count; ++s) {
+    const double target = total * static_cast<double>(s) / static_cast<double>(count - 1);
+    while (seg + 2 < n && cum[seg + 1] < target) ++seg;
+    const double segLen = cum[seg + 1] - cum[seg];
+    const double u = segLen > kProfileTol ? (target - cum[seg]) / segLen : 0.0;
+    const double uc = std::clamp(u, 0.0, 1.0);
+    out.push_back(math::Point3{p[seg].asVec() + (p[seg + 1].asVec() - p[seg].asVec()) * uc});
+  }
+  return out;
 }
 
 // True if the whole spine is a single straight line (every point collinear with the
@@ -653,18 +692,17 @@ inline topo::Shape build_section_thrusections(const double* profileXY, int profi
 
   std::vector<math::Point3> spine = cleanPath(pathXYZ, pathCount);
   if (spine.size() < 2) return {};
-  // A REAL twist needs a FINELY-SAMPLED loft to match OCCT's smoothly-twisted
-  // ThruSections (a single ruled segment across a large twist under-fills the true swept
-  // solid — the corner chords cut inside the rotating section). Densifying converges the
-  // volume, but the resulting many-band TWISTED (saddle) ruled tube does not weld
-  // robustly watertight at every deflection (the interior structured-grid rows of two
-  // adjacent twisted bands do not align across their shared horizontal ring seam — a
-  // curved-band SSI-adjacent weld the native two-stage mesher cannot close for a coarse
-  // multi-vertex section). Rather than ship a leaky or volume-wrong native solid, a real
-  // twist DEFERS to the OCCT twisted_sweep (ThruSections) oracle — the honest fall-through
-  // stated in native_sweep_parity.mm D1. `build_twisted_sweep` only reaches here for a
-  // real twist/scale; a plain (twist≈0, scale≈1) sweep is handled by build_sweep upstream.
-  if (std::fabs(totalTwist) > kTwistDeferThreshold) return {};  // real twist → OCCT
+  // A REAL twist needs a FINELY-SAMPLED loft to converge to (and match OCCT's) smoothly-
+  // twisted ThruSections: a single ruled segment across a large twist under-fills the true
+  // swept solid (the corner chords cut inside the rotating section). The CALLER supplies a
+  // spine pre-densified so each band's accumulated twist stays under a small per-band bound
+  // (build_twisted_sweep densifies a straight spine to `kMaxBandTwist`; guided_sweep passes
+  // its own path with totalTwist == 0). At a bounded per-band twist the twisted (saddle)
+  // ruled tube welds robustly watertight — the SAME gentle-rotation-per-band regime the
+  // landed guided_orient_sweep uses — and its volume converges to the analytic (area-
+  // preserving) value, verified against the OCCT ThruSections oracle fed the same stations.
+  // A tube that still fails the engine self-verify (a near-self-fold slipping the guard) is
+  // DISCARDED by NativeEngine → OCCT (honest coexistence, never a leaky solid).
   const std::vector<math::Vec3> tan = stationTangents(spine);
   const std::vector<SweepFrame> frames = frenetSectionFrames(spine, tan);
   const std::size_t nStations = frames.size();
@@ -697,9 +735,11 @@ inline topo::Shape build_section_thrusections(const double* profileXY, int profi
 // path tangent by `twistRadians` (accumulated linearly 0→twistRadians) and SCALES
 // linearly 1→`scaleEnd`. NATIVE:
 //   * plain (twist≈0, scale≈1) → forwards to build_sweep (constant-frame MakePipe law).
-//   * a REAL twist/scale → the per-station Frenet-framed ruled ThruSections tube
-//     (build_section_thrusections), matching the OCCT twisted_sweep oracle, provided the
-//     tube does not self-intersect.
+//   * a REAL twist/scale → DENSIFY the spine (arc-length) so each ruled band's twist stays
+//     under kMaxBandTwist, then build the per-station Frenet-framed ruled ThruSections tube
+//     (build_section_thrusections). At a bounded per-band rotation the twisted tube welds
+//     watertight and its volume converges to the area-preserving analytic value, matching
+//     the OCCT twisted_sweep (ThruSections) oracle fed the same stations.
 // NULL (→ OCCT twisted_sweep) on a degenerate profile/path or a self-folding tube.
 // ─────────────────────────────────────────────────────────────────────────────
 inline topo::Shape build_twisted_sweep(const double* profileXY, int profileCount,
@@ -707,9 +747,29 @@ inline topo::Shape build_twisted_sweep(const double* profileXY, int profileCount
                                        double scaleEnd) {
   if (std::fabs(twistRadians) <= 1e-9 && std::fabs(scaleEnd - 1.0) <= 1e-9)
     return build_sweep(profileXY, profileCount, pathXYZ, pathCount);
+
+  // Densify the spine so each ruled band's accumulated twist stays under kMaxBandTwist:
+  // a coarse (e.g. 2-point) path across a large twist under-fills the true swept solid,
+  // so we resample the CLEANED spine polyline at nStations points by arc length and feed
+  // the densified path to build_section_thrusections. The twist/scale fraction stays
+  // keyed to the arc-length fraction f (matching the OCCT oracle's per-station f), so the
+  // densified native and a densified OCCT ThruSections converge to the same solid.
+  std::vector<math::Point3> spine = detail::cleanPath(pathXYZ, pathCount);
+  if (spine.size() < 2) return {};
+  std::size_t nBands = 1;
+  if (std::fabs(twistRadians) > 1e-9)
+    nBands = static_cast<std::size_t>(std::ceil(std::fabs(twistRadians) / detail::kMaxBandTwist));
+  nBands = std::max<std::size_t>(nBands, spine.size() - 1);          // honour caller stations
+  nBands = std::min<std::size_t>(nBands, detail::kMaxDensifyStations - 1);
+  const std::vector<math::Point3> dense = detail::resamplePolylineByArcLength(spine, nBands + 1);
+  if (dense.size() < 2) return {};
+
+  std::vector<double> flat;
+  flat.reserve(dense.size() * 3);
+  for (const math::Point3& p : dense) { flat.push_back(p.x); flat.push_back(p.y); flat.push_back(p.z); }
   const auto scaleAt = [scaleEnd](double f) { return 1.0 + (scaleEnd - 1.0) * f; };
-  return detail::build_section_thrusections(profileXY, profileCount, pathXYZ, pathCount,
-                                            twistRadians, scaleAt);
+  return detail::build_section_thrusections(profileXY, profileCount, flat.data(),
+                                            static_cast<int>(dense.size()), twistRadians, scaleAt);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -880,6 +940,75 @@ inline topo::Shape build_guided_orient_sweep(const double* profileXY, int profil
   return detail::assembleRingTube(rings, centres, normals);
 }
 
+namespace detail {
+
+// A centred profile loop analysed for the rail loft: the (x,y) offsets from its centroid.
+inline std::vector<math::Point3> centredProfile(const double* xy, int count) {
+  double cx = 0.0, cy = 0.0;
+  for (int i = 0; i < count; ++i) { cx += xy[i * 2]; cy += xy[i * 2 + 1]; }
+  cx /= count;
+  cy /= count;
+  std::vector<math::Point3> out;
+  out.reserve(static_cast<std::size_t>(count));
+  for (int i = 0; i < count; ++i) out.push_back({xy[i * 2] - cx, xy[i * 2 + 1] - cy, 0.0});
+  return out;
+}
+
+// build_curved_rail_loft — the CURVED-rail arm of build_loft_along_rail. Densify the
+// cleaned rail (arc length) so each band's tangent turn stays under kMaxBandTurn, then
+// RMF-transport (rotation-minimizing frame, zero spurious twist) the section MORPH A→B
+// (linear per-vertex interpolation in the transported frame) into per-station rings, and
+// tile them into a watertight tube (assembleRingTube). For a circular-arc rail of radius
+// R through angle φ with a constant section of area A the volume converges (as the rail
+// densifies) to the Pappus torus-sector value A·R·φ. A rail too tight to weld at the cap
+// is caught by the engine self-verify → OCCT. Returns NULL on a degenerate rail / cap.
+inline topo::Shape build_curved_rail_loft(const std::vector<math::Point3>& rail,
+                                          const std::vector<math::Point3>& localA,
+                                          const std::vector<math::Point3>& localB) {
+  if (rail.size() < 2 || localA.size() != localB.size() || localA.size() < 3) return {};
+
+  // Probe the total tangent turn on a coarse resample → pick the station count so each
+  // band turns at most kMaxBandTurn (the ruled-band weld bound, as guided_orient_sweep).
+  const std::vector<math::Vec3> probeTan = stationTangents(rail);
+  double totalTurn = 0.0;
+  for (std::size_t k = 1; k < probeTan.size(); ++k) {
+    const double d = std::clamp(math::dot(probeTan[k - 1], probeTan[k]), -1.0, 1.0);
+    totalTurn += std::acos(d);
+  }
+  std::size_t nStations = 2;
+  if (totalTurn > 1e-4)
+    nStations = static_cast<std::size_t>(std::ceil(totalTurn / kMaxBandTurn)) + 1;
+  nStations = std::min<std::size_t>(std::max<std::size_t>(nStations, rail.size()),
+                                    kMaxDensifyStations);
+
+  const std::vector<math::Point3> dense = resamplePolylineByArcLength(rail, nStations);
+  if (dense.size() < 2) return {};
+  const std::vector<math::Vec3> tan = stationTangents(dense);
+  const std::vector<SweepFrame> frames = rmfFrames(dense, tan);
+  const std::size_t n = frames.size();
+  const double denom = static_cast<double>(n - 1);
+  const std::size_t nProf = localA.size();
+
+  std::vector<std::vector<math::Point3>> rings(n);
+  std::vector<math::Point3> centres(n);
+  std::vector<math::Vec3> normals(n);
+  for (std::size_t s = 0; s < n; ++s) {
+    const double f = static_cast<double>(s) / denom;
+    std::vector<math::Point3> ring(nProf);
+    for (std::size_t i = 0; i < nProf; ++i) {
+      const double u = localA[i].x + (localB[i].x - localA[i].x) * f;
+      const double v = localA[i].y + (localB[i].y - localA[i].y) * f;
+      ring[i] = frames[s].origin + frames[s].x * u + frames[s].y * v;
+    }
+    rings[s] = std::move(ring);
+    centres[s] = frames[s].origin;
+    normals[s] = math::cross(frames[s].x, frames[s].y);
+  }
+  return assembleRingTube(rings, centres, normals);
+}
+
+}  // namespace detail
+
 // ─────────────────────────────────────────────────────────────────────────────
 // build_loft_along_rail — cc_loft_along_rail entry point. Morph section A (at the rail
 // start) into section B (at the rail end) along the rail. The OCCT oracle is
@@ -887,8 +1016,9 @@ inline topo::Shape build_guided_orient_sweep(const double* profileXY, int profil
 // pipe-shell reduces EXACTLY to a ruled loft between the two sections, each placed in
 // the plane PERPENDICULAR to the (single) rail tangent — so a straight rail is NATIVE
 // (reuse build_ruled_loft). Requires equal section vertex counts ≥3 (build_ruled_loft's
-// contract). A CURVED / kinked rail is a genuine pipe-shell morph (interior transitions,
-// non-constant frame) → NULL → OCCT MakePipeShell.
+// contract). A CURVED rail is served by build_curved_rail_loft — an RMF-transported
+// morph densified to a bounded per-band turn; a rail too tight to weld is discarded by
+// the engine self-verify → OCCT MakePipeShell.
 //
 // The perpendicular frame matches the oracle's perpendicularFrame: uDir = tan × ref,
 // vDir = tan × uDir, ref = +Z unless |tan·Z| > 0.95 then +X.
@@ -902,7 +1032,9 @@ inline topo::Shape build_loft_along_rail(const double* railXYZ, int railCount,
 
   std::vector<math::Point3> rail = detail::cleanPath(railXYZ, railCount);
   if (rail.size() < 2) return {};
-  if (!detail::spineIsStraight(rail)) return {};  // curved/kinked rail → OCCT pipe-shell
+  if (!detail::spineIsStraight(rail))  // curved rail → RMF-transported densified morph
+    return detail::build_curved_rail_loft(rail, detail::centredProfile(profileA_XY, aCount),
+                                          detail::centredProfile(profileB_XY, bCount));
 
   const math::Point3 start = rail.front(), end = rail.back();
   const math::Vec3 tanV = end - start;

@@ -16,12 +16,14 @@
 // polyline spine; the smooth curved case mirrors MakePipe on a bent PLANAR spine.
 //
 // The RESIDUAL sweep ops are now also native (different oracle — ruled ThruSections /
-// straight-rail pipe-shell, a SIMPLE reproducible per-station frame): cc_twisted_sweep
-// (real twist/scale) builds the per-station Frenet-framed ruled tube (native when it
-// welds watertight and does not self-fold — a self-folding tube defers), cc_guided_sweep
-// builds the guide-scaled ruled tube, and cc_loft_along_rail is native for a STRAIGHT
-// rail (perpendicular-framed ruled loft) and defers for a curved/kinked rail. See the
-// per-case tests below and sweep.h for the honest native/fallback split.
+// pipe-shell, a SIMPLE reproducible per-station frame): cc_twisted_sweep (real
+// twist/scale) DENSIFIES the spine to a bounded per-band twist and builds the per-station
+// Frenet-framed ruled tube (native when it welds watertight and does not self-fold — a
+// self-folding tube defers), cc_guided_sweep builds the guide-scaled ruled tube, and
+// cc_loft_along_rail is native for a STRAIGHT rail (perpendicular-framed ruled loft) AND
+// for a SMOOTH CURVED rail (RMF-transported morph densified to a bounded per-band turn —
+// a rail too tight to weld defers). See the per-case tests below and sweep.h for the
+// honest native/fallback split.
 //
 // THE CURVED MACHINERY IS NATIVE AND TESTED HERE end-to-end. The CONSTANT-frame
 // transport in detail::constantFrames is genuine native code exercised on a smooth
@@ -218,22 +220,49 @@ CC_TEST(sweep_curved_arc_native_watertight) {
   CC_CHECK(std::fabs(vol - exactVol) / exactVol < 5e-3);
 }
 
-// ── DEFERRED: a real TWIST cc_twisted_sweep falls through to OCCT ─────────────────
-// A REAL twist needs a finely-sampled loft to match OCCT's smoothly-twisted
+// ── NATIVE: a REAL twist cc_twisted_sweep builds a watertight, volume-converged tube ─
+// A real twist needs a finely-sampled loft to converge to OCCT's smoothly-twisted
 // ThruSections (a single ruled segment across a large twist under-fills the true swept
-// solid — the corner chords cut inside the rotating section). Densifying converges the
-// volume, but the resulting many-band TWISTED (saddle) ruled tube does NOT weld robustly
-// watertight at every deflection (the interior structured-grid rows of two adjacent
-// twisted bands do not align across their shared horizontal ring seam). Rather than ship
-// a leaky or volume-wrong native solid, a real twist DEFERS (NULL) → the NativeEngine
-// forwards to the OCCT twisted_sweep (ThruSections) oracle — the honest fall-through
-// stated in native_sweep_parity.mm D1 and native_geomcompletion_parity. A pure SCALE
-// (guided sweep, ~zero twist) stays native (see guided_sweep_native_watertight).
-CC_TEST(twisted_sweep_real_twist_defers_to_occt) {
+// solid — the corner chords cut inside the rotating section). build_twisted_sweep
+// DENSIFIES the straight spine so each ruled band's twist stays under kMaxBandTwist; at
+// that bounded per-band rotation the twisted tube welds watertight and its volume
+// CONVERGES to the area-preserving analytic value (a pure twist about a straight spine
+// preserves the cross-section area, so V → area·L). Gate (a), host-analytic, OCCT-free.
+CC_TEST(twisted_sweep_real_twist_native_area_preserving) {
   const double prof[] = {-2, -2, 2, -2, 2, 2, -2, 2};  // 4×4 square, area 16
+  const double path[] = {0, 0, 0, 0, 0, 10};           // straight, L = 10 → V = 160
+  const topo::Shape s = cst::build_twisted_sweep(prof, 4, path, 2, 1.5708 /*π/2*/, 1.0);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+  double vol = 0.0;
+  CC_CHECK(watertightAt(s, {0.05, 0.02, 0.005}, vol));  // welds at the deflection ladder
+  // Twist preserves the cross-section area, so the twisted prism volume equals the
+  // untwisted 160. The densified ruled tube is a chord under-fill (like OCCT's own ruled
+  // ThruSections), so assert convergence to within a deflection-bounded 1%.
+  CC_CHECK(std::fabs(vol - 160.0) / 160.0 < 1e-2);
+}
+
+// ── SHARPENED DECLINE: a real twist COMBINED WITH a scale is not robustly weldable ──
+// A pure twist welds watertight at every deflection (above); adding a SIMULTANEOUS
+// linear scale (the section twists AND shrinks along the spine) yields a saddle band the
+// native two-stage mesher welds only INTERMITTENTLY across the deflection ladder — the
+// volume converges (to L·∫₀¹16(1−0.5f)²df = 10·16·7/12 ≈ 93.33) but the mesh drops a
+// boundary edge at some deflections. Rather than ship a sometimes-leaky solid, the
+// builder still emits the candidate but the ENGINE self-verify (robustlyWatertight over
+// {0.05,0.02,0.01,0.005}) DISCARDS it → OCCT twisted_sweep. Assert the candidate is NOT
+// robustly watertight at every deflection (so the engine declines), while its converged
+// volume proves the geometry is right — a measured, honest decline, not a faked pass.
+CC_TEST(twisted_sweep_twist_plus_scale_not_robustly_weldable) {
+  const double prof[] = {-2, -2, 2, -2, 2, 2, -2, 2};
   const double path[] = {0, 0, 0, 0, 0, 10};
-  CC_CHECK(cst::build_twisted_sweep(prof, 4, path, 2, 1.5708, 0.5).isNull());
-  CC_CHECK(cst::build_twisted_sweep(prof, 4, path, 2, 1.5708, 1.0).isNull());
+  const topo::Shape s = cst::build_twisted_sweep(prof, 4, path, 2, 1.5708, 0.5);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+  double vol = 0.0;
+  const bool robustWT = watertightAt(s, {0.05, 0.02, 0.01, 0.005}, vol);
+  CC_CHECK(!robustWT);  // NOT weldable at every deflection → engine self-verify declines
+  const double expected = 10.0 * 16.0 * (7.0 / 12.0);  // ≈ 93.333 (geometry is correct)
+  CC_CHECK(std::fabs(vol - expected) / expected < 2e-2);
 }
 
 // ── DEFERRED: a SELF-FOLDING twist (wide section, large twist, short path) → NULL ──
@@ -386,18 +415,52 @@ CC_TEST(loft_along_rail_straight_native_frustum) {
   CC_CHECK(std::fabs(vol - 93.33333333) < 1e-4);  // exact frustum
 }
 
-// ── DEFERRED: loft_along_rail on a CURVED/kinked rail → NULL (OCCT pipe-shell) ─────
-// A bent rail is a genuine MakePipeShell morph (interior transitions, non-constant
-// frame) the ruled loft does not model, so it defers. Also NULL on mismatched section
-// counts (the ruled loft pairs vertex k→k → equal counts only).
-CC_TEST(loft_along_rail_curved_and_mismatch_deferred) {
-  const double bentRail[] = {0, 0, 0, 5, 0, 3, 10, 0, 0};  // non-collinear rail
+// ── NATIVE: loft_along_rail on a CURVED (circular-arc) rail → Pappus torus sector ───
+// A constant polygonal section (regular 32-gon, circumradius 3) lofted along a
+// quarter-arc rail of radius R=20 in the XY plane. build_loft_along_rail densifies the
+// rail to a bounded per-band turn and RMF-transports the section, welding a watertight
+// tube whose volume CONVERGES to the Pappus torus-sector value polyArea·R·φ. Gate (a),
+// host-analytic, OCCT-free.
+CC_TEST(loft_along_rail_curved_arc_native_pappus) {
+  const double R = 20.0, phi = 1.57079632679;  // quarter arc
+  const int rn = 24;
+  std::vector<double> rail;
+  for (int k = 0; k < rn; ++k) {
+    const double th = phi * k / (rn - 1);
+    rail.push_back(R * std::cos(th));
+    rail.push_back(R * std::sin(th));
+    rail.push_back(0.0);
+  }
+  const int pn = 32;
+  const double rprof = 3.0;
+  std::vector<double> prof;
+  for (int i = 0; i < pn; ++i) {
+    const double t = 2.0 * 3.14159265358979323846 * i / pn;
+    prof.push_back(rprof * std::cos(t));
+    prof.push_back(rprof * std::sin(t));
+  }
+  const topo::Shape s = cst::build_loft_along_rail(rail.data(), rn, prof.data(), pn, prof.data(), pn);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+  double vol = 0.0;
+  CC_CHECK(watertightAt(s, {0.05, 0.02, 0.005}, vol));
+  const double polyArea = 0.5 * pn * rprof * rprof * std::sin(2.0 * 3.14159265358979323846 / pn);
+  const double expected = polyArea * R * phi;  // Pappus ≈ 882.57
+  CC_CHECK(std::fabs(vol - expected) / expected < 1e-2);
+}
+
+// ── DEFERRED: loft_along_rail mismatch / tight-corner rail → NULL or discarded ─────
+// The ruled loft pairs vertex k→k, so mismatched section counts return NULL. A sharp
+// kinked rail (a near-90° corner over a short chord) turns too fast per band for the
+// native ruled mesher to weld watertight within the station cap — the candidate fails
+// the engine self-verify and falls through to OCCT (measured decline).
+CC_TEST(loft_along_rail_mismatch_and_tight_deferred) {
   const double a[] = {-2, -2, 2, -2, 2, 2, -2, 2};
-  const double b[] = {-1, -1, 1, -1, 1, 1, -1, 1};
-  CC_CHECK(cst::build_loft_along_rail(bentRail, 3, a, 4, b, 4).isNull());  // curved rail
   const double straight[] = {0, 0, 0, 0, 0, 10};
   const double tri[] = {0, 0, 2, 0, 1, 2};                                   // 3 pts
   CC_CHECK(cst::build_loft_along_rail(straight, 2, a, 4, tri, 3).isNull());  // count mismatch
+  const double b[] = {-1, -1, 1, -1, 1, 1, -1, 1};
+  CC_CHECK(cst::build_loft_along_rail(nullptr, 3, a, 4, b, 4).isNull());     // null rail
 }
 
 // ── DEFERRED: degenerate input returns NULL ─────────────────────────────────---

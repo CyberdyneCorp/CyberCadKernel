@@ -62,8 +62,8 @@ All `file:line` are in `src/engine/native/native_engine.cpp` unless noted.
 | solid_loft_wires | cc_solid_loft_wires | 983 | **A** | done | 6 | ditto (986) |
 | solid_loft_sections | cc_solid_loft_sections | 997 | **A** | done M7a | 0 | self-folding / verify-fail only (1000) |
 | solid_sweep | cc_solid_sweep | 1009 | **A** | done | 11 | tight-curvature / SSI spine only (1011) |
-| twisted_sweep | cc_twisted_sweep | 1017 | **B** | M7 / ~0.3py | 4 | native covers only twist≈0 / scale≈1 (degenerate); real twist = typical use → OCCT (1020) |
-| loft_along_rail | cc_loft_along_rail | 1033 | **B** | M7 curved-rail / ~0.4py | 8 | native covers only straight rail; curved rail = typical use → OCCT (1037) |
+| twisted_sweep | cc_twisted_sweep | 1017 | **A** | done M7t | 4 | native serves plain + REAL PURE twist (densified Frenet ruled tube, area-preserving, self-verified watertight); twist+scale saddle not robustly weldable / self-folding → OCCT (1041) |
+| loft_along_rail | cc_loft_along_rail | 1033 | **A** | done M7t | 8 | native serves straight rail AND smooth curved rail (RMF-transported morph densified to a bounded per-band turn, Pappus-converged); tight-kink rail / coarse section that won't weld → OCCT self-verify (1068) |
 | guided_sweep | cc_guided_sweep | 1040 | **A** | resid M2/M7 | 5 | native serves general tube; self-folding SSI only (1044) |
 | guided_orient_sweep | cc_guided_orient_sweep | 1054 | **A** | resid M7 | 0 | native mainline; curved-spine residual (1058); 0 app usage |
 | helical_thread | cc_helical_thread | 1102 | **A** | resid M7b | 6 | coarse pitch native; fine-pitch self-intersecting → OCCT (1106) |
@@ -133,11 +133,12 @@ writers / TetGen). **Facade-pure fp64 (no engine call):** `cc_ref_plane_from_poi
 `set_gpu_tessellation` forward to fallback policy (625-628) → become native no-ops at unlink.
 
 **Site tally:** classified engine fall-through sites → **B: 7**, **C: 2**, the rest **A**
-(this wave: M-TX's 6 transform ops + `extrude_mesh`, M-REF's 7 reference/topology reads, and
-M-DM `replace_face` (DM3 offset) all moved B→A — 15 sites cleared). The remaining **7 B** sites
-are: the M3 OCCT-only fillets (`fillet_face`, `full_round_fillet`, `full_round_fillet_faces`,
-`fillet_edges_g2`), the degenerate-slice construct ops (`twisted_sweep`, `loft_along_rail`),
-and `thread_apply`; `iges_export`/`iges_import` are the two C-class invocations.
+(this wave: M-TX's 6 transform ops + `extrude_mesh`, M-REF's 7 reference/topology reads,
+M-DM `replace_face` (DM3 offset), and M7t's `twisted_sweep` (real twist) +
+`loft_along_rail` (curved rail) all moved B→A — 17 sites cleared). The remaining **5 B**
+sites are: the M3 OCCT-only fillets (`fillet_face`, `full_round_fillet`,
+`full_round_fillet_faces`, `fillet_edges_g2`) and `thread_apply`; `iges_export`/`iges_import`
+are the two C-class invocations.
 
 ---
 
@@ -150,7 +151,7 @@ and `thread_apply`; `iges_export`/`iges_import` are the two C-class invocations.
 | **M-DM direct modeling** — ✅ core LANDED (DM1/DM2/DM3 offset + DM4 project native) | replace_face offset (DM3) + project_point_on_face (DM4) native; only tilted/non-planar retarget breadth residual (gates M2/M3) | **M-DM (done, resid breadth)** | 6 | **~0.5 (residual)** |
 | **M3 OCCT-only + curved-blend breadth** | fillet_face, full_round_fillet, full_round_fillet_faces, fillet_edges_g2 + curved/freeform residuals of the A-class blends (fillet/chamfer/shell/offset_face) | **M3** (in M2/M3 breadth bucket) | 14 direct | **~3–8** (shared M2/M3) |
 | **M2 freeform-boolean breadth + thread_apply** | boolean_op freeform/mixed residual, thread_apply | **M2** (same bucket) | 0 direct | (in the ~3–8) |
-| **M7 / M7b construct tails** | twisted_sweep (real twist), loft_along_rail (curved rail), fine-pitch thread residuals | **M7 / M7b** | 12 | **~1–2** |
+| **M7b construct tails** — ✅ M7t LANDED (twisted_sweep real twist + loft_along_rail curved rail native, both gates) | ~~twisted_sweep (real twist)~~ ✅, ~~loft_along_rail (curved rail)~~ ✅, fine-pitch thread residuals | **M7t (done) / M7b** | 12 | **~0.5 (M7b thread residual)** |
 | **M-GS GS1 curved-HLR** — ✅ LANDED (native cone/frustum + torus silhouettes, two gates green) | hlr_project cone/frustum/torus(Kind::Torus) silhouettes native; freeform + revolve-built torus (B-spline bands) → OCCT | **M-GS GS1 (done)** | 0 direct | **0 (done — freeform B-spline silhouette is the honest residual)** |
 
 **MUST-GO-NATIVE remaining-py total: ≈ 4.5–11 py (midpoint ≈ 7 py)**, now almost entirely the

@@ -517,12 +517,13 @@ CC_TEST(native_sweep_smooth_arc) {
 
 // A TIGHT-CURVATURE / self-intersecting sweep spine forwards to the fallback (stub → 0
 // on host), never faked — it needs surface-surface intersection (Tier 4). A REAL twist
-// ALSO defers: the native ruled tube cannot robustly match OCCT's smoothly-twisted
-// ThruSections loft (a densified twisted saddle-band tube does not weld watertight at
-// every deflection), so build_twisted_sweep returns NULL and the engine forwards to the
-// OCCT twisted_sweep oracle (stub → 0 on host). Proves the native path both guards the
-// self-intersecting case AND honestly defers the real twist (never a faked/leaky solid).
-CC_TEST(native_sweep_tight_and_twist_defer) {
+// A tight-curvature sweep still defers; a REAL PURE twist now runs NATIVE (the densified
+// Frenet-framed ruled tube welds watertight at every deflection and converges to the
+// area-preserving volume); a twist COMBINED WITH a scale is NOT robustly weldable and is
+// discarded by the engine self-verify → OCCT (stub → 0 on host). Proves the native path
+// guards the self-intersecting case, serves the pure twist, and honestly declines the
+// combined twist+scale (never a faked/leaky solid).
+CC_TEST(native_sweep_tight_defer_and_twist_native) {
     EngineGuard g;
     cc_set_engine(1);
 
@@ -537,9 +538,18 @@ CC_TEST(native_sweep_tight_and_twist_defer) {
     }
     CC_CHECK_EQ(cc_solid_sweep(prof, 4, tight.data(), 13), 0);  // tight → stub fallback
 
-    // A real 90° twist along a straight spine defers to OCCT (stub → 0 on host).
+    // A real 90° PURE twist along a straight spine runs NATIVE (watertight, V → area·L).
     const double path[] = {0, 0, 0, 0, 0, 10};
-    CC_CHECK_EQ(cc_twisted_sweep(prof, 4, path, 2, 1.5708, 1.0), 0);
+    const CCShapeId tw = cc_twisted_sweep(prof, 4, path, 2, 1.5708, 1.0);
+    CC_CHECK(tw != 0);
+    if (tw != 0) {
+        const CCMassProps mp = cc_mass_properties(tw);
+        CC_CHECK(mp.valid != 0 && mp.volume > 0.0);
+        CC_CHECK(std::fabs(mp.volume - 160.0) / 160.0 < 2e-2);  // area-preserving
+        cc_shape_release(tw);
+    }
+    // A twist + scale is not robustly weldable → engine self-verify declines → stub 0.
+    CC_CHECK_EQ(cc_twisted_sweep(prof, 4, path, 2, 1.5708, 0.5), 0);
 }
 
 // Tier-2#4 (widened envelope): a GUIDED sweep now runs NATIVE — the profile is scaled
@@ -564,13 +574,14 @@ CC_TEST(native_guided_sweep_runs_native) {
     cc_shape_release(id);
 }
 
-// Tier-2#4 (widened envelope): loft-along-a-STRAIGHT-rail now runs NATIVE — a ruled
-// loft between the two equal-count sections placed perpendicular to the rail tangent
-// (build_loft_along_rail, matching MakePipeShell on a straight rail). A 4×4 → 2×2
-// square morph along a +Z rail is a watertight frustum-like solid the engine keeps
-// native. A CURVED/kinked rail (genuine pipe-shell morph) or mismatched section
-// counts → NULL → fallback (stub → 0), verified below.
-CC_TEST(native_loft_along_straight_rail_runs_native) {
+// Tier-2#4 (widened envelope): loft-along-a-rail runs NATIVE for a STRAIGHT rail (a
+// ruled loft between the two equal-count sections placed perpendicular to the rail
+// tangent) AND for a SMOOTH CURVED rail with a well-sampled section (an RMF-transported
+// morph densified to a bounded per-band turn — a watertight tube converging to the
+// Pappus torus-sector volume). A SHARP-CORNERED section along a curved rail, or a
+// tight-kinked rail, does not weld robustly → engine self-verify declines → OCCT (stub →
+// 0 on host). Mismatched section counts → NULL → fallback. All verified below.
+CC_TEST(native_loft_along_rail_runs_native) {
     EngineGuard g;
     cc_set_engine(1);
 
@@ -585,9 +596,40 @@ CC_TEST(native_loft_along_straight_rail_runs_native) {
     CC_CHECK(mp.volume > 0.0);
     cc_shape_release(id);
 
-    // A curved rail is a genuine pipe-shell morph → not native → stub fallback (0).
+    // A SMOOTH curved (quarter-arc) rail with a well-sampled (32-gon) section runs NATIVE:
+    // the RMF-transported tube welds watertight and converges to Pappus polyArea·R·φ.
+    const double R = 20.0, phi = kPi / 2.0;
+    std::vector<double> arc;
+    for (int k = 0; k < 24; ++k) {
+        const double th = phi * k / 23;
+        arc.push_back(R * std::cos(th));
+        arc.push_back(R * std::sin(th));
+        arc.push_back(0.0);
+    }
+    std::vector<double> circ;
+    const int pn = 32;
+    const double rp = 3.0;
+    for (int i = 0; i < pn; ++i) {
+        const double t = 2.0 * kPi * i / pn;
+        circ.push_back(rp * std::cos(t));
+        circ.push_back(rp * std::sin(t));
+    }
+    const CCShapeId cid = cc_loft_along_rail(arc.data(), 24, circ.data(), pn, circ.data(), pn);
+    CC_CHECK(cid != 0);
+    if (cid != 0) {
+        const CCMassProps cm = cc_mass_properties(cid);
+        const double polyArea = 0.5 * pn * rp * rp * std::sin(2.0 * kPi / pn);
+        CC_CHECK(cm.valid != 0 && cm.volume > 0.0);
+        CC_CHECK(std::fabs(cm.volume - polyArea * R * phi) / (polyArea * R * phi) < 2e-2);
+        cc_shape_release(cid);
+    }
+
+    // A tight-kinked rail (a near-90° V) does not weld robustly → declines → stub 0.
     const double bentRail[] = {0, 0, 0, 3, 0, 5, 0, 0, 10};
     CC_CHECK_EQ(cc_loft_along_rail(bentRail, 3, a, 4, b, 4), 0);
+    // Mismatched section counts → NULL → fallback.
+    const double tri[] = {0, 0, 2, 0, 1, 2};
+    CC_CHECK_EQ(cc_loft_along_rail(rail, 2, a, 4, tri, 3), 0);
 }
 
 // ── Tier-D (#4b): native tapered shank + thread fall-through ───────────────────

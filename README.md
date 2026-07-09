@@ -28,6 +28,41 @@ the facade evolves:
   implementation can coexist and be compared behind the *same* facade call.
 - **Determinism by default** — parallelism preserves reproducible results.
 
+## Performance & footprint (measured)
+
+The native engine is not just an OCCT replacement — it is **materially faster on the
+hot interactive path and tens-to-hundreds of MB lighter to ship**. Measured native
+vs OCCT on the *same* `cc_*` operations, on identical self-verified-correct results
+(host macOS arm64, Homebrew OCCT 7.9.3, median-of-25 after warm-up; deterministic
+N-gon inputs). Full method, per-size rows, and honest caveats:
+[docs/BENCH-native-vs-occt.md](docs/BENCH-native-vs-occt.md).
+
+**Latency — native speedup** (ratio = OCCT / native; >1 ⇒ native faster):
+
+| op | small | medium | large |
+|---|--:|--:|--:|
+| boolean (fuse / cut / common) | 14–20× | 10–15× | 8–10× |
+| tessellate | 14.9× | 13.3× | 10.6× |
+| mass_properties | 8.5× | 7.9× | 7.2× |
+
+`section` is **native-only** (the OCCT adapter declines it, so no like-for-like ratio);
+`fillet_edges` **forwards** to OCCT today (curved fillet face) — no native win, an
+honest decline that becomes a clean decline after unlink.
+
+**Binary footprint** (iOS-simulator arm64 shipping slice, OCCT-linked vs native-only):
+
+| | MB |
+|---|--:|
+| OCCT static dependency dropped (linked-toolkit subset) | **112.15** (140.78 full trimmed install) |
+| Dead-stripped **in-binary** reduction (representative reachable set) | **28.05** |
+| Native-only kernel `.a` | 2.66 (vs 3.74 with the OCCT adapter) |
+
+Dropping OCCT removes 16 adapter TUs / 259 symbols and **hundreds of MB of static
+libraries you no longer build, vendor, ship, or code-sign** — the iPad shipping win —
+in exchange for a ~1 MB kernel-side native adapter. **Net: 7–20× faster on the ops
+the app runs most, and far lighter to ship** — the two-sided justification for
+[`drop-occt`](openspec/MOAT-ROADMAP.md).
+
 ## Architecture
 
 ```mermaid
@@ -427,6 +462,7 @@ follow-ups. See [docs/STATUS.md](docs/STATUS.md) and
 - **[docs/ROADMAP.md](docs/ROADMAP.md)** — phase plan and where things stand.
 - **[docs/FEATURES.md](docs/FEATURES.md)** — capability catalogue (the `cc_*` surface).
 - **[docs/STATUS.md](docs/STATUS.md)** — what is verified, and how to reproduce it.
+- **[docs/BENCH-native-vs-occt.md](docs/BENCH-native-vs-occt.md)** — measured native-vs-OCCT latency + binary-size payoff (the drop-OCCT "why").
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — layers, seams, and design decisions.
 - **[docs/python.md](docs/python.md)** — the desktop Python binding (`cybercadkernel`).
 - **[docs/build.md](docs/build.md)** — toolchain and build instructions.

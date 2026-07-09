@@ -1315,7 +1315,18 @@ ShapeResult NativeEngine::chamfer_edges(EngineShape body, const int* e, int ec, 
     // REMOVES material). The first passing candidate wins; NULL/failed → next → OCCT.
 
     // 1. PLANAR dihedral chamfer — slice the convex corner with the setback plane.
+    //    (Sequential per-edge clip; welds NON-adjacent edge sets.)
     ntopo::Shape result = nblend::chamfer_edges(h->shape, e, ec, d);
+    if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
+        return track(wrapNative(std::move(result)));
+
+    // 1b. CONVEX-CORNER chamfer weld — the sequential path (1) DECLINES a set of
+    //     mutually-ADJACENT convex edges sharing a corner (the first cut removes the
+    //     shared corner, losing the next edge). This weld resolves all chamfer planes
+    //     up front against the ORIGINAL soup, then applies all cuts; the corner facet
+    //     forms from the exposed rings. All-planar → welds through the same
+    //     assembleSolid path with no tessellator change. Same SHRINK self-verify.
+    result = nblend::chamfer_corner(h->shape, e, ec, d);
     if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
         return track(wrapNative(std::move(result)));
 

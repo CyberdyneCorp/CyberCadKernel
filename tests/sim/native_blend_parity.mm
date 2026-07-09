@@ -437,6 +437,35 @@ void runCase(const BlendCase& c) {
 // 10×10×10 box shelled with wall thickness 6 (> half the 10 extent) has NO valid
 // hollow cavity: the inward half-spaces cross, so the native builder produces no sane
 // wall and the engine cannot forward a native body to OCCT → an honest error.
+// The M2 triple-corner ORACLE-GAP decline: chamfering the 3 edges at ONE box corner
+// under NATIVE must return id 0 (a clean self-verify/oracle-gap decline). OCCT's
+// MakeChamfer breaks the triple corner into chamfer-chamfer facets that trim more than
+// the plain half-space intersection the weld builds (measured OCCT 985.667 vs 985.75),
+// so the weld CANNOT match the oracle at a triple corner and honestly declines. A
+// native body cannot forward to OCCT, so the native result is a clean error (id 0) —
+// never a solid the oracle disagrees with.
+void runTripleCornerGuard() {
+    char detail[512];
+    cc_set_engine(1);
+    const CCShapeId box = buildBox(10.0, 10.0, 10.0);
+    const bool activeNative = cc_active_engine() == 1;
+    const int ex = box ? findAxisEdge(box, 1, 0.0, 2, 0.0, 1e-6) : 0;
+    const int ey = box ? findAxisEdge(box, 0, 0.0, 2, 0.0, 1e-6) : 0;
+    const int ez = box ? findAxisEdge(box, 0, 0.0, 1, 0.0, 1e-6) : 0;
+    const int ids[3] = {ex, ey, ez};
+    const CCShapeId chamfered =
+        (box && ex && ey && ez) ? cc_chamfer_edges(box, ids, 3, 1.0) : -1;
+    const bool ok = activeNative && (box != 0) && (ex && ey && ez) && (chamfered == 0);
+    std::snprintf(detail, sizeof detail,
+                  "native active=%d, native chamfer(3 edges @ one corner)->id=%ld "
+                  "(expect 0) — triple-corner oracle-gap decline: %s",
+                  activeNative ? 1 : 0, static_cast<long>(chamfered), cc_last_error());
+    record(ok, "native", "triple-corner-guard", detail);
+    cc_set_engine(0);
+    if (chamfered > 0) cc_shape_release(chamfered);
+    if (box) cc_shape_release(box);
+}
+
 void runNativeGuard() {
     char detail[512];
     cc_set_engine(1);
@@ -477,6 +506,23 @@ int main() {
         const int ids[1] = {e};
         return cc_chamfer_edges(body, ids, 1, 1.0);
     };
+
+    // ── corner chamfer: chamfer the TWO / THREE convex edges meeting at the box corner
+    //    (0,0,0) in ONE watertight solid. The sequential cc_chamfer_edges DECLINES the
+    //    adjacent set natively (first cut removes the shared corner); the corner weld
+    //    (up-front chamfer planes + exposed-ring corner facet) lands it. The chamfer is
+    //    PLANAR so it is EXACT vs OCCT BRepFilletAPI_MakeChamfer::Add on the same edges.
+    //    Closed forms (d=1, L=10, inclusion-exclusion of the per-edge corner prisms):
+    //      2 adjacent: removed = d²(L − d/3) = 9.6667 → 990.3333
+    //      3 corner:   removed = 3d²(2L − d)/4 = 14.25 → 985.75
+    const BlendOp chamferCorner2 = [](CCShapeId body) -> CCShapeId {
+        const int ex = findAxisEdge(body, 1, 0.0, 2, 0.0, 1e-6);  // along x (y=0,z=0)
+        const int ey = findAxisEdge(body, 0, 0.0, 2, 0.0, 1e-6);  // along y (x=0,z=0)
+        if (ex == 0 || ey == 0) return 0;
+        const int ids[2] = {ex, ey};
+        return cc_chamfer_edges(body, ids, 2, 1.0);
+    };
+    // (The 3-edge triple corner does NOT match OCCT — see runTripleCornerGuard.)
 
     // ── fillet: constant radius r=1 rolling-ball on the SAME convex vertical edge. The
     //    removed volume per unit length is r²(1 − π/4); over length 10 → 10·(1 − π/4) ≈
@@ -526,6 +572,10 @@ int main() {
         // ── NATIVE: planar chamfer / offset / shell — EXACT vs OCCT ──────────────
         {"chamfer-edge", Mode::Native, box10, chamferEdge, /*exact*/ true, 995.0,
          /*defl*/ 0.05},
+        // The M2 convex-corner chamfer weld — adjacent-edge sets the sequential path
+        // declines, welded watertight EXACT vs OCCT MakeChamfer::Add.
+        {"chamfer-corner2", Mode::Native, box10, chamferCorner2, /*exact*/ true, 990.33333333,
+         /*defl*/ 0.05},
         {"offset-face", Mode::Native, box10, offsetTop, true, 1500.0, 0.05},
         {"shell-open-top", Mode::Native, box10, shellTopOpen, true, 424.0, 0.05},
 
@@ -547,6 +597,7 @@ int main() {
     };
 
     for (const BlendCase& c : cases) runCase(c);
+    runTripleCornerGuard();
     runNativeGuard();
 
     cc_set_engine(0);

@@ -399,6 +399,21 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_smooth_trim_split)
         set(test_native_smooth_trim_split_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_smooth_trim_split.cpp")
+        # MOAT M2 curved-wall freeform half-space CUT / COMMON — host GATE (a), the
+        # OCCT-free closed-form VOLUME proof of the weld that CONSUMES the B2 smooth-trim
+        # enabler. A bowl-cup solid (a Bézier bowl trimmed by a rim CIRCLE + a flat
+        # top-lid disk) cut by the HORIZONTAL plane z=c has a CLOSED CIRCULAR seam on the
+        # freeform wall; curvedWallHalfSpaceCut composes recognise[B1] → trace[M1] →
+        # splitFaceSmoothTrim[B2] → analytic wall split[B4] → flat circular cap synth →
+        # M0 weld → watertight+volume self-verify into the CUT (Below) and COMMON (Above)
+        # keep sides, each welding watertight (Euler χ=2) at the closed-form volume
+        # (π·ρ²·c/2 and V(full)−that), with partition closure V(below)+V(above)=V(full).
+        # Non-cutting-plane + non-freeform declines to NULL→OCCT. Its seam is the real S3
+        # trace, so this host suite builds only under CYBERCAD_HAS_NUMSCI. Additive
+        # header-only verb (curved_wall_cut.h); no lib change, no cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_curved_wall_cut)
+        set(test_native_curved_wall_cut_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_curved_wall_cut.cpp")
         # MOAT M-GS GS3/GS4 analysis services (src/native/analysis) — host GATE (a),
         # the OCCT-free closed-form/brute-force proof of minimum distance, angle and
         # surface/edge curvature (+ honest declines). The freeform seed-and-refine

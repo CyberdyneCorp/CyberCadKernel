@@ -413,6 +413,19 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_multi_seam)
         set(test_native_multi_seam_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_multi_seam.cpp")
+        # MOAT M2 blocker #4 (≥3-seam) — host GATE (a): the OCCT-free proof that the
+        # THREE-arc, TWO-junction seam-graph CHAIN builder lands in ISOLATION. `A` = the
+        # bowl-lidded quad prism; `B` = a box straddling one EDGE so three faces slice
+        # `A`'s Bézier wall. Proves buildChainSeamGraph (three iso-arcs — two parallel
+        # ends + one orthogonal middle — two analytic junctions on both planes + in
+        # domain, arcs joined into one bent boundary→J1→J2→boundary chain) against the
+        # closed-form strip oracle; the 2-junction weld is the sharpened next blocker.
+        # Its arcs are the real S3 trace, so this host suite builds only under
+        # CYBERCAD_HAS_NUMSCI. Additive header-only verb (seam_graph_chain.h); no lib
+        # change, no cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_chain_seam)
+        set(test_native_chain_seam_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_chain_seam.cpp")
         # MOAT M2b / B2 SMOOTH-TRIM generalisation — host GATE (a), the OCCT-free
         # closed/circular-seam tiling proof. A quad-trimmed Bézier bowl sliced by a
         # HORIZONTAL plane (z=c) has a CLOSED CIRCULAR seam interior to the face; the

@@ -33,6 +33,7 @@
 #endif
 #include "native/blend/native_blend.h"
 #include "native/boolean/native_boolean.h"
+#include "native/boolean/thread_apply.h"
 #include "native/construct/native_construct.h"
 #include "native/drafting/native_drafting.h"
 #include "native/section/native_section.h"
@@ -1602,9 +1603,39 @@ ShapeResult NativeEngine::boolean_op(EngineShape a, EngineShape b, int op) {
     }
     return track(wrapNative(std::move(result)));
 }
+// thread_apply — apply a helical thread to a shaft (op 0 FUSE crest / 1 CUT groove).
+// The native attempt reuses the landed planar BSP boolean: recognise the tractable input
+// (cylinder shaft + coaxial helical thread), facet both operands into consistently-
+// oriented planar-triangle solids, run boolean_solid, and self-verify WATERTIGHT + χ=2 +
+// consistently-oriented + a two-sided closed-form-volume band (src/native/boolean/
+// thread_apply.h). A verified result is kept native; ANY decline falls through to the OCCT
+// per-turn oracle — never a leaky/misoriented/wrong solid, never a native void to OCCT.
+//
+// MEASURED: a multi-turn helical thread declines today (the native build_thread solid is
+// watertight but NOT consistently oriented — sameDirectionEdgeCount != 0 — so it is an
+// invalid BSP operand, and the near-tangent helical root ↔ shaft-wall contact fragments the
+// dense-soup BSP into T-junction cracks). The self-verify catches both; OCCT owns the case.
+// The sharpened next blocker is an orientation-coherent thread builder + robust dense-soup
+// CSG with T-junction repair (M7b). A mixed native/OCCT or OCCT-only pair forwards to OCCT.
 ShapeResult NativeEngine::thread_apply(EngineShape shaft, EngineShape thread, int op) {
-    CC_NATIVE_BODY_UNSUPPORTED("thread_apply", shaft);
-    CC_NATIVE_BODY_UNSUPPORTED("thread_apply", thread);
+    const bool sNative = isNative(shaft);
+    const bool tNative = isNative(thread);
+    // Not both native: the OCCT engine owns at least one void → forward (mixed is not a
+    // native case; forwarding a native void to OCCT would misread it, but the OCCT engine
+    // only ever sees its own bodies here — a mixed pair means the caller built under
+    // different engines, which the OCCT oracle rejects honestly).
+    if (!sNative || !tNative) return fallback().thread_apply(shaft, thread, op);
+
+    const auto* hs = static_cast<const NativeShape*>(shaft.get());
+    const auto* ht = static_cast<const NativeShape*>(thread.get());
+    if (hs->isMesh || ht->isMesh) return fallback().thread_apply(shaft, thread, op);
+
+    namespace nbo = cybercad::native::boolean;
+    nbo::ThreadApplyDecline why = nbo::ThreadApplyDecline::Ok;
+    ntopo::Shape result = nbo::threadApply(hs->shape, ht->shape, op, /*deflection=*/0.05, &why);
+    if (!result.isNull() && why == nbo::ThreadApplyDecline::Ok)
+        return track(wrapNative(std::move(result)));
+    // Honest decline (measured reason recorded via `why`) → OCCT per-turn oracle.
     return fallback().thread_apply(shaft, thread, op);
 }
 

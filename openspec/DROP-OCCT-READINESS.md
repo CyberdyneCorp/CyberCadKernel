@@ -87,7 +87,7 @@ All `file:line` are in `src/engine/native/native_engine.cpp` unless noted.
 | fillet_edges_g2 | cc_fillet_edges_g2 | 1386 | **B** | M3 (G2) | 0 | hard decline (1387) |
 | **BOOLEAN** ||||||
 | boolean_op | cc_boolean | 1411 | **A** | resid M2 freeform | 13 | native planar-polyhedron + analytic-curved SSI (bulk of CAD booleans); all-OCCT operands → OCCT (1416); mixed native/OCCT → honest error; native-native curved/degenerate → honest error (NEVER faked) |
-| thread_apply | cc_thread_apply | 1440 | **B** | M2/M7b | 0 | hard decline on shaft+thread (1441-1442) |
+| thread_apply | cc_thread_apply | 1605 | **B** | M2/M7b | 0 | NATIVE ATTEMPT + honest decline: recognise[cylinder]→facet→planar-BSP `boolean_solid`→4-part self-verify (watertight+χ=2+consistently-oriented+two-sided closed-form-volume band); `threadApply` (`boolean/thread_apply.h`, OCCT-free). MACHINERY SOUND (cylinder−box baseline welds vs OCCT, both gates); multi-turn thread declines `NotWatertight`/`NotOriented` (measured: `build_thread` solid is watertight but sameDirectionEdgeCount=6 → invalid BSP operand + near-tangent helical BSP T-junction cracks) → OCCT per-turn oracle. Next blocker: orientation-coherent thread builder + robust dense-soup CSG with T-junction repair (M7b) |
 | **TESSELLATE / QUERY / ANALYSIS** (native served; OCCT arm reached only for OCCT-built bodies, which cease to exist at unlink) ||||||
 | tessellate | cc_tessellate | 669 | **A** | done | 12 | `if (!isNative) forward` (670) |
 | face_meshes | cc_face_meshes | 679 | **A** | done | 9 | `!isNative` guard (680) |
@@ -150,7 +150,7 @@ are the two C-class invocations.
 | **M-REF reference / topology** — ✅ LANDED (native, two gates green) | face_axis, ref_plane_from_face, ref_axis_from_edge, ref_axis_from_face, tangent_chain, outer_rim_chain, offset_face_boundary | **M-REF (done)** | 22 | **0 (done)** |
 | **M-DM direct modeling** — ✅ core LANDED (DM1/DM2/DM3 offset + DM4 project native) | replace_face offset (DM3) + project_point_on_face (DM4) native; only tilted/non-planar retarget breadth residual (gates M2/M3) | **M-DM (done, resid breadth)** | 6 | **~0.5 (residual)** |
 | **M3 OCCT-only + curved-blend breadth** | fillet_face, full_round_fillet, full_round_fillet_faces, fillet_edges_g2 + curved/freeform residuals of the A-class blends (fillet/chamfer/shell/offset_face) | **M3** (in M2/M3 breadth bucket) | 14 direct | **~3–8** (shared M2/M3) |
-| **M2 freeform-boolean breadth + thread_apply** | boolean_op freeform/mixed residual, thread_apply | **M2** (same bucket) | 0 direct | (in the ~3–8) |
+| **M2 freeform-boolean breadth + thread_apply** — thread_apply NATIVE MACHINERY LANDED (recognise+facet+planar-BSP+4-part self-verify, both gates; multi-turn declines with a measured reason → M7b) | boolean_op freeform/mixed residual, thread_apply multi-turn weld (orientation-coherent thread builder + robust dense-soup CSG w/ T-junction repair) | **M2 / M7b** (same bucket) | 0 direct | (in the ~3–8) |
 | **M7b construct tails** — ✅ M7t LANDED (twisted_sweep real twist + loft_along_rail curved rail native, both gates) | ~~twisted_sweep (real twist)~~ ✅, ~~loft_along_rail (curved rail)~~ ✅, fine-pitch thread residuals | **M7t (done) / M7b** | 12 | **~0.5 (M7b thread residual)** |
 | **M-GS GS1 curved-HLR** — ✅ LANDED (native cone/frustum + torus silhouettes, two gates green) | hlr_project cone/frustum/torus(Kind::Torus) silhouettes native; freeform + revolve-built torus (B-spline bands) → OCCT | **M-GS GS1 (done)** | 0 direct | **0 (done — freeform B-spline silhouette is the honest residual)** |
 
@@ -293,7 +293,7 @@ Default engine under rehearsal: `cc_active_engine()==1` (native), `cc_brep_avail
 | cc_fillet_edges_g2 | B | **CLEAN-DECLINE** | "… fillet_edges_g2 …" |
 | cc_twisted_sweep (real twist) | B | **CLEAN-DECLINE** | "operation not supported by active engine: twisted_sweep" |
 | cc_loft_along_rail (curved rail) | B | **CLEAN-DECLINE** | "… loft_along_rail" |
-| cc_thread_apply | B | **CLEAN-DECLINE** | "… thread_apply …" |
+| cc_thread_apply | B | **NATIVE ATTEMPT → CLEAN-DECLINE** | native recognise+facet+planar-BSP+4-part self-verify; multi-turn thread → measured decline (NotWatertight/NotOriented) → OCCT per-turn oracle |
 | cc_iges_import | C | **CLEAN-DECLINE** | "operation not supported by active engine: iges_import" |
 | cc_iges_export | C | **CLEAN-DECLINE** | "… iges_export …" |
 | cc_solid_revolve | A | **SERVED-NATIVE** | — |
@@ -334,7 +334,14 @@ The delete only converts these OCCT-served ops to honest declines:
 3. **`twisted_sweep` (real twist), `loft_along_rail` (curved rail)** (Class-B, M7) — the
    degenerate slice is native; the typical use declines. **12 app sites combined.**
    Requires **M7/M7b** (~1–2 py).
-4. **`thread_apply`** (Class-B, M2/M7b) — clean decline; 0 direct app sites.
+4. **`thread_apply`** (Class-B, M2/M7b) — NATIVE MACHINERY LANDED (recognise[cylinder] →
+   facet → planar-BSP `boolean_solid` → 4-part self-verify: watertight + χ=2 +
+   consistently-oriented + two-sided closed-form-volume band; both gates green). The
+   tractable planar-cutter baseline (cylinder − box) WELDS native-vs-OCCT; a multi-turn
+   helical thread declines with a MEASURED reason (`build_thread` is watertight but
+   `sameDirectionEdgeCount=6` → invalid BSP operand + near-tangent helical BSP T-junction
+   cracks) → OCCT per-turn oracle. Next blocker: orientation-coherent thread builder +
+   robust dense-soup CSG with T-junction repair (M7b). 0 direct app sites.
 5. **`iges_import`, `iges_export`** (Class-C, DROPPED) — clean declines by product
    decision. **11 app sites** → needs a companion app-side IGES decision (drop / OCCT-shim
    / native), not kernel work.

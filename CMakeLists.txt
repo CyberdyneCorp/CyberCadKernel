@@ -476,6 +476,18 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_freeform_freeform_cut)
         set(test_native_freeform_freeform_cut_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_freeform_freeform_cut.cpp")
+        # MOAT (Class-B) native cc_thread_apply — host GATE (a), the OCCT-free proof that
+        # the recognise[cylinder] → facet → planar-BSP boolean_solid → four-part self-verify
+        # (watertight + Euler χ=2 + consistently-oriented + two-sided closed-form-volume band)
+        # pipeline WELDS the tractable planar-cutter baseline (cylinder − box) and HONEST-
+        # DECLINES a multi-turn helical thread with a measured reason (the near-tangent
+        # helical BSP fragments + the orientation-inconsistent thread operand). Reuses the
+        # planar BSP (boolean_solid → ssi_boolean_solid), so this host suite builds only under
+        # CYBERCAD_HAS_NUMSCI. Additive header-only verb (thread_apply.h); no lib change, no
+        # cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_thread_apply)
+        set(test_native_thread_apply_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_thread_apply.cpp")
         # MOAT M-GS GS3/GS4 analysis services (src/native/analysis) — host GATE (a),
         # the OCCT-free closed-form/brute-force proof of minimum distance, angle and
         # surface/edge curvature (+ honest declines). The freeform seed-and-refine

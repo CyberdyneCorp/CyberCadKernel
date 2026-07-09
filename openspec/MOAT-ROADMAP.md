@@ -314,6 +314,27 @@ whole SSI arc was built for.
     freeform-only). No stub/dead `freeform_boolean_solid` was written; the engine keeps its OCCT
     fall-through. Closing the gap needs a B2 convex→smooth-trim generalisation **and** a B4 analytic-
     face split + cross-section cap synthesis (the M2 weld/assembly verb), tracked next.
+- **Status — `cc_thread_apply` NATIVE MACHINERY LANDED (`moat-thr-thread-apply`), multi-turn
+  weld deferred to M7b.** `thread_apply` (apply a helical thread to a shaft: op 0 FUSE crest /
+  op 1 CUT groove) is the app's #1 OCCT wall — a single-shot boolean of a fine multi-turn
+  helix hangs OCCT for minutes (GitHub #286). The additive OCCT-free verb `threadApply`
+  (`src/native/boolean/thread_apply.h`) recognises the tractable input (axis-cylinder shaft +
+  coaxial helical thread via `curved::recogniseCylinder` + a measured crest/root/z-extent),
+  facets both operands into consistently-oriented planar-triangle solids, runs the landed
+  planar-polyhedron BSP `boolean_solid`, and self-verifies under a FOUR-PART gauntlet —
+  WATERTIGHT + Euler χ=2 + consistently-oriented (`tess::isConsistentlyOriented`) + a
+  two-sided closed-form threaded-shaft-volume band — returning NULL (→ OCCT per-turn oracle)
+  with a typed `ThreadApplyDecline` on any failure. MEASURED (both gates green): the SAME verb
+  WELDS the tractable planar-cutter baseline (a cylinder CUT by a box, `bnd=0`, `χ=2`, matches
+  OCCT `BRepAlgoAPI_Cut` within the deflection band) — the BSP machinery is SOUND — while a
+  multi-turn helical thread honest-declines `NotWatertight`/`NotOriented` for two verified
+  reasons: (1) the native `build_thread` solid is watertight but NOT consistently oriented
+  (`tess::sameDirectionEdgeCount == 6`, a latent cap/band winding defect) → invalid BSP
+  operand; (2) the near-tangent helical root ↔ shaft-wall contact fragments the dense-soup BSP
+  into T-junction cracks (`boundaryEdgeCount` 15–140 across single-turn to 4-turn). The
+  sharpened next blocker is **M7b**: an ORIENTATION-COHERENT thread builder (fix `build_thread`
+  `sd=6`) + robust DENSE-SOUP CSG with T-junction repair. No tessellator / `construct/thread.h`
+  change; `cc_*` ABI unchanged; the self-verify never returns a leaky/misoriented/wrong solid.
 
 ### M3 — General freeform blends + wrap-emboss · ~2–4 py · needs M2
 The curved-curved blends and freeform-base features that sit on booleans: cyl↔cyl-canal /
@@ -917,7 +938,9 @@ detail in [DROP-OCCT-READINESS.md](DROP-OCCT-READINESS.md) §6):
   ("default = stub / no B-rep / not native") that the rehearsal deliberately inverts; they are sentinel
   flips, not regressions.
 - **Per-op probe:** every Class-B op (`fillet_face`, `full_round_fillet[_faces]`, `fillet_edges_g2`,
-  `twisted_sweep` real-twist, `loft_along_rail` curved-rail, `thread_apply`) and every Class-C op
+  `twisted_sweep` real-twist, `loft_along_rail` curved-rail, `thread_apply` [now a native
+  recognise+facet+planar-BSP+4-part-self-verify ATTEMPT that welds the cylinder−box baseline and
+  cleanly declines the multi-turn thread → OCCT]) and every Class-C op
   (`iges_import/_export`) **CLEANLY DECLINES** (id=0 + honest `cc_last_error`); every Class-A spine op
   (`solid_revolve/_loft/_tessellate/_mass_properties/_extrude`) **SERVES NATIVELY**.
 - **Static-vs-measured:** the static A/B/C classification **held** — no Class-A op crashed or returned a

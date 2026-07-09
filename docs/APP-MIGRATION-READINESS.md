@@ -85,7 +85,7 @@ their class from the readiness table (+ the M8-measured verdict):
 | cc_fillet_edges | 15 | A (resid M3) | planar+circular NATIVE | **curved/freeform-edge fillet → decline** (see §3) |
 | cc_fillet_edges_variable | 7 | A (resid M3) | convex-circular linear-law NATIVE | non-circular → decline |
 | cc_chamfer_edges | 10 | A (resid M3) | planar+convex-circular NATIVE | curved → decline |
-| cc_shell | 12 | A (resid M3 curved) | convex-planar NATIVE | curved/non-convex → decline |
+| cc_shell | 12 | A (resid M3 curved) | convex-planar + capped-cylinder/cone-frustum NATIVE | stepped/sphere/freeform/non-convex → decline |
 | cc_offset_face | 10 | A (resid M3 curved) | planar-face NATIVE | curved face → decline |
 | cc_fillet_face | 7 | **A (prism cap, M3)** | SERVED-NATIVE prism cap / else CLEAN-DECLINE | **non-perp-wall / curved / concave → decline** |
 | cc_split_plane / replace_face / replace_face_to_plane | 4/6/4 | A (M-DM) | planar/offset NATIVE | oblique/tilt/curved → decline |

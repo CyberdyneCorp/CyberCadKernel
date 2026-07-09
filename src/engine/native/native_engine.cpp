@@ -1372,12 +1372,24 @@ ShapeResult NativeEngine::chamfer_edges_asym(EngineShape body, const int* e, int
 ShapeResult NativeEngine::shell(EngineShape body, const int* f, int fc, double t) {
     if (!isNative(body)) return fallback().shell(body, f, fc, t);
     const auto* h = static_cast<const NativeShape*>(body.get());
+    // 1. PLANAR convex shell — half-space cavity + BSP-CSG cut. Verified SHRINK.
     ntopo::Shape result = nblend::shell(h->shape, f, fc, t);
-    if (result.isNull() || !blendResultVerified(result, h->shape, /*wantGrow=*/false))
-        return make_error(
-            "native shell: no verified watertight wall for this native body "
-            "(curved/non-convex solid or thickness too large → OCCT-only)");
-    return track(wrapNative(std::move(result)));
+    if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
+        return track(wrapNative(std::move(result)));
+
+    // 2. CURVED shell — a capped CYLINDER or CONE FRUSTUM hollowed to a uniform wall by
+    //    an analytic inward offset of the curved wall, one planar cap left OPEN. Rebuilt
+    //    as a watertight facet soup (curved_shell.h); the wall volume is closed-form. A
+    //    hollow REMOVES material → verified SHRINK. Cone faces exist only on native bodies
+    //    of revolution, so an OCCT body never reaches here.
+    result = nblend::curved_shell(h->shape, f, fc, t);
+    if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
+        return track(wrapNative(std::move(result)));
+
+    return make_error(
+        "native shell: no verified watertight wall for this native body "
+        "(non-convex planar / stepped-multi-wall / sphere / freeform / tilted cap / both "
+        "caps or wall removed / thickness too large → OCCT-only)");
 }
 ShapeResult NativeEngine::offset_face(EngineShape body, int f, double d) {
     if (!isNative(body)) return fallback().offset_face(body, f, d);

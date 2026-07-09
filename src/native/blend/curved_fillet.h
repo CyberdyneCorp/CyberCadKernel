@@ -1003,6 +1003,280 @@ inline std::vector<nb::Polygon> buildFilletedCone(const ConeCapGeom& g, double r
   return polys;
 }
 
+// ── CONVEX circular-rim fillet on a SPHERE ↔ coaxial planar cap ──────────────────────
+// Extends the cone-frustum cap fillet (buildFilletedCone) to a doubly-curved wall: a SPHERE
+// lateral face (radius R, centre on the axis) meeting a coaxial planar cap at a circular rim
+// — a TRUNCATED BALL / dome / spherical plug with a flat top (the app's revolve-of-an-arc
+// rim). The cap sits at axial height h from the sphere centre (|h|<R), so the rim circle has
+// radius Rrim = √(R²−h²).
+//
+// A ball of radius r rolled into the CONVEX crease between the sphere wall and the cap sits
+// tangent to BOTH from the material side: its centre is at distance R−r from the sphere
+// centre (the rounded fillet stays inside the sphere near the wall) and r below the cap. By
+// coaxial symmetry the centre traces a CIRCLE coaxial with the sphere:
+//   axial coord     Cz = h − r                      (r below the cap along the axis)
+//   centre radius   Rmaj = √((R−r)² − Cz²)           (Pythagoras on the R−r offset sphere)
+// The blend is therefore a coaxial TORUS (major Rmaj, minor r) whose tube-centre circle sits
+// at axial Cz. Its two trim seams lie EXACTLY on the neighbour surfaces (G1 by construction):
+//   * cap seam  (minor angle v=+π/2): radius Rmaj, axial Cz+r = h → tangent circle on the
+//     cap (normal axial). Rmaj < Rrim (the fillet trims the rim inward).
+//   * wall seam (minor angle v = vWall): the tangent point on the sphere, where the torus
+//     outward normal (cos v, sin v) equals the sphere outward normal (radial-from-centre).
+//     Solving, vWall = atan2(Cz/(R−r), Rmaj/(R−r)) = atan2(Cz, Rmaj); the seam is a latitude
+//     circle at radius Rmaj+r·cos(vWall), axial Cz+r·sin(vWall), strictly BELOW the cap.
+// Ring-torus guard Rmaj ≥ r; the wall seam must stay strictly below the cap (vWall < π/2).
+//
+// Rebuild (planar-facet weld, tessellator-pristine): the truncated ball is one deflection-
+// bounded planar-facet soup sharing the SAME N angular samples across every seam:
+//   1. the SPHERE wall from the south pole (v_lat=−π/2) up to the wall-seam latitude, as an
+//      N·K quad band (K from the sphere-arc sagitta) — the pole ring collapses to an apex;
+//   2. the TORUS quarter-ish band v∈[vWall, π/2] × u full turn, as N·M quads;
+//   3. the TRIMMED cap disk (radius Rmaj) at axial h.
+// All share N angular samples, so the wall→torus seam (radius Rmaj+r·cos vWall, axial
+// Cz+r·sin vWall) and the torus→cap seam (radius Rmaj, axial h) weld with coincident
+// vertices. The engine SHRINK self-verify then accepts it, else → OCCT.
+struct SphereCapGeom {
+  math::Ax3 axis;        // sphere frame (z = axis toward the cap), origin at the sphere centre
+  double R = 0.0;        // sphere radius
+  double capH = 0.0;     // axial coord of the cap plane (from the sphere centre, along +axis)
+  double s = 1.0;        // sign toward the cap along the raw frame z (+1 already folded here)
+  math::Vec3 capNormal;  // outward normal of the cap (= +axis toward the cap)
+};
+
+struct SphereInfo {
+  math::Ax3 frame;   // origin at the sphere centre
+  double radius = 0.0;
+};
+inline std::optional<SphereInfo> sphereInfo(const topo::Shape& solid, int faceId) {
+  const topo::ShapeMap map = topo::mapShapes(solid, topo::ShapeType::Face);
+  if (faceId < 1 || static_cast<std::size_t>(faceId) > map.size()) return std::nullopt;
+  const auto surf = topo::surfaceOf(map.shape(faceId));
+  if (!surf || surf->surface->kind != topo::FaceSurface::Kind::Sphere) return std::nullopt;
+  math::Ax3 f = surf->surface->frame;
+  if (!surf->location.isIdentity()) {
+    const math::Transform& t = surf->location.transform();
+    f.origin = t.applyToPoint(f.origin);
+    f.x = math::Dir3{t.applyToVector(f.x.vec())};
+    f.y = math::Dir3{t.applyToVector(f.y.vec())};
+    f.z = math::Dir3{t.applyToVector(f.z.vec())};
+  }
+  return SphereInfo{f, surf->surface->radius};
+}
+
+// Recognise the picked circular rim as the CONVEX crease between a coaxial SPHERE wall and a
+// coaxial planar cap, validating the body WHOLESALE (a full revolve fragments the wall/cap
+// into angular sectors, so single-face matching cannot be used): every face must be a
+// coaxial sphere of the SAME centre / radius, or an axis-normal plane at exactly ONE height
+// (the cap), and the rim radius must match √(R²−h²). Returns nullopt for anything else
+// (cylinder / cone / stepped shaft / tilted cap / mixed / two-cap spherical zone / freeform).
+inline std::optional<SphereCapGeom> sphereCapGeom(const topo::Shape& solid, int edgeId) {
+  const auto rim = circleOf(solid, edgeId);
+  if (!rim) return std::nullopt;
+  const math::Dir3 axisDir{rim->axis};
+  if (!axisDir.valid()) return std::nullopt;
+
+  // Locate ONE coaxial Sphere face whose centre lies on the rim axis. All sphere sectors
+  // share the frame, so the first match defines the ball.
+  const topo::ShapeMap fmap = topo::mapShapes(solid, topo::ShapeType::Face);
+  std::optional<SphereInfo> ball;
+  const math::Vec3 az0 = axisDir.vec();
+  for (std::size_t fi = 1; fi <= fmap.size(); ++fi) {
+    const auto si = sphereInfo(solid, static_cast<int>(fi));
+    if (!si) continue;
+    const math::Vec3 d = rim->centre - si->frame.origin;
+    if (math::norm(d - az0 * math::dot(d, az0)) > 1e-6) continue;  // centre off the rim axis
+    ball = si;
+    break;
+  }
+  if (!ball) return std::nullopt;
+  const math::Point3 centre = ball->frame.origin;
+  const double R = ball->radius;
+  if (!(R > kCurveEps)) return std::nullopt;
+
+  // Orient the frame z along the rim axis toward the cap (+ side = where the cap sits).
+  math::Vec3 az = az0;
+  const double capH0 = math::dot(rim->centre - centre, az);
+  if (capH0 < 0.0) { az = az * -1.0; }
+  const double capH = std::fabs(capH0);          // axial coord of the cap from the centre
+  if (!(capH < R - 1e-9) || !(capH > -R + 1e-9)) return std::nullopt;  // rim not a proper cut
+  const double Rrim = std::sqrt(std::max(0.0, R * R - capH * capH));
+  if (std::fabs(Rrim - rim->radius) > 1e-5) return std::nullopt;  // rim radius must = √(R²−h²)
+
+  // Build an orthonormal frame with z = az (toward the cap), origin at the sphere centre.
+  math::Ax3 ax = ball->frame;
+  // Reuse the sphere's x/y but flip z consistently if we flipped the axis.
+  if (capH0 < 0.0) {
+    ax.z = math::Dir3{az};
+    ax.x = ball->frame.x;
+    ax.y = math::Dir3{math::cross(ax.z.vec(), ax.x.vec())};
+  } else {
+    ax.z = math::Dir3{az};
+  }
+  ax.origin = centre;
+
+  // WHOLESALE validation: every face is a coaxial Sphere (same centre / R) or an axis-normal
+  // Plane at exactly ONE height (the cap). Any other face → not a pure truncated ball.
+  std::vector<double> capHeights;
+  for (std::size_t fi = 1; fi <= fmap.size(); ++fi) {
+    const auto surf = topo::surfaceOf(fmap.shape(static_cast<int>(fi)));
+    if (!surf) return std::nullopt;
+    if (surf->surface->kind == topo::FaceSurface::Kind::Sphere) {
+      const auto si = sphereInfo(solid, static_cast<int>(fi));
+      if (!si) return std::nullopt;
+      if (math::norm(si->frame.origin - centre) > 1e-6) return std::nullopt;  // different ball
+      if (std::fabs(si->radius - R) > 1e-6) return std::nullopt;
+    } else if (surf->surface->kind == topo::FaceSurface::Kind::Plane) {
+      const auto pl = facePlane(solid, static_cast<int>(fi));
+      if (!pl) return std::nullopt;
+      if (std::fabs(std::fabs(math::dot(pl->normal, az)) - 1.0) > 1e-6) return std::nullopt;
+      const double h = (pl->w - math::dot(pl->normal, centre.asVec())) / math::dot(pl->normal, az);
+      bool found = false;
+      for (double e : capHeights)
+        if (std::fabs(e - h) < 1e-6) { found = true; break; }
+      if (!found) capHeights.push_back(h);
+    } else {
+      return std::nullopt;  // cylinder / cone / freeform → not a pure truncated ball
+    }
+  }
+  if (capHeights.size() != 1) return std::nullopt;             // exactly ONE cap plane
+  if (std::fabs(capHeights[0] - capH) > 1e-6) return std::nullopt;  // rim sits on that cap
+
+  SphereCapGeom g;
+  g.axis = ax;
+  g.R = R;
+  g.capH = capH;
+  g.s = 1.0;                       // z already points toward the cap
+  g.capNormal = az;
+  return g;
+}
+
+// Assemble the filleted truncated ball as a planar-facet soup (empty on any degeneracy).
+// Same weld idiom as buildFilletedCone: faceted sphere wall (south pole → wall seam) + torus
+// band (wall seam → cap seam) + trimmed cap, all sharing N angular samples.
+inline std::vector<nb::Polygon> buildFilletedSphere(const SphereCapGeom& g, double r,
+                                                    double defl) {
+  const math::Ax3& ax = g.axis;
+  const double R = g.R, capH = g.capH;
+  if (!(r > kCurveEps) || !(R - r > kCurveEps)) return {};   // ball must exceed the tube
+
+  // Rolling-ball centre circle: axial Cz (r below the cap), radius Rmaj on the R−r sphere.
+  const double Cz = capH - r;
+  const double d = R - r;
+  const double disc = d * d - Cz * Cz;
+  if (!(disc > 1e-12)) return {};
+  const double Rmaj = std::sqrt(disc);
+  if (!(Rmaj >= r - 1e-9)) return {};                         // ring-torus guard
+  // Wall-seam minor angle (from +radial about the tube centre) = latitude of the tangent
+  // point: vWall = atan2(Cz, Rmaj). Must stay strictly below the cap (vWall < π/2).
+  const double vWall = std::atan2(Cz, Rmaj);
+  if (!(vWall < kTwoPi / 4.0 - 1e-6)) return {};              // seam would meet/exceed the cap
+
+  // Sphere-wall tangent latitude (v_lat on the sphere, measured from the equator):
+  // the seam point is (Rmaj + r·cos vWall, Cz + r·sin vWall) in (radial, axial); its
+  // latitude satisfies sin(latSeam) = axial/R, cos(latSeam) = radial/R.
+  const double seamRad = Rmaj + r * std::cos(vWall);
+  const double seamAx = Cz + r * std::sin(vWall);
+  const double latSeam = std::atan2(seamAx, seamRad);         // sphere latitude of the seam
+  const double latSouth = -kTwoPi / 4.0;                      // south pole
+
+  const int N = sagittaSteps(std::max(Rmaj, seamRad), kTwoPi, defl, 8, 256);  // angular
+  const double sweepTube = (kTwoPi / 4.0) - vWall;
+  const int M = sagittaSteps(r, sweepTube, defl, 3, 64);      // torus band minor
+  const int K = sagittaSteps(R, latSeam - latSouth, defl, 4, 128);  // sphere wall latitude
+
+  auto uAt = [&](int i) { return kTwoPi * i / N; };
+  // A sphere point at azimuth u and latitude lat (radial R·cos lat, axial R·sin lat).
+  auto spherePoint = [&](double u, double lat) -> math::Point3 {
+    return ringPoint(ax, R * std::cos(lat), u, R * std::sin(lat));
+  };
+  // A torus point at azimuth u, minor angle vAbs (radial Rmaj+r·cos v, axial Cz+r·sin v).
+  auto torusPoint = [&](double u, double vAbs) -> math::Point3 {
+    return ringPoint(ax, Rmaj + r * std::cos(vAbs), u, Cz + r * std::sin(vAbs));
+  };
+  // The SHARED wall↔torus seam ring, computed from ONE expression so the sphere-band top
+  // ring and the torus-band bottom ring are BYTE-identical at the seam (a sphere-latitude
+  // formula and a torus-minor-angle formula agree only to rounding — on -O2/FMA arm64 they
+  // can differ by >1e-7, opening a hairline crack the coarse tessellator then leaks through).
+  auto seamPoint = [&](double u) -> math::Point3 { return ringPoint(ax, seamRad, u, seamAx); };
+  auto torusNormal = [&](double u, double vAbs) -> math::Vec3 {
+    const math::Vec3 radial = ax.x.vec() * std::cos(u) + ax.y.vec() * std::sin(u);
+    return radial * std::cos(vAbs) + ax.z.vec() * std::sin(vAbs);
+  };
+
+  std::vector<nb::Polygon> polys;
+  polys.reserve(static_cast<std::size_t>(N) * (K + M + 1) + 2);
+
+  auto emit = [&](std::vector<math::Point3> loop, const math::Vec3& outward) {
+    const math::Dir3 nd{outward};
+    if (!nd.valid() || loop.size() < 3) return;
+    math::Vec3 area{0, 0, 0};
+    for (std::size_t i = 0; i < loop.size(); ++i)
+      area += math::cross(loop[i].asVec(), loop[(i + 1) % loop.size()].asVec());
+    if (math::dot(area, nd.vec()) < 0.0) std::reverse(loop.begin(), loop.end());
+    polys.emplace_back(std::move(loop), nb::Plane::fromPointNormal(loop.front(), nd.vec()));
+  };
+  auto emitTri = [&](const math::Point3& a, const math::Point3& b, const math::Point3& cc,
+                     const math::Vec3& outward) {
+    math::Vec3 nrm = math::cross(b - a, cc - a);
+    if (math::dot(nrm, outward) < 0.0) nrm = nrm * -1.0;
+    emit({a, b, cc}, nrm);
+  };
+  auto emitQuad = [&](const math::Point3& p00, const math::Point3& p10, const math::Point3& p11,
+                      const math::Point3& p01, const math::Vec3& outward) {
+    emitTri(p00, p10, p11, outward);
+    emitTri(p00, p11, p01, outward);
+  };
+
+  // A sphere-wall ring at latitude index k∈[0,K]: the TOP ring (k==K) is snapped to the
+  // shared seam ring so it coincides exactly with the torus band's bottom ring (below).
+  auto wallRingPoint = [&](double u, int k) -> math::Point3 {
+    if (k >= K) return seamPoint(u);
+    const double lat = latSouth + (latSeam - latSouth) * k / K;
+    return spherePoint(u, lat);
+  };
+  // 1. Sphere wall: latSouth → latSeam, N·K quads. The bottom band degenerates to a fan of
+  //    triangles at the south pole (radius 0), which emitQuad handles (zero-area tri skips).
+  for (int i = 0; i < N; ++i) {
+    const double u0 = uAt(i), u1 = uAt(i + 1), um = 0.5 * (u0 + u1);
+    for (int k = 0; k < K; ++k) {
+      const double lat0 = latSouth + (latSeam - latSouth) * k / K;
+      const double lat1 = latSouth + (latSeam - latSouth) * (k + 1) / K;
+      const double latm = 0.5 * (lat0 + lat1);
+      const math::Vec3 radial = ax.x.vec() * std::cos(um) + ax.y.vec() * std::sin(um);
+      const math::Vec3 outN = radial * std::cos(latm) + ax.z.vec() * std::sin(latm);
+      emitQuad(wallRingPoint(u0, k), wallRingPoint(u1, k), wallRingPoint(u1, k + 1),
+               wallRingPoint(u0, k + 1), outN);
+    }
+  }
+  // A torus-band ring at minor-angle index j∈[0,M]: the BOTTOM ring (j==0, v==vWall) is
+  // snapped to the shared wall seam; the TOP ring (j==M, v==π/2) is snapped to the cap ring
+  // (radius Rmaj at capH) — both so the torus band coincides EXACTLY with its neighbours
+  // (a torus-minor-angle formula and the cap/sphere formulae agree only to rounding).
+  auto capRingPoint = [&](double u) -> math::Point3 { return ringPoint(ax, Rmaj, u, capH); };
+  auto torusRingPoint = [&](double u, int j) -> math::Point3 {
+    if (j <= 0) return seamPoint(u);
+    if (j >= M) return capRingPoint(u);
+    return torusPoint(u, vWall + sweepTube * j / M);
+  };
+  // 2. Torus band: v ∈ [vWall, π/2] × full turn, N·M quads.
+  for (int i = 0; i < N; ++i) {
+    const double u0 = uAt(i), u1 = uAt(i + 1), um = 0.5 * (u0 + u1);
+    for (int j = 0; j < M; ++j) {
+      const double vm = 0.5 * (vWall + sweepTube * j / M + vWall + sweepTube * (j + 1) / M);
+      emitQuad(torusRingPoint(u0, j), torusRingPoint(u1, j), torusRingPoint(u1, j + 1),
+               torusRingPoint(u0, j + 1), torusNormal(um, vm));
+    }
+  }
+  // 3. Trimmed cap: disk radius Rmaj at axial capH, outward = capNormal.
+  {
+    std::vector<math::Point3> ring;
+    ring.reserve(static_cast<std::size_t>(N));
+    for (int i = 0; i < N; ++i) ring.push_back(ringPoint(ax, Rmaj, uAt(i), capH));
+    emit(std::move(ring), g.capNormal);
+  }
+  return polys;
+}
+
 }  // namespace detail
 
 // Fillet a single CIRCULAR crease (cylinder lateral face ↔ coaxial planar cap) of
@@ -1133,6 +1407,32 @@ inline topo::Shape cone_fillet_edge(const topo::Shape& solid, const int* edgeIds
   const auto g = detail::coneCapGeom(solid, edgeIds[0]);
   if (!g) return {};
   std::vector<nb::Polygon> polys = detail::buildFilletedCone(*g, r, deflection);
+  if (polys.size() < 4) return {};
+  return nb::assembleSolid(polys);
+}
+
+// Fillet a single CONVEX CIRCULAR crease between a coaxial SPHERE lateral face and a coaxial
+// planar cap (a truncated ball / dome / spherical plug capped at one end) with constant
+// radius `r`. The blend is a coaxial TORUS band (major radius = the rolling-ball centre-circle
+// radius, minor r) swept the minor angle from the sphere-wall seam to the cap seam,
+// G1-tangent to both. Returns the filleted solid (deflection-bounded planar-facet soup,
+// watertight) or a NULL Shape (→ OCCT) when the edge is not a convex sphere↔cap circular rim,
+// when the centre-circle radius < r (ring-torus guard), when the wall seam would reach the
+// cap, or on any degeneracy. The whole body must be a pure truncated ball (every face a
+// coaxial sphere of the SAME centre / radius, or an axis-normal plane at exactly ONE height)
+// — a cylinder / cone (handled by their arms), a stepped body, a tilted cap, a concave sphere
+// rim, a two-cap spherical zone, or any freeform face → NULL. Multiple picked edges → NULL.
+inline topo::Shape sphere_fillet_edge(const topo::Shape& solid, const int* edgeIds, int edgeCount,
+                                      double r, double deflection = 0.01) {
+  if (edgeIds == nullptr || edgeCount != 1 || !(r > kBlendEps)) return {};
+  const topo::ShapeMap emap = topo::mapShapes(solid, topo::ShapeType::Edge);
+  if (edgeIds[0] < 1 || static_cast<std::size_t>(edgeIds[0]) > emap.size()) return {};
+  const auto ce = topo::curveOf(emap.shape(edgeIds[0]));
+  if (!ce || ce->curve->kind != topo::EdgeCurve::Kind::Circle) return {};
+
+  const auto g = detail::sphereCapGeom(solid, edgeIds[0]);
+  if (!g) return {};
+  std::vector<nb::Polygon> polys = detail::buildFilletedSphere(*g, r, deflection);
   if (polys.size() < 4) return {};
   return nb::assembleSolid(polys);
 }

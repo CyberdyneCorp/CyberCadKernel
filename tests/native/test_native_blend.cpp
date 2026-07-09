@@ -898,6 +898,161 @@ CC_TEST(cone_fillet_scope_defers) {
   CC_CHECK(blend::cone_fillet_edge(tc, tcids, 1, 0.5, 0.01).isNull());
 }
 
+// ── sphere cap fillet (torus band on a SPHERE↔coaxial-cap circular rim) ───────────--
+
+namespace {
+// A truncated ball: sphere radius R centred at origin, capped by a flat top at axial height
+// zc (0<zc<R). Profile in (r,h): arc from the south pole (0,-R) up to the rim (Rrim,zc),
+// then a line rim→axis (0,zc) — the cap. Revolved a full turn about the in-plane axis
+// (→ world +Y). Produces coaxial Sphere sectors + a planar top cap. Rrim = √(R²−zc²).
+topo::Shape truncatedBall(double R, double zc) {
+  const double Rrim = std::sqrt(R * R - zc * zc);
+  std::vector<cst::ProfileSegment> segs;
+  cst::ProfileSegment arc;
+  arc.kind = 1;
+  arc.cx = 0; arc.cy = 0; arc.r = R;
+  arc.x0 = 0; arc.y0 = -R; arc.x1 = Rrim; arc.y1 = zc;
+  arc.a0 = -M_PI / 2.0; arc.a1 = std::atan2(zc, Rrim);
+  segs.push_back(arc);
+  cst::ProfileSegment cap;
+  cap.kind = 0;
+  cap.x0 = Rrim; cap.y0 = zc; cap.x1 = 0; cap.y1 = zc;
+  segs.push_back(cap);
+  return cst::build_revolution_profile(segs, cst::RevolveAxis{0, 0, 0, 1}, 2.0 * M_PI);
+}
+// Sharp truncated-ball volume = ball region below z=zc = π·∫_{-R}^{zc}(R²−z²)dz.
+double truncatedBallVolume(double R, double zc) {
+  auto cap = [&](double z) { return R * R * z - z * z * z / 3.0; };
+  return M_PI * (cap(zc) - cap(-R));
+}
+// Closed-form removed volume for a rolling-ball fillet r on the cap rim of a truncated ball
+// (Pappus of the corner-minus-arc region). Cross-section polygon: sphere arc (sphere seam →
+// rim), cap (rim → cap seam), torus arc (cap seam → sphere seam). 2π·|A|·centroid_r.
+double sphereRemoved(double R, double zc, double r) {
+  const double Rrim = std::sqrt(R * R - zc * zc);
+  const double Cz = zc - r, d = R - r;
+  const double Rmaj = std::sqrt(d * d - Cz * Cz);
+  const double vWall = std::atan2(Cz, Rmaj);           // wall-seam minor angle
+  const double scRad = Rmaj + r * std::cos(vWall);     // sphere-seam radius
+  const double scAx = Cz + r * std::sin(vWall);        // sphere-seam axial
+  const double latSeam = std::atan2(scAx, scRad);
+  std::vector<double> X, Y;
+  const int Na = 3000;
+  // sphere arc: latitude latSeam → the rim latitude (asin(zc/R)), radius R·cos lat.
+  const double latRim = std::asin(zc / R);
+  for (int i = 0; i < Na; ++i) {
+    const double lat = latSeam + (latRim - latSeam) * i / (Na - 1);
+    X.push_back(R * std::cos(lat)); Y.push_back(R * std::sin(lat));
+  }
+  // cap: radius Rrim → Rmaj at z=zc.
+  X.push_back(Rmaj); Y.push_back(zc);
+  // torus arc: v from π/2 down to vWall.
+  for (int i = 0; i < Na; ++i) {
+    const double v = (M_PI / 2.0) + (vWall - M_PI / 2.0) * i / (Na - 1);
+    X.push_back(Rmaj + r * std::cos(v)); Y.push_back(Cz + r * std::sin(v));
+  }
+  double A = 0, cx = 0;
+  const int n = static_cast<int>(X.size());
+  for (int i = 0; i < n; ++i) {
+    const int j = (i + 1) % n;
+    const double cr = X[i] * Y[j] - X[j] * Y[i];
+    A += cr; cx += (X[i] + X[j]) * cr;
+  }
+  A *= 0.5; cx /= (6.0 * A);
+  return 2.0 * M_PI * std::fabs(A) * cx;
+}
+}  // namespace
+
+CC_TEST(sphere_fillet_truncated_ball_watertight_volume_reduced) {
+  // A ball R=5 capped at zc=3 (rim radius 4); roll a ball r=0.8 into the cap rim → a coaxial
+  // torus band tangent to the sphere wall and the cap. Watertight, volume BELOW the sharp
+  // truncated ball by the closed-form removed volume (deflection-bounded).
+  const double R = 5, zc = 3, r = 0.8;
+  topo::Shape s = truncatedBall(R, zc);
+  CC_CHECK(!s.isNull());
+  const nmath::Vec3 axisY{0, 1, 0};
+  const double vSharp = truncatedBallVolume(R, zc);
+  const int rim = findRimAtAxial(s, axisY, zc, std::sqrt(R * R - zc * zc));
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  topo::Shape f = blend::sphere_fillet_edge(s, ids, 1, r, 0.004);
+  bool wt = false;
+  const double v = vol(f, wt);
+  CC_CHECK(!f.isNull());
+  CC_CHECK(wt);                 // torus band welds watertight to the sphere wall + trimmed cap
+  CC_CHECK(v < vSharp);         // a convex fillet REDUCES the volume vs the sharp ball
+  const double expected = vSharp - sphereRemoved(R, zc, r);
+  CC_CHECK(nearRel(v, expected, 5e-3));
+}
+
+CC_TEST(sphere_fillet_converges_with_deflection) {
+  // The faceted sphere+torus body under-fills; refining the deflection tightens the volume
+  // toward the exact filleted volume from below.
+  const double R = 6, zc = 2.5, r = 1.0;
+  topo::Shape s = truncatedBall(R, zc);
+  const nmath::Vec3 axisY{0, 1, 0};
+  const double Rrim = std::sqrt(R * R - zc * zc);
+  const int rim = findRimAtAxial(s, axisY, zc, Rrim);
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  const double exact = truncatedBallVolume(R, zc) - sphereRemoved(R, zc, r);
+  bool wtC = false, wtF = false;
+  const double vCoarse = vol(blend::sphere_fillet_edge(s, ids, 1, r, 0.05), wtC);
+  const double vFine = vol(blend::sphere_fillet_edge(s, ids, 1, r, 0.004), wtF);
+  CC_CHECK(wtC && wtF);
+  CC_CHECK(vCoarse <= exact + 1e-6);          // under-fills
+  CC_CHECK(vFine <= exact + 1e-6);
+  CC_CHECK(vFine >= vCoarse - 1e-9);          // refinement grows the volume toward exact
+  CC_CHECK(nearRel(vFine, exact, 5e-3));
+}
+
+CC_TEST(sphere_fillet_g1_tangent_at_both_seams) {
+  // ANALYTIC G1 (no OCCT, no mesh): the torus band normal (cos v, sin v) at each seam equals
+  // the adjacent primary-face normal in the (radial, axial) cross section.
+  const double R = 5, zc = 3, r = 0.8;
+  const double Cz = zc - r, d = R - r;
+  const double Rmaj = std::sqrt(d * d - Cz * Cz);
+  const double vWall = std::atan2(Cz, Rmaj);
+  // cap seam v=π/2: normal (0,1) == cap axial normal.
+  CC_CHECK(nearRel(std::cos(M_PI / 2.0), 0.0, 1e-12));
+  CC_CHECK(nearRel(std::sin(M_PI / 2.0), 1.0, 1e-12));
+  // wall seam: torus normal (cos vWall, sin vWall) must equal the sphere outward normal
+  // (radial, axial)/R at the seam point.
+  const double scRad = Rmaj + r * std::cos(vWall);
+  const double scAx = Cz + r * std::sin(vWall);
+  CC_CHECK(nearRel(scRad * scRad + scAx * scAx, R * R, 1e-9));   // seam lies ON the sphere
+  CC_CHECK(nearRel(std::cos(vWall), scRad / R, 1e-9));           // normals coincide
+  CC_CHECK(nearRel(std::sin(vWall), scAx / R, 1e-9));
+}
+
+CC_TEST(sphere_fillet_scope_defers) {
+  const nmath::Vec3 axisY{0, 1, 0};
+  // A pure cylinder (no Sphere face) → NULL (owned by curved_fillet_edge).
+  const double cylProf[] = {0, 0, 5, 0, 5, 10, 0, 10};
+  topo::Shape cyl = cst::build_revolution(cylProf, 4, cst::RevolveAxis{0, 0, 0, 1}, 2.0 * M_PI);
+  const int crim = findRimAtAxial(cyl, axisY, 10, 5);
+  if (crim != 0) {
+    int cids[] = {crim};
+    CC_CHECK(blend::sphere_fillet_edge(cyl, cids, 1, 1.0, 0.01).isNull());
+  }
+  // A truncated ball, but: zero radius, multi-edge, and an oversized ring-torus radius.
+  const double R = 5, zc = 3;
+  topo::Shape s = truncatedBall(R, zc);
+  const int rim = findRimAtAxial(s, axisY, zc, std::sqrt(R * R - zc * zc));
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  CC_CHECK(blend::sphere_fillet_edge(s, ids, 1, 0.0, 0.01).isNull());   // r=0
+  int ids2[] = {rim, 1};
+  CC_CHECK(blend::sphere_fillet_edge(s, ids2, 2, 0.5, 0.01).isNull());  // multi-edge
+  // Ring-torus / seam guard: a very large r on a shallow cap → Rmaj<r or seam≥cap → NULL.
+  CC_CHECK(blend::sphere_fillet_edge(s, ids, 1, 2.8, 0.01).isNull());
+  // A pure planar box has no Sphere face → NULL.
+  topo::Shape b = box(10, 10, 10);
+  const int le = findEdgeId(b, {0, 10, 10}, {10, 10, 10});
+  int idsb[] = {le};
+  CC_CHECK(blend::sphere_fillet_edge(b, idsb, 1, 1.0, 0.01).isNull());
+}
+
 // ── offset_face ────────────────────────────────────────────────────────────────--
 
 CC_TEST(offset_top_face_grows_slab) {

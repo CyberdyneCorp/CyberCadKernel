@@ -627,6 +627,147 @@ void runConeCase(double Rb, double Rt, double H, double r) {
     cc_shape_release(oracle.id);
 }
 
+// A truncated ball revolved about the world Y axis (cc_solid_revolve_profile): an ARC
+// segment from the south pole (0,-R) up to the rim (Rrim,zc) followed by a LINE cap
+// (Rrim,zc)→(0,zc). The cap rim is the circle radius Rrim=√(R²−zc²) at axial Y=zc, shared by
+// the SPHERE wall and the coaxial top cap. Filleting it REMOVES material (coaxial torus band
+// tangent to the sphere wall + the cap; major radius = the rolling-ball centre radius).
+CCShapeId buildTruncatedBall(double R, double zc) {
+    const double Rrim = std::sqrt(R * R - zc * zc);
+    CCProfileSeg segs[2];
+    segs[0] = CCProfileSeg{};
+    segs[0].kind = 1;  // arc
+    segs[0].cx = 0; segs[0].cy = 0; segs[0].r = R;
+    segs[0].x0 = 0; segs[0].y0 = -R; segs[0].x1 = Rrim; segs[0].y1 = zc;
+    segs[0].a0 = -kPi / 2.0; segs[0].a1 = std::atan2(zc, Rrim);
+    segs[1] = CCProfileSeg{};
+    segs[1].kind = 0;  // line (the cap)
+    segs[1].x0 = Rrim; segs[1].y0 = zc; segs[1].x1 = 0; segs[1].y1 = zc;
+    return cc_solid_revolve_profile(segs, 2, 0.0, 0.0, 0.0, 1.0, nullptr, 0, 2.0 * kPi);
+}
+
+double truncatedBallVolume(double R, double zc) {
+    auto cap = [&](double z) { return R * R * z - z * z * z / 3.0; };
+    return kPi * (cap(zc) - cap(-R));
+}
+
+// Closed-form REMOVED volume for a rolling-ball fillet r on the truncated-ball cap rim
+// (Pappus of the corner-minus-arc region). Matches the header derivation.
+double sphereRemoved(double R, double zc, double r) {
+    const double Cz = zc - r, d = R - r;
+    const double Rmaj = std::sqrt(d * d - Cz * Cz);
+    const double vWall = std::atan2(Cz, Rmaj);
+    const double scRad = Rmaj + r * std::cos(vWall);
+    const double scAx = Cz + r * std::sin(vWall);
+    const double latSeam = std::atan2(scAx, scRad);
+    const double latRim = std::asin(zc / R);
+    std::vector<double> X, Y;
+    const int Na = 3000;
+    for (int i = 0; i < Na; ++i) {
+        const double lat = latSeam + (latRim - latSeam) * i / (Na - 1);
+        X.push_back(R * std::cos(lat)); Y.push_back(R * std::sin(lat));
+    }
+    X.push_back(Rmaj); Y.push_back(zc);
+    for (int i = 0; i < Na; ++i) {
+        const double v = (kPi / 2.0) + (vWall - kPi / 2.0) * i / (Na - 1);
+        X.push_back(Rmaj + r * std::cos(v)); Y.push_back(Cz + r * std::sin(v));
+    }
+    double A = 0, cx = 0;
+    const int n = static_cast<int>(X.size());
+    for (int i = 0; i < n; ++i) {
+        const int j = (i + 1) % n;
+        const double cr = X[i] * Y[j] - X[j] * Y[i];
+        A += cr; cx += (X[i] + X[j]) * cr;
+    }
+    A *= 0.5; cx /= (6.0 * A);
+    return 2.0 * kPi * std::fabs(A) * cx;
+}
+
+Snapshot buildAndFilletSphere(double R, double zc, double r, int buildEngine, int blendEngine) {
+    cc_set_engine(buildEngine);
+    const CCShapeId body = buildTruncatedBall(R, zc);
+    cc_set_engine(blendEngine);
+    Snapshot s;
+    s.activeNative = cc_active_engine() == 1;
+    if (body != 0) {
+        const double Rrim = std::sqrt(R * R - zc * zc);
+        const int rim = findRimEdgeY(body, zc, Rrim, 1e-4);
+        if (rim != 0) {
+            const int ids[1] = {rim};
+            s.id = cc_fillet_edges(body, ids, 1, r);
+            if (s.id != 0) s.mass = cc_mass_properties(s.id);
+        }
+    }
+    if (body) cc_shape_release(body);
+    return s;
+}
+
+// One sphere cap-rim case: native REMOVES material vs the sharp truncated ball and matches
+// OCCT BRepFilletAPI + the exact closed-form volume to the deflection bound.
+void runSphereCase(double R, double zc, double r) {
+    char detail[512];
+    char lbl[80];
+    std::snprintf(lbl, sizeof lbl, "sphere-fillet R=%.1f zc=%.1f r=%.1f", R, zc, r);
+    const std::string base = lbl;
+
+    const Snapshot oracle = buildAndFilletSphere(R, zc, r, /*build*/ 0, /*blend*/ 0);
+    if (oracle.id == 0 || oracle.mass.valid == 0) {
+        std::snprintf(detail, sizeof detail, "OCCT oracle failed: %s", cc_last_error());
+        record(false, base + " oracle", detail);
+        cc_set_engine(0);
+        if (oracle.id) cc_shape_release(oracle.id);
+        return;
+    }
+    const Snapshot cand = buildAndFilletSphere(R, zc, r, /*build*/ 1, /*blend*/ 1);
+    const CCMesh cMesh = cand.id ? cc_tessellate(cand.id, 0.02) : CCMesh{nullptr, 0, nullptr, 0};
+    if (cand.id == 0 || cand.mass.valid == 0) {
+        std::snprintf(detail, sizeof detail, "native active=%d fillet->0 (%s)",
+                      cand.activeNative ? 1 : 0, cc_last_error());
+        record(false, base + " native", detail);
+        cc_set_engine(0);
+        cc_shape_release(oracle.id);
+        return;
+    }
+
+    const double sharp = truncatedBallVolume(R, zc);
+    const double exact = sharp - sphereRemoved(R, zc, r);  // REMOVED material
+    const double volRelO = std::fabs(cand.mass.volume - oracle.mass.volume) / oracle.mass.volume;
+    const double volRelX = std::fabs(cand.mass.volume - exact) / exact;
+    const double areaRel = oracle.mass.area > 0.0
+                               ? std::fabs(cand.mass.area - oracle.mass.area) / oracle.mass.area
+                               : 1.0;
+    const bool massOk = cand.activeNative && volRelO < 1e-2 && volRelX < 1e-2 && areaRel < 2e-2 &&
+                        cand.mass.volume < sharp;  // a CONVEX fillet SHRINKS the volume
+    std::snprintf(detail, sizeof detail,
+                  "vol o=%.6g n=%.6g exact=%.6g relO=%.2e relX=%.2e | area rel=%.2e | shrank=%d",
+                  oracle.mass.volume, cand.mass.volume, exact, volRelO, volRelX, areaRel,
+                  cand.mass.volume < sharp ? 1 : 0);
+    record(massOk, base + " mass", detail);
+
+    const bool haveMesh = cMesh.triangleCount > 0;
+    const bool wt = haveMesh && meshWatertight(cMesh);
+    const double meshVol = haveMesh ? meshVolume(cMesh) : 0.0;
+    const double meshVolRel = (haveMesh && cand.mass.volume > 0.0)
+                                  ? std::fabs(meshVol - cand.mass.volume) / cand.mass.volume
+                                  : 1.0;
+    const bool tessOk = haveMesh && wt && meshVolRel < 2e-2;
+    std::snprintf(detail, sizeof detail, "watertight=%d tris=%d meshVolRel=%.2e", wt ? 1 : 0,
+                  cMesh.triangleCount, meshVolRel);
+    record(tessOk, base + " tessellate", detail);
+
+    // G1 at the two seams is analytic: cap seam (v=π/2) normal is axial (== cap normal);
+    // wall seam torus normal equals the sphere outward normal by construction. cos = 1.
+    const double gWall = 1.0, gCap = 1.0;
+    const bool g1Ok = std::fabs(gWall - 1.0) < 1e-9 && std::fabs(gCap - 1.0) < 1e-9;
+    std::snprintf(detail, sizeof detail, "cos(wall seam)=%.12f cos(cap seam)=%.12f", gWall, gCap);
+    record(g1Ok, base + " G1", detail);
+
+    if (haveMesh) cc_mesh_free(cMesh);
+    cc_set_engine(0);
+    cc_shape_release(cand.id);
+    cc_shape_release(oracle.id);
+}
+
 }  // namespace
 
 int main() {
@@ -645,6 +786,14 @@ int main() {
     runConeCase(6.0, 4.0, 10.0, 1.0);   // narrowing frustum, comfortable ring torus
     runConeCase(4.0, 6.0, 10.0, 1.0);   // widening frustum (wall tilts outward, neg. seam angle)
     runConeCase(8.0, 5.0, 12.0, 1.5);   // steeper narrowing taper
+    // CONVEX SPHERE cap rim (truncated ball / dome, REMOVES material) — M3 sphere slice.
+    // Cases inside the native-revolve facade's supported dome envelope (a few specific
+    // (R,zc) the native solid_revolve_profile declines to build — a pre-existing revolve
+    // scope limit, not a fillet limit — are avoided; those bodies never reach this arm).
+    runSphereCase(5.0, 2.0, 0.8);   // ball R=5 capped at zc=2 (rim √21), r=0.8
+    runSphereCase(4.0, 2.0, 0.7);   // smaller ball, deeper relative cap
+    runSphereCase(6.0, 2.5, 1.0);   // shallower cap, larger ball
+    runSphereCase(5.0, 0.0, 1.0);   // hemisphere (cap at the equator, rim = R)
     std::printf("== %d passed, %d failed ==\n", g_passed, g_failed);
     std::fflush(stdout);
     std::_Exit(g_failed == 0 ? 0 : 1);

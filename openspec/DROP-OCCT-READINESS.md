@@ -71,7 +71,7 @@ All `file:line` are in `src/engine/native/native_engine.cpp` unless noted.
 | tapered_shank | cc_tapered_shank | 1116 | **A** | done | 4 | null only (1118) |
 | wrap_emboss | cc_wrap_emboss | 1074 | **A** | resid M3 freeform-base | 6 | cylinder base native (typical); freeform base → OCCT (1076) |
 | **FEATURE / BLEND** ||||||
-| fillet_edges | cc_fillet_edges | 1204 | **A** | resid M3 | 15 | planar + convex/concave-circular native (prismatic parts = bulk); curved/freeform → OCCT (1205) |
+| fillet_edges | cc_fillet_edges | 1204 | **A** | resid M3 | 15 | planar + convex/concave-circular + cone-frustum cap-rim + **sphere cap-rim (truncated ball / dome)** native (prismatic + tapered + revolved-ball rims = bulk); non-circular curved crease / cyl-cyl canal / freeform → OCCT (1205) |
 | fillet_edges_variable | cc_fillet_edges_variable | 1250 | **A** | resid M3 | 7 | convex-circular linear-law native (1252) |
 | chamfer_edges | cc_chamfer_edges | 1270 | **A** | resid M3 | 10 | planar + convex-circular native (1271) |
 | chamfer_edges_asym | cc_chamfer_edges_asym | 1292 | **A** | resid M3 | 0 | convex-circular native (1294) |

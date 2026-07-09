@@ -305,6 +305,66 @@ static TopoDS_Shape occtCollinearVertSoup(const PentaTopSoup& h) {
   return comp;
 }
 
+// A cube soup whose +Z top face's c4→c5 side carries a RUN of collinear vertices at
+// parameters `ts` (each exactly on the c4-c5 line) — the STEP "over-split" artifact
+// (one straight span cut into three-or-more full-length sub-edges). The other five faces
+// are plain quads carrying the plain straight span, so the whole run blocks sharing until
+// the fixpoint removes EVERY vertex (see host cubeTopCollinearRun / collinear_vert.h).
+struct PolyTopSoup {
+  std::vector<Quad> quads;        // the five plain quad faces (−Z,−Y,+Y,−X,+X)
+  std::vector<m::Point3> topPoly; // the +Z face as a (4+|ts|)-corner loop
+  m::Dir3 topN{0, 0, 1};
+};
+static PolyTopSoup cubeTopCollinearRunSoup(const std::vector<double>& ts) {
+  const double s = 1.0;
+  const m::Point3 c[8] = {{0,0,0},{s,0,0},{s,s,0},{0,s,0},{0,0,s},{s,0,s},{s,s,s},{0,s,s}};
+  PolyTopSoup h;
+  h.quads.push_back({{c[0],c[3],c[2],c[1]}, m::Dir3{0,0,-1}});  // −Z
+  h.quads.push_back({{c[0],c[1],c[5],c[4]}, m::Dir3{0,-1,0}});  // −Y (plain c4-c5)
+  h.quads.push_back({{c[3],c[7],c[6],c[2]}, m::Dir3{0,1,0}});   // +Y
+  h.quads.push_back({{c[0],c[4],c[7],c[3]}, m::Dir3{-1,0,0}});  // −X
+  h.quads.push_back({{c[1],c[2],c[6],c[5]}, m::Dir3{1,0,0}});   // +X
+  h.topPoly.push_back(c[4]);
+  for (double t : ts) h.topPoly.push_back(c[4] + (c[5] - c[4]) * t);  // interior collinear run
+  h.topPoly.push_back(c[5]);
+  h.topPoly.push_back(c[6]);
+  h.topPoly.push_back(c[7]);
+  return h;
+}
+
+// The native collinear-run soup: five plain quad faces + the (4+|ts|)-corner +Z face.
+static topo::Shape nativeCollinearRunSoup(const PolyTopSoup& h) {
+  std::vector<topo::Shape> faces;
+  for (const Quad& q : h.quads) faces.push_back(nativeQuadFace(q, false));
+  faces.push_back(nativePolyFace(h.topPoly.data(), (int)h.topPoly.size(), h.topN));
+  return topo::ShapeBuilder::makeShell(faces);
+}
+
+// The OCCT collinear-run soup: the SAME five plain quads + the (4+|ts|)-vertex +Z polygon.
+// BRepBuilderAPI_Sewing + ShapeFix drops the collinear run and closes it — the OCCT analogue.
+static TopoDS_Shape occtCollinearRunSoup(const PolyTopSoup& h) {
+  BRep_Builder bb; TopoDS_Compound comp; bb.MakeCompound(comp);
+  for (const Quad& q : h.quads) {
+    BRepBuilderAPI_MakePolygon poly;
+    for (int i = 0; i < 4; ++i) poly.Add(gp_Pnt(q.p[i].x, q.p[i].y, q.p[i].z));
+    poly.Close();
+    if (!poly.IsDone()) continue;
+    const gp_Pln plane(gp_Pnt(q.p[0].x, q.p[0].y, q.p[0].z), gp_Dir(q.n.x(), q.n.y(), q.n.z()));
+    BRepBuilderAPI_MakeFace mf(plane, poly.Wire());
+    if (mf.IsDone()) bb.Add(comp, mf.Face());
+  }
+  BRepBuilderAPI_MakePolygon top;
+  for (const m::Point3& p : h.topPoly) top.Add(gp_Pnt(p.x, p.y, p.z));
+  top.Close();
+  if (top.IsDone()) {
+    const gp_Pln plane(gp_Pnt(h.topPoly[0].x, h.topPoly[0].y, h.topPoly[0].z),
+                       gp_Dir(h.topN.x(), h.topN.y(), h.topN.z()));
+    BRepBuilderAPI_MakeFace mf(plane, top.Wire());
+    if (mf.IsDone()) bb.Add(comp, mf.Face());
+  }
+  return comp;
+}
+
 // ── OCCT soup builder (a compound of independent planar faces) ─────────────────
 static TopoDS_Shape occtSoup(const std::vector<Quad>& quads) {
   BRep_Builder bb; TopoDS_Compound comp; bb.MakeCompound(comp);
@@ -680,6 +740,53 @@ int main() {
     const bool occtEitherDeclinesOrHonest =
         !orr.watertight || std::fabs(std::fabs(orr.volume) - 1.0) < 1e-3;
     check("collinear-vert default-off: native more-conservative than OCCT",
+          nativeConservative && occtEitherDeclinesOrHonest, buf);
+  }
+
+  // ── M5 TAIL: MULTI-COLLINEAR RUN REMOVAL (fixpoint, opt-in removeCollinearVerts) ─
+  // In-scope: a unit cube whose +Z top face's c4→c5 side carries a RUN of TWO redundant
+  // collinear vertices (t=0.3, 0.6) an exporter over-split onto the straight span (the STEP
+  // "over-split" — one span cut into three full-length sub-edges). A single disjoint removal
+  // pass drops only the first; the FIXPOINT re-runs and removes BOTH, restoring the exact
+  // c4-c5 span → watertight unit cube. The OCCT reference sews the SAME seven-vertex-top soup
+  // at tol; ShapeFix drops the whole collinear run and closes it. Both land V ≈ 1, and native
+  // reports EXACTLY 2 removed — proving the fixpoint, not a single pass, did the work.
+  {
+    const PolyTopSoup h = cubeTopCollinearRunSoup({0.3, 0.6});
+    const heal::HealResult nr = heal::healShell(
+        nativeCollinearRunSoup(h), heal::HealOptions{tol, 0.0, false, false, 0.0, true});
+    const cyber::occt::SewFixResult orr = cyber::occt::sewAndFix(occtCollinearRunSoup(h), tol);
+    const double nv = nr.healed() ? nativeVolume(nr.shape) : 0.0;
+    char buf[220];
+    std::snprintf(buf, sizeof buf,
+                  "(native V=%.5f watertight=%d removed=%d | OCCT V=%.5f valid=%d)", nv,
+                  (int)nr.metrics.watertight, nr.metrics.nRemovedCollinearVerts, orr.volume,
+                  (int)orr.validSolid);
+    const bool ok = nr.healed() && nr.metrics.watertight &&
+                    nr.metrics.nRemovedCollinearVerts == 2 &&  // fixpoint: BOTH run verts
+                    orr.validSolid && std::fabs(nv - 1.0) < 1e-3 &&
+                    std::fabs(std::fabs(orr.volume) - 1.0) < 1e-3 &&
+                    std::fabs(nv - std::fabs(orr.volume)) < 1e-3;
+    check("collinear-run fixpoint matches OCCT sew+fix", ok, buf);
+  }
+
+  // EQUAL-OR-MORE-CONSERVATIVE: with the flag OFF native declines the SAME run soup honestly
+  // (input unchanged, nothing removed) while OCCT still drops the run and closes — native
+  // deferring where OCCT repairs, the intended contract; the opt-in flag recovers the win.
+  {
+    const PolyTopSoup h = cubeTopCollinearRunSoup({0.3, 0.6});
+    const heal::HealResult nr = heal::healShell(nativeCollinearRunSoup(h), opts);  // flag OFF
+    const cyber::occt::SewFixResult orr = cyber::occt::sewAndFix(occtCollinearRunSoup(h), tol);
+    char buf[240];
+    std::snprintf(buf, sizeof buf,
+                  "(native UNHEALED reason=%d removed=%d residual=%.4g | OCCT valid=%d watertight=%d V=%.5f)",
+                  (int)nr.reason, nr.metrics.nRemovedCollinearVerts, nr.metrics.maxResidualGap,
+                  (int)orr.validSolid, (int)orr.watertight, orr.volume);
+    const bool nativeConservative = !nr.healed() && nr.metrics.nRemovedCollinearVerts == 0 &&
+                                    nr.metrics.maxResidualGap > tol;
+    const bool occtEitherDeclinesOrHonest =
+        !orr.watertight || std::fabs(std::fabs(orr.volume) - 1.0) < 1e-3;
+    check("collinear-run default-off: native more-conservative than OCCT",
           nativeConservative && occtEitherDeclinesOrHonest, buf);
   }
 

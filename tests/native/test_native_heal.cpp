@@ -324,6 +324,74 @@ topo::Shape quadFaceExtraVertFirstSide(const m::Point3& p0, const m::Point3& p1,
   return topo::ShapeBuilder::makeFace(s, wire, {}, topo::Orientation::Forward);
 }
 
+// A quad face whose first side p0→p1 carries a RUN of `ts.size()` extra collinear vertices
+// (parameters `ts`, strictly increasing in (0,1)), each EXACTLY on the straight p0→p1 line
+// (off==0 collinear). Unlike quadFaceExtraVertFirstSide (one vertex) this is the STEP
+// "over-split" artifact: an exporter split a single straight span into three-or-more
+// full-length sub-edges. The neighbour face carries the plain straight p0→p1 span, so the
+// whole run blocks sharing until every vertex is removed — a single disjoint pass leaves an
+// adjacent one standing, so this exercises the fixpoint. Loop: p0, B1..Bk, p1, p2, p3.
+topo::Shape quadFaceCollinearRunFirstSide(const m::Point3& p0, const m::Point3& p1,
+                                          const m::Point3& p2, const m::Point3& p3,
+                                          const m::Dir3& normal, const std::vector<double>& ts) {
+  const m::Vec3 e = (p1 - p0);
+  const m::Vec3 ref = std::fabs(normal.z()) < 0.9 ? m::Vec3{0, 0, 1} : m::Vec3{1, 0, 0};
+  const m::Ax3 frame = m::Ax3::fromAxisAndRef(p0, normal, m::Dir3{ref});
+  std::vector<m::Point3> pts;
+  pts.push_back(p0);
+  for (double t : ts) pts.push_back(p0 + e * t);  // interior collinear vertices, exactly on line
+  pts.push_back(p1);
+  pts.push_back(p2);
+  pts.push_back(p3);
+  const int nc = static_cast<int>(pts.size());
+  std::vector<topo::Shape> v(nc);
+  for (int i = 0; i < nc; ++i) v[i] = topo::ShapeBuilder::makeVertex(pts[i]);
+  auto toUV = [&](const m::Point3& p) -> m::Point3 {
+    const m::Vec3 d = p - frame.origin;
+    return m::Point3{m::dot(d, frame.x.vec()), m::dot(d, frame.y.vec()), 0.0};
+  };
+  std::vector<topo::Shape> edges;
+  for (int i = 0; i < nc; ++i) {
+    const m::Point3& a = pts[i];
+    const m::Point3& b = pts[(i + 1) % nc];
+    const m::Vec3 d = b - a;
+    const double len = std::max(m::norm(d), 1e-12);
+    topo::EdgeCurve c;
+    c.kind = topo::EdgeCurve::Kind::Line;
+    c.frame.origin = a;
+    c.frame.x = m::norm(d) > 1e-12 ? m::Dir3{d} : m::Dir3{1, 0, 0};
+    c.frame.z = frame.z;
+    topo::Shape ed = topo::ShapeBuilder::makeEdge(c, 0.0, len, v[i], v[(i + 1) % nc]);
+    topo::PCurve pc;
+    pc.kind = topo::EdgeCurve::Kind::Line;
+    const m::Point3 uv0 = toUV(a), uv1 = toUV(b);
+    pc.origin2d = uv0;
+    pc.dir2d = (uv1 - uv0) / len;
+    edges.push_back(topo::ShapeBuilder::addPCurve(ed, ed.tshape(), pc));
+  }
+  topo::Shape wire = topo::ShapeBuilder::makeWire(std::move(edges));
+  topo::FaceSurface s;
+  s.kind = topo::FaceSurface::Kind::Plane;
+  s.frame = frame;
+  return topo::ShapeBuilder::makeFace(s, wire, {}, topo::Orientation::Forward);
+}
+
+// The six unit-cube faces, but the +Z (top) face's first side c4→c5 carries a RUN of
+// collinear vertices at parameters `ts` (each exactly on the line). The neighbour −Y face
+// carries the plain straight c4-c5 span, so the whole run blocks sharing until the fixpoint
+// removes every vertex. Every other corner is exactly coincident so a repaired heal → V=1.
+std::vector<topo::Shape> cubeTopCollinearRun(const std::vector<double>& ts) {
+  const Corners k = cubeCorners();
+  std::vector<topo::Shape> f;
+  f.push_back(quadFace(k.c[0], k.c[3], k.c[2], k.c[1], m::Dir3{0, 0, -1}));  // −Z
+  f.push_back(quadFaceCollinearRunFirstSide(k.c[4], k.c[5], k.c[6], k.c[7], m::Dir3{0, 0, 1}, ts));  // +Z
+  f.push_back(quadFace(k.c[0], k.c[1], k.c[5], k.c[4], m::Dir3{0, -1, 0}));  // −Y (plain c4-c5)
+  f.push_back(quadFace(k.c[3], k.c[7], k.c[6], k.c[2], m::Dir3{0, 1, 0}));   // +Y
+  f.push_back(quadFace(k.c[0], k.c[4], k.c[7], k.c[3], m::Dir3{-1, 0, 0}));  // −X
+  f.push_back(quadFace(k.c[1], k.c[2], k.c[6], k.c[5], m::Dir3{1, 0, 0}));   // +X
+  return f;
+}
+
 // The six unit-cube faces, but the +Z (top) face has one extra vertex on its first side
 // c4→c5 at parameter `t`, offset `off` perpendicular in-plane. off==0 ⇒ a redundant
 // collinear T-vertex (both sub-edges full-length); off>0 ⇒ a real corner. Every other
@@ -858,6 +926,84 @@ CC_TEST(heal_collinear_vert_remove_loop_layer) {
       heal::detail::removeLoopVerts(spur, 1e-4, n3, mx3);
   CC_CHECK_EQ(n3, 0);                // t∉(0,1) ⇒ the projection test refuses
   CC_CHECK_EQ((int)out3.size(), 5);  // unchanged
+}
+
+// ── (L5) MULTI-COLLINEAR RUN — a run of 2 collinear vertices collapses to a fixpoint ─
+// The +Z face's c4→c5 side carries TWO extra vertices at t=0.3 and t=0.6, both exactly on
+// the line (the STEP "over-split" — one straight span cut into three full-length sub-edges).
+// A single disjoint pass drops only the first (the skip past C leaves the second standing),
+// so BEFORE the fixpoint the shell would stay open. The fixpoint re-runs on the survivors and
+// removes BOTH, restoring the exact c4-c5 span the neighbour −Y face carries → V=1.
+CC_TEST(heal_collinear_run_two_verts_heals) {
+  auto f = cubeTopCollinearRun({0.3, 0.6});
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r =
+      heal::healShell(input, heal::HealOptions{1e-4, 0.0, false, false, 0.0, true});
+  CC_CHECK(r.healed());
+  CC_CHECK(r.metrics.watertight);
+  CC_CHECK(r.metrics.valid);
+  CC_CHECK_EQ(r.metrics.nRemovedCollinearVerts, 2);   // BOTH run vertices removed (fixpoint)
+  CC_CHECK(r.metrics.maxCollinearVertDev <= 1e-4);
+  CC_CHECK_EQ(r.metrics.nCollapsedShortEdges, 0);     // NOT the short-edge pass
+  CC_CHECK(r.metrics.maxResidualGap == 0.0);          // fully closed after the run collapsed
+  CC_CHECK(watertightVolumeNear(r.shape, 1.0, 1e-6)); // exact unit cube
+}
+
+// ── (L6) MULTI-COLLINEAR RUN — three consecutive collinear vertices collapse ────────
+// A run of THREE (t=0.25,0.5,0.75) exercises more than one fixpoint iteration: pass 1
+// drops t=0.25 and t=0.75 (disjoint), leaving t=0.5; pass 2 drops t=0.5; pass 3 removes
+// nothing (terminates). All three are removed → V=1 exactly, none faked.
+CC_TEST(heal_collinear_run_three_verts_heals) {
+  auto f = cubeTopCollinearRun({0.25, 0.5, 0.75});
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r =
+      heal::healShell(input, heal::HealOptions{1e-4, 0.0, false, false, 0.0, true});
+  CC_CHECK(r.healed());
+  CC_CHECK(r.metrics.watertight);
+  CC_CHECK_EQ(r.metrics.nRemovedCollinearVerts, 3);   // all three removed across passes
+  CC_CHECK(r.metrics.maxResidualGap == 0.0);
+  CC_CHECK(watertightVolumeNear(r.shape, 1.0, 1e-6));
+}
+
+// ── (L7) MULTI-RUN DEFAULT-OFF — the two-vertex run declines (landed byte-identical) ─
+// With removeCollinearVerts == false the run is unpaired boundary corners → honest decline,
+// input unchanged, exactly as before this pass (the fixpoint only runs behind the flag).
+CC_TEST(heal_collinear_run_default_off_declines) {
+  auto f = cubeTopCollinearRun({0.3, 0.6});
+  const topo::Shape input = topo::ShapeBuilder::makeShell(f);
+  const heal::HealResult r = heal::healShell(input, kOpts);  // flag OFF
+  CC_CHECK(!r.healed());
+  CC_CHECK(r.reason == heal::UnhealedReason::GapBeyondTolerance);
+  CC_CHECK_EQ(r.metrics.nRemovedCollinearVerts, 0);   // nothing removed
+  CC_CHECK(r.shape.isSameGeometry(input));            // input UNCHANGED
+}
+
+// ── (L8) UNIT LAYER — removeLoopVerts collapses a full run, keeps a mixed real corner ─
+// Drives the helper on a run of two collinear vertices on one side (both removed) and,
+// separately, a run whose middle vertex is off-line (only the collinear ones removed,
+// the real corner kept) — proving the fixpoint never over-removes a genuine feature.
+CC_TEST(heal_collinear_run_remove_loop_layer) {
+  int n = 0; double mx = 0.0;
+  // Square 0..1 with TWO collinear extra vertices on the bottom side:
+  const std::vector<m::Point3> run{
+      {0, 0, 0}, {0.3, 0, 0}, {0.6, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+  const std::vector<m::Point3> out = heal::detail::removeLoopVerts(run, 1e-4, n, mx);
+  CC_CHECK_EQ(n, 2);                 // BOTH collinear vertices removed (fixpoint)
+  CC_CHECK_EQ((int)out.size(), 4);   // hexagon → square
+  CC_CHECK(mx <= 1e-4);
+
+  int n2 = 0; double mx2 = 0.0;
+  // Run where the middle of three is off-line (a real corner) → only the two collinear
+  // flankers around it collapse where legal; the off-line corner survives.
+  const std::vector<m::Point3> mixed{
+      {0, 0, 0}, {0.25, 0, 0}, {0.5, 0.2, 0}, {0.75, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+  const std::vector<m::Point3> out2 = heal::detail::removeLoopVerts(mixed, 1e-4, n2, mx2);
+  // (0.5,0.2) is a real corner and is never removed; its off-line presence means its
+  // immediate neighbours are NOT collinear on the line through THEIR neighbours either.
+  bool keptRealCorner = false;
+  for (const m::Point3& p : out2)
+    if (std::fabs(p.x - 0.5) < 1e-9 && std::fabs(p.y - 0.2) < 1e-9) keptRealCorner = true;
+  CC_CHECK(keptRealCorner);          // the genuine corner survives the fixpoint
 }
 
 CC_RUN_ALL()

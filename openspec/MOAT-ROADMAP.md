@@ -377,6 +377,26 @@ bridging, arbitrary broken industrial B-rep**. Gates trustworthy foreign import 
   OCCT's closure the same honest unit cube). REMAINING (asymptotic tail): a vertex that turns a real corner,
   a removal needing the neighbour face re-projected, pcurve reconstruction, self-intersecting-wire repair,
   arbitrary broken industrial B-rep.
+- **Status — tail slice EXTENDED (multi-collinear RUN removal to a FIXPOINT).** The collinear-vertex pass
+  removed only a SINGLE redundant vertex per straight span: its one disjoint left-to-right sweep skips past a
+  removed vertex's successor, so a STEP "over-split" run A→B1→B2→…→C (one straight edge cut into three-or-more
+  FULL-LENGTH sub-edges, every Bₖ on the line) lost only every OTHER vertex per pass and a survivor still
+  blocked the sew → the healer DECLINED. `collinear_vert.h` now iterates the disjoint sweep
+  (`detail::removeLoopVertsPass`) to a FIXPOINT inside `detail::removeLoopVerts`: it re-runs on the previous
+  sweep's SURVIVORS until a sweep removes nothing (or the loop reaches a triangle), so once B1 is gone the next
+  sweep sees B2's neighbours as A,C and removes it too — the whole run collapses to the single straight edge
+  A→C. Termination is guaranteed (survivors strictly decrease while any removal occurs). No `HealOptions` /
+  `HealMetrics` / `heal.cpp` change — internal to the helper; the single-vertex and default-OFF paths are
+  BYTE-IDENTICAL (one sweep then terminate; no-op when disabled); `nRemovedCollinearVerts` now counts the whole
+  run. Verified both gates: host analytic (`test_native_heal` 36/36 — a 2-vertex run t=0.3,0.6 heals to V=1.0
+  with nRemovedCollinearVerts=2; a 3-vertex run t=0.25,0.5,0.75 → nRemovedCollinearVerts=3, exercising >1
+  fixpoint iteration; default-off declines `GapBeyondTolerance` input unchanged; `removeLoopVerts` unit-driven
+  collapses a 2-vertex run to a square while keeping an off-line real corner in a mixed run) and native-vs-OCCT
+  (`run-sim-native-heal` 16/16 — the 2-run removal matches OCCT `Sewing`+`ShapeFix` at V=1.0, removed=2; flag OFF
+  native declines while OCCT closes → native EQUAL-OR-MORE-CONSERVATIVE, OCCT's closure the same honest unit
+  cube). REMAINING (asymptotic tail, unchanged): a vertex that turns a real corner, a removal needing the
+  neighbour face re-projected, pcurve reconstruction, self-intersecting-wire repair, arbitrary broken
+  industrial B-rep — no clean isolated closed-form/OCCT arbiter, the honest phase-end.
 
 ### M6 — Robustness completeness bar (S4-f + coverage) · ongoing · gates drop-occt
 The measured-recall / completeness discipline (SSI S4-f landed a first slice): below any fixed

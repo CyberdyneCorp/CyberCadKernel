@@ -5,9 +5,12 @@
 // vertex unification, the classic STEP-import "T-vertex" / seam-split artifact).
 //
 // ── THE DEFECT (distinct from every landed pass) ─────────────────────────────────
-// A STEP exporter / mesh→B-rep conversion frequently drops an EXTRA vertex B onto a
-// face's straight boundary run A→C, so that face carries A→B→C (two edges) while the
-// NEIGHBOUR face carries the same span as ONE straight edge A→C. B lies EXACTLY on the
+// A STEP exporter / mesh→B-rep conversion frequently drops one-or-MORE EXTRA vertices onto
+// a face's straight boundary run A→C, so that face carries A→B1→…→C (two-or-more edges)
+// while the NEIGHBOUR face carries the same span as ONE straight edge A→C. Each Bₖ lies on
+// the line A→C (they are redundant — they turn no corner). The removal below iterates to a
+// FIXPOINT, so a RUN of two-or-more consecutive collinear vertices is collapsed fully, not
+// just the first. For a single B this is the classic STEP "T-vertex" / seam-split; B lies EXACTLY on the
 // line A→C (it is redundant — it turns no corner), and BOTH incident edges |A−B| and
 // |B−C| may be FULL-LENGTH real edges. Because the neighbour does not carry B, the
 // tolerant sew cannot share the run: boundary edges survive and the shell is returned
@@ -46,8 +49,13 @@
 //
 //   3. LOOP STAYS A POLYGON. A face is only rewritten if it keeps ≥ 3 corners after the
 //      removal (a triangle is the floor); a loop that would drop below 3 is left
-//      unchanged. Removals are kept disjoint (a removed B's neighbours A,C are not
-//      themselves removed in the same sweep) so one corner is never consumed twice.
+//      unchanged. Within ONE pass removals are kept disjoint (a removed B's neighbours A,C
+//      are not themselves removed in the same sweep) so one corner is never consumed twice;
+//      the pass is then iterated to a FIXPOINT so a RUN of two-or-more consecutive collinear
+//      vertices (A→B1→B2→C, the disjoint skip leaves B2 standing after B1 goes) collapses
+//      fully — each pass reads the previous pass's survivors, so B2's neighbours become A,C
+//      and it is removed on the next pass. The fixpoint removes only corners collinear
+//      within tol among the current survivors, so it never removes a real corner.
 //
 //   4. MANDATORY SELF-VERIFY (in heal.cpp, UNCHANGED). After removal + re-sew the
 //      candidate must STILL tessellate watertight with positive enclosed volume; a
@@ -107,20 +115,22 @@ inline double perpAndParam(const math::Point3& p, const math::Point3& a, const m
   return math::norm(math::cross(ap, ac)) / std::sqrt(len2);
 }
 
-// Remove redundant collinear vertices from ONE loop. A corner B (wire neighbours
-// A = prev(B), C = next(B)) is removed when:
+// One left-to-right removal sweep over `loop`, appending survivors to `out`. A corner B
+// (wire neighbours A = prev(B), C = next(B) among the CURRENT survivors) is removed when:
 //   * its perpendicular distance to the line A→C is ≤ tol, AND
 //   * it projects strictly between A and C (0 < t < 1), AND
 //   * the loop keeps ≥ 3 corners after the removal.
-// One left-to-right sweep; a removal advances past C so a corner is never consumed by
-// two removals (removals stay disjoint — A and C survive their neighbour's removal).
-inline std::vector<math::Point3> removeLoopVerts(const std::vector<math::Point3>& loop, double tol,
-                                                 int& nRemoved, double& maxDeviation) {
+// A removal advances past C so a single pass never consumes a corner twice (removals stay
+// disjoint WITHIN one pass — A and C survive their neighbour's removal). Returns the number
+// removed THIS pass so the caller can iterate to a fixpoint; the neighbours A,C are read
+// from `loop` (the survivors of the previous pass), which is why an ADJACENT second
+// collinear vertex left standing by the disjoint skip is picked up on the next pass.
+inline int removeLoopVertsPass(const std::vector<math::Point3>& loop, double tol,
+                               double& maxDeviation, std::vector<math::Point3>& out) {
   const std::size_t n = loop.size();
-  if (n < 4) return loop;  // need ≥ 3 survivors after removing ≥ 1 ⇒ ≥ 4 corners
-
   std::vector<char> drop(n, 0);
   int survivors = static_cast<int>(n);
+  int removed = 0;
   std::size_t i = 0;
   while (i < n) {
     const std::size_t b = i, a = (i + n - 1) % n, c = (i + 1) % n;
@@ -129,7 +139,7 @@ inline std::vector<math::Point3> removeLoopVerts(const std::vector<math::Point3>
     const double dev = perpAndParam(loop[b], loop[a], loop[c], t);
     if (dev <= tol && t > 0.0 && t < 1.0 && survivors - 1 >= 3) {
       drop[b] = 1;  // B is redundant ⇒ the span becomes the straight edge A→C
-      ++nRemoved;
+      ++removed;
       --survivors;
       maxDeviation = std::max(maxDeviation, dev);
       i += 2;       // skip C so it starts the next window (keeps removals disjoint)
@@ -137,11 +147,36 @@ inline std::vector<math::Point3> removeLoopVerts(const std::vector<math::Point3>
     }
     ++i;
   }
-  std::vector<math::Point3> out;
+  out.clear();
   out.reserve(static_cast<std::size_t>(survivors));
   for (std::size_t k = 0; k < n; ++k)
     if (!drop[k]) out.push_back(loop[k]);
-  return out;
+  return removed;
+}
+
+// Remove ALL redundant collinear vertices from ONE loop, iterating removeLoopVertsPass to a
+// FIXPOINT. A single disjoint pass leaves an ADJACENT second collinear vertex standing (the
+// skip past C means a run A→B1→B2→C keeps B2), so a STEP exporter that split a straight span
+// into three-or-more sub-edges (A→B1→B2→C, both Bₖ within tol of line A→C) would only lose
+// one vertex per pass and still block the sew. Re-running the pass on each pass's survivors
+// collapses the whole run: once B1 is gone the next pass reads B2's neighbours as A,C and
+// removes it too, until a pass removes nothing. Each pass only ever removes a corner that is
+// collinear-within-tol among the CURRENT survivors, so the fixpoint never removes a real
+// corner and terminates in ≤ n passes (survivors strictly decrease while any removal occurs).
+inline std::vector<math::Point3> removeLoopVerts(const std::vector<math::Point3>& loop, double tol,
+                                                 int& nRemoved, double& maxDeviation) {
+  if (loop.size() < 4) return loop;  // need ≥ 3 survivors after removing ≥ 1 ⇒ ≥ 4 corners
+
+  std::vector<math::Point3> cur = loop;
+  std::vector<math::Point3> next;
+  for (;;) {
+    const int removed = removeLoopVertsPass(cur, tol, maxDeviation, next);
+    if (removed == 0) break;
+    nRemoved += removed;
+    cur.swap(next);
+    if (cur.size() < 4) break;  // a triangle is the floor; no interior run can remain
+  }
+  return cur;
 }
 
 }  // namespace detail

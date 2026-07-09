@@ -14,9 +14,10 @@
 //   * OCCT's `BRepAlgoAPI_Cut(A,B)` and `Common(A,B)` (the ORACLE) yield the closed-form
 //     volumes V(A−B) = V(A) − π·H²/(4a) and V(A∩B) = π·H²/(4a) — so the closed-form host
 //     oracle is the CORRECT answer OCCT owns;
-//   * the native verb DECLINES (returns NULL) for CUT and COMMON — the honest fallthrough
-//     to OCCT is correct (the native path NEVER emits a leaky/partial/wrong solid), which
-//     is the disciplined behaviour while the two-curved-side seam weld is tessellator-gated;
+//   * the native verb WELDS COMMON (the lens) — after the orientation-coherence repair its
+//     meshed volume matches OCCT's `BRepAlgoAPI_Common` within the deflection band and
+//     CONVERGES — and honest-DECLINES CUT to NULL → OCCT (its apex-adjacent membership is
+//     ambiguous); the native path NEVER emits a leaky/partial/wrong solid;
 //   * a non-intersecting second operand → the native trace declines SeamUnusable and OCCT's
 //     Cut is a no-op (V unchanged) — no fabrication either way.
 //
@@ -26,6 +27,8 @@
 //
 #include "native/boolean/freeform_freeform_cut.h"
 #include "native/boolean/freeform_operand.h"
+#include "native/tessellate/mesh.h"
+#include "native/tessellate/solid_mesher.h"
 #include "native/tessellate/surface_eval.h"
 #include "native/topology/native_topology.h"
 
@@ -215,20 +218,36 @@ int main() {
   std::snprintf(buf, sizeof buf, "V=%.6f cf=%.6f", vCom, ffx::volCommon());
   report("occt", "common-matches-closed-form", std::fabs(vCom - ffx::volCommon()) / ffx::volCommon() < vrel, buf);
 
-  // ── (3) the native verb HONEST-DECLINES CUT and COMMON (correct fallthrough) ─────
-  // The two-CURVED-side closed-seam weld is gated on the byte-frozen M0 tessellator, so
-  // the native path returns NULL → OCCT (NEVER a leaky/partial/wrong solid). This asserts
-  // the disciplined fallthrough is what actually happens.
+  // ── (3) the native verb: COMMON WELDS vs OCCT; CUT honest-declines to NULL ───────
+  // COMMON (the lens) now welds a coherently-oriented solid (the orientation-repair flips
+  // one cap so the shell is a consistent outward-normal boundary); its meshed volume must
+  // match OCCT `BRepAlgoAPI_Common` + `BRepGProp` within the deflection-bounded band (a
+  // triangulated smooth cap UNDER-estimates by O(deflection)) and CONVERGE as d refines.
+  // CUT still honest-declines to NULL → OCCT (its apex-adjacent membership is ambiguous);
+  // the native path NEVER emits a leaky/partial/wrong solid.
   const nt::Shape A = ffx::buildA();
   const nt::Shape B = ffx::buildB();
-  for (double d : {0.01, 0.005}) {
+  double prevComErr = 1.0;
+  for (double d : {0.01, 0.005, 0.0025}) {
     bo::FfCutDecline wc = bo::FfCutDecline::Ok, wm = bo::FfCutDecline::Ok;
     const nt::Shape ncut = bo::freeformFreeformClosedSeamCut(A, B, bo::FfOp::Cut, d, &wc);
-    const nt::Shape ncom = bo::freeformFreeformClosedSeamCut(A, B, bo::FfOp::Common, d, &wm);
-    std::snprintf(buf, sizeof buf, "d=%.3f CUT null=%d(%s)", d, ncut.isNull(), bo::ffCutDeclineName(wc));
+    const nt::Shape ncom =
+        bo::freeformFreeformClosedSeamCut(A, B, bo::FfOp::Common, d, &wm, ffx::volCommon());
+    std::snprintf(buf, sizeof buf, "d=%.4f CUT null=%d(%s)", d, ncut.isNull(), bo::ffCutDeclineName(wc));
     report("native", "cut-declines-to-null", ncut.isNull() && wc != bo::FfCutDecline::Ok, buf);
-    std::snprintf(buf, sizeof buf, "d=%.3f COMMON null=%d(%s)", d, ncom.isNull(), bo::ffCutDeclineName(wm));
-    report("native", "common-declines-to-null", ncom.isNull() && wm != bo::FfCutDecline::Ok, buf);
+
+    // native COMMON welds — mesh it and compare its volume to OCCT's Common volume.
+    const bool welded = !ncom.isNull() && wm == bo::FfCutDecline::Ok;
+    double nComVol = 0.0;
+    if (welded) {
+      cybercad::native::tessellate::MeshParams mp; mp.deflection = d;
+      nComVol = std::fabs(cybercad::native::tessellate::enclosedVolume(
+          cybercad::native::tessellate::SolidMesher(mp).mesh(ncom)));
+    }
+    const double comErr = welded ? std::fabs(nComVol - vCom) / vCom : 1e30;
+    std::snprintf(buf, sizeof buf, "d=%.4f native=%.6f OCCT=%.6f relErr=%.3f", d, nComVol, vCom, comErr);
+    report("native", "common-welds-vs-occt", welded && comErr < 30.0 * d && comErr < prevComErr, buf);
+    prevComErr = comErr;
   }
 
   // ── (4) fallback contract: a non-intersecting operand → native SeamUnusable, OCCT no-op

@@ -191,6 +191,54 @@ inline std::size_t boundaryEdgeCount(const Mesh& m) {
   return n;
 }
 
+// ── Directed-edge (orientation-coherence) accounting ──────────────────────────
+// isWatertight() is UNDIRECTED: it only asks that each edge be used twice, so a
+// shell whose two halves wind the SAME way across a shared seam (both caps CW, or
+// both CCW) still passes — yet it is NOT a coherently-oriented solid boundary and
+// its signed enclosedVolume() is wrong. The DIRECTED test closes that gap: in a
+// consistently-oriented closed 2-manifold every directed half-edge (a→b) occurs
+// exactly once and is matched by exactly one reverse (b→a) from the adjacent
+// triangle. A same-direction duplicate (a→b seen from two triangles) is the
+// signature of an inconsistent shell.
+
+/// A directed edge key (ordered endpoints) for orientation-coherence counting.
+struct DirectedEdge {
+  std::uint32_t from;
+  std::uint32_t to;
+  bool operator==(const DirectedEdge& o) const noexcept { return from == o.from && to == o.to; }
+};
+struct DirectedEdgeHash {
+  std::size_t operator()(const DirectedEdge& e) const noexcept {
+    return (static_cast<std::size_t>(e.from) << 32) ^ static_cast<std::size_t>(e.to);
+  }
+};
+
+/// Number of DIRECTED half-edges that occur more than once in the same direction
+/// (each extra use counted). Zero ⇔ no two triangles traverse the same edge the
+/// same way — the orientation-coherence signature of a consistently-wound shell.
+inline std::size_t sameDirectionEdgeCount(const Mesh& m) {
+  std::unordered_map<DirectedEdge, int, DirectedEdgeHash> dir;
+  dir.reserve(m.triangles.size() * 3);
+  auto bump = [&](std::uint32_t x, std::uint32_t y) { ++dir[DirectedEdge{x, y}]; };
+  for (const Triangle& t : m.triangles) {
+    bump(t.a, t.b);
+    bump(t.b, t.c);
+    bump(t.c, t.a);
+  }
+  std::size_t dup = 0;
+  for (const auto& [edge, uses] : dir)
+    if (uses > 1) dup += static_cast<std::size_t>(uses - 1);
+  return dup;
+}
+
+/// A closed mesh is CONSISTENTLY ORIENTED iff it is watertight AND no directed
+/// half-edge is traversed the same way twice (every interior edge is used once
+/// forward and once reversed). This is the invariant that makes enclosedVolume()
+/// meaningful — a watertight-but-orientation-inconsistent shell fails it.
+inline bool isConsistentlyOriented(const Mesh& m) {
+  return isWatertight(m) && sameDirectionEdgeCount(m) == 0;
+}
+
 }  // namespace cybercad::native::tessellate
 
 #endif  // CYBERCAD_NATIVE_TESSELLATE_MESH_H

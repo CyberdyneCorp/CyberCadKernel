@@ -13,9 +13,11 @@
 //   * the shared seam is the real M1 trace: CLOSED, radius ρ on BOTH walls' (u,v) to
 //     ~1e-13, on both surfaces to the trace residual;
 //   * the closed-form volume oracles are self-consistent (V(A−B)+V(A∩B)=V(A));
-//   * `freeformFreeformClosedSeamCut` runs the whole pipeline and returns NULL with a
-//     measured `NotWatertight` (the two-curved-side seam weld is tessellator-gated) —
-//     NEVER a leaky solid; and DECLINES a non-operand / a non-intersecting pose cleanly.
+//   * `freeformFreeformClosedSeamCut` runs the whole pipeline: COMMON (the lens) WELDS
+//     watertight at the closed-form volume π·H²/(4a) after the orientation-coherence
+//     repair (one cap reversed) and CONVERGES as the deflection refines, verified
+//     TWO-SIDED; CUT honest-declines to NULL (its apex-adjacent membership is ambiguous)
+//     — NEVER a leaky/wrong solid; and it DECLINES a non-operand / non-intersecting pose.
 // Requires CYBERCAD_HAS_NUMSCI (the seam is the real S3 trace between two Béziers).
 //
 #include "native/boolean/freeform_freeform_cut.h"
@@ -92,16 +94,39 @@ CC_TEST(ff_cut_honest_declines_never_leaky) {
   }
 }
 
-// ── COMMON (the lens) HONEST-DECLINES to NULL for the same reason ──
-CC_TEST(ff_common_honest_declines_never_leaky) {
+// ── COMMON (the lens) WELDS watertight at the CLOSED-FORM volume, and CONVERGES ──
+// The two survivor caps (A's disk, B's disk) each inherit their parent wall's
+// orientation (A opens UP, B opens DOWN), so a naive weld is watertight (undirected)
+// but orientation-INCONSISTENT — its signed volume is a locked 33% too small and does
+// NOT converge. `freeformFreeformClosedSeamCut` repairs orientation coherence (the
+// directed-edge invariant: exactly one cap reversed) so the assembled lens is a coherent
+// outward-normal boundary; its meshed volume then matches the closed-form lens
+// V = π·H²/(4a) within the deflection-bounded band AND converges monotonically as the
+// deflection refines (the residual is the O(deflection) triangulation under-estimate of
+// a smooth cap, NOT the orientation error). The self-verify is TWO-SIDED (the closed
+// form is passed in), so a too-small wrong volume can never be returned as success.
+CC_TEST(ff_common_welds_watertight_at_closed_form) {
   const topo::Shape A = ffx::buildA();
   const topo::Shape B = ffx::buildB();
+  const double cf = ffx::volCommon();  // π·H²/(4a) = 0.010053096
+  double prevErr = 1.0;                 // relative error must shrink as d refines
   for (double d : {0.01, 0.005, 0.0025}) {
     bo::FfCutDecline why = bo::FfCutDecline::Ok;
-    const topo::Shape com = bo::freeformFreeformClosedSeamCut(A, B, bo::FfOp::Common, d, &why);
-    CC_CHECK(com.isNull());
-    CC_CHECK(why == bo::FfCutDecline::NotWatertight ||
-             why == bo::FfCutDecline::ClassifyAmbiguous);
+    const topo::Shape com = bo::freeformFreeformClosedSeamCut(A, B, bo::FfOp::Common, d, &why, cf);
+    CC_CHECK(!com.isNull());                       // WELDS (not a decline)
+    CC_CHECK(why == bo::FfCutDecline::Ok);
+    if (com.isNull()) continue;
+    tess::MeshParams mp;
+    mp.deflection = d;
+    const tess::Mesh m = tess::SolidMesher(mp).mesh(com);
+    CC_CHECK(tess::isWatertight(m));                       // χ = 2 (closed 2-manifold)
+    CC_CHECK(tess::isConsistentlyOriented(m));             // coherent winding (0 same-dir dups)
+    const double v = std::fabs(tess::enclosedVolume(m));
+    const double err = std::fabs(v - cf) / cf;
+    CC_CHECK(err < 30.0 * d);                              // within the deflection band
+    CC_CHECK(v < cf);                                      // smooth cap under-estimates
+    CC_CHECK(err < prevErr);                               // and CONVERGES toward cf
+    prevErr = err;
   }
 }
 

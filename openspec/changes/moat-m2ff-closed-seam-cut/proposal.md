@@ -39,13 +39,23 @@ whose two curved walls intersect in ONE CLOSED curved seam. It:
    lens (A's disk cap inside B + B's disk cap inside A);
 5. **confirms** each survivor's membership via B3 `classifyPointInMesh` against the other
    operand's mesh (never guessed);
-6. **welds** the survivors (M0 `SolidMesher`) and runs the mandatory self-verify (M0
-   WATERTIGHT + a consistent op-volume bound), returning a NULL Shape (→ OCCT
-   `BRepAlgoAPI_{Cut,Common}`) with a typed decline on ANY failure.
+6. **welds** the survivors (M0 `SolidMesher`) with an ORIENTATION-COHERENCE REPAIR (the
+   two survivor caps each inherit their parent wall's orientation; A opens UP and B opens
+   DOWN, so the naive weld is watertight-but-orientation-inconsistent — the verb enforces
+   the DIRECTED-edge invariant `tess::isConsistentlyOriented` and flips exactly one cap so
+   the lens is a coherent outward-normal boundary), then runs the mandatory self-verify —
+   WATERTIGHT + consistently-oriented + a TWO-SIDED volume band against the analytic
+   op-volume when supplied (new decline `VolumeInconsistent`) — returning a NULL Shape (→
+   OCCT `BRepAlgoAPI_{Cut,Common}`) with a typed decline on ANY failure.
 
 The shared seam is carried as ONE canonical closed straight-chord discretization laid on
 BOTH curved sub-faces (the smooth-trim split's faithful straight-edge-per-node form), so
 the M0w seam pin welds it watertight with NO tessellator change.
+
+**OUTCOME:** COMMON (the lens) WELDS a coherently-oriented solid at the closed-form volume
+π·H²/(4a) and converges as deflection refines (host gate (a) `8/8`, sim gate (b) `14/14`
+native-vs-OCCT `BRepAlgoAPI_Common`); CUT honest-declines to NULL (`ClassifyAmbiguous`) →
+OCCT. The path NEVER emits a leaky/partial/orientation-inconsistent/wrong-volume solid.
 
 ## Impact
 
@@ -53,6 +63,9 @@ the M0w seam pin welds it watertight with NO tessellator change.
   `tests/native/test_native_freeform_freeform_cut.cpp` + fixture
   `tests/native/freeform_freeform_cut_fixture.h`; new sim harness
   `tests/sim/native_freeform_freeform_cut_parity.mm` + run script.
-- `src/native/**` stays OCCT-FREE; no `cc_*` ABI change; the M0 tessellator, M1, B1, B2
-  (`splitFace` + `splitFaceSmoothTrim`), and every landed boolean header stay
-  BYTE-IDENTICAL. Strictly additive; correct decline is first-class.
+- `src/native/**` stays OCCT-FREE; no `cc_*` ABI change; the M0 tessellator (mesher/CDT/
+  rim weld), M1, B1, B2 (`splitFace` + `splitFaceSmoothTrim`), and every landed boolean
+  header stay BYTE-IDENTICAL. The only additive touch outside the new header is
+  `tessellate/mesh.h` (`sameDirectionEdgeCount`/`isConsistentlyOriented` — new directed-
+  edge checks; the existing volume/watertight checks are untouched). Strictly additive;
+  a correct weld is preferred and a clean decline is the honest fallback.

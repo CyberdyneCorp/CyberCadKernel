@@ -66,7 +66,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace cybercad::native::boolean {
@@ -202,6 +204,33 @@ inline void collectAnalyticByMembership(const FreeformOperand& op, const tess::M
   }
 }
 
+/// Assemble `faces` into a Solid and mesh it, then REPAIR orientation coherence: the
+/// two survivor caps each inherit their parent wall's orientation, so for the lens one
+/// cap may wind the SAME way as the other across the shared seam — watertight but NOT a
+/// coherent solid boundary (the signed volume is then wrong). We detect that with the
+/// DIRECTED-edge invariant (`isConsistentlyOriented`) and, if it fails, flip the LAST
+/// face and re-weld. Returns the coherent (result, mesh) or nullopt if no single flip
+/// makes the shell consistently oriented (→ the caller declines, never leaky).
+inline std::optional<std::pair<topo::Shape, tess::Mesh>> weldOrientationCoherent(
+    std::vector<topo::Shape> faces, const tess::MeshParams& mp) {
+  auto build = [&](const std::vector<topo::Shape>& fs) {
+    const topo::Shape shell = topo::ShapeBuilder::makeShell(fs);
+    const topo::Shape solid = topo::ShapeBuilder::makeSolid({shell});
+    return std::make_pair(solid, tess::SolidMesher(mp).mesh(solid));
+  };
+  auto [result, mesh] = build(faces);
+  if (tess::isWatertight(mesh) && tess::isConsistentlyOriented(mesh))
+    return std::make_pair(result, mesh);
+  // Flip the last survivor (the second cap) and re-weld — the lens needs exactly ONE
+  // cap reversed for a coherent outward-normal boundary.
+  std::vector<topo::Shape> flipped = faces;
+  flipped.back() = flipped.back().reversedShape();
+  auto [result2, mesh2] = build(flipped);
+  if (tess::isWatertight(mesh2) && tess::isConsistentlyOriented(mesh2))
+    return std::make_pair(result2, mesh2);
+  return std::nullopt;
+}
+
 }  // namespace ffcdetail
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -209,10 +238,19 @@ inline void collectAnalyticByMembership(const FreeformOperand& op, const tess::M
 // operands whose curved walls meet in ONE CLOSED curved seam. Returns the welded,
 // self-verified CUT (`A − B`) or COMMON (`A ∩ B`) solid, or a NULL Shape (→ OCCT) with
 // a measured decline. Never emits a leaky/partial/wrong solid; no tolerance widened.
+//
+// `analyticOpVolume` (optional, NaN ⇒ unknown): the closed-form volume of the requested
+// operation. When supplied, the self-verify is TWO-SIDED — the welded solid's meshed
+// volume must lie within a deflection-bounded band of it (a too-SMALL wrong volume, e.g.
+// from an orientation-inconsistent shell, is rejected as `VolumeInconsistent`), not just
+// under the upper bound. When unknown, the orientation-coherence gate + the upper bound
+// still guarantee no inconsistent/leaky solid is returned.
 // ─────────────────────────────────────────────────────────────────────────────
 inline topo::Shape freeformFreeformClosedSeamCut(const topo::Shape& A, const topo::Shape& B,
                                                  FfOp op, double deflection = 0.005,
-                                                 FfCutDecline* why = nullptr) {
+                                                 FfCutDecline* why = nullptr,
+                                                 double analyticOpVolume =
+                                                     std::numeric_limits<double>::quiet_NaN()) {
   using namespace ffcdetail;
   auto fail = [&](FfCutDecline d) -> topo::Shape { if (why) *why = d; return {}; };
 
@@ -271,20 +309,42 @@ inline topo::Shape freeformFreeformClosedSeamCut(const topo::Shape& A, const top
   }
   if (faces.size() < 2) return fail(FfCutDecline::WeldOpen);
 
-  // (5) weld → Solid + mandatory self-verify (watertight + a consistent op-volume).
-  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
-  const topo::Shape result = topo::ShapeBuilder::makeSolid({shell});
-  const tess::Mesh m = tess::SolidMesher(mp).mesh(result);
-  if (!tess::isWatertight(m)) return fail(FfCutDecline::NotWatertight);
+  // (5) weld → Solid, REPAIR orientation coherence, then mandatory self-verify.
+  // The two survivor caps each inherit their parent wall's orientation (A opens UP,
+  // B opens DOWN), so for the lens ONE cap must be reversed to make the shell a
+  // coherent outward-normal boundary — watertight alone (undirected) does not catch a
+  // same-winding shell. `weldOrientationCoherent` enforces the DIRECTED-edge invariant
+  // (every seam half-edge has exactly one reverse partner, 0 same-direction duplicates),
+  // flipping the last cap if needed. If no single flip yields a consistently-oriented
+  // 2-manifold, we DECLINE — never a leaky/inconsistent solid.
+  const auto welded = weldOrientationCoherent(std::move(faces), mp);
+  if (!welded) return fail(FfCutDecline::NotWatertight);
+  const topo::Shape result = welded->first;
+  const tess::Mesh& m = welded->second;
   const double v = std::fabs(tess::enclosedVolume(m));
   if (!(v > 0.0) || std::isnan(v)) return fail(FfCutDecline::VolumeInconsistent);
 
-  // op-volume bound: CUT ⊂ A (0 < V ≤ V(A)); COMMON ⊂ A and ⊂ B (0 < V ≤ min(V(A),V(B))).
+  // Self-verify — TWO-SIDED against the analytic op-volume when known, else the
+  // orientation-coherence gate above + the operand upper bound.
   const double vA = std::fabs(tess::enclosedVolume(meshA));
   const double vB = std::fabs(tess::enclosedVolume(meshB));
-  const double tol = 0.05 * std::max(std::max(vA, vB), 1e-12);
+  // op-volume UPPER bound: CUT ⊂ A (0 < V ≤ V(A)); COMMON ⊂ A and ⊂ B (0 < V ≤ min).
   const double upper = op == FfOp::Cut ? vA : std::min(vA, vB);
-  if (v > upper + tol) return fail(FfCutDecline::VolumeInconsistent);
+  const double upperTol = 0.05 * std::max(std::max(vA, vB), 1e-12);
+  if (v > upper + upperTol) return fail(FfCutDecline::VolumeInconsistent);
+
+  // TWO-SIDED band vs the closed-form op-volume, if supplied. A triangulated smooth
+  // cap UNDER-estimates the true volume by O(deflection); the relative error is
+  // ~proportional to the deflection, so the admissible band scales with it (capped at
+  // 50% so a coarse mesh is not falsely rejected, but a ~33%-off orientation-collapsed
+  // shell at the working deflections is). This makes a too-SMALL wrong volume — the
+  // signature of the orientation bug — an honest VolumeInconsistent decline even for a
+  // pose whose orientation-coherence gate happens to pass on a degenerate coarse mesh.
+  if (!std::isnan(analyticOpVolume) && analyticOpVolume > 0.0) {
+    constexpr double kVolConvergeSlope = 30.0;  // safety ×~2.4 over the measured ~12.5·d
+    const double band = std::min(0.5, kVolConvergeSlope * deflection) * analyticOpVolume;
+    if (std::fabs(v - analyticOpVolume) > band) return fail(FfCutDecline::VolumeInconsistent);
+  }
 
   if (why) *why = FfCutDecline::Ok;
   return result;

@@ -2,7 +2,7 @@
 
 ## ADDED Requirements
 
-### Requirement: Freeform↔freeform CLOSED-SEAM CUT / COMMON composes the M2 substrate and HONEST-DECLINES the two-curved-side weld
+### Requirement: Freeform↔freeform CLOSED-SEAM COMMON welds a coherently-oriented lens at the closed-form volume; CUT honest-declines
 
 The native boolean layer SHALL provide an additive OCCT-free header-only verb
 `freeformFreeformClosedSeamCut(A, B, op, deflection, why)`
@@ -26,22 +26,34 @@ seam. The verb SHALL:
    OUTSIDE `B` + `A`'s lids OUTSIDE `B` + `B`'s wall sub-face INSIDE `A`; COMMON keeps
    `A`'s wall sub-face INSIDE `B` + `B`'s wall sub-face INSIDE `A`), declining
    `ClassifyAmbiguous` on an On/Unknown/wrong-side verdict;
-5. weld the survivors (M0 `SolidMesher`) and run a MANDATORY self-verify (require the M0
-   mesh WATERTIGHT AND a positive finite enclosed volume within the op-volume bound — CUT
-   ⊂ `A`, COMMON ⊂ `A` and ⊂ `B`), returning the welded solid ONLY when it passes.
+5. weld the survivors (M0 `SolidMesher`) with an ORIENTATION-COHERENCE REPAIR — because the
+   two survivor caps each inherit their parent wall's orientation (`A` opens UP, `B` opens
+   DOWN) a naive weld is watertight (UNDIRECTED) but orientation-INCONSISTENT (its signed
+   volume is wrong), so the verb SHALL enforce the DIRECTED-edge invariant
+   `tess::isConsistentlyOriented` (every seam half-edge used once forward and once reversed;
+   0 same-direction duplicates), flipping exactly one cap to obtain a coherent outward-normal
+   boundary, and SHALL DECLINE (`NotWatertight`) if no single flip yields a consistently-
+   oriented 2-manifold — then run a MANDATORY self-verify: the M0 mesh WATERTIGHT AND
+   consistently-oriented AND a positive finite enclosed volume within the op-volume UPPER
+   bound (CUT ⊂ `A`, COMMON ⊂ `A` and ⊂ `B`) AND, when the analytic op-volume is supplied,
+   within a TWO-SIDED deflection-bounded band of it (`VolumeInconsistent` otherwise),
+   returning the welded solid ONLY when it passes.
 
 On ANY failure the verb SHALL return a NULL `Shape` (→ OCCT `BRepAlgoAPI_{Cut,Common}`)
-with a typed `FfCutDecline`, SHALL NEVER emit a leaky / partial / wrong solid, and SHALL
-NOT weaken any tolerance to force a pass. In particular, because the two-CURVED-side
-closed-seam weld (a shared closed seam between two independently-tessellated CURVED
-sub-faces) is gated on the byte-frozen M0 tessellator — the M0w seam pin welds a CURVED
-sub-face to a FLAT chord the other side already sits on, but does NOT weld two curved
-sides — the verb SHALL HONEST-DECLINE (`NotWatertight` or `ClassifyAmbiguous`) rather than
-emit a non-watertight solid. The change SHALL be strictly ADDITIVE: it SHALL NOT modify
-`splitFaceSmoothTrim`, B2 `splitFace`, `recogniseFreeformSolid`, `classifyPointInMesh`,
-the M0 tessellator, M1, or any landed boolean header, and SHALL consume their primitives
-BYTE-IDENTICAL. The verb SHALL remain OCCT-free, SHALL introduce no `cc_*` ABI surface,
-and SHALL keep its per-function cognitive complexity within the backend band.
+with a typed `FfCutDecline` (including the additive `VolumeInconsistent`), SHALL NEVER emit
+a leaky / partial / orientation-inconsistent / wrong-volume solid, and SHALL NOT weaken any
+tolerance to force a pass. With the M0-rim tessellator weld in place the two-CURVED-side
+closed seam welds watertight at the working deflections, so COMMON (the lens) SHALL weld a
+coherently-oriented solid whose volume matches the closed-form `π·H²/(4a)` within the
+deflection band and CONVERGES as deflection refines; CUT SHALL honest-decline
+(`ClassifyAmbiguous`, its apex-adjacent membership) to NULL → OCCT. The change SHALL be
+strictly ADDITIVE: it SHALL NOT modify `splitFaceSmoothTrim`, B2 `splitFace`,
+`recogniseFreeformSolid`, `classifyPointInMesh`, the M0 tessellator (mesher/CDT/rim weld),
+M1, or any landed boolean header, and SHALL consume their primitives BYTE-IDENTICAL (the
+only additive touch outside the verb is the new directed-edge checks in `tessellate/mesh.h`,
+leaving the existing volume/watertight checks untouched). The verb SHALL remain OCCT-free,
+SHALL introduce no `cc_*` ABI surface, and SHALL keep its per-function cognitive complexity
+within the backend band.
 
 #### Scenario: The pipeline traces + splits both curved walls and the closed-form partition is consistent (host, no OCCT)
 
@@ -55,24 +67,28 @@ and SHALL keep its per-function cognitive complexity within the backend band.
   residual; each wall's smooth-trim disk area equals the closed-form `π·ρ²`; and the
   closed-form oracles tile exactly (`V(A−B) + V(A∩B) = V(A)`, `V(A∩B) = π·H²/(4a)`)
 
-#### Scenario: CUT and COMMON HONEST-DECLINE to NULL — never a leaky solid (host, no OCCT)
+#### Scenario: COMMON welds at the closed-form volume and converges; CUT honest-declines (host, no OCCT)
 
 - GIVEN the two-bowl-cup operands and the composed verb
-- WHEN `freeformFreeformClosedSeamCut(A, B, {Cut,Common}, d)` runs across a deflection sweep
-- THEN each call returns a NULL `Shape` with a measured `FfCutDecline`
-  (`NotWatertight` or `ClassifyAmbiguous`) — the two-curved-side closed-seam weld is
-  tessellator-gated, so the disciplined outcome is NULL → OCCT, NEVER a leaky/partial solid;
-  and a non-operand declines `NotAdmittedA`, a non-intersecting second operand declines
-  `SeamUnusable`
+- WHEN `freeformFreeformClosedSeamCut(A, B, Common, d, why, V(A∩B))` runs across a deflection
+  sweep, and `freeformFreeformClosedSeamCut(A, B, Cut, d)` runs likewise
+- THEN COMMON returns a NON-NULL `Shape` with `why == Ok` that is WATERTIGHT AND
+  consistently-oriented (`tess::isConsistentlyOriented`), whose meshed volume equals the
+  closed-form lens `π·H²/(4a)` within the deflection-bounded band, under-estimates it (a
+  smooth cap triangulation), and whose relative error SHRINKS as the deflection refines;
+  CUT returns a NULL `Shape` with a measured `FfCutDecline` (`NotWatertight` or
+  `ClassifyAmbiguous`) → OCCT, NEVER a leaky/partial solid; and a non-operand declines
+  `NotAdmittedA`, a non-intersecting second operand declines `SeamUnusable`
 
-#### Scenario: The shared seam is grounded on OCCT and the honest fallthrough is verified (sim, native-vs-OCCT)
+#### Scenario: The shared seam is grounded on OCCT and native COMMON matches the OCCT oracle (sim, native-vs-OCCT)
 
 - GIVEN the SAME two bowl-cups reconstructed in OCCT (each a `Geom_BezierSurface` bowl +
   a planar lid on the shared rim, sewn, interior-classified outward) on a booted iOS simulator
 - WHEN the native seam is traced and OCCT `BRepAlgoAPI_Cut(A,B)` / `Common(A,B)` (the ORACLE)
   are computed
 - THEN each native seam node lies ON BOTH OCCT Bézier surfaces (BRepExtrema ≤ 1e-4, measured
-  ~1e-14); OCCT `Cut` = `V(A) − π·H²/(4a)` and `Common` = `π·H²/(4a)` to ≤ 2% (so the
-  closed-form host oracle is the correct answer OCCT owns); the native verb DECLINES CUT and
-  COMMON to NULL (the correct honest fallthrough — the native path never emits a leaky/wrong
-  solid); and a non-intersecting operand yields native `SeamUnusable` and an OCCT no-op
+  ~1e-14); OCCT `Cut` = `V(A) − π·H²/(4a)` and `Common` = `π·H²/(4a)` to ≤ 2%; the native
+  COMMON WELDS and its meshed volume matches OCCT `BRepAlgoAPI_Common` + `BRepGProp` within
+  the deflection-bounded band, converging as deflection refines, while native CUT DECLINES to
+  NULL (the correct honest fallthrough — the native path never emits a leaky/wrong solid);
+  and a non-intersecting operand yields native `SeamUnusable` and an OCCT no-op

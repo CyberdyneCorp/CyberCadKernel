@@ -97,31 +97,71 @@ topo::Shape cappedCylinder(double Rc, double h) {
 
 // ── fillet_face ─────────────────────────────────────────────────────────────────
 //
-// SCOPE THIS WAVE (honest, MEASURED): fillet_face per the ABI/OCCT semantics rounds
-// EVERY edge bounding the picked face. On an all-planar convex solid every face is a
-// CLOSED loop of ≥3 edges that pairwise share corners, and rounding two edges that
-// meet at a corner needs a SPHERICAL corner patch between their two cylinder blends —
-// the corner weld that gates on M2 (the landed multi-edge fillet_edges welds only
-// NON-adjacent edge sets, e.g. an opposite pair; adjacent edges return NULL). So a
-// full-face fillet on a planar solid is DECLINED this wave with a measured reason; it
-// lands automatically once M2 supplies the corner weld. The native PATH is wired and
-// self-verified — it accepts any face whose convex bounding edges weld as a group —
-// so the moment fillet_edges handles corner-sharing edges, fillet_face lands with no
-// engine change.
+// fillet_face per the ABI/OCCT semantics rounds EVERY edge bounding the picked face.
+// On an all-planar prism cap every bounding edge is a convex dihedral, and rounding
+// two edges that meet at a corner needs a SPHERICAL corner patch between their two
+// cylinder blends. That spherical fillet-corner weld now LANDS natively
+// (`fillet_corner.h`): the per-edge tangent cylinders are welded together with a
+// sphere-of-radius-r corner patch at each shared corner, sharing the tangent great-
+// circle arcs bit-identically so the result is watertight and consistently oriented at
+// the closed-form volume. The closed form for a cube of side L filleting its 4 top
+// edges (perpendicular walls, radius r) is derived by decomposing the top slab:
+//   V_removed = r²·L·(4−π) − 4r³ + (4/3)π·r³.
 
-CC_TEST(fillet_face_full_face_declines_corner_weld_gates_m2) {
-  // The common case: fillet the top face of a 10×10×10 box. Its four top edges are all
-  // convex but form a corner-sharing loop → the multi-edge builder cannot weld the
-  // four corners (needs the M2 corner-sphere patch) → NULL → honest decline.
-  topo::Shape b = box(10, 10, 10);
-  const int fid = topFaceId(b, 10);
+CC_TEST(fillet_face_full_face_lands_at_closed_form) {
+  // The common case: fillet the top face of a 10×10×10 box. All four top edges form a
+  // corner-sharing loop → the spherical corner weld closes the four corners.
+  const double L = 10.0, r = 1.5;
+  topo::Shape b = box(L, L, L);
+  const int fid = topFaceId(b, L);
   CC_CHECK(fid != 0);
   blend::FilletFaceDecline why = blend::FilletFaceDecline::Ok;
-  topo::Shape f = blend::fillet_face(b, fid, 1.5, 0.004, &why);
-  CC_CHECK(f.isNull());  // corner weld gates on M2 → OCCT owns the full-face fillet
-  // The convex bounding edges WERE identified; the decline is at the WELD (the corner-
-  // sphere patch), not the selection — the path is ready for the M2 corner weld.
-  CC_CHECK(why == blend::FilletFaceDecline::WeldGatesM2);
+  topo::Shape f = blend::fillet_face(b, fid, r, 0.002, &why);
+  CC_CHECK(!f.isNull());
+  CC_CHECK(why == blend::FilletFaceDecline::Ok);
+  bool wt = false;
+  const double v = vol(f, wt);
+  CC_CHECK(wt);
+  const double removed = r * r * L * (4.0 - M_PI) - 4.0 * r * r * r + (4.0 / 3.0) * M_PI * r * r * r;
+  CC_CHECK(nearRel(v, L * L * L - removed, 3e-3));  // deflection-bounded, converging
+  CC_CHECK(v < L * L * L);                          // SHRINK
+}
+
+CC_TEST(fillet_face_converges_to_closed_form) {
+  // The faceted result converges monotonically to the closed form as deflection → 0.
+  const double L = 10.0, r = 1.5;
+  topo::Shape b = box(L, L, L);
+  const int fid = topFaceId(b, L);
+  const double removed = r * r * L * (4.0 - M_PI) - 4.0 * r * r * r + (4.0 / 3.0) * M_PI * r * r * r;
+  const double target = L * L * L - removed;
+  double prevErr = 1e9;
+  for (double defl : {0.02, 0.008, 0.004, 0.002}) {
+    blend::FilletFaceDecline why = blend::FilletFaceDecline::Ok;
+    topo::Shape f = blend::fillet_face(b, fid, r, defl, &why);
+    CC_CHECK(!f.isNull());
+    bool wt = false;
+    const double v = vol(f, wt);
+    CC_CHECK(wt);
+    const double err = std::fabs(v - target);
+    CC_CHECK(err <= prevErr + 1e-6);  // error shrinks (or holds) as deflection refines
+    CC_CHECK(v <= target + 1e-6);     // a faceted sphere/cylinder UNDER-estimates volume
+    prevErr = err;
+  }
+}
+
+CC_TEST(fillet_face_non_cube_prism_cap_lands) {
+  // A rectangular (non-cube) prism cap also lands watertight with material removed.
+  const double sx = 8.0, sy = 12.0, sz = 5.0, r = 1.0;
+  topo::Shape b = box(sx, sy, sz);
+  const int fid = topFaceId(b, sz);
+  blend::FilletFaceDecline why = blend::FilletFaceDecline::Ok;
+  topo::Shape f = blend::fillet_face(b, fid, r, 0.004, &why);
+  CC_CHECK(!f.isNull());
+  CC_CHECK(why == blend::FilletFaceDecline::Ok);
+  bool wt = false;
+  const double v = vol(f, wt);
+  CC_CHECK(wt);
+  CC_CHECK(v > 0.0 && v < sx * sy * sz);  // shrink
 }
 
 CC_TEST(fillet_face_curved_and_bad_input_decline) {
@@ -131,8 +171,8 @@ CC_TEST(fillet_face_curved_and_bad_input_decline) {
   blend::FilletFaceDecline why = blend::FilletFaceDecline::Ok;
   CC_CHECK(blend::fillet_face(b, fid, 0.0, 0.004, &why).isNull());
   CC_CHECK(why == blend::FilletFaceDecline::BadInput);
-  // Oversized radius (r ≥ half the face) → the multi-edge weld cannot close → NULL
-  // (NoConvexEdges if the arc probe rejects every edge, else WeldGatesM2).
+  // Oversized radius (r ≥ half the face) → the corner spheres overlap / tangent lines
+  // overrun → the weld self-verify rejects → NULL (WeldGatesM2 or NoConvexEdges).
   why = blend::FilletFaceDecline::Ok;
   CC_CHECK(blend::fillet_face(b, fid, 20.0, 0.004, &why).isNull());
   CC_CHECK(why == blend::FilletFaceDecline::WeldGatesM2 ||

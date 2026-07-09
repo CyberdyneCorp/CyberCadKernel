@@ -41,6 +41,7 @@
 #include "native/blend/corner_chamfer_weld.h"
 #include "native/blend/curved_chamfer.h"
 #include "native/blend/curved_fillet.h"
+#include "native/blend/fillet_corner.h"
 #include "native/blend/fillet_edges.h"
 #include "native/blend/fillet_face.h"
 #include "native/blend/full_round.h"

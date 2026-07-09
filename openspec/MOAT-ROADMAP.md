@@ -322,14 +322,28 @@ construction + the M0 mesher + M2 booleans.
   built as the r = w/2 special case of the landed rolling-ball blend on the two OPPOSITE
   seam edges (`src/native/blend/full_round.h`), consuming the middle face. Both gates
   green — host analytic `V_removed = (w²/2)(1−π/4)·L` + SIM parity vs the OCCT full-round
-  oracle (watertight, χ=2, vol/area/bbox/deflection-bounded-Hausdorff). `cc_fillet_face`
-  has its native PATH wired + self-verified (`fillet_face.h`) but the full-face fillet on
-  a planar solid still **honestly DECLINES this wave** — rounding a closed corner-sharing
-  edge loop needs the SPHERICAL corner weld between adjacent edge-fillets, which gates on
-  **M2** (MEASURED: the landed multi-edge fillet welds only NON-adjacent edge sets); it
-  lands automatically on the M2 corner weld with no engine change. The DIHEDRAL / curved /
-  closed-seam full round declines → OCCT (dihedral valley-solve + closed-seam weld gate on
-  M2). Residual = the freeform/curved-blend breadth above.
+  oracle (watertight, χ=2, vol/area/bbox/deflection-bounded-Hausdorff).
+- **Status — SPHERICAL FILLET-CORNER weld LANDED (`moat-fcw-fillet-corner-weld`) → full-face
+  fillets NATIVE.** `cc_fillet_face` now LANDS on a planar PRISM CAP:
+  `src/native/blend/fillet_corner.h` rounds every convex edge bounding a picked planar
+  face, welding the per-edge tangent-cylinder strips together with a **spherical corner
+  patch** (sphere radius r centred at the trihedral offset point) + a flat corner ledge
+  at each shared corner. The curved↔curved weld is EXACT because the sphere centre lies
+  on BOTH incident cylinder axes, so the cylinder strip end arc and the sphere leg are the
+  SAME great-circle arc — sampled by ONE canonical `arcSample` (slerp) consumed
+  bit-identically by both faces, so the seam welds watertight at ANY deflection PURELY in
+  the assembly layer (**NO tessellator change** — the byte-identical gate is trivially met,
+  zero mesher diff). Both gates green: host analytic `V_removed = r²L(4−π) − 4r³ + (4/3)π r³`
+  (converges as deflection refines; watertight + `isConsistentlyOriented` at every
+  deflection) + SIM parity vs OCCT `BRepFilletAPI_MakeFillet` (watertight, χ=2, volume rel
+  <5e-3 / analytic <1e-3, area <2e-2, bbox exact). SCOPE (honest): the incident side walls
+  must be PERPENDICULAR to the face (prism cap — the ledge is then planar); a
+  non-perpendicular wall / concave / curved / ≠2-face edge / oversized radius / self-verify
+  miss DECLINES → OCCT. OCCT's setback-corner shape differs from the pure sphere-octant by
+  ~r locally (a modeling-convention gap, like the chamfer triple-corner) — reported, not
+  gated; the native volume is actually CLOSER to the ideal closed form than OCCT's. The
+  DIHEDRAL / curved / closed-seam full round still declines → OCCT (dihedral valley-solve +
+  closed-seam weld gate on M2). Residual = the freeform/curved-blend breadth above.
 
 ### M4 — General STEP / AP242 import (+ IGES stays dropped) · ~1.5–3 py · needs M0
 The remaining import breadth on the landed AP203+ reader: **foreign rational/general B-spline

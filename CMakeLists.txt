@@ -314,6 +314,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_heal
         test_native_blend
         test_native_analytic_fillet
+        test_native_fillet_corner
         test_native_corner_chamfer
         test_native_chamfer_face
         test_native_wrap_emboss
@@ -571,6 +572,14 @@ if(CYBERCAD_BUILD_TESTS)
     # tracer), so it lives in the always-on native suite. Header-only ops; no lib change.
     set(test_native_analytic_fillet_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_analytic_fillet.cpp")
+    # MOAT M2/M3 spherical FILLET-CORNER weld — host GATE (a): the OCCT-free proof that
+    # fillet_corner rounds every convex edge bounding a prism cap, welding the tangent-
+    # cylinder strips with a spherical corner patch (shared great-circle arcs) watertight
+    # + consistently oriented at the closed-form volume (converging as deflection refines)
+    # + the honest declines. Pure assembly layer (no tessellator change). Header-only over
+    # blend/construct/tessellate/topology; no numsci link, always-on native suite.
+    set(test_native_fillet_corner_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_fillet_corner.cpp")
     # MOAT M2 convex-corner chamfer weld — host GATE (a): the OCCT-free closed-form
     # proof that chamfer_corner welds 1/2/3 mutually-adjacent convex edges sharing a
     # corner watertight at the EXACT inclusion-exclusion volume (planar, tessellator-

@@ -39,6 +39,7 @@
 #define CYBERCAD_NATIVE_BLEND_FILLET_FACE_H
 
 #include "native/blend/blend_geom.h"
+#include "native/blend/fillet_corner.h"
 #include "native/blend/fillet_edges.h"
 
 #include <vector>
@@ -115,8 +116,21 @@ inline topo::Shape fillet_face(const topo::Shape& solid, int faceId, double radi
       detail::convexBoundingEdges(solid, faceId, model.polygons(), radius);
   if (edgeIds.empty()) return fail(FilletFaceDecline::NoConvexEdges);
 
-  // Reuse the byte-frozen multi-edge tangent-cylinder blend (open-seam weld). A NULL
-  // from it (interference / self-verify) propagates as the same honest decline.
+  // SPHERICAL FILLET-CORNER weld (fillet_corner.h): round the whole closed corner-
+  // sharing edge loop of the picked face, welding the tangent-cylinder strips together
+  // with a spherical corner patch at every shared corner (the curved↔curved seam the
+  // sequential fillet_edges cannot make). Lands watertight + at the closed-form volume
+  // for a prism cap (perpendicular walls). Its OWN self-verify (consistently-oriented
+  // watertight + SHRINK) gates it; NULL → the sequential fall-back below.
+  {
+    FilletCornerDecline fcw = FilletCornerDecline::Ok;
+    topo::Shape corner = fillet_corner(solid, faceId, radius, deflection, &fcw);
+    if (!corner.isNull()) return corner;
+  }
+
+  // Fall back to the byte-frozen sequential multi-edge tangent-cylinder blend (open-seam
+  // weld — handles a NON-corner-sharing subset). A NULL from it (adjacent-corner weld /
+  // interference / self-verify) → OCCT owns this full-face fillet.
   topo::Shape result =
       fillet_edges(solid, edgeIds.data(), static_cast<int>(edgeIds.size()), radius, deflection);
   if (result.isNull()) return fail(FilletFaceDecline::WeldGatesM2);

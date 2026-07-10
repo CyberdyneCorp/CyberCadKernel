@@ -36,7 +36,7 @@ NURBS is not one feature — it is a stack. Here is the stack vs. what this kern
 | Layer | OCCT / Parasolid | CyberCadKernel today |
 |---|---|---|
 | **Geometry** — rational B-spline curves/surfaces, arbitrary degree, knots/mults; De Boor eval + derivatives | full | ✅ **partial** — NURBS eval + projection (`src/native/numerics`), Bézier/BSpline trimmed faces (`shape.h`), STEP admission of B-spline surfaces/curves + trims |
-| **Geometry algorithms** — knot insert/remove, degree elevate/reduce, split, reparametrize | full | ❌ mostly absent |
+| **Geometry algorithms** — knot insert/remove, degree elevate/reduce, split, reparametrize | full | ✅ **exact-NURBS kernel** — OCCT-free, substrate-free `src/native/math/bspline_ops.{h,cpp}`: knot insert/refine/remove, degree elevate/reduce, split, Bézier decompose, reparam for curves + tensor surfaces, rational-aware (homogeneous lift). Exact-preserving (knot-removal / degree-reduction report a bounded error and decline honestly). Host-analytic gate `tests/native/test_native_nurbs_ops.cpp`. Layers 2–8 below remain demand-gated. |
 | **Fitting / approximation** — points→B-spline curve/surface, interpolation | full | ❌ absent (= the scan-to-CAD / point-cloud direction) |
 | **NURBS intersection (SSI)** — arbitrary NURBS↔NURBS incl. tangent/singular | full (`IntPatch`) | 🟡 **bounded** — analytic + bounded-freeform SSI; general skew-NURBS↔NURBS honestly declines |
 | **NURBS B-rep boolean** — arbitrary trimmed-NURBS faces, tolerant, non-manifold | full (`BOPAlgo`) | 🟡 **bounded** — the M2 spine covers the app's poses; general NURBS↔NURBS is the deep tail |

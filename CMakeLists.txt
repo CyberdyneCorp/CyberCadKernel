@@ -297,6 +297,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_parallel_toggle
         test_abi
         test_native_math
+        test_native_nurbs_ops
         test_native_topology
         test_native_tessellate
         test_native_display_mesh
@@ -574,6 +575,14 @@ if(CYBERCAD_BUILD_TESTS)
 
     # Most tests live directly under tests/; native-library tests live under
     # tests/native/. Map the exceptions here (basename → source path).
+    # NURBS roadmap Layer 1 — exact-NURBS geometry kernel (src/native/math/
+    # bspline_ops). Host GATE: the OCCT-free, substrate-free closed-form oracle
+    # (every knot/degree/split op preserves the curve & surface pointwise to
+    # ~1e-12; insert↔remove and elevate↔reduce round-trips; honest decline for
+    # irreducible inputs) plus the rational-evaluation hardening cases. Header-only
+    # over math (no numsci link); always-on native suite.
+    set(test_native_nurbs_ops_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_ops.cpp")
     set(test_native_topology_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_topology.cpp")
     set(test_native_tessellate_SRC

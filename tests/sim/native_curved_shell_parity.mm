@@ -330,6 +330,120 @@ void runFrustumCase(double Rb, double Rt, double H, double t) {
     cc_shape_release(oracle.id);
 }
 
+// ── SPHERE-CAP DOME shell parity (F2 curved-face extension) ──────────────────────────
+// Closed-form wall volume of a hollowed sphere-cap dome (cap open, concentric inner sphere
+// Ri = Ro − t): outer spherical segment (axial coord ≥ capOff) − inner segment.
+//   seg(R, a) = π(2R³/3 − R²a + a³/3).
+double sphereShellVolume(double Ro, double capOff, double t) {
+    auto seg = [](double R, double a) {
+        return kPi * (2.0 * R * R * R / 3.0 - R * R * a + a * a * a / 3.0);
+    };
+    return seg(Ro, capOff) - seg(Ro - t, capOff);
+}
+
+// A sphere-cap dome about the +Y axis (a semicircle-region revolve): base disc at y=capOff
+// (radius √(Ro²−capOff²)), arc up to the pole (0,Ro) centred on the axis at (0,0). capOff=0
+// is a hemisphere; capOff>0 a shallow cap; capOff<0 a deep dome. Built with the ACTIVE engine.
+CCShapeId buildDome(double Ro, double capOff) {
+    const double rimBase = std::sqrt(Ro * Ro - capOff * capOff);
+    CCProfileSeg base{};
+    base.kind = 0;
+    base.x0 = 0; base.y0 = capOff; base.x1 = rimBase; base.y1 = capOff;
+    // Arc from the base rim (rimBase, capOff) to the pole (0, Ro), centred on the axis at
+    // (0,0). OCCT's buildTypedWire parametrises the arc by a0/a1 (angles), the native path by
+    // the endpoints — set BOTH so the identical profile drives either engine.
+    CCProfileSeg arc{};
+    arc.kind = 1;
+    arc.x0 = rimBase; arc.y0 = capOff; arc.x1 = 0; arc.y1 = Ro;
+    arc.cx = 0; arc.cy = 0; arc.r = Ro;
+    arc.a0 = std::atan2(capOff, rimBase);  // angle at the base rim
+    arc.a1 = std::atan2(Ro, 0.0);          // angle at the pole (= π/2)
+    // Explicit closing meridian edge (pole → base start) along the axis so OCCT's wire
+    // closes (the native builder auto-closes on-axis endpoints; OCCT needs the edge).
+    CCProfileSeg axisSeg{};
+    axisSeg.kind = 0;
+    axisSeg.x0 = 0; axisSeg.y0 = Ro; axisSeg.x1 = 0; axisSeg.y1 = capOff;
+    const CCProfileSeg segs[3] = {base, arc, axisSeg};
+    return cc_solid_revolve_profile(segs, 3, 0.0, 0.0, 0.0, 1.0, nullptr, 0, 2.0 * kPi);
+}
+
+Snapshot buildAndShellDome(double Ro, double capOff, double t, int buildEngine, int shellEngine) {
+    cc_set_engine(buildEngine);
+    const CCShapeId body = buildDome(Ro, capOff);
+    Snapshot s;
+    if (body != 0) {
+        const std::vector<int> caps = capFaceIds(body, /*y*/ 1, capOff, 1e-4);
+        cc_set_engine(shellEngine);
+        s.activeNative = cc_active_engine() == 1;
+        if (!caps.empty()) {
+            s.id = cc_shell(body, caps.data(), static_cast<int>(caps.size()), t);
+            if (s.id != 0) s.mass = cc_mass_properties(s.id);
+        }
+    } else {
+        cc_set_engine(shellEngine);
+        s.activeNative = cc_active_engine() == 1;
+    }
+    if (body) cc_shape_release(body);
+    return s;
+}
+
+void runDomeCase(double Ro, double capOff, double t) {
+    char detail[512];
+    char lbl[80];
+    std::snprintf(lbl, sizeof lbl, "dome-shell Ro=%.1f cap=%.1f t=%.2f", Ro, capOff, t);
+    const std::string base = lbl;
+
+    const Snapshot oracle = buildAndShellDome(Ro, capOff, t, /*build*/ 0, /*shell*/ 0);
+    if (oracle.id == 0 || oracle.mass.valid == 0) {
+        std::snprintf(detail, sizeof detail, "OCCT oracle failed: %s", cc_last_error());
+        record(false, base + " oracle", detail);
+        cc_set_engine(0);
+        if (oracle.id) cc_shape_release(oracle.id);
+        return;
+    }
+    const Snapshot cand = buildAndShellDome(Ro, capOff, t, /*build*/ 1, /*shell*/ 1);
+    const CCMesh cMesh = cand.id ? cc_tessellate(cand.id, 0.02) : CCMesh{nullptr, 0, nullptr, 0};
+    if (cand.id == 0 || cand.mass.valid == 0) {
+        std::snprintf(detail, sizeof detail, "native active=%d shell->0 (%s)",
+                      cand.activeNative ? 1 : 0, cc_last_error());
+        record(false, base + " native", detail);
+        cc_set_engine(0);
+        cc_shape_release(oracle.id);
+        return;
+    }
+
+    const double exact = sphereShellVolume(Ro, capOff, t);
+    const double sharp = kPi * (2.0 * Ro * Ro * Ro / 3.0 - Ro * Ro * capOff + capOff * capOff * capOff / 3.0);
+    const double volRelO = std::fabs(cand.mass.volume - oracle.mass.volume) / oracle.mass.volume;
+    const double volRelX = std::fabs(cand.mass.volume - exact) / exact;
+    const double areaRel = oracle.mass.area > 0.0
+                               ? std::fabs(cand.mass.area - oracle.mass.area) / oracle.mass.area
+                               : 1.0;
+    const bool massOk = cand.activeNative && volRelO < 2e-2 && volRelX < 1e-2 && areaRel < 4e-2 &&
+                        cand.mass.volume < sharp;  // a shell REMOVES material
+    std::snprintf(detail, sizeof detail,
+                  "vol o=%.6g n=%.6g exact=%.6g relO=%.2e relX=%.2e | area rel=%.2e | shrank=%d",
+                  oracle.mass.volume, cand.mass.volume, exact, volRelO, volRelX, areaRel,
+                  cand.mass.volume < sharp ? 1 : 0);
+    record(massOk, base + " mass", detail);
+
+    const bool haveMesh = cMesh.triangleCount > 0;
+    const bool wt = haveMesh && meshWatertight(cMesh);
+    const double meshVol = haveMesh ? meshVolume(cMesh) : 0.0;
+    const double meshVolRel = (haveMesh && cand.mass.volume > 0.0)
+                                  ? std::fabs(meshVol - cand.mass.volume) / cand.mass.volume
+                                  : 1.0;
+    const bool tessOk = haveMesh && wt && meshVolRel < 2e-2;
+    std::snprintf(detail, sizeof detail, "watertight=%d tris=%d meshVolRel=%.2e", wt ? 1 : 0,
+                  cMesh.triangleCount, meshVolRel);
+    record(tessOk, base + " tessellate", detail);
+
+    if (haveMesh) cc_mesh_free(cMesh);
+    cc_set_engine(0);
+    cc_shape_release(cand.id);
+    cc_shape_release(oracle.id);
+}
+
 }  // namespace
 
 int main() {
@@ -341,6 +455,11 @@ int main() {
     // Capped cone frustum shells (tapered bushing), top open.
     runFrustumCase(6.0, 4.0, 10.0, 1.0);
     runFrustumCase(4.0, 6.0, 10.0, 1.0);   // widening frustum
+    // Sphere-cap dome shells (turned dome / bowl), equatorial / cap plane open.
+    runDomeCase(5.0, 0.0, 1.0);            // hemisphere bowl
+    runDomeCase(6.0, 0.0, 1.5);
+    runDomeCase(5.0, 2.0, 1.0);            // shallow spherical-cap dome
+    runDomeCase(5.0, -2.0, 1.0);           // deep dome (cap below the centre)
     std::printf("== %d passed, %d failed ==\n", g_passed, g_failed);
     std::fflush(stdout);
     std::_Exit(g_failed == 0 ? 0 : 1);

@@ -34,14 +34,28 @@
 //   4. KEPT cap INNER disk (radius Ri_kept) at hKept + s·t, normal toward the open side;
 //   5. OPEN-END rim ANNULUS (Ri_open → outer radius) at hOpen, the wall-thickness ring.
 //
+// ── F2 SPHERE-CAP extension (curved-face breadth) ─────────────────────────────────────
+// A third analytic curved substrate: a SPHERE-CAP dome — one coaxial Sphere wall closed at
+// the pole and cut by EXACTLY ONE axis-normal planar cap (a hemisphere is capH = 0; any
+// shallower/deeper spherical cap is the same family). Hollowing it opens the cap; the inner
+// surface is the CONCENTRIC sphere Ri = Ro − t (the offset of a sphere is a concentric
+// sphere), running pole → the SAME cap plane (a flush opening) with an open-rim ANNULUS at
+// the cap. Closed-form wall volume = outer spherical segment − inner spherical segment
+// (segment above the plane at axial a: π(2R³/3 − R²a + a³/3)). recogniseShellSphere +
+// removedSphereCap + buildSphereShell, welded through the SAME assembleSolid — no tessellator
+// change. This lands the app's turned-dome / bowl shell on the sphere substrate.
+//
 // ── SCOPE (honest) ──────────────────────────────────────────────────────────────────
-// Native only for a body that is EXACTLY a capped cylinder or a capped cone frustum
-// (every face a single coaxial Cylinder/Cone + two axis-normal planar caps at two
-// distinct heights), removing EXACTLY ONE of the two caps, with t < the smallest inner
-// dimension (Ri > 0 and H > t). Everything else → NULL → OCCT
+// Native only for a body that is EXACTLY a capped cylinder / capped cone frustum (one
+// coaxial Cylinder/Cone + two axis-normal planar caps) removing ONE cap, OR a sphere-cap
+// dome (one coaxial Sphere + EXACTLY ONE axis-normal planar cap) opening that cap, with
+// t < the smallest inner dimension. Everything else → NULL → OCCT
 // (BRepOffsetAPI_MakeThickSolid):
 //   * removing the curved wall or BOTH caps, or removing zero faces;
-//   * a stepped shaft / multi-cylinder / multi-cone body, a sphere, a freeform wall;
+//   * a stepped shaft / multi-cylinder / multi-cone body, a freeform wall;
+//   * a spherical ZONE (two cap planes) or an off-centre / multi-radius sphere;
+//   * a MIXED planar-and-curved (box-with-a-curved-face) or NON-CONVEX planar body — the
+//     per-face inward offset self-intersects at reflex edges (no analytic re-weld here);
 //   * a tilted (non-perpendicular) cap; a thickness that collapses the cavity;
 //   * a cone whose inner offset crosses the axis before the far end.
 //
@@ -304,6 +318,200 @@ inline std::vector<nb::Polygon> buildCurvedShell(const ShellBody& b, double hOpe
   return polys;
 }
 
+// ── SPHERE-CAP dome shell (F2 curved-face extension) ─────────────────────────────────
+// The third analytic curved substrate: a SPHERE-CAP dome — a body whose faces are one
+// coaxial Sphere wall (radius Ro, centre C) closed at the pole and cut by EXACTLY ONE
+// axis-normal planar cap. A hemisphere (cap through the centre, capH = 0) and any
+// shallower/deeper spherical cap (0 < capH < Ro) are the same family. Hollowing it to a
+// uniform wall `t` opens the planar cap: the inner surface is the CONCENTRIC sphere
+// Ri = Ro − t (the offset of a sphere is a concentric sphere), running from the pole down
+// to the SAME cap plane (a flush opening). The wall volume is the outer spherical segment
+// (axial coord toward the pole ≥ capH) minus the inner segment — a closed form.
+struct ShellSphere {
+  math::Ax3 axis;        // sphere frame; origin at the centre, z toward the POLE (away from cap)
+  double R = 0.0;        // outer sphere radius
+  double capH = 0.0;     // axial coord of the single cap plane from the centre (0 ≤ capH < R)
+};
+
+// Recognise `solid` as a pure sphere-cap dome: every face a coaxial Sphere (same centre /
+// radius) OR an axis-normal Plane at EXACTLY ONE height (the cap). The sphere is closed at
+// the pole opposite the cap. Returns nullopt for anything else (cylinder/cone body already
+// handled by recogniseShellBody; a spherical ZONE with two caps; a tilted cap; freeform).
+inline std::optional<ShellSphere> recogniseShellSphere(const topo::Shape& solid) {
+  const topo::ShapeMap fmap = topo::mapShapes(solid, topo::ShapeType::Face);
+  if (fmap.size() < 2) return std::nullopt;
+
+  std::optional<math::Point3> centre;
+  double R = 0.0;
+  math::Ax3 sphAxis;
+  bool haveSphere = false;
+  for (std::size_t fi = 1; fi <= fmap.size(); ++fi) {
+    const auto surf = topo::surfaceOf(fmap.shape(static_cast<int>(fi)));
+    if (!surf) return std::nullopt;
+    if (surf->surface->kind == topo::FaceSurface::Kind::Sphere) {
+      const auto si = sphereInfo(solid, static_cast<int>(fi));
+      if (!si) return std::nullopt;
+      if (!haveSphere) { centre = si->frame.origin; R = si->radius; sphAxis = si->frame; haveSphere = true; }
+      else {
+        if (math::norm(si->frame.origin - *centre) > 1e-6) return std::nullopt;  // off-centre
+        if (std::fabs(si->radius - R) > 1e-6) return std::nullopt;               // multi-radius
+      }
+    } else if (surf->surface->kind == topo::FaceSurface::Kind::Plane) {
+      // Deferred to the second pass (needs the sphere axis to test perpendicularity).
+    } else {
+      return std::nullopt;  // cylinder / cone / freeform → not a pure sphere-cap dome
+    }
+  }
+  if (!haveSphere || !(R > kBlendEps)) return std::nullopt;
+
+  // The cap axis is the sphere-cap normal. All caps must be axis-normal at exactly ONE
+  // height; the axis direction is that shared cap normal.
+  std::optional<math::Vec3> capN;
+  std::vector<double> capOffsets;  // signed plane offset w along the cap normal
+  bool anyPlane = false;
+  for (std::size_t fi = 1; fi <= fmap.size(); ++fi) {
+    const auto surf = topo::surfaceOf(fmap.shape(static_cast<int>(fi)));
+    if (!surf || surf->surface->kind != topo::FaceSurface::Kind::Plane) continue;
+    anyPlane = true;
+    const auto pl = facePlane(solid, static_cast<int>(fi));
+    if (!pl) return std::nullopt;
+    if (!capN) capN = pl->normal;
+    else if (std::fabs(std::fabs(math::dot(pl->normal, *capN)) - 1.0) > 1e-6) return std::nullopt;
+    const double h = signedDist(*pl, *centre);  // signed distance centre → plane along +normal
+    // Fold every cap plane's height to the FIRST cap normal so ± sectors compare equal.
+    const double sgn = math::dot(pl->normal, *capN) >= 0.0 ? 1.0 : -1.0;
+    const double hh = -h * sgn;  // axial coord of the plane from the centre along +capN
+    bool found = false;
+    for (double e : capOffsets) if (std::fabs(e - hh) < 1e-6) { found = true; break; }
+    if (!found) capOffsets.push_back(hh);
+  }
+  if (!anyPlane || capOffsets.size() != 1) return std::nullopt;  // must be exactly ONE cap
+
+  const double capH = capOffsets.front();  // along +capN from the centre
+  if (!(std::fabs(capH) < R - 1e-9)) return std::nullopt;  // cap must actually cut the sphere
+
+  // Build the dome frame: z toward the POLE (away from the cap). The cap plane sits at axial
+  // coord capH along +capN; the pole is on the OPPOSITE side of the material from the cap, so
+  // z = −capN (the cap normal points OUT of the material, i.e. away from the pole).
+  const math::Dir3 zPole{*capN * -1.0};
+  if (!zPole.valid()) return std::nullopt;
+  ShellSphere b;
+  b.R = R;
+  b.capH = -capH;  // axial coord of the cap along +zPole (pole side positive): capH along +capN → −capH along +zPole
+  // Orthonormal frame at the centre with z = zPole.
+  math::Vec3 zv = zPole.vec();
+  math::Vec3 ref = std::fabs(zv.x) < 0.9 ? math::Vec3{1, 0, 0} : math::Vec3{0, 1, 0};
+  math::Dir3 xd{ref - zv * math::dot(ref, zv)};
+  if (!xd.valid()) return std::nullopt;
+  b.axis = math::Ax3{*centre, xd, math::Dir3{math::cross(zv, xd.vec())}, zPole};
+  return b;
+}
+
+// The picked face(s) must be EXACTLY the single cap plane of the sphere-cap dome (opening
+// it), else nullopt. Returns the cap's axial coord along +axis (== b.capH) on success.
+inline std::optional<double> removedSphereCap(const topo::Shape& solid, const ShellSphere& b,
+                                              const int* faceIds, int faceCount) {
+  if (faceIds == nullptr || faceCount < 1) return std::nullopt;
+  const math::Vec3 az = b.axis.z.vec();
+  for (int i = 0; i < faceCount; ++i) {
+    const auto pl = facePlane(solid, faceIds[i]);
+    if (!pl) return std::nullopt;  // picked a curved (sphere) wall → decline
+    if (std::fabs(std::fabs(math::dot(pl->normal, az)) - 1.0) > 1e-6) return std::nullopt;
+    const double nDotAz = math::dot(pl->normal, az);
+    const double h = (pl->w - math::dot(pl->normal, b.axis.origin.asVec())) / nDotAz;
+    if (std::fabs(h - b.capH) > 1e-6) return std::nullopt;  // not the one cap
+  }
+  return b.capH;
+}
+
+// Build the hollow sphere-cap dome (a bowl) as a planar-facet soup. Outer sphere wall +
+// concentric inner sphere wall (Ri = R − t), both from the pole down to the cap plane, and
+// the open-rim ANNULUS at the cap plane (innerRim → outerRim). Empty on any degeneracy.
+inline std::vector<nb::Polygon> buildSphereShell(const ShellSphere& b, double t, double defl) {
+  const math::Ax3& ax = b.axis;
+  const double Ro = b.R, Ri = Ro - t, capH = b.capH;
+  if (!(Ri > kBlendEps)) return {};                      // wall thicker than the ball
+  // Rim radii where each sphere meets the cap plane (axial coord capH from the centre).
+  if (!(capH < Ri - 1e-9)) return {};                    // inner sphere must still cross the cap
+  const double rimOut = std::sqrt(std::max(0.0, Ro * Ro - capH * capH));
+  const double rimIn = std::sqrt(std::max(0.0, Ri * Ri - capH * capH));
+  if (!(rimOut > rimIn + kBlendEps)) return {};
+
+  // Sphere latitude (from the equator) of the cap plane on each sphere: sin(lat) = capH/R.
+  const double latCapOut = std::asin(std::clamp(capH / Ro, -1.0, 1.0));
+  const double latCapIn = std::asin(std::clamp(capH / Ri, -1.0, 1.0));
+  const double latPole = kTwoPi / 4.0;                   // +π/2 at the pole (+axis)
+
+  const int N = sagittaSteps(Ro, kTwoPi, defl, 8, 256);                 // angular
+  const int Ko = sagittaSteps(Ro, latPole - latCapOut, defl, 4, 128);  // outer wall latitude
+  const int Ki = sagittaSteps(Ri, latPole - latCapIn, defl, 4, 128);   // inner wall latitude
+
+  std::vector<nb::Polygon> polys;
+  polys.reserve(static_cast<std::size_t>(N) * (Ko + Ki + 1) + 4);
+
+  auto uAt = [&](int i) { return kTwoPi * i / N; };
+  auto spherePt = [&](double rad, double u, double lat) -> math::Point3 {
+    return ringPoint(ax, rad * std::cos(lat), u, rad * std::sin(lat));
+  };
+  auto emit = [&](std::vector<math::Point3> loop, const math::Vec3& outward) {
+    const math::Dir3 nd{outward};
+    if (!nd.valid() || loop.size() < 3) return;
+    math::Vec3 area{0, 0, 0};
+    for (std::size_t i = 0; i < loop.size(); ++i)
+      area += math::cross(loop[i].asVec(), loop[(i + 1) % loop.size()].asVec());
+    if (math::dot(area, nd.vec()) < 0.0) std::reverse(loop.begin(), loop.end());
+    polys.emplace_back(std::move(loop), nb::Plane::fromPointNormal(loop.front(), nd.vec()));
+  };
+  auto emitTri = [&](const math::Point3& a, const math::Point3& c1, const math::Point3& c2,
+                     const math::Vec3& outward) {
+    math::Vec3 nrm = math::cross(c1 - a, c2 - a);
+    if (math::dot(nrm, outward) < 0.0) nrm = nrm * -1.0;
+    emit({a, c1, c2}, nrm);
+  };
+  auto emitQuad = [&](const math::Point3& p00, const math::Point3& p10, const math::Point3& p11,
+                      const math::Point3& p01, const math::Vec3& outward) {
+    emitTri(p00, p10, p11, outward);
+    emitTri(p00, p11, p01, outward);
+  };
+
+  // 1. OUTER sphere wall: latCapOut → pole, N·Ko quads, outward normal radial-from-centre.
+  for (int i = 0; i < N; ++i) {
+    const double u0 = uAt(i), u1 = uAt(i + 1), um = 0.5 * (u0 + u1);
+    for (int k = 0; k < Ko; ++k) {
+      const double l0 = latCapOut + (latPole - latCapOut) * k / Ko;
+      const double l1 = latCapOut + (latPole - latCapOut) * (k + 1) / Ko;
+      const double lm = 0.5 * (l0 + l1);
+      const math::Vec3 radial = ax.x.vec() * std::cos(um) + ax.y.vec() * std::sin(um);
+      const math::Vec3 outN = radial * std::cos(lm) + ax.z.vec() * std::sin(lm);
+      emitQuad(spherePt(Ro, u0, l0), spherePt(Ro, u1, l0), spherePt(Ro, u1, l1),
+               spherePt(Ro, u0, l1), outN);
+    }
+  }
+  // 2. INNER sphere wall: latCapIn → pole, N·Ki quads, normal points TOWARD the centre
+  //    (into the cavity → out of the wall material).
+  for (int i = 0; i < N; ++i) {
+    const double u0 = uAt(i), u1 = uAt(i + 1), um = 0.5 * (u0 + u1);
+    for (int k = 0; k < Ki; ++k) {
+      const double l0 = latCapIn + (latPole - latCapIn) * k / Ki;
+      const double l1 = latCapIn + (latPole - latCapIn) * (k + 1) / Ki;
+      const double lm = 0.5 * (l0 + l1);
+      const math::Vec3 radial = ax.x.vec() * std::cos(um) + ax.y.vec() * std::sin(um);
+      const math::Vec3 inN = (radial * std::cos(lm) + ax.z.vec() * std::sin(lm)) * -1.0;
+      emitQuad(spherePt(Ri, u0, l0), spherePt(Ri, u1, l0), spherePt(Ri, u1, l1),
+               spherePt(Ri, u0, l1), inN);
+    }
+  }
+  // 3. OPEN-rim ANNULUS at the cap plane (axial capH): rimIn → rimOut, normal = +capN = −axis
+  //    (the cap opening faces OUT of the material along the cap normal).
+  const math::Vec3 rimOut3 = ax.z.vec() * -1.0;
+  for (int i = 0; i < N; ++i) {
+    const double u0 = uAt(i), u1 = uAt(i + 1);
+    emitQuad(ringPoint(ax, rimIn, u0, capH), ringPoint(ax, rimIn, u1, capH),
+             ringPoint(ax, rimOut, u1, capH), ringPoint(ax, rimOut, u0, capH), rimOut3);
+  }
+  return polys;
+}
+
 }  // namespace detail
 
 // Hollow `solid` to a uniform wall `thickness`, opening the picked cap face(s) `faceIds`
@@ -316,13 +524,26 @@ inline std::vector<nb::Polygon> buildCurvedShell(const ShellBody& b, double hOpe
 inline topo::Shape curved_shell(const topo::Shape& solid, const int* faceIds, int faceCount,
                                 double thickness, double deflection = 0.01) {
   if (!(thickness > kBlendEps)) return {};
-  const auto body = detail::recogniseShellBody(solid);
-  if (!body) return {};
-  const auto hOpen = detail::removedCapHeight(solid, *body, faceIds, faceCount);
-  if (!hOpen) return {};
-  std::vector<nb::Polygon> polys = detail::buildCurvedShell(*body, *hOpen, thickness, deflection);
-  if (polys.size() < 4) return {};
-  return nb::assembleSolid(polys);
+  // 1. Capped CYLINDER / CONE FRUSTUM — one cap open.
+  if (const auto body = detail::recogniseShellBody(solid)) {
+    const auto hOpen = detail::removedCapHeight(solid, *body, faceIds, faceCount);
+    if (hOpen) {
+      std::vector<nb::Polygon> polys =
+          detail::buildCurvedShell(*body, *hOpen, thickness, deflection);
+      if (polys.size() >= 4) return nb::assembleSolid(polys);
+    }
+    return {};
+  }
+  // 2. SPHERE-CAP dome (hemisphere / spherical cap) — the single planar cap open, the
+  //    concentric inner sphere Ri = Ro − t is the cavity (F2 curved-face extension).
+  if (const auto ball = detail::recogniseShellSphere(solid)) {
+    const auto cap = detail::removedSphereCap(solid, *ball, faceIds, faceCount);
+    if (cap) {
+      std::vector<nb::Polygon> polys = detail::buildSphereShell(*ball, thickness, deflection);
+      if (polys.size() >= 4) return nb::assembleSolid(polys);
+    }
+  }
+  return {};
 }
 
 }  // namespace cybercad::native::blend

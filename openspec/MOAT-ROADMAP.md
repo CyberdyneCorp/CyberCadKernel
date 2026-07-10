@@ -1214,9 +1214,15 @@ tests. Substages:
   / `CCInterference` / `CCClashState` (ABI additive-only; no existing signature changed) with
   `NativeEngine::interference`, an `IEngine` default, and `OcctEngine::interference` (the
   `BRepAlgoAPI_Common`+`BRepGProp` / `BRepExtrema_DistShapeShape` oracle). CLASH is detected
-  COPLANAR-SAFELY (a boundary vertex/triangle-centroid classified strictly `In` the other — a shared
-  face reads `On`, so a flush TOUCH never mis-fires; a raw Möller tri–tri crossing was tried and
-  REJECTED for over-reporting at a shared seam). The overlap volume is the native boolean COMMON with a
+  COPLANAR-SAFELY by TWO complementary signatures: (i) ENCLOSURE — a boundary vertex/triangle-centroid
+  classified strictly `In` the other (a shared face reads `On`, so a flush TOUCH never mis-fires; a raw
+  Möller tri–tri crossing was tried and REJECTED for over-reporting at a shared seam); and (ii)
+  PASS-THROUGH — an EDGE of one solid piercing a FACE of the other TRANSVERSALLY through its interior
+  (moat-clfix2-penetration): this detects a bar poking CLEAN THROUGH a slab, a positive-volume overlap
+  where NEITHER solid has a vertex/centroid inside the other, which the enclosure signature alone MISSED
+  (mis-reporting the overlap as TOUCHING). The pierce is seam-safe (a strictly-interior segment×triangle
+  crossing — a coplanar/endpoint contact never fires), so TOUCHING/CLEAR are unaffected and no tolerance
+  is widened. The overlap volume is the native boolean COMMON with a
   TWO-SIDED self-verify (COMMON watertight AND `vc ≤ min(V(A),V(B))`); a null/non-watertight/out-of-band
   COMMON or a mesh-soup operand DECLINES to OCCT — a wrong overlap is never returned. The TOUCHING-vs-
   CLEAR split uses the min triangle–triangle distance, now `min(6 vertex–face, 9 edge–edge)` sub-tests
@@ -1224,14 +1230,17 @@ tests. Substages:
   clash op CORRECT FOR ARBITRARY FLUSH CONTACT — the M6-breadth-17 coplanar plus-sign-cross pose (two
   faces crossing with no mutually-contained vertex) previously overshot to CLEAR and is now TOUCHING at
   distance 0, matching OCCT `BRepExtrema_DistShapeShape`. **Verified both gates:** GATE A host closed-
-  form (`tests/native/test_native_interference.cpp`, 11/11) — overlapping boxes → CLASH at the exact
+  form (`tests/native/test_native_interference.cpp`, 15/15) — overlapping boxes → CLASH at the exact
   intersection-box volume + witness; disjoint → CLEAR at the exact gap; face-touching → TOUCHING vol 0;
   nested → CLASH; non-watertight → UNKNOWN decline; coplanar plus-sign-cross → TOUCHING (regression:
-  was CLEAR); penetrating cross → CLASH; gapped cross → CLEAR at the exact 0.5 gap. GATE B sim
-  (`tests/sim/native_interference_parity.mm` via `run-sim-native-interference.sh`, 10/10) — CLASH/TOUCHING/
+  was CLEAR); penetrating cross → CLASH; gapped cross → CLEAR at the exact 0.5 gap; bar-through-slab →
+  CLASH via the pass-through signature (regression: was TOUCHING; overlap volume 4 through the facade,
+  order-symmetric) with its touching (flush seat) → TOUCHING and gapped → CLEAR variants. GATE B sim
+  (`tests/sim/native_interference_parity.mm` via `run-sim-native-interference.sh`, 14/14) — CLASH/TOUCHING/
   CLEAR state + overlap volume vs `BRepAlgoAPI_Common`+`BRepGProp`+`BRepExtrema_DistShapeShape`, matched
   on every pose (volumes 1/2/8 to machine precision; coplanar-cross TOUCHING + gapped CLEAR match the
-  oracle). **Sharpened next blocker:** a freeform-operand overlap (the COMMON the planar/analytic native
+  oracle; bar-through-slab CLASH matches OCCT `Common` volume 4, its touching/gapped variants match).
+  **Sharpened next blocker:** a freeform-operand overlap (the COMMON the planar/analytic native
   boolean cannot yet build) still declines to OCCT.
 - *Oracle:* `HLRBRep_Algo` / `BRepAlgoAPI_Section` / `BRepExtrema_DistShapeShape` / `BRepLProp` on
   visible-segment sets / section-curve length+topology / min-distance / curvature values.

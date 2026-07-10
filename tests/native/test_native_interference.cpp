@@ -146,6 +146,60 @@ CC_TEST(interference_coplanar_cross_gap_clear) {
   CC_CHECK(std::fabs(r.minDistance - 0.5) < 1e-6);
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// PASS-THROUGH PENETRATION (regression, moat-clfix2) — a bar poking CLEAN THROUGH
+// a slab. The bar's ends stick out both faces of the slab (its vertices are OUTSIDE
+// the slab's z-range) and the slab is wider than the bar (its vertices are OUTSIDE
+// the bar), so NEITHER solid has a vertex OR a triangle centroid inside the other —
+// the enclosure signature (2a/2b) MISSES it and it was mis-reported as TOUCHING. The
+// pass-through signature (2c: an edge of the bar pierces a slab face transversally
+// through its interior) catches it as CLASH. The true overlap is [4,6]×[4,6]×[0,1],
+// a positive volume of 4 (bar∩slab intersection box, closed form).
+//
+//   slab B = [0,10]×[0,10]×[0,1]  (wide, thin)
+//   bar  A = [4,6]×[4,6]×[-5,20]  (thin, long; passes clean through the slab)
+CC_TEST(interference_bar_through_slab_passthrough_clash) {
+  const tess::Mesh bar = boxMesh(4, 4, -5, 2, 2, 25);   // [4,6]×[4,6]×[-5,20]
+  const tess::Mesh slab = boxMesh(0, 0, 0, 10, 10, 1);  // [0,10]×[0,10]×[0,1]
+  const an::InterferenceResult r = an::meshInterference(bar, slab, kDefl);
+  // Regression: was TOUCHING (minDistance 0, enclosure signature missed the overlap).
+  CC_CHECK(r.state == an::ClashState::Clash);
+  CC_CHECK(r.clash());
+  CC_CHECK(r.hasWitness);
+  // The witness AABB must lie within the true overlap box [4,6]×[4,6]×[0,1] (a pierce
+  // point is on the shared surface; the engine sharpens it to the COMMON centroid).
+  CC_CHECK(r.witnessLo.x >= 4.0 - 1e-6 && r.witnessHi.x <= 6.0 + 1e-6);
+  CC_CHECK(r.witnessLo.y >= 4.0 - 1e-6 && r.witnessHi.y <= 6.0 + 1e-6);
+  CC_CHECK(r.witnessLo.z >= 0.0 - 1e-6 && r.witnessHi.z <= 1.0 + 1e-6);
+  // Symmetry: the verdict must not depend on operand order.
+  const an::InterferenceResult rs = an::meshInterference(slab, bar, kDefl);
+  CC_CHECK(rs.state == an::ClashState::Clash);
+}
+
+// Touching variant of the pass-through pose: the bar is lifted so its BOTTOM face
+// z=1 is flush with the slab's TOP face z=1 — a coplanar seat, zero-volume contact.
+// No edge pierces an interior (the contact is at endpoints/coplanar) → TOUCHING.
+CC_TEST(interference_bar_on_slab_touching) {
+  const tess::Mesh bar = boxMesh(4, 4, 1, 2, 2, 25);    // bottom z=1 flush with slab top
+  const tess::Mesh slab = boxMesh(0, 0, 0, 10, 10, 1);
+  const an::InterferenceResult r = an::meshInterference(bar, slab, kDefl);
+  CC_CHECK(r.state == an::ClashState::Touching);
+  CC_CHECK(!r.clash());
+  CC_CHECK(r.minDistance < 2.0 * kDefl + 1e-9);
+}
+
+// Gapped variant: the bar bottom z=1.5 leaves a 0.5 clearance above the slab top
+// z=1 → CLEAR at the exact gap. Confirms the pass-through term does not fabricate a
+// contact when the bar is clear of the slab.
+CC_TEST(interference_bar_above_slab_clear) {
+  const tess::Mesh bar = boxMesh(4, 4, 1.5, 2, 2, 25);  // bottom z=1.5
+  const tess::Mesh slab = boxMesh(0, 0, 0, 10, 10, 1);  // top z=1
+  const an::InterferenceResult r = an::meshInterference(bar, slab, kDefl);
+  CC_CHECK(r.state == an::ClashState::Clear);
+  CC_CHECK(!r.clash());
+  CC_CHECK(std::fabs(r.minDistance - 0.5) < 1e-6);
+}
+
 // ── HONEST DECLINE: a non-watertight operand → Unknown (never a guessed clash) ──
 CC_TEST(interference_non_watertight_declines) {
   tess::Mesh a = boxMesh(0, 0, 0, 2, 2, 2);
@@ -198,6 +252,33 @@ CC_TEST(facade_interference_overlap_volume) {
 
   cc_shape_release(a);
   cc_shape_release(b);
+}
+
+// Pass-through native pose → cc_interference reports CLASH with the exact overlap
+// volume (native boolean COMMON) even though NO vertex/centroid is mutually contained.
+// slab [0,10]×[0,10]×[0,1] ∩ bar [4,6]×[4,6]×[-5,20] = [4,6]×[4,6]×[0,1], volume 4.
+CC_TEST(facade_interference_passthrough_volume) {
+  EngineGuard g; cc_set_engine(1);
+  const CCShapeId slab = makeBoxAt(0, 0, 0, 10, 10, 1);
+  const CCShapeId bar = makeBoxAt(4, 4, -5, 2, 2, 25);
+  CC_CHECK(slab != 0 && bar != 0);
+
+  CCInterference out{};
+  const int ok = cc_interference(bar, slab, &out);
+  CC_CHECK(ok == 1);
+  CC_CHECK(out.decided == 1);
+  CC_CHECK(out.clash == 1);
+  CC_CHECK(out.state == CC_CLASH_CLASH);
+  // Native COMMON is exact for planar polyhedra: overlap volume = 2·2·1 = 4.
+  CC_CHECK(std::fabs(out.overlap_volume - 4.0) < 1e-6);
+  CC_CHECK(out.has_witness == 1);
+  // The engine sharpens the witness to the COMMON centroid — strictly inside overlap.
+  CC_CHECK(out.witness_point[0] > 4.0 && out.witness_point[0] < 6.0);
+  CC_CHECK(out.witness_point[1] > 4.0 && out.witness_point[1] < 6.0);
+  CC_CHECK(out.witness_point[2] > 0.0 && out.witness_point[2] < 1.0);
+
+  cc_shape_release(slab);
+  cc_shape_release(bar);
 }
 
 // Disjoint native boxes → CLEAR with the exact gap, no witness.

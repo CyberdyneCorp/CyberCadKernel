@@ -155,6 +155,20 @@ int main() {
   // Gapped cross: same footprints, B raised to bottom z=1.5 → 0.5 clearance → CLEAR.
   parityCase("coplanar-cross-gap", 0, 1, 0, 3, 1, 1, 1, 0, 1.5, 1, 3, 1, 0, 0.0);
 
+  // PASS-THROUGH (moat-clfix2 regression): a bar poking CLEAN THROUGH a slab. Slab
+  // A=[0,10]×[0,10]×[0,1] (wide, thin), bar B=[4,6]×[4,6]×[-5,20] (thin, long) —
+  // the bar's ends stick out both slab faces and the slab is wider than the bar, so
+  // NEITHER solid has a vertex/centroid inside the other. OCCT Common volume =
+  // 2·2·1 = 4 (>0 ⇒ CLASH); native mis-reported TOUCHING before the pass-through
+  // (edge-pierces-face) penetration signature was added. overlap [4,6]×[4,6]×[0,1].
+  parityCase("bar-through-slab", 0, 0, 0, 10, 10, 1, 4, 4, -5, 2, 2, 25, 2, 4.0);
+
+  // Touching variant: bar bottom z=1 flush with the slab top z=1 → TOUCHING, vol 0.
+  parityCase("bar-on-slab", 0, 0, 0, 10, 10, 1, 4, 4, 1, 2, 2, 25, 1, 0.0);
+
+  // Gapped variant: bar bottom z=1.5, 0.5 clearance above the slab top → CLEAR.
+  parityCase("bar-above-slab", 0, 0, 0, 10, 10, 1, 4, 4, 1.5, 2, 2, 25, 0, 0.0);
+
   std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
   std::fflush(stdout);
   std::_Exit(g_fail == 0 ? 0 : 1);

@@ -1150,6 +1150,141 @@ CC_TEST(curved_offset_scope_defers) {
   CC_CHECK(!blend::curved_offset_face(cyl, cylWallFace(cyl), 1.0).isNull());
 }
 
+// ── F3 curved offset_face (CONE-FRUSTUM wall + SPHERE wall) ──────────────────────────
+namespace {
+// A capped cone frustum about +Y: profile (0,0)→(Rb,0)→(Rt,H)→(0,H) revolved a full turn.
+// Bottom cap radius Rb at h=0, top cap radius Rt at h=H, one Cone lateral wall.
+topo::Shape frustumSolid(double Rb, double Rt, double H) {
+  const double prof[] = {0, 0, Rb, 0, Rt, H, 0, H};
+  return cst::build_revolution(prof, 4, cst::RevolveAxis{0, 0, 0, 1}, 2.0 * M_PI);
+}
+// The id of the (first) Cone lateral face.
+int coneWallFace(const topo::Shape& s) {
+  const topo::ShapeMap map = topo::mapShapes(s, topo::ShapeType::Face);
+  for (std::size_t i = 1; i <= map.size(); ++i) {
+    const auto su = topo::surfaceOf(map.shape(static_cast<int>(i)));
+    if (su && su->surface->kind == topo::FaceSurface::Kind::Cone) return static_cast<int>(i);
+  }
+  return 0;
+}
+// Frustum volume π·H/3·(Rb²+Rb·Rt+Rt²). Offsetting the wall by d shifts both cap radii by
+// dR = d/cosσ, cosσ = 1/√(1+((Rt−Rb)/H)²).
+double frustumVol(double Rb, double Rt, double H) {
+  return M_PI * H / 3.0 * (Rb * Rb + Rb * Rt + Rt * Rt);
+}
+double coneCapDelta(double Rb, double Rt, double H, double d) {
+  const double tanS = (Rt - Rb) / H;
+  return d * std::sqrt(1.0 + tanS * tanS);  // d / cosσ
+}
+// A SPHERE-CAP dome about +Y: one Sphere wall (radius R, centre origin) closed at the pole
+// (0,R), cut by one axis-normal cap plane at y=capOff. Meridian: base disc (0,capOff)→
+// (rimBase,capOff) then arc (rimBase,capOff)→(0,R) centred on the axis at (0,0).
+topo::Shape domeSolid(double R, double capOff) {
+  const double rimBase = std::sqrt(R * R - capOff * capOff);
+  cst::ProfileSegment base;
+  base.kind = 0;
+  base.x0 = 0; base.y0 = capOff; base.x1 = rimBase; base.y1 = capOff;
+  cst::ProfileSegment arc;
+  arc.kind = 1;
+  arc.x0 = rimBase; arc.y0 = capOff; arc.x1 = 0; arc.y1 = R; arc.cx = 0; arc.cy = 0; arc.r = R;
+  return cst::build_revolution_profile({base, arc}, cst::RevolveAxis{0, 0, 0, 1}, 2.0 * M_PI);
+}
+int sphereWallFace(const topo::Shape& s) {
+  const topo::ShapeMap map = topo::mapShapes(s, topo::ShapeType::Face);
+  for (std::size_t i = 1; i <= map.size(); ++i) {
+    const auto su = topo::surfaceOf(map.shape(static_cast<int>(i)));
+    if (su && su->surface->kind == topo::FaceSurface::Kind::Sphere) return static_cast<int>(i);
+  }
+  return 0;
+}
+// Dome (spherical segment, pole above cap at axial coord a from centre): π(2R³/3−R²a+a³/3).
+double domeVol(double R, double a) {
+  return M_PI * (2.0 * R * R * R / 3.0 - R * R * a + a * a * a / 3.0);
+}
+}  // namespace
+
+// Offset a NARROWING cone-frustum wall (Rb>Rt) OUTWARD → a coaxial fatter frustum. The
+// offset shifts both cap radii by d/cosσ; watertight, χ=2, GROWS, matching the closed form.
+CC_TEST(curved_offset_cone_wall_grows) {
+  const double Rb = 6.0, Rt = 4.0, H = 10.0, d = 1.0;
+  const topo::Shape f = frustumSolid(Rb, Rt, H);
+  const int wf = coneWallFace(f);
+  CC_CHECK(wf != 0);
+  const topo::Shape g = blend::curved_offset_face(f, wf, d);
+  bool wt = false;
+  const double v = vol(g, wt);
+  CC_CHECK(!g.isNull());
+  CC_CHECK(wt);
+  const double dR = coneCapDelta(Rb, Rt, H, d);
+  CC_CHECK(nearRel(v, frustumVol(Rb + dR, Rt + dR, H), 6e-3));
+  CC_CHECK(v > frustumVol(Rb, Rt, H));  // GREW vs the sharp frustum
+}
+
+// Offset a WIDENING cone-frustum wall (Rb<Rt) INWARD → a coaxial thinner frustum (both caps
+// stay positive). Watertight, SHRINKS, matching the closed form.
+CC_TEST(curved_offset_cone_wall_shrinks) {
+  const double Rb = 4.0, Rt = 6.0, H = 10.0, d = -1.0;
+  const topo::Shape f = frustumSolid(Rb, Rt, H);
+  const int wf = coneWallFace(f);
+  const topo::Shape g = blend::curved_offset_face(f, wf, d);
+  bool wt = false;
+  const double v = vol(g, wt);
+  CC_CHECK(!g.isNull());
+  CC_CHECK(wt);
+  const double dR = coneCapDelta(Rb, Rt, H, d);
+  CC_CHECK(nearRel(v, frustumVol(Rb + dR, Rt + dR, H), 1e-2));
+  CC_CHECK(v < frustumVol(Rb, Rt, H));  // SHRANK
+}
+
+// Offset a sphere-cap dome's SPHERE wall OUTWARD → concentric sphere R+d, same cap plane.
+// Watertight, χ=2, GROWS, matching the spherical-segment closed form.
+CC_TEST(curved_offset_sphere_wall_grows) {
+  const double R = 5.0, capOff = 0.0, d = 1.0;  // hemisphere
+  const topo::Shape dome = domeSolid(R, capOff);
+  const int wf = sphereWallFace(dome);
+  CC_CHECK(wf != 0);
+  const topo::Shape g = blend::curved_offset_face(dome, wf, d, 0.003);
+  bool wt = false;
+  const double v = vol(g, wt);
+  CC_CHECK(!g.isNull());
+  CC_CHECK(wt);
+  CC_CHECK(nearRel(v, domeVol(R + d, capOff), 6e-3));
+  CC_CHECK(v > domeVol(R, capOff));  // GREW
+}
+
+// Offset a SHALLOW / DEEP sphere-cap dome INWARD → concentric smaller sphere, same cap plane.
+CC_TEST(curved_offset_sphere_wall_shrinks) {
+  for (double capOff : {2.0, -2.0}) {  // shallow cap (above centre) and deep dome (below)
+    const double R = 5.0, d = -1.0;
+    const topo::Shape dome = domeSolid(R, capOff);
+    const int wf = sphereWallFace(dome);
+    const topo::Shape g = blend::curved_offset_face(dome, wf, d, 0.003);
+    bool wt = false;
+    const double v = vol(g, wt);
+    CC_CHECK(!g.isNull());
+    CC_CHECK(wt);
+    // Deflection-bounded: the volume converges to the closed form as the builder deflection
+    // refines (verified: rel drops 1.8e-2→1.1e-3 as defl 0.02→0.001). The hard gates are
+    // watertight + oriented + the SHRINK direction.
+    CC_CHECK(nearRel(v, domeVol(R + d, capOff), 6e-3));
+    CC_CHECK(v < domeVol(R, capOff));  // SHRANK
+  }
+}
+
+// Honest DECLINE for the F3 families: a picked PLANAR cap of a frustum/dome (planar arm's
+// job) and a shrink that inverts a cone cap (Rt+d/cosσ ≤ 0) return NULL.
+CC_TEST(curved_offset_cone_sphere_scope_defers) {
+  const topo::Shape f = frustumSolid(6.0, 4.0, 10.0);
+  CC_CHECK(blend::curved_offset_face(f, cylCapFace(f), 1.0).isNull());  // planar cap → arm/OCCT
+  CC_CHECK(blend::curved_offset_face(f, coneWallFace(f), -8.0).isNull());  // inverts top cap
+  const topo::Shape dome = domeSolid(5.0, 0.0);
+  CC_CHECK(blend::curved_offset_face(dome, cylCapFace(dome), 1.0).isNull());  // planar cap
+  CC_CHECK(blend::curved_offset_face(dome, sphereWallFace(dome), -5.0).isNull());  // R+d=0
+  // Controls: the curved walls DO offset native.
+  CC_CHECK(!blend::curved_offset_face(f, coneWallFace(f), 1.0).isNull());
+  CC_CHECK(!blend::curved_offset_face(dome, sphereWallFace(dome), 1.0).isNull());
+}
+
 // ── shell ──────────────────────────────────────────────────────────────────────--
 
 CC_TEST(shell_open_top_box_wall_volume) {

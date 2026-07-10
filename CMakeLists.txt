@@ -328,6 +328,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_step_pmi
         test_native_stl
         test_native_gltf
+        test_native_gltf_fuzz
         test_native_quality
         test_native_drafting
         test_native_section
@@ -695,6 +696,18 @@ if(CYBERCAD_BUILD_TESTS)
     # pure additive native writers (tessellator untouched); no numsci link.
     set(test_native_gltf_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_gltf.cpp")
+    # MOAT M6 glTF ROUND-TRIP differential fuzzer — the no-silent-wrong completeness
+    # bar for the OCCT-FREE native glTF 2.0 writer (src/native/exchange/gltf_writer).
+    # A WRITER has no OCCT equivalence to diff against, so the arbiter is ROUND-TRIP /
+    # SELF-CONSISTENCY: a self-contained glTF-2.0 + .glb structural validator plus a
+    # geometry-fidelity round-trip (parse the emitted buffers, compare vert/tri/
+    # connectivity/bbox against an independent reimplementation of the writer's
+    # documented compaction contract). Seeded splitmix64→xoshiro256** generator over
+    # analytic primitives, multi-solids, fans, soup, empty/1-tri/bad-index edge cases,
+    # and tiny/huge coordinate scales. Calls the native writer directly (no engine, no
+    # numsci link); always-on native suite. BAR: DISAGREED==0.
+    set(test_native_gltf_fuzz_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_gltf_fuzz.cpp")
     set(test_native_quality_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_quality.cpp")
     # MOAT M-GS GS1 orthographic HLR — host GATE (a), the OCCT-free analytic proof

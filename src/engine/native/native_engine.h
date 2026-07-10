@@ -235,6 +235,11 @@ public:
     ShapeResult draft_faces(EngineShape body, const int* faceIds, int faceCount,
                             const double* neutralOrigin, const double* pullDir,
                             double angleDeg) override;
+    ShapeResult sheet_base_flange(const double* profileXY, int pointCount,
+                                  double thickness) override;
+    ShapeResult sheet_edge_flange(EngineShape body, int edgeId, double height, double bendRadius,
+                                  double angleDeg) override;
+    ShapeResult sheet_unfold(EngineShape body, double kFactor) override;
     ShapeResult fillet_face(EngineShape body, int faceId, double radius) override;
     ShapeResult split_plane(EngineShape body, double ox, double oy, double oz, double nx, double ny,
                             double nz, int keepPositive) override;

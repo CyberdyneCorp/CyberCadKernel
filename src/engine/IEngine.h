@@ -410,6 +410,22 @@ public:
         (void)angleDeg;
         return engine_unsupported("draft_faces");
     }
+    // ── sheet metal (MOAT M-SM, first slice; native-only, no OCCT oracle) ──────
+    virtual ShapeResult sheet_base_flange(const double* profileXY, int pointCount,
+                                          double thickness) {
+        (void)profileXY; (void)pointCount; (void)thickness;
+        return engine_unsupported("sheet_base_flange");
+    }
+    virtual ShapeResult sheet_edge_flange(EngineShape body, int edgeId, double height,
+                                          double bendRadius, double angleDeg) {
+        (void)body; (void)edgeId; (void)height; (void)bendRadius; (void)angleDeg;
+        return engine_unsupported("sheet_edge_flange");
+    }
+    virtual ShapeResult sheet_unfold(EngineShape body, double kFactor) {
+        (void)body; (void)kFactor;
+        return engine_unsupported("sheet_unfold");
+    }
+
     virtual ShapeResult fillet_face(EngineShape body, int faceId, double radius) {
         (void)body; (void)faceId; (void)radius;
         return engine_unsupported("fillet_face");

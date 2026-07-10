@@ -688,6 +688,35 @@ CCShapeId cc_draft_faces(CCShapeId body, const int* faceIds, int faceCount,
         CCShapeId{0});
 }
 
+CCShapeId cc_sheet_base_flange(const double* profileXY, int pointCount, double thickness) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            auto r = active_engine()->sheet_base_flange(profileXY, pointCount, thickness);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
+}
+
+CCShapeId cc_sheet_edge_flange(CCShapeId body, int edgeId, double height, double bendRadius,
+                               double angleDeg) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            auto r = active_engine()->sheet_edge_flange(resolve(body), edgeId, height, bendRadius,
+                                                        angleDeg);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
+}
+
+CCShapeId cc_sheet_unfold(CCShapeId body, double kFactor) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            auto r = active_engine()->sheet_unfold(resolve(body), kFactor);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
+}
+
 CCShapeId cc_fillet_face(CCShapeId body, int faceId, double radius) {
     return cyber::guard(
         [&]() -> CCShapeId {

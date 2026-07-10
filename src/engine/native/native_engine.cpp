@@ -41,6 +41,7 @@
 #include "native/exchange/native_exchange.h"
 #include "native/feature/draft_faces.h"
 #include "native/feature/wrap_emboss.h"
+#include "native/sheetmetal/sheetmetal.h"  // MOAT M-SM: base/edge flange + unfold
 #include "native/heal/native_heal.h"
 #include "native/math/transform.h"  // M-TX: affine placement for native transforms
 #include "native/tessellate/native_tessellate.h"
@@ -124,6 +125,10 @@ struct NativeShape {
     ntopo::Shape shape;       // B-rep bodies; left default/empty for mesh bodies
     ntess::Mesh mesh;         // populated for imported STL mesh bodies (issue #5)
     bool isMesh = false;      // true => serve the mesh directly (no B-rep)
+    // MOAT M-SM: closed-form fold parameters of a single-bend sheet-metal part,
+    // recorded so cc_sheet_unfold(body, kFactor) develops it EXACTLY (no fragile mesh
+    // reverse-engineering). Additive, process-internal — never crosses the cc_* ABI.
+    cybercad::native::sheetmetal::FoldRecord fold{};
     NativeShape() { NativeShapeRegistry::add(this); }
     ~NativeShape() { NativeShapeRegistry::remove(this); }
     NativeShape(const NativeShape&) = delete;
@@ -133,6 +138,15 @@ struct NativeShape {
 EngineShape wrapNative(ntopo::Shape shape) {
     auto holder = std::make_shared<NativeShape>();
     holder->shape = std::move(shape);
+    return std::static_pointer_cast<void>(holder);
+}
+
+// Wrap a folded sheet-metal body WITH its closed-form fold record attached.
+EngineShape wrapNativeFold(ntopo::Shape shape,
+                           const cybercad::native::sheetmetal::FoldRecord& fold) {
+    auto holder = std::make_shared<NativeShape>();
+    holder->shape = std::move(shape);
+    holder->fold = fold;
     return std::static_pointer_cast<void>(holder);
 }
 
@@ -1610,6 +1624,69 @@ ShapeResult NativeEngine::draft_faces(EngineShape body, const int* faceIds, int 
     return make_error("operation not supported on a native body yet: draft_faces"
                       " (native scope: prismatic planar-face draft about a planar neutral;"
                       " curved base / non-planar neutral / cap face / self-intersecting → OCCT-only)");
+}
+
+// ── MOAT M-SM sheet metal (first slice; native-only, closed-form arbiter) ───────
+// OCCT core has NO sheet-metal module, so these are native-only and NEVER forwarded:
+// a case the native builder cannot robustly build HONEST-DECLINES with a clean error
+// (a measured SheetMetalDecline), it is never faked and never handed to OCCT. Every
+// built solid self-verifies watertight / χ=2 / oriented at the closed-form volume.
+namespace {
+namespace nsm = cybercad::native::sheetmetal;
+const char* smDeclineText(nsm::SheetMetalDecline d) {
+    switch (d) {
+        case nsm::SheetMetalDecline::BadProfile:        return "degenerate profile (<3 pts / zero area)";
+        case nsm::SheetMetalDecline::BadThickness:      return "thickness must be > 0";
+        case nsm::SheetMetalDecline::BadParam:          return "bad parameter (height<0 / radius<0 / angle outside (0,180))";
+        case nsm::SheetMetalDecline::EdgeNotFound:      return "edge id out of range on the base";
+        case nsm::SheetMetalDecline::EdgeNotStraight:   return "the bend line is not a straight edge";
+        case nsm::SheetMetalDecline::NotSingleBendPart: return "not a recognised single-bend part (base+one edge flange)";
+        case nsm::SheetMetalDecline::SelfCollision:     return "the fold self-intersects (flange re-enters the base)";
+        case nsm::SheetMetalDecline::VerifyFailed:      return "the built solid failed the closed-form self-verify";
+        default:                                        return "unsupported";
+    }
+}
+}  // namespace
+
+ShapeResult NativeEngine::sheet_base_flange(const double* profileXY, int pointCount,
+                                            double thickness) {
+    nsm::SheetMetalDecline why = nsm::SheetMetalDecline::Ok;
+    ntopo::Shape solid = nsm::baseFlange(profileXY, pointCount, thickness, &why);
+    if (!solid.isNull() && watertightVolume(solid) > 0.0)
+        return track(wrapNative(std::move(solid)));
+    return make_error(std::string("sheet_base_flange (native, no OCCT sheet-metal oracle): ") +
+                      smDeclineText(why));
+}
+
+ShapeResult NativeEngine::sheet_edge_flange(EngineShape body, int edgeId, double height,
+                                            double bendRadius, double angleDeg) {
+    if (!isNative(body))
+        return make_error("sheet_edge_flange: sheet metal is native-only (build the base under"
+                          " cc_set_engine(1); OCCT has no sheet-metal module)");
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (holder->isMesh)
+        return make_error("sheet_edge_flange: an imported mesh body is not a sheet-metal base");
+    nsm::SheetMetalDecline why = nsm::SheetMetalDecline::Ok;
+    nsm::FoldRecord fold{};
+    const double angleRad = angleDeg * 3.14159265358979323846 / 180.0;
+    ntopo::Shape result =
+        nsm::edgeFlange(holder->shape, edgeId, height, bendRadius, angleRad, &why, &fold);
+    if (!result.isNull() && watertightVolume(result) > 0.0)
+        return track(wrapNativeFold(std::move(result), fold));
+    return make_error(std::string("sheet_edge_flange (native, no OCCT sheet-metal oracle): ") +
+                      smDeclineText(why));
+}
+
+ShapeResult NativeEngine::sheet_unfold(EngineShape body, double kFactor) {
+    if (!isNative(body))
+        return make_error("sheet_unfold: sheet metal is native-only (OCCT has no sheet-metal module)");
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    nsm::SheetMetalDecline why = nsm::SheetMetalDecline::Ok;
+    ntopo::Shape blank = nsm::unfold(holder->fold, kFactor, /*out=*/nullptr, &why);
+    if (!blank.isNull() && watertightVolume(blank) > 0.0)
+        return track(wrapNative(std::move(blank)));
+    return make_error(std::string("sheet_unfold (native, no OCCT sheet-metal oracle): ") +
+                      smDeclineText(why));
 }
 // ── NATIVE M3 fillet_face (additive; reuses the landed multi-edge dihedral fillet) ──
 // The app's `cc_fillet_face(body, faceId, radius)` — round EVERY edge bounding the

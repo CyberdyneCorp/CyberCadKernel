@@ -568,6 +568,42 @@ CCShapeId cc_replace_face_to_plane(CCShapeId body, int faceId,
 CCShapeId cc_draft_faces(CCShapeId body, const int *faceIds, int faceCount,
                          const double *neutralOrigin, const double *pullDir, double angleDeg);
 
+/* ── Sheet metal (MOAT M-SM, first slice) ──────────────────────────────────────
+ * Constant-thickness sheet-metal primitives: a flat BASE flange, a single EDGE
+ * flange with a cylindrical BEND, and the flat-pattern UNFOLD of that single-bend
+ * part. All three are NATIVE-ONLY (cc_set_engine(1)); OCCT core has NO sheet-metal
+ * module, so there is NO oracle to fall back to — the ARBITER is CLOSED FORM, and a
+ * case the native builder cannot robustly build HONEST-DECLINES (returns 0 with
+ * cc_last_error set), it is NEVER forwarded to OCCT and NEVER faked. ADDITIVE. */
+
+/* BASE FLANGE — the flat sheet solid = the closed 2D polygon `profileXY` (x,y pairs
+ * on z=0, `pointCount` points) extruded by `thickness` along +Z. The base of every
+ * sheet-metal part. Closed-form volume = |profileArea|·thickness; the result self-
+ * verifies watertight / χ=2 / oriented at that volume. Returns 0 on a degenerate
+ * profile (< 3 pts / zero area) or thickness ≤ 0 (cc_last_error set). */
+CCShapeId cc_sheet_base_flange(const double *profileXY, int pointCount, double thickness);
+
+/* EDGE FLANGE — add a flange off the STRAIGHT edge `edgeId` (1-based, cc_subshape_ids
+ * order) of a rectangular base flange: a cylindrical BEND of inner radius `bendRadius`
+ * swept through `angleDeg` (in (0,180)), welded to a planar FLANGE WALL of length
+ * `height`, at the base's constant thickness. Emitted as ONE watertight solid (base +
+ * true-cylinder bend + wall prism) that self-verifies at the closed-form volume
+ * base + ½·θ·((r+t)²−r²)·W + height·t·W. FIRST SLICE: one flange off one straight
+ * rim of a recognised L×W×t base; a non-straight bend line, a non-recognised base, a
+ * degenerate parameter, or a SELF-COLLIDING fold HONEST-DECLINE (return 0). Multi-bend
+ * interference / miter / corner-relief are OUT of the slice. */
+CCShapeId cc_sheet_edge_flange(CCShapeId body, int edgeId, double height, double bendRadius,
+                               double angleDeg);
+
+/* UNFOLD — the FLAT-PATTERN of a single-bend part: unroll the bend about its neutral
+ * fibre (bend allowance BA = angle·(bendRadius + kFactor·thickness)) into the developed
+ * flat blank (a planar sheet solid of the same thickness, footprint
+ * (baseRun + BA + flangeHeight) × width). `kFactor` ∈ [0,1] is the neutral-fibre
+ * position (material/process constant, typ. 0.3–0.5). The developed area is invariant
+ * under fold→unfold (baseArea + BA·width + flangeArea). Serves a body produced by
+ * cc_sheet_edge_flange; any other body HONEST-DECLINES (return 0). */
+CCShapeId cc_sheet_unfold(CCShapeId body, double kFactor);
+
 /* Project the 3-D point (px,py,pz) onto the analytic surface of face `faceId`
  * (1-based, cc_subshape_ids order) of `body` — MOAT M-DM DM4, ADDITIVE. Returns the
  * closed-form foot-of-perpendicular + minimum distance (see CCProjection). The native

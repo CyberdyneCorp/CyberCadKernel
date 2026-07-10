@@ -1236,6 +1236,40 @@ buffer, and `.glb` binary) and `cc_usdz_export(body, path, deflection)` (USDZ �
   a file-size optimisation, not an AR-handoff capability gap. glTF/USDZ **import** is out of scope.
   No third-party glTF/USD library is vendored. Change: `openspec/changes/moat-gltf-export/`.
 
+### M-SM — Sheet metal (base flange + edge flange with a bend + flat-pattern unfold) · **LANDED (first slice)** · independent
+The SolidWorks-class **sheet-metal** capability, landed as a BOUNDED FIRST SLICE (the rest is
+honest-declined). Three ADDITIVE `cc_*` ops in a NEW module `src/native/sheetmetal/` (header-only:
+`base_flange.h` / `edge_flange.h` / `unfold.h` + `common.h`), wired facade → `IEngine` virtual →
+`NativeEngine`. Constant-thickness, planar + a single cylindrical bend — no freeform.
+- **What the first slice lands (✅ NATIVE, OCCT-FREE):**
+  - `cc_sheet_base_flange(profileXY, count, thickness)` — the flat sheet solid = the 2D profile
+    extruded by `thickness` (a thin wrapper over the landed `construct::build_prism`; the base of
+    every sheet-metal part). Closed-form volume `|profileArea|·thickness`.
+  - `cc_sheet_edge_flange(body, edgeId, height, bendRadius, angleDeg)` — one flange off ONE straight
+    rim of a recognised rectangular base: a **true partial-cylinder BEND** (inner radius r, outer
+    r+t, swept through θ) welded to a planar **flange WALL** of length `height`, at constant
+    thickness — emitted as ONE watertight solid built face-by-face in the base frame (no boolean).
+    Closed-form volume `base + ½·θ·((r+t)²−r²)·W + height·t·W`.
+  - `cc_sheet_unfold(body, kFactor)` — the FLAT-PATTERN: unroll the bend about its neutral fibre
+    (bend allowance `BA = θ·(r + k·t)`) into the developed flat blank. Developed footprint area
+    `baseArea + BA·W + flangeArea`, **invariant under fold→unfold** (the manufacturing payoff).
+- **OCCT is NOT the oracle — closed form is.** OCCT core has NO sheet-metal module, so these are
+  **native-only** and NEVER forwarded: a case the native builder cannot robustly build HONEST-DECLINES
+  with a clean `cc_last_error` (a measured reason), never a wrong/self-intersecting solid, never a
+  widened tolerance. The ARBITER is CLOSED FORM. Gate (a) host `test_native_sheetmetal` (9 cases,
+  green): every built solid watertight / χ=2 / consistently oriented at the closed-form volume, and
+  the unfold's fold→unfold area invariant. Gate (b) sim `native_sheetmetal_selftest.mm` (own `main()`,
+  SKIP-listed self-contained runner): the built parts pass `cc_check_solid` + `cc_mass_properties`
+  volume vs the host closed form, deterministically — native under its own engine, NO OCCT compared.
+- **Honest-declined (out of the first slice, measured reason):** multi-bend interference / >1 flange
+  / miter / corner-relief; a non-straight bend line; a non-recognised (non-rectangular / freeform)
+  base; a self-colliding flange; degenerate parameters. The self-verify catches a self-collision as a
+  leak/overlap and declines.
+- **Sharpened next blocker:** MULTI-BEND — a second flange (bend-bend interference), the MITER between
+  adjacent flanges, and CORNER-RELIEF cuts. That needs a boolean-fused multi-region weld (the current
+  slice builds one contiguous cross-section) and an edge/relief solver. Change:
+  `openspec/changes/moat-sheet-metal/`.
+
 ### M8 — `drop-occt` — unlink OCCT · gated on M0–M7 + **M-DM** + **M-GS** + M6 bar
 > **Itemized unlink checklist:** [DROP-OCCT-READINESS.md](DROP-OCCT-READINESS.md) — every OCCT fall-through site classified A (now-native, 65 sites) / B (must-go-native, **now 2 sites** `fillet_edges_g2` + `thread_apply`, neither app-used) / C (IGES decline). Build-unlink PROVEN today (§6 rehearsal: native-only, 0 crash / 0 silent-wrong); ship-quality blocked on **≈ 1.5–3.5 py (mid ~2.5)** of thin-tail kernel breadth **the app does not hit** — the F1–F5 wave closed the app's curved-substrate gaps (canal fillet end-to-end via facade bicyl-COMMON, sphere shell, cone/sphere offset_face, off-center + disjoint booleans, freeform sphere wrap-emboss). Remaining: ff↔ff FUSE + general freeform-B-spline bases + non-convex shell + the 2 zero-app-site B ops. **The real ship-blockers are now non-kernel: app-side kernel adoption (ABI ready, 63/63 symbols) + the IGES decision.** Measured payoff: native 7–20× faster, ~28 MB in-binary / ~112 MB dep lighter, ~11.5 MB less peak RAM ([docs/BENCH-native-vs-occt.md](../docs/BENCH-native-vs-occt.md), [docs/BENCH-memory-native-vs-occt.md](../docs/BENCH-memory-native-vs-occt.md)).
 

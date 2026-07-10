@@ -321,6 +321,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_corner_chamfer
         test_native_chamfer_face
         test_native_wrap_emboss
+        test_native_sheetmetal
         test_native_step_writer
         test_native_step_reader
         test_native_step_pmi
@@ -659,6 +660,15 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_chamfer_face.cpp")
     set(test_native_wrap_emboss_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_wrap_emboss.cpp")
+    # MOAT M-SM sheet metal (first slice) — host GATE (a), the OCCT-free closed-form
+    # proof: base flange volume = profileArea·thickness; single edge flange (cylindrical
+    # bend + wall) watertight / χ=2 / oriented at base + ½θ((r+t)²−r²)·W + h·t·W; unfold
+    # develops to (baseRun + BA + h)·W with BA = θ(r + k·t), area-invariant under
+    # fold→unfold; and the measured honest-declines (bad param / non-straight bend line /
+    # non-recognised base / self-collision). Header-only over construct/tessellate/
+    # topology; no numsci link, always-on native suite.
+    set(test_native_sheetmetal_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_sheetmetal.cpp")
     set(test_native_step_writer_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step_writer.cpp")
     set(test_native_step_reader_SRC

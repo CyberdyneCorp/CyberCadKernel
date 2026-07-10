@@ -400,6 +400,163 @@ transforms + M-REF references + M-DM core), tessellate, all query/analysis, STEP
 
 ---
 
+## 6-bis. Measured rehearsal — ROUND 2 (dated 2026-07-10)
+
+§6 (round 1, 2026-07-08) was measured *many features ago*. Since then a large wave
+landed — the **M2 freeform-boolean spine**, **M3** curved fillets / shell / offset,
+**curved-wall + off-centre + disjoint** booleans, **freeform wrap-emboss**, ABI parity,
+and the native fuzz domains to 14 — capped by the **F1–F5** app-gap wave. This round
+**re-runs the exact same rehearsal wiring against the CURRENT, much-more-native surface**
+to re-measure the post-unlink shape and diff it against round 1. Same discipline: the
+non-shipping `CYBERCAD_M8_REHEARSAL` flag (reused, unchanged), no delete of
+`src/engine/occt`, no shipping-default change, `src/native/**` + the `cc_*` ABI
+byte-unchanged. Output is measurement only (this section + the refreshed throwaway
+`scratch/m8_probe.cpp`).
+
+### 6-bis.1 Build result — still build-safe, now against a bigger native surface
+
+`cmake -S . -B build-m8 -DCYBERCAD_M8_REHEARSAL=ON -DCYBERCAD_HAS_NUMSCI=ON …` configures,
+builds the library, and links **all 67 test executables** (up from 56 at round 1) cleanly.
+`find build-m8 -path '*occt*' -name '*.o'` is **empty** (0 OCCT TUs compiled) and
+`nm libcybercadkernel.a | grep OcctEngine` is **empty** (0 `OcctEngine` symbols referenced),
+with `CYBERCAD_M8_REHEARSAL=1` confirmed in the compile flags. Both `scripts/build-numsci.sh
+host` and `iossim` exit 0 (77 TUs each, 0 fail). **The terminal "delete `src/engine/occt`"
+step remains build-safe today.**
+
+### 6-bis.2 HOST suite result — 64 PASS-native / 0 clean-decline-fail / 3 sentinel-flip / 0 crash
+
+| bucket | round 1 | **round 2** | tests |
+|---|---|---|---|
+| **PASS-native** | 53 | **64** | every geometry / construct / query / analysis / exchange / freeform-boolean / curved-blend suite (incl. the heavy SSI numerics: `ssi_curved_boolean` 317 s, `curved_wall_cut` 66 s — all pass; total wall time ≈ 931 s) |
+| **FAIL — sentinel flip** | 3 | **3** | `test_guard`, `test_abi`, `test_native_engine` |
+| **FAIL — crash / silent-wrong** | **0** | **0** | — |
+
+The 3 "failures" are the **identical** shipping-default sentinels as round 1, same single root
+cause — each asserts the invariant the rehearsal deliberately inverts, verified at the
+assertion:
+- `test_guard::brep_unavailable_in_stub_build` (`cc_brep_available()==0`) +
+  `stub_geometry_returns_zero_and_sets_error` (`cc_solid_extrude` returns 0 + error): under
+  the rehearsal the default engine is NativeEngine, so B-rep reports available and
+  `cc_solid_extrude` builds a real native solid. PASS-native outcomes a stub-era test flags.
+- `test_abi::library_links_and_reports_no_brep` (`cc_brep_available()==0`): same flip.
+- `test_native_engine::default_engine_is_not_native` (`cc_active_engine()==0`): inverted by
+  design. The suite has **grown to 45 cases** (round 1: 43) and **only this one sentinel
+  case fails** — the other **44 native geometry cases all pass, including the NEW
+  `native_facade_steinmetz_common` (F1) case**.
+
+### 6-bis.3 Per-op decline probe — round 1 declines held; F1–F5 now SERVE NATIVE
+
+Default under rehearsal: `cc_active_engine()==1`, `cc_brep_available()==1`.
+`scratch/m8_probe.cpp` was refreshed with a new Section B driving the F1–F5 ops through the
+shipping facade. **Section A** (the round-1 Class-B/C decline + Class-A spine probes) is
+unchanged; **Section B** is new.
+
+| op | class | round 1 | **round 2 measured** |
+|---|---|---|---|
+| **SECTION A** |||| 
+| cc_fillet_face | A prism-cap | SERVED-NATIVE | **SERVED-NATIVE** (prism cap) |
+| cc_full_round_fillet[_faces] | A prismatic | clean-decline (dihedral/curved) | **CLEAN-DECLINE** (same honest error) |
+| cc_fillet_edges_g2 | B | clean-decline | **CLEAN-DECLINE** |
+| cc_twisted_sweep (real twist) | ~~B~~→A | clean-decline | **SERVED-NATIVE** ⬆ (M7t landed real-twist) |
+| cc_loft_along_rail (curved rail) | A | clean-decline (probe's straight-recipe slice) | **CLEAN-DECLINE** (out-of-envelope slice) |
+| cc_thread_apply | B | native-attempt → clean-decline | **CLEAN-DECLINE** (multi-turn → OCCT oracle) |
+| cc_iges_import / _export | C | clean-decline | **CLEAN-DECLINE** |
+| cc_solid_revolve / _loft / tessellate / mass_properties | A | SERVED-NATIVE | **SERVED-NATIVE** |
+| **SECTION B — F1–F5 (round 1: OCCT-forward or decline)** ||||
+| **F1** cc_boolean cyl-cyl COMMON (Steinmetz) | A | OCCT / decline | **SERVED-NATIVE** — vol 5.3287 vs 16Rc³/3=5.3333 (rel 8.7e-4) |
+| **F2** cc_shell sphere dome (hemisphere) | A | OCCT | **SERVED-NATIVE** — vol 70.62 vs 70.95 (rel 4.6e-3) |
+| **F3a** cc_offset_face cone-frustum wall | A | OCCT | **SERVED-NATIVE** — vol 240.09 vs 240.77 (rel 2.9e-3) |
+| **F3b** cc_offset_face sphere-cap wall | A | OCCT | **SERVED-NATIVE** — vol 346.55 vs 348.46 (rel 5.5e-3) |
+| **F4** off-centre / disjoint freeform CUT | A | OCCT (or ~29 % over) | **SERVED-NATIVE** via the dedicated host gates (below) |
+| **F5** cc_wrap_emboss sphere-cap boss | A | OCCT | **SERVED-NATIVE** — watertight embossed body (vol 260.78, valid) |
+
+Every F1–F3/F5 op serves a NATIVE body whose measured volume matches the closed-form
+analytic to the facade deflection bound (rel ≤ 5.5e-3) — no fabricated / silently-wrong
+shape. **F4** is verified by its dedicated host gates rather than a single facade call:
+`test_native_curved_wall_cut` (13/13 — the off-centre / mid-wall keep-side volume, the exact
+regime the F4 by-normal cap-orientation fix corrected) and `test_native_slab_disjoint_cut`
+(6/6 — the two-lump WELD `Compound` at the closed-form partition). The probe's own F4 line
+(an off-centre plane through a spline-walled prism) is an out-of-envelope split_plane config
+and **cleanly declines** — honest and expected, NOT a regression: a curved perpendicular
+slice is outside the facade split path's native envelope, so it returns the standard honest
+"not supported on a native body yet: split_plane" error, never a crash or a leaky solid.
+
+Every declining op returns **id=0 with a non-empty `cc_last_error`**. **No op hit a FINDING
+case** (id=0 with empty error, or a fabricated non-zero handle / wrong volume where OCCT
+would have served).
+
+### 6-bis.4 Round-1 → round-2 delta
+
+- **Suite: +11 native test executables** (56 → 67), all new ones PASS-native — the M2/M3/F1–F5
+  wave shipped with its own two-gate host suites (`curved_shell`, `curved_wall_cut`,
+  `slab_disjoint_cut`, `freeform_freeform_cut`, `two_operand_freeform_boolean`,
+  `freeform_boolean_breadth`, `multi_seam`, `chain_seam`, `smooth_trim_split`,
+  `thread_apply`, `curved_boolean`).
+- **PASS-native: 53 → 64.** **Sentinel-flips: 3 → 3** (unchanged root cause).
+  **Crash / silent-wrong: 0 → 0.**
+- **Ops that moved decline/OCCT-forward → SERVED-NATIVE since round 1:** the **F1–F5** set
+  (Steinmetz cyl-cyl COMMON through the facade; sphere-dome shell; cone- and sphere-wall
+  offset_face; off-centre + disjoint freeform CUT; sphere-cap wrap-emboss boss) **plus
+  `cc_twisted_sweep` real-twist** (M7t). That is the whole app-facing curved-substrate
+  blend/boolean gap closing, empirically, at the two-gate bar, under the OCCT-unlinked wiring.
+- **New crash / silent-wrong: NONE.** The static A/B/C classification still holds — every
+  Class-A op served or (out-of-envelope) declined honestly; every Class-B/C op declined with
+  a reason.
+
+### 6-bis.5 Current measured unlink checklist — what still declines if `src/engine/occt` is deleted TODAY
+
+Re-measured against the current surface (supersedes §6.6). **Nothing breaks the build;
+nothing produces silent-wrong.** The delete converts only these OCCT-served cases to honest
+declines:
+
+1. **`fillet_edges_g2` + `full_round_fillet[_faces]` dihedral/curved/closed-seam + `fillet_face`
+   non-perp/curved/oversized residual** (Class-B / A-residual, M3) — clean declines.
+   `fillet_face` and `full_round_fillet[_faces]` **serve their prismatic/prism-cap slice
+   natively today**; only the OCCT-only sub-cases decline. `fillet_edges_g2` — **0 app sites**.
+2. **`boolean` freeform residual** — the planar + analytic-curved bulk **and now the F1
+   cyl-cyl COMMON Steinmetz + F4 curved-wall / off-centre / disjoint CUT are native**; the
+   remaining ff↔ff **FUSE** (two curved operands, curved-annulus weld) and native-native
+   degenerate configs decline. Kernel-breadth, **not app-critical**.
+3. **`loft_along_rail` tight-kink residual + fine-pitch `helical_thread`/`tapered_thread`**
+   (Class-A residual, M7b) — the typical straight/smooth-rail and coarse-pitch inputs are
+   native; only the tight-tail declines. (`twisted_sweep` real-twist is now **fully native** —
+   removed from this list vs round 1.)
+4. **`thread_apply`** (Class-B, M2/M7b) — native recognise+facet+planar-BSP+4-part self-verify
+   ATTEMPT; multi-turn helical thread declines with a measured reason → OCCT per-turn oracle.
+   **0 app sites.**
+5. **`iges_import` / `iges_export`** (Class-C, DROPPED) — clean declines by product decision;
+   needs the companion app-side IGES decision, not kernel work. **11 app sites.**
+6. **Class-A curved-residual breadth** (freeform-B-spline bases for wrap_emboss / offset /
+   shell beyond analytic-revolve; non-convex shell; torus / unequal-radius canal fillet;
+   `hlr_project` freeform silhouettes; STEP out-of-scope) — the typical in-domain input is
+   already native; only the named out-of-envelope residual declines.
+
+**Confirmed: 0 crash / 0 silent-wrong** across the full 67-test suite + the F1–F5 facade
+probe. Everything else — the Class-A construct spine, M-TX transforms, M-REF references, M-DM
+core, tessellate, all query/analysis, STEP/STL, **and now the F1–F5 curved-substrate
+blend/boolean set** — serves natively today with OCCT unlinked.
+
+### 6-bis.6 Assessment — how close the scoped unlink is now
+
+- **To BUILD OCCT-free:** *nothing further* — proven again, now against 64 PASS-native suites
+  (11 more than round 1) with 0 crash / 0 silent-wrong.
+- **To SHIP without regressing the supported domain:** the **app-facing hard-decline group is
+  now empirically native** (F1–F5 + `twisted_sweep` closed the last app-exercised curved gaps).
+  The residual §6-bis.5 declines are **thin-tail kernel breadth the app does not hit** (ff↔ff
+  FUSE, general freeform-B-spline bases, non-convex shell, the 2 zero-app-site B ops) — a
+  measured ≈ 1.5–3.5 py, down from round 1's framing where the F1–F5 gaps were still open.
+- **The real remaining ship-blockers are non-kernel:** app-side kernel adoption (ABI ready,
+  63/63 symbols) + the IGES product decision.
+- The **M6 completeness / fuzzing bar** (14 native domains, 0 DISAGREED) remains the true gate
+  guaranteeing no silent-wrong across the whole input space before the oracle is deleted; this
+  rehearsal confirms the clean-decline contract on every op probed.
+
+**Verdict:** the scoped unlink is **build-reachable now and materially closer to ship-ready
+than at round 1** — the app-facing curved-substrate frontier that round 1 still listed as
+OCCT-served has moved to native-served, measured under the exact post-unlink wiring.
+
+---
+
 *This is a documentation artifact, not an OpenSpec change. The living roadmap is
 [MOAT-ROADMAP.md](MOAT-ROADMAP.md) (M8); parent [NATIVE-REWRITE.md](NATIVE-REWRITE.md).
 The §6 rehearsal method is captured as the OpenSpec change

@@ -1116,6 +1116,20 @@ UI + call sites, and `cc_iges_import/export` becomes a clean "IGES not supported
 fully-OCCT-free app. **FUTURE (backlog, unscheduled):** native IGES (~1.5–3 py) if demand ever
 materialises — parked, not lost.
 
+**M8 scoped-unlink DRY-RUN rehearsal — ROUND 2 (re-measured 2026-07-10).** Re-ran the identical
+rehearsal wiring against the CURRENT surface after the M2/M3 + F1–F5 wave (full detail in
+[DROP-OCCT-READINESS.md](DROP-OCCT-READINESS.md) §6-bis). Build still links with **zero** OCCT TUs and
+no `OcctEngine` symbol; the HOST suite is now **64 PASS-native / 3 sentinel-flip / 0 crash / 0
+silent-wrong** (up from 53 PASS at round 1 as the suite grew 56→67 executables). The refreshed per-op
+probe confirms the **F1–F5 ops now SERVE NATIVE** through the shipping facade (Steinmetz cyl-cyl COMMON
+vol rel 8.7e-4, sphere-dome shell 4.6e-3, cone/sphere offset_face 2.9e-3/5.5e-3, off-centre+disjoint CUT
+via `curved_wall_cut` 13/13 + `slab_disjoint_cut` 6/6 gates, sphere wrap-emboss boss) and that
+`twisted_sweep` real-twist moved decline→native (M7t) — **the app-facing curved-substrate blend/boolean
+frontier that round 1 still listed as OCCT-served is now native-served, measured under the exact
+post-unlink wiring.** The remaining declines are thin-tail kernel breadth the app does not hit (ff↔ff
+FUSE, general freeform-B-spline bases, `fillet_edges_g2`/`thread_apply` [0 app sites]) + the IGES
+decision. Round-1 detail retained below.
+
 **M8 scoped-unlink DRY-RUN rehearsal (measured 2026-07-08).** A throwaway, non-shipping CMake option
 `CYBERCAD_M8_REHEARSAL` (branch `moat-m8dry`) wires the build's DEFAULT active engine to
 `NativeEngine`-over-stub — the exact post-unlink wiring — without deleting `src/engine/occt` or changing

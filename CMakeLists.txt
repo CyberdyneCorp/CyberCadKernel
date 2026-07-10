@@ -177,7 +177,7 @@ if(CYBERCAD_MACOS_OCCT)
         -L"${CYBERCAD_HOMEBREW_OCCT_LIB}"
         -lTKDESTEP -lTKDEIGES -lTKXSBase -lTKDE -lTKXCAF -lTKLCAF -lTKCAF
         -lTKCDF -lTKMesh -lTKShHealing -lTKOffset -lTKFillet -lTKBool -lTKPrim
-        -lTKBO -lTKTopAlgo -lTKGeomAlgo -lTKBRep -lTKGeomBase -lTKG3d -lTKG2d
+        -lTKHLR -lTKBO -lTKTopAlgo -lTKGeomAlgo -lTKBRep -lTKGeomBase -lTKG3d -lTKG2d
         -lTKMath -lTKernel
         -Wl,-rpath,"${CYBERCAD_HOMEBREW_OCCT_LIB}")
 endif()

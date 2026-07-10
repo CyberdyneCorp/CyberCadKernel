@@ -57,6 +57,8 @@ struct Tuned {
   bool enableSelfIntersection = false;///< S4-f: record + trace through single-arm self-crossings
   double selfIntersectRadius;         ///< S4-f: self-cross coincidence radius (resolved from selfIntersectRadiusFrac)
   int maxPoints, crossMaxSteps;
+  bool adaptiveCrossReanchor = false; ///< S4-c deep tail: re-anchor crossing plane to local curve tangent (M1d)
+  double reanchorBlend = 1.0;         ///< blend weight local-tangent↔t★ per crossing step (1 = full local tangent)
   bool enableBranchPoints = false;    ///< S4-d: capture branch stalls for localization + arm routing
   // ── S4-e chart-singularity knobs (single-surface ‖dU‖ collapse; sentinel-resolved) ──
   bool enableChartSingularities = false;  ///< S4-e: step across a sphere pole / cone apex
@@ -104,6 +106,8 @@ Tuned tune(const MarchOptions& o, double scale) {
                                                          : 2.0 * t.loopClose) * t.h0;
   t.maxPoints     = std::max(16, o.maxPoints);
   t.crossMaxSteps = std::max(1, o.crossMaxSteps);
+  t.adaptiveCrossReanchor = o.adaptiveCrossReanchor;
+  t.reanchorBlend = o.reanchorBlend > 0.0 ? clampd(o.reanchorBlend, 0.0, 1.0) : 1.0;
   t.enableBranchPoints = o.enableBranchPoints;
   // S4-e: chart-collapse threshold (‖dU‖ ≪ ‖dV‖·scale) and the FINE crossing step. Both
   // sentinel-resolved; neither weakens a solve tolerance — they only decide WHERE the
@@ -417,14 +421,31 @@ struct CrossOut {
 //    point it turns sharply / reverses. A ≥60° turn in one step, or a continuity-oriented
 //    tangent that no longer heads the crossing way, means two branches meet (S4-d).
 // On accept, `rawOut` is the continuity-oriented raw tangent to carry to the next step.
+//
+// `reanchor` (M1d deep tail): on the curve-following reanchor path the intersection curve
+// legitimately turns a LARGE TOTAL angle across a tighter graze — more than 90° away from
+// the FROZEN entry t★ by the far side. The per-step ≥60° branch-flip guard (a branch point
+// flips the raw tangent sharply in ONE step) and the sine floor still hold and still catch
+// a genuine branch / tangency; only the "U-turn vs the FROZEN t★" test is relaxed to
+// continuity against the PREVIOUS raw tangent (rawPrev), because t★ is a stale reference
+// once the curve has turned. Honesty is preserved: a real branch still trips the per-step
+// turn guard, the sine floor, or the anti-orbit arc cap. On the frozen-t★ path (reanchor
+// false) the behaviour is byte-identical.
 bool crossNodeCrossable(const Tangent& tanNew, const Vec3& rawPrev, const Vec3& dirStar,
-                        const Tuned& t, Vec3& rawOut) {
+                        const Tuned& t, Vec3& rawOut, bool reanchor = false) {
   if (!tanNew.valid || tanNew.sine < t.minCrossSine) return false;
   Vec3 rawNew = tanNew.dir;
   const double contDot = math::dot(rawNew, rawPrev);
   if (std::fabs(contDot) < 0.5) return false;              // turned ≥60° in one step
   if (contDot < 0.0) rawNew = rawNew * -1.0;               // orient by continuity
-  if (math::dot(rawNew, dirStar) <= 0.0) return false;     // U-turn off the crossing way
+  if (reanchor) {
+    // Continuity is against the PREVIOUS step's raw tangent (already enforced by the ≥60°
+    // guard above once oriented) — the curve may have turned well past 90° from the frozen
+    // t★ and that is a legitimate graze turn, not a U-turn.
+    if (math::dot(rawNew, rawPrev) <= 0.0) return false;   // net reversal step-to-step
+  } else {
+    if (math::dot(rawNew, dirStar) <= 0.0) return false;   // U-turn off the crossing way
+  }
   rawOut = rawNew;
   return true;
 }
@@ -480,15 +501,52 @@ CrossOut crossNearTangent(const SurfaceAdapter& A, const SurfaceAdapter& B,
   const double hCrossCap = std::max(t.minStep, t.h0 / 16.0);
   double h = hCrossCap;
 
+  // ANTI-ORBIT arc cap (deep-tail reanchor only). When a graze is WIDE (a large fraction
+  // of the intersection loop stays near-tangent) the curve-following crossing legitimately
+  // traverses a loop-scale arc before the far side recovers — so the cap must admit a full
+  // loop. It is a TERMINATION SAFETY (never a correctness gate: far-side recovery + the
+  // per-node on-both-surfaces / floor / branch-flip guards decide the crossing). A run that
+  // exceeds a few loop-scales is genuinely orbiting → discard + defer, never fabricate.
+  // Scaled to the domain (loopClose·h0 is the loop-closure window; ×crossMaxSteps admits a
+  // full loop-sized traversal). Only active on the reanchor path; frozen-t★ is byte-identical.
+  const double crossArcCap =
+      std::max(hCrossCap, t.loopClose * t.h0) * static_cast<double>(t.crossMaxSteps);
+  double crossArc = 0.0;
+  int recoveredRun = 0;  // consecutive recovered nodes (reanchor hand-back stability)
+
   for (int i = 0; i < t.crossMaxSteps; ++i) {
-    // Curvature-aware guess along the FIXED t★, then fixed-plane-cut correct: the
-    // corrector's advance residual uses dirStar (well-posed as local sine → 0), NOT the
-    // degenerating local tangent.
+    // ADVANCE DIRECTION for this step. By default it is the FROZEN t★ (the shipped S4-c
+    // fixed-plane cut — well-posed as local sine → 0, byte-identical when the deep-tail
+    // flag is off). With `adaptiveCrossReanchor` on, RE-ANCHOR it toward the LOCAL
+    // intersection tangent at the current node so the advance plane FOLLOWS the curve's
+    // turn through a tighter graze instead of slicing it far from the guess. Inside a
+    // CROSSABLE graze the pair sine stays bounded above the floor, so t_local = nA×nB is a
+    // well-defined curve direction (unlike a raw node secant, which is noisy at fine h). It
+    // is CONTINUITY-ORIENTED toward the crossing way and only adopted (blended, then a bit)
+    // when it still heads the CROSSING way (dot(t_local, t★) > 0); otherwise the frozen t★
+    // is kept — the honesty anchor never rotates past a U-turn.
+    Vec3 stepDir = dirStar;
+    if (t.adaptiveCrossReanchor) {
+      const Tangent tl = intersectionTangent(A, B, cur);
+      if (tl.valid) {
+        Vec3 loc = tl.dir;
+        if (math::dot(loc, dirStar) < 0.0) loc = loc * -1.0;  // orient toward the crossing way
+        if (math::dot(loc, dirStar) > 0.0) {
+          const double a = t.reanchorBlend;
+          Vec3 blended = loc * a + dirStar * (1.0 - a);
+          const double bl = math::norm(blended);
+          if (bl > 1e-300 && math::dot(blended, dirStar) > 0.0) stepDir = blended * (1.0 / bl);
+        }
+      }
+    }
+    // Curvature-aware guess along stepDir, then fixed-plane-cut correct: the corrector's
+    // advance residual uses stepDir (well-posed as local sine → 0), NOT the degenerating
+    // local tangent.
     State guess = cur;
-    guess.p = curvaturePredict(havePrev ? &prev : nullptr, cur, h, dirStar);
-    advanceParams(A, cur.u1, cur.v1, A.uPeriod, dirStar * h, A.domain, guess.u1, guess.v1);
-    advanceParams(B, cur.u2, cur.v2, B.uPeriod, dirStar * h, B.domain, guess.u2, guess.v2);
-    const CorrectorOut c = correct(A, B, cur, dirStar, h, guess, t.onSurfTol);
+    guess.p = curvaturePredict(havePrev ? &prev : nullptr, cur, h, stepDir);
+    advanceParams(A, cur.u1, cur.v1, A.uPeriod, stepDir * h, A.domain, guess.u1, guess.v1);
+    advanceParams(B, cur.u2, cur.v2, B.uPeriod, stepDir * h, B.domain, guess.u2, guess.v2);
+    const CorrectorOut c = correct(A, B, cur, stepDir, h, guess, t.onSurfTol);
 
     // VERIFY: on both surfaces, advanced along t★, and the chord/arc DEFLECTION is within
     // budget. The deflection cap is what forces the crossing to RESOLVE the near-tangent
@@ -496,9 +554,17 @@ CrossOut crossNearTangent(const SurfaceAdapter& A, const SurfaceAdapter& B,
     // sharply, so a big step has huge deflection → shrink until it SAMPLES the sine → 0
     // dip, where the floor/flip guards below abort. A genuine graze bows gently and is
     // accepted at a healthy step.
-    const double advance = math::dot(c.s.p - cur.p, dirStar);
+    // NET progress is measured against the STEP DIRECTION actually taken (stepDir): the
+    // curve advances along its OWN tangent through the turn, so on the frozen-t★ path
+    // stepDir == dirStar and this is the original along-t★ test (byte-identical); on the
+    // reanchor path it lets a legitimately TURNING graze keep advancing (a step whose
+    // t★-projection dips below 0.25·h at the pinch is NOT a stall — it is the curve
+    // turning). The anti-orbit arc cap below bounds the total path so a non-traversing
+    // orbit still terminates + defers. Deflection is measured in the plane the step was
+    // actually taken in (stepDir) so a re-anchored step is not spuriously flagged.
+    const double advance = math::dot(c.s.p - cur.p, stepDir);
     const bool advanced = advance >= 0.25 * h;
-    const double defl = c.ok ? stepDeflection(A, B, cur, c.s, dirStar, t.onSurfTol)
+    const double defl = c.ok ? stepDeflection(A, B, cur, c.s, stepDir, t.onSurfTol)
                              : std::numeric_limits<double>::infinity();
     if (!c.ok || !advanced || defl > t.maxDeflection) {
       if (h <= t.minStep) { out.resize(base); return r; }  // stuck at the floor → defer
@@ -508,8 +574,9 @@ CrossOut crossNearTangent(const SurfaceAdapter& A, const SurfaceAdapter& B,
 
     const Tangent tanNew = intersectionTangent(A, B, c.s);
     Vec3 rawNew{};
-    if (!crossNodeCrossable(tanNew, rawPrev, dirStar, t, rawNew)) { out.resize(base); return r; }
+    if (!crossNodeCrossable(tanNew, rawPrev, dirStar, t, rawNew, t.adaptiveCrossReanchor)) { out.resize(base); return r; }
 
+    crossArc += math::distance(cur.p, c.s.p);
     out.push_back(toNode(c.s, c.resid));
     prev = cur; havePrev = true;
     cur = c.s;
@@ -517,14 +584,49 @@ CrossOut crossNearTangent(const SurfaceAdapter& A, const SurfaceAdapter& B,
     r.maxResid = std::max(r.maxResid, c.resid);
     ++r.count;
 
-    // Recovered on the far side: transversality back above the exit threshold → crossed.
-    if (tanNew.sine >= t.bandExitSin) {
-      r.crossed = true;
-      r.end = cur;
+    // ANTI-ORBIT: a crossable graze traverses in a short bounded arc; if the reanchored
+    // curve-following step has run past the arc cap without recovering on the far side it
+    // is orbiting (not traversing) → discard + defer. Never fabricates a close.
+    if (t.adaptiveCrossReanchor && crossArc > crossArcCap) {
+      out.resize(base);
       return r;
     }
-    // still deep in the band: keep the step fine (bounded by the crossing cap / minStep).
-    h = std::max(t.minStep, std::min(h, hCrossCap));
+
+    // Recovered on the far side → hand back to the normal S3 march. Frozen-t★ path uses the
+    // exit hysteresis bandExitSin (1.5·enter) — byte-identical. Reanchor path: a WIDE graze's
+    // inter-pinch stretch may top out only modestly above the ENTER threshold (below the
+    // exit hysteresis), yet it is a genuine transversal recovery — sine steadily ≥ bandEnter
+    // where S3 itself is comfortable. Hand back at bandEnter with a stability requirement (two
+    // consecutive recovered nodes) so a single lucky sample can't trigger a premature exit; if
+    // S3 dips near-tangent again it simply re-enters the crossing. No tolerance is weakened —
+    // the recovered region is handed to the SAME S3 corrector that runs everywhere else.
+    const double recoverSin = t.adaptiveCrossReanchor ? t.bandEnterSin : t.bandExitSin;
+    if (tanNew.sine >= recoverSin) {
+      if (!t.adaptiveCrossReanchor || recoveredRun >= 1) {  // reanchor: require 2 in a row
+        r.crossed = true;
+        r.end = cur;
+        return r;
+      }
+      ++recoveredRun;
+    } else {
+      recoveredRun = 0;
+    }
+    // STEP CONTROL. Frozen-t★ path: keep the step fine through the whole band (bounded by
+    // the crossing cap / minStep) — byte-identical to before. Reanchor path: a WIDE graze
+    // has TRANSVERSAL stretches between pinches (the loop recovers to sine≈1 there); pinning
+    // the step fine crawls those in ~loop-scale arc and exhausts the node budget. Because
+    // reanchoring follows the true curve tangent (and every node is still verified on both
+    // surfaces + gated), the step may GROW back toward the normal maxStep as sine climbs
+    // above the enter threshold, then SHRINK to the fine cap as it re-approaches a pinch —
+    // so the crossing spends its fine steps where the graze actually is. This changes only
+    // WHERE the resolution is spent, never a tolerance: the sine-floor / branch-flip / arc
+    // guards are unchanged, so a genuine tangency still defers.
+    if (t.adaptiveCrossReanchor) {
+      if (tanNew.sine >= t.bandEnterSin) h = std::min(t.maxStep, h * 1.5);  // transversal stretch → speed up
+      else                               h = std::max(t.minStep, std::min(h, hCrossCap));  // near a pinch → resolve fine
+    } else {
+      h = std::max(t.minStep, std::min(h, hCrossCap));
+    }
   }
 
   out.resize(base);  // budget exhausted without recovering → discard, defer

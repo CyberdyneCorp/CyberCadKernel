@@ -825,6 +825,107 @@ void pairNearTangentCrossedS4c() {
   std::fflush(stdout);
 }
 
+// ── S4-c DEEP breadth (M1d): a TIGHTER graze crossed by adaptive re-anchoring, vs OCCT ──
+// The same offset cyl∩sphere family, pushed DEEPER: dx = 0.590 (r+dx = 0.990) so the
+// transversality sine dips to ≈ 0.141 — BELOW the ≈ 0.17 floor where the shipped fixed-t★
+// crossing corrector still converges. With reanchor OFF the DEFAULT S4-c honestly DEFERS
+// here (asserted below). With `adaptiveCrossReanchor` the crossing re-anchors its advance
+// plane to the local curve tangent and traverses the graze → the FULL closed loop.
+//
+// PARITY (honest, same contract as the shipped S4-c graze): OCCT tolerance-splits the loop
+// at the near-tangency while native crosses it as ONE loop, so the gate asserts the strong
+// uncontested facts: every densely-sampled native node lies ON the OCCT locus AND on BOTH
+// surfaces within tol (the crossed curve IS the true intersection, not fabricated), it was a
+// genuine crossing (nearTangentGaps → 0, nearTangentCrossed ≥ 1, one Closed loop), AND the
+// DEFAULT (reanchor off) still declines this deeper graze (the breadth extension is real).
+void pairDeepNearTangentReanchorS4c() {
+  nm::Sphere sph{frameZ(), 1.0};
+  nm::Cylinder cyl{frameZ({0.590, 0, 0}), 0.4};  // r+dx = 0.990 → deeper graze, minSine ≈ 0.141
+  ssi::ParamBox sdom{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
+  ssi::ParamBox cdom{0.0, 2.0 * kPi, -1.5, 1.5};
+  auto A = ssi::makeSphereAdapter(sph, sdom);
+  auto B = ssi::makeCylinderAdapter(cyl, cdom);
+  Handle(Geom_Surface) sa = new Geom_SphericalSurface(toOcctAx3(frameZ()), 1.0);
+  Handle(Geom_Surface) sb = new Geom_CylindricalSurface(toOcctAx3(frameZ({0.590, 0, 0})), 0.4);
+
+  ssi::SeedOptions sopt; sopt.initialGridU = 6; sopt.initialGridV = 6; sopt.minPatchFrac = 1.0 / 64.0;
+
+  // DEFAULT S4-c (reanchor OFF): the deeper graze is below the fixed-plane floor → HONEST DEFER.
+  ssi::MarchOptions moOff; moOff.tangentSinTol = 0.25;
+  const ssi::TraceSet tsOff = ssi::trace_intersection(A, B, sopt, moOff);
+  const bool declineOff = tsOff.nearTangentGaps >= 1 && tsOff.nearTangentCrossed == 0 &&
+                          tsOff.closedCurves == 0;
+
+  // M1d adaptive re-anchoring ON: crosses the tighter graze → full closed loop.
+  ssi::MarchOptions moOn; moOn.tangentSinTol = 0.25;
+  moOn.adaptiveCrossReanchor = true; moOn.reanchorBlend = 0.5;
+  const ssi::TraceSet ts = ssi::trace_intersection(A, B, sopt, moOn);
+
+  GeomAPI_IntSS iss(sa, sb, 1e-7);
+  const int occtN = iss.IsDone() ? iss.NbLines() : 0;
+  std::vector<OcctBranch> occtBr;
+  for (int i = 1; i <= occtN; ++i) occtBr.push_back(classifyBranch(iss.Line(i), sa, sb, 1e-2));
+
+  const double onCurveTol = 5e-4, onSurfTol = 1e-4;
+  double maxOnCurve = 0.0, maxOnSurf = 0.0, crossResid = 0.0;
+  for (const auto& w : ts.lines) {
+    crossResid = std::max(crossResid, w.crossMaxResidual);
+    for (const Point3& p : sampleWLine(w)) {
+      double best = 1e30;
+      for (const auto& b : occtBr) best = std::min(best, distToOcctCurve(b.curve, p));
+      maxOnCurve = std::max(maxOnCurve, best);
+      maxOnSurf = std::max(maxOnSurf, std::max(distToOcctSurface(sa, p), distToOcctSurface(sb, p)));
+    }
+  }
+
+  const bool ok = declineOff && ts.nearTangentGaps == 0 && ts.nearTangentCrossed >= 1 &&
+                  ts.closedCurves == 1 && occtN > 0 && crossResid <= onSurfTol &&
+                  maxOnCurve <= onCurveTol && maxOnSurf <= onSurfTol;
+  if (ok) ++g_pass; else ++g_fail;
+  std::printf("[NMARCH] %-4s %-18s declineOff=%d NTgaps=%d crossed=%d closed=%d onCurve=%.2e "
+              "onSurf=%.2e crossResid=%.2e occtBr=%d\n",
+              ok ? "PASS" : "FAIL", "deep-nt reanchor", (int)declineOff, ts.nearTangentGaps,
+              ts.nearTangentCrossed, ts.closedCurves, maxOnCurve, maxOnSurf, crossResid, occtN);
+  std::fflush(stdout);
+}
+
+// ── S4-c HONEST DECLINE below the extended floor (M1d) ────────────────────────────
+// Pushed FURTHER: dx = 0.595 (r+dx = 0.995), transversality sine ≈ 0.100 — below even the
+// adaptive-re-anchoring floor. EVEN WITH reanchor ON the native marcher HONESTLY DECLINES:
+// no crossing, no fabricated loop across the knife-edge (nearTangentCrossed == 0, no Closed
+// loop, nearTangentGaps ≥ 1 → deferred to OCCT). OCCT (GeomAPI_IntSS) does resolve a locus
+// here; the gate asserts native declines while OCCT reports — the honest boundary, measured.
+void pairDeepNearTangentHonestDeclineS4c() {
+  nm::Sphere sph{frameZ(), 1.0};
+  nm::Cylinder cyl{frameZ({0.595, 0, 0}), 0.4};  // r+dx = 0.995 → minSine ≈ 0.100, below the extended floor
+  ssi::ParamBox sdom{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
+  ssi::ParamBox cdom{0.0, 2.0 * kPi, -1.5, 1.5};
+  auto A = ssi::makeSphereAdapter(sph, sdom);
+  auto B = ssi::makeCylinderAdapter(cyl, cdom);
+  Handle(Geom_Surface) sa = new Geom_SphericalSurface(toOcctAx3(frameZ()), 1.0);
+  Handle(Geom_Surface) sb = new Geom_CylindricalSurface(toOcctAx3(frameZ({0.595, 0, 0})), 0.4);
+
+  ssi::SeedOptions sopt; sopt.initialGridU = 6; sopt.initialGridV = 6; sopt.minPatchFrac = 1.0 / 64.0;
+  ssi::MarchOptions moOn; moOn.tangentSinTol = 0.25;
+  moOn.adaptiveCrossReanchor = true; moOn.reanchorBlend = 0.5;
+  const ssi::TraceSet ts = ssi::trace_intersection(A, B, sopt, moOn);
+
+  GeomAPI_IntSS iss(sa, sb, 1e-7);
+  const int occtN = iss.IsDone() ? iss.NbLines() : 0;
+
+  bool anyFabricatedLoop = false;
+  for (const auto& w : ts.lines)
+    if (w.nearTangentCrossed != 0 || w.isClosed()) anyFabricatedLoop = true;
+
+  const bool ok = ts.nearTangentCrossed == 0 && !anyFabricatedLoop &&
+                  ts.nearTangentGaps >= 1 && occtN > 0;  // native declines; OCCT reports
+  if (ok) ++g_pass; else ++g_fail;
+  std::printf("[NMARCH] %-4s %-18s crossed=%d closed=%d NTgaps=%d occtBr=%d (native declines, OCCT reports)\n",
+              ok ? "PASS" : "FAIL", "deep-nt decline", ts.nearTangentCrossed, ts.closedCurves,
+              ts.nearTangentGaps, occtN);
+  std::fflush(stdout);
+}
+
 // ── S4-c: a GENUINE tangency the marcher reaches must STILL STOP (not be crossed) ─────
 // Two equal cylinders crossing at 90° (axes Z and X, both R=1) meet TANGENTIALLY at the
 // saddle points — a BRANCH crossing (S4-d), where the intersection self-crosses and the
@@ -1250,6 +1351,8 @@ int main() {
   pairCrossingSpheres();
   pairSphereBezier();
   pairNearTangentCrossedS4c();   // S4-c: graze marched through, full curve vs OCCT
+  pairDeepNearTangentReanchorS4c();      // M1d: DEEPER graze crossed by adaptive re-anchoring (default declines) vs OCCT
+  pairDeepNearTangentHonestDeclineS4c(); // M1d: below the extended floor, native honestly declines while OCCT reports
   pairEqualCylindersDefer();     // S4-c: branch saddle still deferred (not crossed) — control
   pairEqualCylindersBranchS4d(); // S4-d: branch points localized + arms routed vs OCCT
   pairFreeformSaddleBranchS4d(); // S4-d-g: FREEFORM saddle open-arm branch localized + routed vs OCCT

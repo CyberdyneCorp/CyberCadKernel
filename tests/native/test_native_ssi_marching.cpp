@@ -819,4 +819,117 @@ CC_TEST(march_sphere_cyl_twice_piercing_two_loops) {
   }
 }
 
+// ── S4-c DEEP near-tangent breadth (M1d): adaptive re-anchoring crosses a TIGHTER graze ──
+// The same offset cyl∩sphere family as march_near_tangent_crossed_s4c, but pushed DEEPER
+// into the near-tangent regime: dx = 0.590 (r+dx = 0.990) so the transversality sine dips to
+// ≈ 0.141 at the pinches — BELOW the ≈ 0.17 floor where the shipped fixed-t★ crossing corrector
+// still converges. There the frozen-plane corrector fails to land (the curve turns materially
+// through the pinch, slicing the fixed plane far from the guess) → the DEFAULT S4-c HONESTLY
+// DEFERS (nearTangentGaps == 1, no fabricated curve). With `adaptiveCrossReanchor` the crossing
+// re-anchors its advance plane to the LOCAL curve tangent and traverses the graze, producing the
+// FULL closed loop — every node still on BOTH surfaces ≤ 1e-9, matching the tolerance-below-dip
+// ground truth. This is the measured breadth extension (floor ≈ 0.17 → ≈ 0.14).
+CC_TEST(march_deep_near_tangent_reanchor_crossed_s4c) {
+  nmath::Sphere sp{frameZ({0, 0, 0}), 1.0};
+  nmath::Cylinder cy{frameZ({0.590, 0, 0}), 0.4};  // r+dx = 0.990 → deeper graze, minSine ≈ 0.141
+  ssi::ParamBox sd{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
+  ssi::ParamBox cd{0.0, 2.0 * kPi, -1.5, 1.5};
+  auto A = ssi::makeSphereAdapter(sp, sd);
+  auto B = ssi::makeCylinderAdapter(cy, cd);
+
+  ssi::SeedOptions so;
+  so.initialGridU = 6;
+  so.initialGridV = 6;
+  so.minPatchFrac = 1.0 / 64;
+
+  // Ground truth: with the tolerance BELOW the dip the S3 marcher closes the loop.
+  ssi::MarchOptions ctrl;
+  ctrl.tangentSinTol = 1e-4;
+  auto ref = ssi::trace_intersection(A, B, so, ctrl);
+  CC_CHECK(ref.closedCurves == 1);
+  double refLen = 0.0;
+  if (ref.curveCount() >= 1) refLen = polylineLength(ref.lines[0]);
+
+  // DEFAULT S4-c (frozen t★, reanchor OFF): the deeper graze is below the fixed-plane floor →
+  // HONEST DEFER. No fabricated curve, no crossing.
+  ssi::MarchOptions off;
+  off.tangentSinTol = 0.25;
+  auto trOff = ssi::trace_intersection(A, B, so, off);
+  CC_CHECK(trOff.nearTangentGaps == 1);
+  CC_CHECK(trOff.nearTangentCrossed == 0);
+  CC_CHECK(trOff.closedCurves == 0);
+
+  // M1d DEEP breadth: adaptive re-anchoring crosses the tighter graze → FULL closed loop.
+  ssi::MarchOptions on;
+  on.tangentSinTol = 0.25;
+  on.adaptiveCrossReanchor = true;
+  on.reanchorBlend = 0.5;
+  auto tr = ssi::trace_intersection(A, B, so, on);
+  CC_CHECK(tr.curveCount() == 1);
+  if (tr.curveCount() != 1) return;
+
+  const ssi::WLine& w = tr.lines[0];
+  CC_CHECK(tr.nearTangentGaps == 0);       // the deeper graze was crossed, not truncated
+  CC_CHECK(tr.nearTangentCrossed >= 1);    // and it is REPORTED as a crossing
+  CC_CHECK(w.nearTangentCrossed >= 1);
+  CC_CHECK(w.isClosed());                  // full closed loop, not an open truncation
+  CC_CHECK(!w.truncated());
+  CC_CHECK(w.points.size() >= 2);
+  // Every node — including those spliced across the tighter graze — lies on BOTH surfaces
+  // (never a fabricated point off the geometry).
+  for (const auto& nd : w.points) {
+    CC_CHECK(distToSphere(sp, nd.point) < 1e-9);
+    CC_CHECK(distToCylinder(cy, nd.point) < 1e-9);
+  }
+  // Reproduces the ground-truth loop: same closed shape, arc length within a step-bounded
+  // under-estimate (chord polyline takes larger chords through the graze).
+  const double len = polylineLength(w);
+  if (refLen > 0.0) {
+    CC_CHECK(len <= refLen + 1e-4);        // never longer than the ground-truth arc
+    CC_CHECK(len >= refLen * 0.88);        // within a step-bounded under-estimate
+  }
+}
+
+// ── HONEST DECLINE below the extended floor (M1d) ─────────────────────────────────
+// Pushed FURTHER still: dx = 0.595 (r+dx = 0.995), transversality sine dips to ≈ 0.100 — below
+// even the ADAPTIVE-re-anchoring floor. The graze is now so wide (a large fraction of the loop
+// is near-tangent) that the curve-following crossing cannot recover to a transversal stretch
+// within budget. The honest contract: EVEN WITH adaptiveCrossReanchor ON, this defers — NO
+// fabricated curve, no crossing across the knife-edge. A ground-truth loop still exists (traced
+// only with the tolerance below the dip), so this is a genuine HONEST DECLINE at the sharpened
+// floor, not a missing loop.
+CC_TEST(march_deep_near_tangent_reanchor_honest_decline_s4c) {
+  nmath::Sphere sp{frameZ({0, 0, 0}), 1.0};
+  nmath::Cylinder cy{frameZ({0.595, 0, 0}), 0.4};  // r+dx = 0.995 → minSine ≈ 0.100, below the extended floor
+  ssi::ParamBox sd{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
+  ssi::ParamBox cd{0.0, 2.0 * kPi, -1.5, 1.5};
+  auto A = ssi::makeSphereAdapter(sp, sd);
+  auto B = ssi::makeCylinderAdapter(cy, cd);
+
+  ssi::SeedOptions so;
+  so.initialGridU = 6;
+  so.initialGridV = 6;
+  so.minPatchFrac = 1.0 / 64;
+
+  // A ground-truth loop DOES exist (tolerance below the dip) — so a decline is honest, not a miss.
+  ssi::MarchOptions ctrl;
+  ctrl.tangentSinTol = 1e-4;
+  auto ref = ssi::trace_intersection(A, B, so, ctrl);
+  CC_CHECK(ref.closedCurves == 1);
+
+  // Adaptive re-anchoring ON — still HONESTLY DECLINES below the extended floor: no crossing,
+  // no fabricated closed loop stitched across the knife-edge.
+  ssi::MarchOptions on;
+  on.tangentSinTol = 0.25;
+  on.adaptiveCrossReanchor = true;
+  on.reanchorBlend = 0.5;
+  auto tr = ssi::trace_intersection(A, B, so, on);
+  CC_CHECK(tr.nearTangentCrossed == 0);   // never crossed the knife-edge
+  for (const ssi::WLine& w : tr.lines) {
+    CC_CHECK(w.nearTangentCrossed == 0);
+    CC_CHECK(!w.isClosed());              // no full loop fabricated across the near-tangency
+  }
+  CC_CHECK(tr.nearTangentGaps >= 1);       // the honest S4 gap is reported (deferred → OCCT)
+}
+
 int main() { return cctest::run_all(); }

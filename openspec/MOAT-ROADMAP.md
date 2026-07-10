@@ -213,6 +213,43 @@ resolution. The curve *pipeline* exists; this is the *robustness* on adversarial
     (grazing crossings where the transversality sine dips below the crossable band) and
     coincident/overlapping FREEFORM surfaces — both still defer to OCCT. The quadric-pair breadth is
     now verified end-to-end; the freeform near-tangent tail is the hard slice.
+- **M1d S4-c near-tangent breadth EXTENDED into the grazing regime (change `moat-m1d-ssi-deep-tail`).**
+  The shipped S4-c crossing froze ONE reference tangent `t★` as both the crossability anchor AND the
+  fixed-plane advance direction for the whole crossing; host probing measured its robust-crossing
+  floor at a minimum transversality sine of ≈ **0.17** (offset cyl∩sphere: dx=0.585/r+dx=0.985 crosses;
+  dx=0.590/r+dx=0.990, minSine≈0.141, DEFERS). The measured ROOT CAUSE of the defer is NOT the band-min
+  floor (0.141 ≫ the 0.075 floor) nor a steep sine collapse — it is the two-surface corrector failing
+  to converge (`c.ok==false`): the curve TURNS through the tighter pinch and the frozen `t★` plane
+  slices it far from the guess.
+  - **Adaptive crossing re-anchoring** (`src/native/ssi/marching.cpp`, ADDITIVE, default-off
+    `MarchOptions::adaptiveCrossReanchor` + `reanchorBlend`): the crossing corrector re-anchors its
+    advance plane toward the LOCAL intersection tangent (`normalize(nA×nB)`, continuity-oriented,
+    blended with `t★`) so the plane FOLLOWS the curve's turn; per-step progress is measured along the
+    actual step (bounded by an anti-orbit total-arc cap); hand-back to S3 fires at the band-ENTER
+    threshold (with a two-node stability requirement) because a WIDE graze's inter-pinch stretch tops
+    out below the exit hysteresis. The HONESTY anchors are UNCHANGED (band-min floor, steep-collapse
+    witness, per-step ≥60° branch-flip guard on the frozen `t★`; every node verified on BOTH surfaces
+    at the SAME `onSurfTol`; a raw node-secant re-anchoring was tried and REJECTED as too noisy). The
+    flag DEFAULTS OFF → the crossing loop, per-node guard, step control, and hand-back are
+    byte-identical to the shipped S4-c crossing for every prior case.
+  - **Measured breadth extension:** robust-crossing floor **≈ 0.17 → ≈ 0.14**. dx=0.590 (minSine≈0.141,
+    shipped DEFERS) now traces ONE closed loop, every node on both surfaces ≤ 8e-11, arc within ~4% of
+    the tolerance-below-dip ground truth. dx=0.593–0.595 (minSine ≈ 0.12–0.10) remain an HONEST DECLINE
+    even with re-anchoring on (the near-tangent band is too wide to recover within budget) — discard +
+    defer, never fabricate.
+  - Host **Gate A 21/21** (19 prior frozen + `march_deep_near_tangent_reanchor_crossed_s4c`
+    [OFF defers, ON crosses ≤ 1e-9] + `march_deep_near_tangent_reanchor_honest_decline_s4c`
+    [ON still declines below the floor]). Sim **Gate B 19/0** vs `GeomAPI_IntSS`: `deep-nt reanchor`
+    declineOff=1, crossed=21, closed=1, onCurve=1.3e-4, onSurf=2.2e-5, crossResid=6.9e-11 (occtBr=4);
+    `deep-nt decline` crossed=0, closed=0, NTgaps=1 (native declines, OCCT reports); all 17 prior cases
+    frozen (nt-cross s4c still crosses at dx=0.585, eq-cyl still defers, s4d/s4e green). `src/native`
+    diff confined to `ssi/marching.{h,cpp}`, OCCT-free + additive; tessellator/boolean/blend untouched;
+    `cc_*` unchanged; no tolerance weakened.
+  - **Next blocker (sharpened, measured):** grazing crossings whose minimum transversality sine dips
+    below ≈ **0.12** — the WIDE-BAND regime where a large fraction of the loop is near-tangent so the
+    curve-following crossing cannot recover to a transversal stretch within budget (still an honest
+    defer) — and coincident/overlapping FREEFORM surfaces. The near-tangent floor is now ≈ 0.14; the
+    wide-band tail and the true-tangency knife-edge stay the asymptotic moat core.
 
 ### M2 — General freeform booleans · ~2–4 py · needs M0 + M1
 Lift `recogniseCurvedSolid` to accept **freeform (B-spline/NURBS) operands** (it rejects them

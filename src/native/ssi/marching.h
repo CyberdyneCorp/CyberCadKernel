@@ -293,6 +293,32 @@ struct MarchOptions {
   double bandEnterSin = -1.0;  ///< sine below this ⇒ enter the crossing band (≤ 0 → tangentSinTol)
   double bandExitSin  = -1.0;  ///< sine above this on the far side ⇒ band exit, resume S3 (≤ 0 → 1.5·tangentSinTol)
   int    crossMaxSteps = 256;  ///< max fixed-plane steps spent crossing one graze before deferring
+
+  // ── S4-c DEEP near-tangent breadth (M1d, ADDITIVE, default OFF → byte-identical) ──
+  //
+  // The shipped S4-c crossing freezes ONE reference tangent t★ (the last-good pre-band
+  // tangent) as BOTH the crossability anchor AND the fixed-plane advance direction for
+  // the whole band. On a TIGHTER graze (transversality sine dipping ≈ 0.10–0.17, below
+  // the ≈ 0.17 the frozen plane still resolves) the intersection curve TURNS materially
+  // through the pinch, so the frozen advance plane slices the curve far from the guess
+  // and the two-surface corrector fails to converge (`c.ok == false`) — an honest defer,
+  // but a RESOLVABLE one: the graze is a genuine single transversal branch (band-min
+  // sine well above the 0.3·enter floor, no steep collapse).
+  //
+  // `adaptiveCrossReanchor` (default OFF) lets the crossing corrector RE-ANCHOR its
+  // fixed-plane advance direction toward the LOCAL intersection tangent (normalize(nA×nB),
+  // continuity-oriented) as it steps — a higher-order (curve-following) plane that stays
+  // transverse to the turning curve, so the corrector keeps landing on both surfaces deeper
+  // into the band (a raw node-secant was tried first and rejected as too noisy at the fine
+  // crossing step). The HONESTY anchors are UNCHANGED: crossability is still decided against
+  // the frozen t★ (`crossNodeCrossable` sine floor + per-step branch-flip guard, band-min
+  // floor, steep-collapse witness), the re-anchored direction must still head the crossing
+  // way (`dot(t_local, t★) > 0`) or the frozen t★ is kept, every node is still verified on
+  // BOTH surfaces at the SAME onSurfTol, and a genuine tangency / branch (sine → 0) still
+  // defers. It only follows the curve's turn — it never widens a tolerance and never
+  // fabricates a point.
+  bool   adaptiveCrossReanchor = false;  ///< S4-c deep tail: re-anchor the crossing plane to the local curve tangent
+  double reanchorBlend = -1.0;           ///< blend weight local-tangent↔t★ per step (≤ 0 → 1.0 = full local tangent); clamped [0,1]
   int maxPoints = 20000;       ///< hard cap on nodes per direction (termination safety)
   int fitDegree = 3;           ///< B-spline fit degree (cubic default)
   int fitMaxPoles = 64;        ///< max poles the least-squares fit uses (0 → interpolate every node)

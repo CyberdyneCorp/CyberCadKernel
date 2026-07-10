@@ -1437,13 +1437,25 @@ ShapeResult NativeEngine::shell(EngineShape body, const int* f, int fc, double t
 ShapeResult NativeEngine::offset_face(EngineShape body, int f, double d) {
     if (!isNative(body)) return fallback().offset_face(body, f, d);
     const auto* h = static_cast<const NativeShape*>(body.get());
+    // 1. PLANAR face on an all-planar solid — slide the cap along its normal, drag the
+    //    side faces. Grow (d>0) increases volume; shrink (d<0) decreases it.
     ntopo::Shape result = nblend::offset_face(h->shape, f, d);
-    // Grow (d>0) must increase volume; shrink (d<0) must decrease it.
-    if (result.isNull() || !blendResultVerified(result, h->shape, /*wantGrow=*/d > 0.0))
-        return make_error(
-            "native offset_face: no verified watertight result for this native body "
-            "(curved solid / non-planar face or degenerate offset → OCCT-only)");
-    return track(wrapNative(std::move(result)));
+    if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/d > 0.0))
+        return track(wrapNative(std::move(result)));
+
+    // 2. CURVED face — the CYLINDER lateral wall of a capped cylinder, offset RADIALLY
+    //    (radius Rc → Rc+d). The offset of a cylinder surface is a coaxial cylinder, so the
+    //    capped body is re-radiused analytically (wall band + two disc caps, planar-facet
+    //    weld, no tessellator change). Same correctly-signed volume self-verify: grow d>0 →
+    //    Vr>Vo, shrink d<0 → 0<Vr<Vo. A picked planar face is served by (1); a cone / sphere
+    //    / stepped / multi-cylinder body → NULL → OCCT (BRepOffsetAPI).
+    result = nblend::curved_offset_face(h->shape, f, d);
+    if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/d > 0.0))
+        return track(wrapNative(std::move(result)));
+
+    return make_error(
+        "native offset_face: no verified watertight result for this native body "
+        "(non-cylinder curved face / stepped / cone / sphere / degenerate offset → OCCT-only)");
 }
 // ── NATIVE DM3 general move-face (additive; derives the target plane, reuses DM2) ──
 // The app's `cc_replace_face(body, faceId, offset, tiltDeg)` — retarget a planar face

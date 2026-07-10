@@ -1081,6 +1081,75 @@ CC_TEST(offset_top_face_shrinks_slab) {
   CC_CHECK(nearRel(v, 600.0));
 }
 
+// ── curved offset_face (cylinder lateral wall, RADIAL) ──────────────────────────---
+namespace {
+constexpr double kOffPi = 3.14159265358979323846;
+// The id of the (first) Cylinder lateral face of a capped cylinder.
+int cylWallFace(const topo::Shape& s) {
+  const topo::ShapeMap map = topo::mapShapes(s, topo::ShapeType::Face);
+  for (std::size_t i = 1; i <= map.size(); ++i) {
+    const auto su = topo::surfaceOf(map.shape(static_cast<int>(i)));
+    if (su && su->surface->kind == topo::FaceSurface::Kind::Cylinder) return static_cast<int>(i);
+  }
+  return 0;
+}
+// The id of the (first) planar cap face.
+int cylCapFace(const topo::Shape& s) {
+  const topo::ShapeMap map = topo::mapShapes(s, topo::ShapeType::Face);
+  for (std::size_t i = 1; i <= map.size(); ++i) {
+    const auto su = topo::surfaceOf(map.shape(static_cast<int>(i)));
+    if (su && su->surface->kind == topo::FaceSurface::Kind::Plane) return static_cast<int>(i);
+  }
+  return 0;
+}
+}  // namespace
+
+// Offset the cylinder wall of a capped cylinder OUTWARD (grow radius) → a bigger tube,
+// matching the exact π(Rc+d)²H closed form to the deflection bound; watertight + oriented.
+CC_TEST(curved_offset_cylinder_wall_grows) {
+  const double Rc = 3.0, H = 10.0, d = 1.0;
+  const topo::Shape cyl = cappedCylinder(Rc, H);
+  const int wf = cylWallFace(cyl);
+  CC_CHECK(wf != 0);
+  const topo::Shape g = blend::curved_offset_face(cyl, wf, d);
+  bool wt = false;
+  const double v = vol(g, wt);
+  CC_CHECK(!g.isNull());
+  CC_CHECK(wt);
+  CC_CHECK(nearRel(v, kOffPi * (Rc + d) * (Rc + d) * H, 5e-3));  // deflection-bounded facets
+  CC_CHECK(v > kOffPi * Rc * Rc * H);                            // GREW vs the sharp tube
+}
+
+// Offset the cylinder wall INWARD (shrink radius) → a smaller tube (still positive radius).
+CC_TEST(curved_offset_cylinder_wall_shrinks) {
+  const double Rc = 3.0, H = 10.0, d = -1.0;
+  const topo::Shape cyl = cappedCylinder(Rc, H);
+  const int wf = cylWallFace(cyl);
+  const topo::Shape g = blend::curved_offset_face(cyl, wf, d);
+  bool wt = false;
+  const double v = vol(g, wt);
+  CC_CHECK(!g.isNull());
+  CC_CHECK(wt);
+  // Deflection-bounded: the shrunk (smaller-radius) tube facets slightly coarser than the
+  // grow case, so the standard 1% curved-mesh tolerance applies (the volume converges as the
+  // deflection refines — the hard gates are watertight + oriented + the SHRINK direction).
+  CC_CHECK(nearRel(v, kOffPi * (Rc + d) * (Rc + d) * H, 1e-2));
+  CC_CHECK(v < kOffPi * Rc * Rc * H);  // SHRANK
+}
+
+// Honest DECLINE (→ planar arm / OCCT): a PLANAR cap face is not the curved arm's job; a
+// shrink that would invert the tube (Rc + d ≤ 0) and a zero offset return NULL.
+CC_TEST(curved_offset_scope_defers) {
+  const double Rc = 3.0, H = 10.0;
+  const topo::Shape cyl = cappedCylinder(Rc, H);
+  CC_CHECK(blend::curved_offset_face(cyl, cylCapFace(cyl), 1.0).isNull());   // planar cap → arm/OCCT
+  CC_CHECK(blend::curved_offset_face(cyl, cylWallFace(cyl), -Rc).isNull());  // Rc+d = 0 → invert
+  CC_CHECK(blend::curved_offset_face(cyl, cylWallFace(cyl), 0.0).isNull());  // zero offset
+  CC_CHECK(blend::curved_offset_face(box(10, 10, 10), 1, 2.0).isNull());     // no cylinder wall
+  // Control: the wall DOES offset native.
+  CC_CHECK(!blend::curved_offset_face(cyl, cylWallFace(cyl), 1.0).isNull());
+}
+
 // ── shell ──────────────────────────────────────────────────────────────────────--
 
 CC_TEST(shell_open_top_box_wall_volume) {

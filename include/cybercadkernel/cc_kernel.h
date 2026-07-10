@@ -159,6 +159,28 @@ typedef struct {
     int triangleCount;
 } CCFaceMesh;
 
+/* ── Phase-additive (NOT part of the mirrored KernelBridgeAPI.h ABI): render-quality
+ *    DISPLAY mesh ─────────────────────────────────────────────────────────────
+ * A shading-ready mesh POST-PROCESSED from the correctness tessellation (the same
+ * triangle mesh cc_tessellate produces). It adds per-vertex SMOOTH normals with
+ * crease-angle HARD edges, optional texture coordinates, and an optional lower
+ * level-of-detail — attributes the correctness mesh deliberately omits. It does
+ * NOT change the tessellator or cc_tessellate: it CONSUMES that mesh.
+ *
+ * `positions` is x,y,z triplets (len vertexCount*3). `normals` is a UNIT normal
+ * per vertex, x,y,z triplets (same length) — smooth across sub-crease surfaces,
+ * split (duplicated vertex) across edges whose dihedral exceeds the crease angle
+ * so hard edges stay sharp. `uvs` is u,v pairs (len vertexCount*2) when UVs were
+ * requested, else NULL. `triangles` is i,j,k triplets into all per-vertex arrays.
+ * Owned by the caller; free with cc_display_mesh_free. All-null / zero counts on
+ * failure or an empty body (HONEST DECLINE, never a fabricated mesh). */
+typedef struct {
+    double *positions;   int vertexCount;   /* x,y,z triplets, len vertexCount*3 */
+    double *normals;                        /* x,y,z unit triplets, len vertexCount*3 */
+    double *uvs;                            /* u,v pairs, len vertexCount*2 (NULL if none) */
+    int    *triangles;   int triangleCount; /* i,j,k triplets, len triangleCount*3 */
+} CCDisplayMesh;
+
 /* ── Phase-4 additive (NOT part of the mirrored KernelBridgeAPI.h ABI): tet mesh ── */
 
 /* A tetrahedral volume mesh. nodes = x,y,z triplets (len nodeCount*3). elements =
@@ -546,6 +568,29 @@ CCShapeId cc_boolean(CCShapeId a, CCShapeId b, int op);
 
 /* Tessellate a body for display at `deflection` (mm). */
 CCMesh cc_tessellate(CCShapeId body, double deflection);
+
+/* ADDITIVE render-quality DISPLAY mesh (NOT part of the mirrored KernelBridgeAPI.h
+ * ABI). Post-processes the correctness tessellation of `body` at `deflection` into
+ * a shading-ready CCDisplayMesh (see the struct above): per-vertex smooth normals,
+ * crease-angle hard edges, optional UVs, optional LOD. It does NOT alter
+ * cc_tessellate — that call is byte-identical whether or not this is used.
+ *   creaseAngleDeg : dihedral (degrees) above which an edge is HARD (vertices are
+ *                    split so the crease stays sharp); curved surfaces below it
+ *                    shade smooth. Typical 20–45.
+ *   lodTargetTris  : target triangle count for edge-collapse decimation; <= 0
+ *                    disables LOD (the display mesh keeps the full resolution).
+ *                    Decimation preserves boundary/crease edges and stays within a
+ *                    Hausdorff bound derived from the deflection.
+ *   wantUVs        : 1 to emit per-vertex UVs (box/planar projection, in [0,1]);
+ *                    0 leaves out->uvs NULL.
+ * Fills *out (owned by the caller; free with cc_display_mesh_free) and returns the
+ * triangle count. Returns 0 with *out zeroed on an empty/unknown body or a mesh
+ * that cannot be produced (HONEST DECLINE) — never a fabricated mesh. Under the
+ * OCCT engine it consumes the OCCT tessellation; under the native engine it
+ * consumes the native SolidMesher output. */
+int cc_display_mesh(CCShapeId body, double deflection, double creaseAngleDeg,
+                    int lodTargetTris, int wantUVs, CCDisplayMesh *out);
+void cc_display_mesh_free(CCDisplayMesh *mesh);
 
 /* ── Queries ─────────────────────────────────────────────────────────────── */
 

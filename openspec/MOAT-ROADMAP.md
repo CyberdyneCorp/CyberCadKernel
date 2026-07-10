@@ -899,6 +899,37 @@ topology graph + frame math and consuming `src/native/{math,topology}` read-only
   `gp_Pln`/`gp_Cylinder`/`gp_Lin`/`BRepTools::OuterWire`/`MakeOffset`/D1-tangent, 8/8). `cc_*` ABI
   unchanged; 0 OCCT includes under `src/native/**`. OpenSpec change `moat-mref-reference-topology`.
 
+### M-RQ — tessellate: render-quality display mesh · **LANDED** (bounded, ANTICIPATORY)
+**Added as anticipatory render value for the app's iPad viewport + higher-quality glTF/USDZ
+export**, and deliberately built as a PURELY ADDITIVE post-process so it is parallel-safe: it
+CONSUMES the existing correctness mesh and does NOT touch the byte-frozen tessellator. A new
+OCCT-FREE, header-only `src/native/render/display_mesh.h` (`cybercad::native::render`) reads the
+`(vertices, triangles)` the mesher already produced and derives shading attributes the correctness
+mesh deliberately omits:
+- **Smooth normals + crease hard edges:** per-vertex angle/area-weighted normals averaged only
+  across sub-crease shared edges; a vertex on an edge whose dihedral exceeds the crease angle is
+  SPLIT (one display vertex per smoothing group) so curved walls shade smooth and creases stay
+  sharp. Closed-form-normal oracle (better than OCCT here): a cylinder wall's smooth normals are
+  EXACTLY radial (~1e-6 by angular symmetry); a sphere is all-smooth, its averaged normal
+  CONVERGING to the analytic radial as deflection refines; a box splits into 24 corner normals + 6
+  axis-aligned face normals; the cap↔wall ring is a crease → axial + radial split copies.
+- **Optional UVs:** dominant-axis planar (box) projection in `[0,1]`, seam-consistent (material
+  preview, not a full unwrap).
+- **Optional LOD:** quadric-error edge-collapse decimation that LOCKS boundary/crease vertices and
+  bounds every collapse by a Hausdorff budget (`scale·deflection`, geometric perpendicular
+  deviation) + a flip guard; `lodTargetTris<=0` disables it. Reduces tri count while every survivor
+  stays within the bound; a tighter budget throttles the collapse.
+- **New ADDITIVE op:** `cc_display_mesh(body, deflection, creaseAngleDeg, lodTargetTris, wantUVs,
+  out)` + `cc_display_mesh_free` + `CCDisplayMesh` POD, consuming the ACTIVE engine's tessellation
+  (serves under both OCCT and native, no engine-interface change). Empty/unknown body → 0 + zeroed
+  out (HONEST DECLINE). `cc_tessellate` is byte-identical whether or not this is called.
+- **Gates:** host `tests/native/test_native_display_mesh.cpp` (closed-form-normal oracle, 12/12,
+  OCCT-free) + sim `tests/sim/native_display_mesh_parity.mm` (`cc_display_mesh` engine-served, same
+  oracle + on-surface / watertight-fold / byte-frozen-tessellator cross-checks). Existing
+  tessellator files byte-identical (`git diff src/native/tessellate` empty), full host ctest 68/68
+  green; `cc_*` ABI additive-only (`test_abi` green); 0 OCCT includes under `src/native/**`. OpenSpec
+  change `moat-render-display-mesh`.
+
 ### M-DM — Direct modeling / synchronous editing · ~1.5–3 py · needs M2 + M3 + M5
 **Added because the CyberCad app depends on it and no other stage covered it.** The app drives
 direct-modeling operations through the `cc_*` ABI that are OCCT-only in the kernel today:

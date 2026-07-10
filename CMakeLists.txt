@@ -299,6 +299,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_math
         test_native_topology
         test_native_tessellate
+        test_native_display_mesh
         test_native_construct
         test_native_profile
         test_native_residuals
@@ -562,6 +563,14 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_topology.cpp")
     set(test_native_tessellate_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_tessellate.cpp")
+    # Render-quality DISPLAY mesh (src/native/render) — host GATE (a), the OCCT-free
+    # closed-form-normal proof (cylinder radial wall normals to ~1e-6, cap↔wall crease
+    # split, sphere all-smooth convergent normals, box 24 corner splits + 6 face
+    # normals, crease-angle threshold, LOD tri-reduction within the Hausdorff bound,
+    # UVs in [0,1] seam-consistent). Post-processes the existing tessellator's Mesh;
+    # no tessellator change. Header-only over math + tessellate/mesh; always-on suite.
+    set(test_native_display_mesh_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_display_mesh.cpp")
     set(test_native_construct_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_construct.cpp")
     set(test_native_profile_SRC

@@ -19,6 +19,8 @@
 #include "engine/native/native_engine.h"
 #include "native/exchange/native_exchange.h"
 #include "native/mesh/native_mesh.h"
+#include "native/render/display_mesh.h"
+#include "native/tessellate/mesh.h"
 
 namespace {
 
@@ -703,6 +705,122 @@ CCMesh cc_tessellate(CCShapeId body, double deflection) {
             return finish_mesh(r);
         },
         empty_mesh());
+}
+
+// ── render-quality display mesh (ADDITIVE) ──────────────────────────────────────
+// Consumes the ENGINE's correctness tessellation (the same MeshData cc_tessellate
+// returns) and post-processes it OCCT-FREE into a shading-ready display mesh. This
+// never re-meshes and never touches the tessellator — it is a pure consumer, so
+// cc_tessellate stays byte-identical.
+
+namespace {
+
+CCDisplayMesh empty_display_mesh() {
+    CCDisplayMesh m;
+    m.positions = nullptr;
+    m.vertexCount = 0;
+    m.normals = nullptr;
+    m.uvs = nullptr;
+    m.triangles = nullptr;
+    m.triangleCount = 0;
+    return m;
+}
+
+// Flat engine MeshData → the native tessellate::Mesh the post-processor consumes.
+cybercad::native::tessellate::Mesh meshDataToTess(const MeshData& md) {
+    namespace ntess = cybercad::native::tessellate;
+    namespace nmath = cybercad::native::math;
+    ntess::Mesh m;
+    const std::size_t nv = md.vertices.size() / 3;
+    m.vertices.reserve(nv);
+    for (std::size_t i = 0; i < nv; ++i)
+        m.vertices.push_back(nmath::Point3{md.vertices[3 * i], md.vertices[3 * i + 1],
+                                           md.vertices[3 * i + 2]});
+    const std::size_t nt = md.triangles.size() / 3;
+    m.triangles.reserve(nt);
+    for (std::size_t i = 0; i < nt; ++i)
+        m.triangles.push_back(ntess::Triangle{static_cast<std::uint32_t>(md.triangles[3 * i]),
+                                              static_cast<std::uint32_t>(md.triangles[3 * i + 1]),
+                                              static_cast<std::uint32_t>(md.triangles[3 * i + 2])});
+    return m;
+}
+
+}  // namespace
+
+int cc_display_mesh(CCShapeId body, double deflection, double creaseAngleDeg, int lodTargetTris,
+                    int wantUVs, CCDisplayMesh* out) {
+    return cyber::guard(
+        [&]() -> int {
+            if (out) *out = empty_display_mesh();
+            // Pull the ENGINE's correctness tessellation (OCCT or native — same
+            // MeshData either serves). This is the ONLY geometry input.
+            auto r = active_engine()->tessellate(resolve(body), deflection);
+            if (!r) {
+                set_last_error(r.error().message);
+                return 0;
+            }
+            const MeshData& md = r.value();
+            if (md.triangles.empty()) {
+                // HONEST DECLINE: no mesh to display (empty / unknown body).
+                set_last_error("cc_display_mesh: source tessellation is empty");
+                return 0;
+            }
+
+            namespace nrender = cybercad::native::render;
+            const cybercad::native::tessellate::Mesh src = meshDataToTess(md);
+            nrender::DisplayParams p;
+            p.deflection = deflection > 0.0 ? deflection : 0.1;
+            p.creaseAngleDeg = creaseAngleDeg;
+            p.lodTargetTris = lodTargetTris;
+            p.wantUVs = (wantUVs != 0);
+            const nrender::DisplayMesh dm = nrender::buildDisplayMesh(src, p);
+            if (dm.triangleCount() == 0) {
+                set_last_error("cc_display_mesh: post-process produced no triangles");
+                return 0;
+            }
+
+            if (!out) return static_cast<int>(dm.triangleCount());
+
+            std::vector<double> pos, nrm, uv;
+            std::vector<int> tris;
+            pos.reserve(dm.vertexCount() * 3);
+            nrm.reserve(dm.vertexCount() * 3);
+            for (std::size_t i = 0; i < dm.vertexCount(); ++i) {
+                pos.push_back(dm.positions[i].x);
+                pos.push_back(dm.positions[i].y);
+                pos.push_back(dm.positions[i].z);
+                nrm.push_back(dm.normals[i].x());
+                nrm.push_back(dm.normals[i].y());
+                nrm.push_back(dm.normals[i].z());
+            }
+            if (dm.hasUVs()) {
+                uv.reserve(dm.vertexCount() * 2);
+                for (const auto& t : dm.uvs) { uv.push_back(t[0]); uv.push_back(t[1]); }
+            }
+            tris.reserve(dm.triangleCount() * 3);
+            for (const auto& t : dm.triangles) {
+                tris.push_back(static_cast<int>(t.a));
+                tris.push_back(static_cast<int>(t.b));
+                tris.push_back(static_cast<int>(t.c));
+            }
+            out->positions = copy_doubles(pos);
+            out->vertexCount = static_cast<int>(dm.vertexCount());
+            out->normals = copy_doubles(nrm);
+            out->uvs = dm.hasUVs() ? copy_doubles(uv) : nullptr;
+            out->triangles = copy_ints(tris);
+            out->triangleCount = static_cast<int>(dm.triangleCount());
+            return static_cast<int>(dm.triangleCount());
+        },
+        0);
+}
+
+void cc_display_mesh_free(CCDisplayMesh* mesh) {
+    if (!mesh) return;
+    std::free(mesh->positions);
+    std::free(mesh->normals);
+    std::free(mesh->uvs);
+    std::free(mesh->triangles);
+    *mesh = empty_display_mesh();
 }
 
 // ── queries ───────────────────────────────────────────────────────────────────

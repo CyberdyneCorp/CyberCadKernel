@@ -172,7 +172,10 @@ if(CYBERCAD_MACOS_OCCT)
         POSITION_INDEPENDENT_CODE ON
         OSX_ARCHITECTURES arm64)
 
-    # The exact TK* order from the proven recipe.
+    # The exact TK* order from the proven recipe. -lTKHLR is required by
+    # occt_drafting.cpp (HLRBRep_* hidden-line removal): Homebrew OCCT 7.9.x split
+    # the HLR algorithms out of TKTopAlgo into their own TKHLR library, so it must
+    # be listed explicitly or the dylib link fails with unresolved HLRBRep_* symbols.
     target_link_libraries(cybercadkernel PRIVATE
         -L"${CYBERCAD_HOMEBREW_OCCT_LIB}"
         -lTKDESTEP -lTKDEIGES -lTKXSBase -lTKDE -lTKXCAF -lTKLCAF -lTKCAF
@@ -296,6 +299,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_parallel_policy
         test_parallel_toggle
         test_abi
+        test_cross_engine_guard
         test_native_math
         test_native_nurbs_ops
         test_native_nurbs_ops_fuzz

@@ -10,6 +10,8 @@
 
 #include "engine/native/native_engine.h"
 
+#include "core/shape_provenance.h"  // process-wide native-body identity (cross-engine guard)
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -87,39 +89,23 @@ namespace nref = cybercad::native::reference;
 // instance's bookkeeping: cc_set_engine(1) builds a fresh NativeEngine each time, so
 // a body built under one instance would look "unknown" (→ OCCT) to the next.
 //
-// PROCESS-WIDE IDENTITY. Every live NativeShape registers its own address in a
-// static set on construction and removes it on destruction, so isNative() is a
-// stable, instance-independent fact carried by the shape itself. This is the robust
-// fix for the boolean-parity crash (build under engine 1, run boolean under a second
-// engine-1 instance → the second instance no longer misclassifies the operands as
-// OCCT bodies and never forwards a native void to OCCT).
+// PROCESS-WIDE IDENTITY. Every live NativeShape registers its own address on
+// construction and removes it on destruction, so isNative() is a stable,
+// instance-independent fact carried by the shape itself. This is the robust fix for
+// the boolean-parity crash (build under engine 1, run boolean under a second engine-1
+// instance → the second instance no longer misclassifies the operands as OCCT bodies
+// and never forwards a native void to OCCT).
+//
+// The backing store is the SHARED, engine-agnostic cyber::*_native_shape registry in
+// src/core/shape_provenance — the SAME set the OCCT adapter queries at its unwrap()
+// boundary to REFUSE a foreign native body (the symmetric half of this guard: OCCT
+// active, handed a native body). This thin wrapper keeps the existing call sites
+// (add/remove/contains) but routes them to that one source of truth.
 class NativeShapeRegistry {
 public:
-    static void add(const void* p) {
-        std::lock_guard<std::mutex> lock(mutex());
-        live().insert(p);
-    }
-    static void remove(const void* p) {
-        std::lock_guard<std::mutex> lock(mutex());
-        live().erase(p);
-    }
-    static bool contains(const void* p) {
-        if (p == nullptr) return false;
-        std::lock_guard<std::mutex> lock(mutex());
-        return live().find(p) != live().end();
-    }
-
-private:
-    // Meyers singletons: guaranteed initialised on first use, no static-init-order
-    // dependency (this TU may build shapes during another TU's static setup).
-    static std::mutex& mutex() {
-        static std::mutex m;
-        return m;
-    }
-    static std::unordered_set<const void*>& live() {
-        static std::unordered_set<const void*> s;
-        return s;
-    }
+    static void add(const void* p) { register_native_shape(p); }
+    static void remove(const void* p) { unregister_native_shape(p); }
+    static bool contains(const void* p) { return is_native_shape(p); }
 };
 
 struct NativeShape {

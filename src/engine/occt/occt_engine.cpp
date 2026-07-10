@@ -23,6 +23,9 @@
 #include "engine/occt/occt_engine.h"
 #include "engine/occt/parallel_policy.h"
 
+#include "core/guard.h"             // set_last_error — record the cross-engine decline
+#include "core/shape_provenance.h"  // is_native_shape — refuse a foreign native body
+
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -46,15 +49,37 @@ EngineShape wrapThread(const TopoDS_Shape& shape, const ThreadTag& tag) {
     return std::static_pointer_cast<void>(holder);
 }
 
+// CROSS-ENGINE GUARD. The void behind an EngineShape is a bare shared_ptr<void>
+// with no RTTI, so this static_pointer_cast<OcctShape> is UNCHECKED: handed a body
+// built by the native engine (a NativeShape holder), it would reinterpret those
+// bytes as an OcctShape and read a garbage TopoDS_Shape — OCCT then dereferences a
+// bad handle and SIGSEGVs (the reported crash: native build → cc_set_engine(0) →
+// cc_step_export / cc_mass_properties on the native handle). The header contract is
+// explicit that a native body must NEVER be handed to OCCT, so refuse it HERE, at
+// the single chokepoint every OCCT op funnels through: return nullptr (an honest
+// decline every caller already handles as "unknown body") and record why. Guarding
+// unwrap protects ALL body-consuming OCCT ops — step_export, mass_properties, and
+// every other — not just the two that surfaced the bug.
+bool isForeignNativeBody(const EngineShape& handle) {
+    if (is_native_shape(handle.get())) {
+        set_last_error(
+            "shape was built under a different engine (native); cannot operate across "
+            "engines — rebuild it under the active engine or switch back with "
+            "cc_set_engine before this call");
+        return true;
+    }
+    return false;
+}
+
 const TopoDS_Shape* unwrap(const EngineShape& handle) {
-    if (!handle) {
+    if (!handle || isForeignNativeBody(handle)) {
         return nullptr;
     }
     return &std::static_pointer_cast<OcctShape>(handle)->shape;
 }
 
 const ThreadTag* threadTagOf(const EngineShape& handle) {
-    if (!handle) {
+    if (!handle || isForeignNativeBody(handle)) {
         return nullptr;
     }
     return &std::static_pointer_cast<OcctShape>(handle)->thread;

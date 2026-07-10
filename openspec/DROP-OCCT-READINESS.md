@@ -183,13 +183,15 @@ app-side kernel adoption (the ABI link is ready, 63/63 symbols) + the IGES produ
 
 ## 3. OUT-OF-SCOPE-DECLINE (Class C) — what the product declines
 
-- **`cc_iges_import` / `cc_iges_export` — IGES DROPPED (product decision).** The only clean
-  Class-C sites (`native_engine.cpp:2062`, `2065`). The app *uses* both (11 call-sites across
-  `KernelBridge.mm` / `BRepShape.swift` / `KernelBridgeAPI.h`), so a fully-OCCT-free *app*
-  needs a companion IGES decision: **(a)** drop IGES from the app, **(b)** keep a thin
-  OCCT-linked IGES shim outside the OCCT-free core (app then not 100% OCCT-free), or **(c)**
-  reimplement IGES natively (~1.5–3 py, out of current scope). This document assumes (a)/(b);
-  at unlink both ops become a clean "IGES not supported" error.
+- **`cc_iges_import` / `cc_iges_export` — IGES DROPPED. ✅ DECISION MADE (product, 2026-07-10):
+  option (a) — DROP IGES from the app.** The team has decided IGES is **not needed for the
+  foreseeable** (STEP covers exact B-rep exchange); the app removes its IGES import/export UI +
+  call sites (11 across `KernelBridge.mm` / `BRepShape.swift` / `KernelBridgeAPI.h`), and at unlink
+  `cc_iges_import`/`cc_iges_export` (the only clean Class-C sites, `native_engine.cpp:2062`,`2065`)
+  become a clean "IGES not supported" error — no OCCT-linked shim, no native reimpl. **This
+  UNBLOCKS a fully-OCCT-free app** (options (b) OCCT-shim and (c) native reimpl ~1.5–3 py are both
+  declined). **FUTURE (backlog, not scheduled):** if IGES is ever required, reintroduce it as a
+  native reader/writer (~1.5–3 py) — marked here so the decision is revisitable, not lost.
 - **Already honest declines, no native work needed:** arbitrary-broken B-rep healing beyond
   the landed M5 slices; exotic freeform booleans / blends in full generality (declined at
   recognition, never faked — the same discipline as the landed M2 declines); full PMI

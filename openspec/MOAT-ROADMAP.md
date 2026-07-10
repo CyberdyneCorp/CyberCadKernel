@@ -1109,10 +1109,12 @@ geometry services) is native at the acceptance bar AND the M6 completeness bar h
 fuzzing shows zero silent wrong results — every non-native input honestly declines with a clear error
 rather than a fabricated shape). This is the terminal step; it does not begin until the fallback is
 provably unnecessary for the supported domain.
-**IGES note (app-relevant):** `cc_iges_import/export` is **descoped** from native but the app *uses*
-it — so a fully-OCCT-free *app* additionally requires an IGES decision: drop IGES from the app, keep a
-thin OCCT-linked IGES shim (app not 100 % OCCT-free), or reimplement IGES natively (~1.5–3 py, out of
-current scope).
+**IGES note (app-relevant): ✅ DECISION MADE (2026-07-10) — DROP IGES from the app.** IGES is **not
+needed for the foreseeable** (STEP covers exact B-rep exchange); the app removes its IGES import/export
+UI + call sites, and `cc_iges_import/export` becomes a clean "IGES not supported" decline at unlink —
+**no OCCT-linked shim, no native reimpl**, so this clears the app's last Class-C blocker toward a
+fully-OCCT-free app. **FUTURE (backlog, unscheduled):** native IGES (~1.5–3 py) if demand ever
+materialises — parked, not lost.
 
 **M8 scoped-unlink DRY-RUN rehearsal (measured 2026-07-08).** A throwaway, non-shipping CMake option
 `CYBERCAD_M8_REHEARSAL` (branch `moat-m8dry`) wires the build's DEFAULT active engine to

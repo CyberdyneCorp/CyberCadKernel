@@ -274,7 +274,14 @@ declarations too; the *live Swift/UI/test* sites are 7):
 | 6 | `ModelWorkspaceChrome.swift:195` | UI: `Button("IGES (B-rep)")` export |
 | 7 | `BRepShapeIntegrationTests.swift:130-145` | round-trip export→reimport test |
 
-**Three options the team can act on:**
+**✅ DECISION MADE (2026-07-10): option (a) — DROP IGES from the app.** IGES is **not needed for
+the foreseeable**; the app removes the two UI sites + the import/export/test paths, STEP remains the
+exact-B-rep exchange, and `cc_iges_*` becomes a clean decline at unlink (no OCCT shim, no native
+reimpl). **This clears the app's last Class-C blocker → a fully-OCCT-free app is reachable.** Native
+IGES (option (c), ~1.5–3 py) is **parked on the backlog** — revisitable if IGES demand ever
+materialises, but not scheduled. The three options are retained below for the record.
+
+**Three options (for the record; (a) chosen):**
 
 | option | what it means | cost / impact |
 |---|---|---|

@@ -298,6 +298,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_abi
         test_native_math
         test_native_nurbs_ops
+        test_native_nurbs_ops_fuzz
         test_native_topology
         test_native_tessellate
         test_native_display_mesh
@@ -583,6 +584,14 @@ if(CYBERCAD_BUILD_TESTS)
     # over math (no numsci link); always-on native suite.
     set(test_native_nurbs_ops_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_ops.cpp")
+    # MOAT NURBS L1 differential FUZZER (host arm) — the OCCT-free, seeded batch that
+    # generalises the curated exact-oracle contract over RANDOM valid NURBS curves +
+    # surfaces (rational + non-rational) run through RANDOM op-composition chains
+    # (insert/refine/elevate/split/reparam/decompose), asserting geometry preservation
+    # pointwise end-to-end, plus insert↔remove / elevate↔reduce round-trips and honest
+    # decline. DISAGREED==0 bar across ≥2 seeds. Header-only over math; always-on suite.
+    set(test_native_nurbs_ops_fuzz_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_ops_fuzz.cpp")
     set(test_native_topology_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_topology.cpp")
     set(test_native_tessellate_SRC

@@ -138,6 +138,82 @@ inline void meshBounds(const tessellate::Mesh& m, math::Point3& lo, math::Point3
   for (const math::Point3& v : m.vertices) growBox(v, lo, hi, any);
 }
 
+/// Closed-form minimum distance between two line SEGMENTS [p1,q1] and [p2,q2]
+/// (Ericson, Real-Time Collision Detection §5.1.9). Clamps the barycentric
+/// parameters (s,t) to [0,1] so the closest points stay on the segments, and
+/// handles the parallel / degenerate (zero-length) cases via the near-zero
+/// denominator guard. This is the edge–edge term the tri–tri distance needs:
+/// for two disjoint convex triangles the true minimum distance is attained at
+/// either a vertex–face pair OR an edge–edge pair, and the vertex–face tests
+/// alone miss the coplanar-overlap pose where two faces cross with no mutually
+/// contained vertex. Pure math — OCCT-free.
+inline double segmentSegmentDistance(const math::Point3& p1, const math::Point3& q1,
+                                     const math::Point3& p2, const math::Point3& q2) noexcept {
+  const math::Vec3 d1 = q1 - p1;  // direction of segment 1
+  const math::Vec3 d2 = q2 - p2;  // direction of segment 2
+  const math::Vec3 r = p1 - p2;
+  const double a = math::dot(d1, d1);  // squared length of segment 1
+  const double e = math::dot(d2, d2);  // squared length of segment 2
+  const double f = math::dot(d2, r);
+
+  constexpr double eps = 1e-24;  // squared-length degeneracy guard (fp64 scale)
+  double s = 0.0, t = 0.0;
+
+  if (a <= eps && e <= eps) {
+    // Both segments degenerate to points.
+    return math::norm(p1 - p2);
+  }
+  if (a <= eps) {
+    // Segment 1 is a point; clamp t of the projection onto segment 2.
+    t = std::clamp(f / e, 0.0, 1.0);
+  } else {
+    const double c = math::dot(d1, r);
+    if (e <= eps) {
+      // Segment 2 is a point; clamp s of the projection onto segment 1.
+      s = std::clamp(-c / a, 0.0, 1.0);
+    } else {
+      // General non-degenerate case.
+      const double b = math::dot(d1, d2);
+      const double denom = a * e - b * b;  // ≥ 0; == 0 ⇒ parallel segments
+      if (denom > eps) {
+        s = std::clamp((b * f - c * e) / denom, 0.0, 1.0);
+      } else {
+        s = 0.0;  // parallel: pick an arbitrary point on segment 1, clamp t below
+      }
+      t = (b * s + f) / e;
+      // If t is out of [0,1], clamp it and recompute s for the clamped t.
+      if (t < 0.0) {
+        t = 0.0;
+        s = std::clamp(-c / a, 0.0, 1.0);
+      } else if (t > 1.0) {
+        t = 1.0;
+        s = std::clamp((b - c) / a, 0.0, 1.0);
+      }
+    }
+  }
+  const math::Point3 c1 = p1 + d1 * s;
+  const math::Point3 c2 = p2 + d2 * t;
+  return math::norm(c1 - c2);
+}
+
+/// Minimum distance between the three edges of triangle (a1,b1,c1) and the three
+/// edges of triangle (a2,b2,c2) — the 9 edge–edge sub-tests. Combined with the
+/// six vertex–face tests this gives the exact tri–tri minimum for disjoint convex
+/// triangles.
+inline double triEdgeEdgeDistance(const math::Point3& a1, const math::Point3& b1,
+                                  const math::Point3& c1, const math::Point3& a2,
+                                  const math::Point3& b2, const math::Point3& c2) noexcept {
+  const math::Point3 e1p[3] = {a1, b1, c1};
+  const math::Point3 e1q[3] = {b1, c1, a1};
+  const math::Point3 e2p[3] = {a2, b2, c2};
+  const math::Point3 e2q[3] = {b2, c2, a2};
+  double best = std::numeric_limits<double>::infinity();
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j)
+      best = std::min(best, segmentSegmentDistance(e1p[i], e1q[i], e2p[j], e2q[j]));
+  return best;
+}
+
 }  // namespace idetail
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -156,8 +232,11 @@ inline void meshBounds(const tessellate::Mesh& m, math::Point3& lo, math::Point3
 //      inside point declines (UNKNOWN) rather than guess.
 //   3. Witness — on CLASH, the AABB of the inside points + a representative interior
 //      point (the engine sharpens this to the COMMON solid's box + centroid).
-//   4. No penetration — compute the min triangle–triangle distance; TOUCHING within
-//      the contact band, else CLEAR (the min distance is the clearance).
+//   4. No penetration — compute the min triangle–triangle distance (min over the
+//      six vertex–face AND the nine edge–edge sub-tests, the exact tri–tri minimum
+//      for disjoint convex triangles); TOUCHING within the contact band, else CLEAR
+//      (the min distance is the clearance). The edge–edge term is required for the
+//      coplanar-overlap pose (two faces crossing with no mutually contained vertex).
 // ─────────────────────────────────────────────────────────────────────────────
 inline InterferenceResult meshInterference(const tessellate::Mesh& a, const tessellate::Mesh& b,
                                            double deflection) {
@@ -272,13 +351,15 @@ inline InterferenceResult meshInterference(const tessellate::Mesh& a, const tess
   if (anyUnknown) { r.state = ClashState::Unknown; return r; }
 
   // ── (4) No overlap: min boundary distance → TOUCHING vs CLEAR ────────────────
-  // The min boundary clearance is the minimum triangle–triangle distance, evaluated
-  // as the min over the six vertex-vs-face sub-tests of each candidate pair (the
-  // true tri–tri minimum of two disjoint convex triangles is attained at a
-  // vertex-face or edge-edge pair; for the contact/clearance decision at mesh
-  // fidelity the vertex-face min is exact for axis-aligned faces and a tight bound
-  // otherwise). A per-pair AABB-gap prune with the running `best` keeps it fast when
-  // the bodies are far apart (every B box is farther than `best` ⇒ skipped).
+  // The min boundary clearance is the minimum triangle–triangle distance. For two
+  // disjoint convex triangles the true minimum is attained at either a VERTEX–FACE
+  // pair OR an EDGE–EDGE pair, so the tri–tri distance is the min over BOTH the six
+  // vertex-vs-face sub-tests AND the nine edge–edge sub-tests. The vertex-face
+  // tests alone MISS the coplanar-overlap pose where two faces cross in a plus/cross
+  // with no mutually contained vertex (a real flush TOUCH the closed-form edge–edge
+  // term catches at distance 0). A per-pair AABB-gap prune with the running `best`
+  // keeps it fast when the bodies are far apart (every B box is farther than `best`
+  // ⇒ skipped).
   double best = std::numeric_limits<double>::infinity();
   for (std::size_t i = 0; i < a.triangles.size(); ++i) {
     const tessellate::Triangle& s = a.triangles[i];
@@ -286,13 +367,20 @@ inline InterferenceResult meshInterference(const tessellate::Mesh& a, const tess
     for (std::size_t j = 0; j < nb; ++j) {
       if (idetail::boxDisjoint(slo, shi, bLo[j], bHi[j], best)) continue;
       const tessellate::Triangle& u = b.triangles[j];
+      const math::Point3& sa = a.vertices[s.a]; const math::Point3& sb = a.vertices[s.b];
+      const math::Point3& sc = a.vertices[s.c];
+      const math::Point3& ua = b.vertices[u.a]; const math::Point3& ub = b.vertices[u.b];
+      const math::Point3& uc = b.vertices[u.c];
       double dd = std::numeric_limits<double>::infinity();
-      dd = std::min(dd, nbool::pointTriangleDistance(a.vertices[s.a], b.vertices[u.a], b.vertices[u.b], b.vertices[u.c]));
-      dd = std::min(dd, nbool::pointTriangleDistance(a.vertices[s.b], b.vertices[u.a], b.vertices[u.b], b.vertices[u.c]));
-      dd = std::min(dd, nbool::pointTriangleDistance(a.vertices[s.c], b.vertices[u.a], b.vertices[u.b], b.vertices[u.c]));
-      dd = std::min(dd, nbool::pointTriangleDistance(b.vertices[u.a], a.vertices[s.a], a.vertices[s.b], a.vertices[s.c]));
-      dd = std::min(dd, nbool::pointTriangleDistance(b.vertices[u.b], a.vertices[s.a], a.vertices[s.b], a.vertices[s.c]));
-      dd = std::min(dd, nbool::pointTriangleDistance(b.vertices[u.c], a.vertices[s.a], a.vertices[s.b], a.vertices[s.c]));
+      // Six vertex-vs-face sub-tests (exact for the vertex-in-Voronoi-face cases).
+      dd = std::min(dd, nbool::pointTriangleDistance(sa, ua, ub, uc));
+      dd = std::min(dd, nbool::pointTriangleDistance(sb, ua, ub, uc));
+      dd = std::min(dd, nbool::pointTriangleDistance(sc, ua, ub, uc));
+      dd = std::min(dd, nbool::pointTriangleDistance(ua, sa, sb, sc));
+      dd = std::min(dd, nbool::pointTriangleDistance(ub, sa, sb, sc));
+      dd = std::min(dd, nbool::pointTriangleDistance(uc, sa, sb, sc));
+      // Nine edge–edge sub-tests (the coplanar-cross / skew-edge minimum).
+      dd = std::min(dd, idetail::triEdgeEdgeDistance(sa, sb, sc, ua, ub, uc));
       best = std::min(best, dd);
     }
   }

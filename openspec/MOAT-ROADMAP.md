@@ -1209,14 +1209,21 @@ tests. Substages:
   face reads `On`, so a flush TOUCH never mis-fires; a raw Möller tri–tri crossing was tried and
   REJECTED for over-reporting at a shared seam). The overlap volume is the native boolean COMMON with a
   TWO-SIDED self-verify (COMMON watertight AND `vc ≤ min(V(A),V(B))`); a null/non-watertight/out-of-band
-  COMMON or a mesh-soup operand DECLINES to OCCT — a wrong overlap is never returned. **Verified both
-  gates:** GATE A host closed-form (`tests/native/test_native_interference.cpp`, 8/8) — overlapping
-  boxes → CLASH at the exact intersection-box volume + witness; disjoint → CLEAR at the exact gap;
-  face-touching → TOUCHING vol 0; nested → CLASH; non-watertight → UNKNOWN decline. GATE B sim
-  (`tests/sim/native_interference_parity.mm` via `run-sim-native-interference.sh`, 8/8) — CLASH/TOUCHING/
+  COMMON or a mesh-soup operand DECLINES to OCCT — a wrong overlap is never returned. The TOUCHING-vs-
+  CLEAR split uses the min triangle–triangle distance, now `min(6 vertex–face, 9 edge–edge)` sub-tests
+  (moat-clashfix-edge-edge): the added closed-form clamped segment–segment (edge–edge) term makes the
+  clash op CORRECT FOR ARBITRARY FLUSH CONTACT — the M6-breadth-17 coplanar plus-sign-cross pose (two
+  faces crossing with no mutually-contained vertex) previously overshot to CLEAR and is now TOUCHING at
+  distance 0, matching OCCT `BRepExtrema_DistShapeShape`. **Verified both gates:** GATE A host closed-
+  form (`tests/native/test_native_interference.cpp`, 11/11) — overlapping boxes → CLASH at the exact
+  intersection-box volume + witness; disjoint → CLEAR at the exact gap; face-touching → TOUCHING vol 0;
+  nested → CLASH; non-watertight → UNKNOWN decline; coplanar plus-sign-cross → TOUCHING (regression:
+  was CLEAR); penetrating cross → CLASH; gapped cross → CLEAR at the exact 0.5 gap. GATE B sim
+  (`tests/sim/native_interference_parity.mm` via `run-sim-native-interference.sh`, 10/10) — CLASH/TOUCHING/
   CLEAR state + overlap volume vs `BRepAlgoAPI_Common`+`BRepGProp`+`BRepExtrema_DistShapeShape`, matched
-  on every pose (volumes 1/2/8 to machine precision). **Sharpened next blocker:** a freeform-operand
-  overlap (the COMMON the planar/analytic native boolean cannot yet build) still declines to OCCT.
+  on every pose (volumes 1/2/8 to machine precision; coplanar-cross TOUCHING + gapped CLEAR match the
+  oracle). **Sharpened next blocker:** a freeform-operand overlap (the COMMON the planar/analytic native
+  boolean cannot yet build) still declines to OCCT.
 - *Oracle:* `HLRBRep_Algo` / `BRepAlgoAPI_Section` / `BRepExtrema_DistShapeShape` / `BRepLProp` on
   visible-segment sets / section-curve length+topology / min-distance / curvature values.
 - *Bounded.* GS2/GS3/GS4 reuse landed native machinery; **GS1 (HLR) is the substantial one** and the

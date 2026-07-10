@@ -100,6 +100,52 @@ CC_TEST(interference_nested_box_clash) {
   CC_CHECK(r.hasWitness);
 }
 
+// ── COPLANAR PLUS-SIGN-CROSS (regression, moat-clashfix) ───────────────────────
+// Two boxes whose coplanar faces overlap in a plus/cross with NEITHER box having a
+// corner inside the other. The min tri–tri distance is attained EDGE–EDGE (A's top
+// edges cross B's bottom edges), not vertex–face; before the edge–edge term the
+// vertex-face minimum overshot to 1.0 and this flush TOUCH mis-reported as CLEAR.
+//
+//   A = [0,3]×[1,2]×[0,1]  (horizontal bar, top face z=1)
+//   B = [1,2]×[0,3]×[1,2]  (vertical  bar, bottom face z=1)
+// coplanar at z=1; footprints cross; overlap [1,2]×[1,2]; distance 0 ⇒ TOUCHING.
+CC_TEST(interference_coplanar_cross_touching) {
+  const tess::Mesh a = boxMesh(0, 1, 0, 3, 1, 1);
+  const tess::Mesh b = boxMesh(1, 0, 1, 1, 3, 1);
+  const an::InterferenceResult r = an::meshInterference(a, b, kDefl);
+  // Regression: was CLEAR (minDistance ≈ 0.53–1.0) before the edge–edge term.
+  CC_CHECK(r.state == an::ClashState::Touching);
+  CC_CHECK(!r.clash());
+  CC_CHECK(r.minDistance < 2.0 * kDefl + 1e-9);  // exact edge–edge distance is 0
+}
+
+// Penetrating cross → CLASH. B is lowered + widened so A's top-face corners sit
+// strictly inside B (the existing B3 penetration signature fires); the overlap is
+// [1,2]×[1,2]×[0.5,1.0], a positive-volume interior intersection.
+CC_TEST(interference_coplanar_cross_penetrate_clash) {
+  const tess::Mesh a = boxMesh(0, 1, 0, 3, 1, 1);      // [0,3]×[1,2]×[0,1]
+  const tess::Mesh b = boxMesh(0.5, 0, 0.5, 2.0, 3, 2); // [0.5,2.5]×[0,3]×[0.5,2.5]
+  const an::InterferenceResult r = an::meshInterference(a, b, kDefl);
+  CC_CHECK(r.state == an::ClashState::Clash);
+  CC_CHECK(r.clash());
+  CC_CHECK(r.hasWitness);
+  // Witness AABB must cover the true overlap box [1,2]×[1,2]×[0.5,1.0].
+  CC_CHECK(r.witnessLo.x <= 2.0 + 1e-6 && r.witnessHi.x >= 1.0 - 1e-6);
+  CC_CHECK(r.witnessLo.y <= 2.0 + 1e-6 && r.witnessHi.y >= 1.0 - 1e-6);
+}
+
+// Gapped cross → CLEAR at the exact gap. Same footprints, B raised so its bottom
+// face z=1.5 leaves a 0.5 clearance above A's top face z=1. The min distance is the
+// edge–edge / face–face gap 0.5 (the very term the fix adds) — NOT a false TOUCH.
+CC_TEST(interference_coplanar_cross_gap_clear) {
+  const tess::Mesh a = boxMesh(0, 1, 0, 3, 1, 1);      // top z=1
+  const tess::Mesh b = boxMesh(1, 0, 1.5, 1, 3, 1);    // bottom z=1.5
+  const an::InterferenceResult r = an::meshInterference(a, b, kDefl);
+  CC_CHECK(r.state == an::ClashState::Clear);
+  CC_CHECK(!r.clash());
+  CC_CHECK(std::fabs(r.minDistance - 0.5) < 1e-6);
+}
+
 // ── HONEST DECLINE: a non-watertight operand → Unknown (never a guessed clash) ──
 CC_TEST(interference_non_watertight_declines) {
   tess::Mesh a = boxMesh(0, 0, 0, 2, 2, 2);

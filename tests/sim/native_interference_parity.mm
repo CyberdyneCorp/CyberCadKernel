@@ -145,6 +145,16 @@ int main() {
   // Disjoint: A=[0,1]³, B=[11,12]×[0,1]×[0,1] gap 10 → CLEAR.
   parityCase("disjoint", 0, 0, 0, 1, 1, 1, 11, 0, 0, 1, 1, 1, 0, 0.0);
 
+  // Coplanar plus-sign-cross (moat-clashfix regression): A horizontal bar
+  // [0,3]×[1,2]×[0,1] (top z=1), B vertical bar [1,2]×[0,3]×[1,2] (bottom z=1),
+  // coplanar at z=1, footprints cross with NO mutually contained vertex. OCCT
+  // BRepExtrema_DistShapeShape gives distance 0 (flush contact), Common volume 0 →
+  // TOUCHING. Native mis-reported CLEAR before the tri–tri edge–edge term was added.
+  parityCase("coplanar-cross", 0, 1, 0, 3, 1, 1, 1, 0, 1, 1, 3, 1, 1, 0.0);
+
+  // Gapped cross: same footprints, B raised to bottom z=1.5 → 0.5 clearance → CLEAR.
+  parityCase("coplanar-cross-gap", 0, 1, 0, 3, 1, 1, 1, 0, 1.5, 1, 3, 1, 0, 0.0);
+
   std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
   std::fflush(stdout);
   std::_Exit(g_fail == 0 ? 0 : 1);

@@ -135,6 +135,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_freeform_boolean_fuzz.mm \
       native_vsweep_fuzz.mm \
       native_ngon_fill_fuzz.mm \
+      native_sheetmetal_fuzz.mm \
       native_ssi_s4f_completeness_parity.mm \
       native_first_freeform_boolean_parity.mm \
       native_multi_seam_freeform_boolean_parity.mm \

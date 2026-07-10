@@ -86,6 +86,11 @@ SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 # main(); drives replaceFaceOffsetTilt vs the OCCT move-face oracle and projectPointOnFace
 # vs GeomAPI_ProjectPointOnSurf; header-only DM3/DM4 verbs + the numsci-gated DM2 re-solve
 # substrate, links the OCCT oracle slice, NOT the whole kernel).
+# MOAT M-GS GS7 — native_interference_parity.mm (run-sim-native-interference.sh — its
+# own main(); asserts the native clash/interference classifier's CLASH/TOUCHING/CLEAR
+# state + overlap volume vs BRepAlgoAPI_Common + BRepGProp + BRepExtrema_DistShapeShape;
+# header-only over src/native/{math,tessellate,boolean}, links the OCCT oracle slice,
+# NOT the whole kernel).
 # Phase-3 suite — phase3_suite.cpp
 # (its own main()) plus its checks_*.cpp modules (which record against
 # phase3_checks.h's Ctx, not checks.h's) — has run-sim-phase3-suite.sh. What remains
@@ -101,6 +106,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_blend_parity.mm native_step_parity.mm \
       native_geomcompletion_parity.mm native_numerics_parity.mm \
       native_analysis_parity.mm \
+      native_interference_parity.mm \
       native_reference_parity.mm \
       native_ssi_parity.mm \
       native_ssi_seeding_recall.mm native_ssi_seeding_parity.mm \

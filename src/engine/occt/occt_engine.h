@@ -321,6 +321,9 @@ public:
     Result<ProjectionData> project_point_on_face(EngineShape body, int faceId, double px, double py,
                                                  double pz) override;
     Result<ValidityData> check_solid(EngineShape body) override;  // MOAT M-GS GS6
+    // MOAT M-GS GS7 — the interference/clash ORACLE (occt_query.cpp): overlap volume
+    // via BRepAlgoAPI_Common + BRepGProp, clearance via BRepExtrema_DistShapeShape.
+    Result<InterferenceData> interference(EngineShape a, EngineShape b) override;
     Result<std::vector<double>> bounding_box(EngineShape body) override;
     Result<std::vector<double>> face_axis(EngineShape body, int faceId) override;
     Result<std::vector<int>> subshape_ids(EngineShape body, int kind) override;

@@ -28,6 +28,7 @@
 #include "native/analysis/curvature.h"
 #include "native/analysis/inertia.h"    // GS5: signed-tetra inertia over M0
 #include "native/analysis/validity.h"   // GS6: mesh-level B-rep validity report
+#include "native/analysis/interference.h"  // GS7: mesh-level clash/interference
 #ifdef CYBERCAD_HAS_NUMSCI
 #include "native/analysis/distance.h"  // seed-and-refine minimizer (numsci-gated)
 #endif
@@ -2312,6 +2313,125 @@ Result<ValidityData> NativeEngine::check_solid(EngineShape body) {
     out.noSelfIntersection = rep.noSelfIntersection;
     out.certified = rep.selfIntersectionCertified;
     out.valid = rep.valid();
+    return out;
+}
+
+// ── MOAT M-GS GS7 — CLASH / INTERFERENCE of two native solids ────────────────────
+// Both operands must be native (a mixed native/OCCT pair is rejected honestly; an
+// all-OCCT pair forwards to the BRepAlgoAPI_Common oracle). Both are meshed at the
+// property deflection; the mesh-level classifier (src/native/analysis/interference.h)
+// decides CLASH / TOUCHING / CLEAR + the witness. On CLASH the overlap VOLUME is the
+// native boolean COMMON, guarded by a TWO-SIDED self-verify:
+//   (i)  the COMMON solid must be watertight (else the volume is not trustworthy), and
+//   (ii) it must be bounded by min(V(A),V(B)) — an overlap cannot exceed either operand
+//        (the independent set-algebra sanity bound the boolean self-verify also uses).
+// If the native COMMON is not robustly available (null / non-watertight / out-of-band)
+// the whole verdict is DECLINED (Error) so the facade falls through to OCCT — a wrong
+// overlap volume is NEVER returned. A clash with no measurable volume likewise declines.
+Result<InterferenceData> NativeEngine::interference(EngineShape a, EngineShape b) {
+    const bool aNative = isNative(a);
+    const bool bNative = isNative(b);
+    if (!aNative && !bNative) return fallback().interference(a, b);
+    if (aNative != bNative)
+        return make_error(
+            "interference: mixed native/OCCT operands are not supported "
+            "(build both bodies under the same active engine)");
+
+    const auto* ha = static_cast<const NativeShape*>(a.get());
+    const auto* hb = static_cast<const NativeShape*>(b.get());
+
+    // Mesh both operands (a mesh body IS its geometry; a B-rep body meshes first).
+    ntess::MeshParams mp;
+    mp.deflection = kPropertyDeflection;
+    ntess::Mesh brepA, brepB;
+    if (!ha->isMesh) brepA = ntess::SolidMesher(mp).mesh(ha->shape);
+    if (!hb->isMesh) brepB = ntess::SolidMesher(mp).mesh(hb->shape);
+    const ntess::Mesh& meshA = ha->isMesh ? ha->mesh : brepA;
+    const ntess::Mesh& meshB = hb->isMesh ? hb->mesh : brepB;
+
+    nan::InterferenceResult ir = nan::meshInterference(meshA, meshB, kPropertyDeflection);
+    if (ir.state == nan::ClashState::Unknown)
+        return make_error(
+            "interference: mesh evidence is ambiguous (non-watertight operand or a "
+            "boundary point the ray-parity classifier declined) — verdict declined");
+
+    InterferenceData out;
+    out.minDistance = ir.minDistance;
+    out.hasWitness = ir.hasWitness;
+    out.witLoX = ir.witnessLo.x; out.witLoY = ir.witnessLo.y; out.witLoZ = ir.witnessLo.z;
+    out.witHiX = ir.witnessHi.x; out.witHiY = ir.witnessHi.y; out.witHiZ = ir.witnessHi.z;
+    out.witPX = ir.witnessPoint.x; out.witPY = ir.witnessPoint.y; out.witPZ = ir.witnessPoint.z;
+
+    if (ir.state != nan::ClashState::Clash) {
+        out.state = (ir.state == nan::ClashState::Touching) ? 1 : 0;  // touching / clear
+        out.overlapVolume = 0.0;
+        return out;
+    }
+
+    // CLASH: the overlap VOLUME is the native boolean COMMON. Only a B-rep pair can be
+    // fed to the boolean; a mesh-soup operand has no B-rep to intersect → decline to OCCT.
+    if (ha->isMesh || hb->isMesh)
+        return make_error(
+            "interference: clash detected but a mesh-soup operand has no B-rep overlap "
+            "volume (native COMMON needs B-rep operands) — volume declined to OCCT");
+
+    const ntopo::Shape common = cybercad::native::boolean::boolean_solid(
+        ha->shape, hb->shape, cybercad::native::boolean::Op::Common);
+    const double vc = watertightVolume(common);  // <0 ⇒ null / not watertight
+    if (vc <= 0.0)
+        return make_error(
+            "interference: clash detected but the native COMMON overlap volume is not "
+            "robustly available (curved/near-tangent operand) — volume declined to OCCT");
+
+    // TWO-SIDED self-verify: an overlap cannot exceed either operand's own volume.
+    const double vA = watertightVolume(ha->shape);
+    const double vB = watertightVolume(hb->shape);
+    if (vA > 0.0 && vB > 0.0) {
+        const double cap = std::min(vA, vB);
+        const double tol = std::max(1e-6 * cap, 1e-9);
+        if (vc > cap + tol)
+            return make_error(
+                "interference: native COMMON volume exceeds the smaller operand — the "
+                "overlap is not trustworthy (self-verify), declined to OCCT");
+    }
+
+    out.state = 2;  // clash
+    out.overlapVolume = vc;
+
+    // Sharpen the witness from the COMMON solid itself: its tight mesh AABB + its
+    // signed-tetra centroid — a point guaranteed to lie in the overlap INTERIOR,
+    // matching the OCCT oracle's witness (the COMMON bbox + centre of mass). This
+    // supersedes the mesh-classifier's boundary witness with the true overlap region.
+    {
+        const ntess::Mesh cm = ntess::SolidMesher(mp).mesh(common);
+        if (!cm.vertices.empty()) {
+            nmath::Point3 lo = cm.vertices.front(), hi = cm.vertices.front();
+            for (const auto& p : cm.vertices) {
+                lo.x = std::min(lo.x, p.x); hi.x = std::max(hi.x, p.x);
+                lo.y = std::min(lo.y, p.y); hi.y = std::max(hi.y, p.y);
+                lo.z = std::min(lo.z, p.z); hi.z = std::max(hi.z, p.z);
+            }
+            double cx = 0, cy = 0, cz = 0, v6 = 0;
+            for (const auto& t : cm.triangles) {
+                const auto& A = cm.vertices[t.a]; const auto& B = cm.vertices[t.b];
+                const auto& C = cm.vertices[t.c];
+                const double v = A.x * (B.y * C.z - B.z * C.y) - A.y * (B.x * C.z - B.z * C.x) +
+                                 A.z * (B.x * C.y - B.y * C.x);
+                v6 += v; cx += v * (A.x + B.x + C.x); cy += v * (A.y + B.y + C.y);
+                cz += v * (A.z + B.z + C.z);
+            }
+            out.hasWitness = true;
+            out.witLoX = lo.x; out.witLoY = lo.y; out.witLoZ = lo.z;
+            out.witHiX = hi.x; out.witHiY = hi.y; out.witHiZ = hi.z;
+            if (std::fabs(v6) > 1e-12) {
+                const double inv = 1.0 / (4.0 * v6);
+                out.witPX = cx * inv; out.witPY = cy * inv; out.witPZ = cz * inv;
+            } else {
+                out.witPX = 0.5 * (lo.x + hi.x); out.witPY = 0.5 * (lo.y + hi.y);
+                out.witPZ = 0.5 * (lo.z + hi.z);
+            }
+        }
+    }
     return out;
 }
 

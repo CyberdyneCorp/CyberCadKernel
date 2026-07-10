@@ -62,6 +62,24 @@ struct ValidityData {
     bool certified = true;
 };
 
+// MOAT M-GS GS7 CLASH / INTERFERENCE result of two solids (converted to
+// CCInterference by the facade). `state` mirrors native::analysis::ClashState:
+// 0 CLEAR, 1 TOUCHING, 2 CLASH; a Result<InterferenceData> Error is the honest
+// decline (native ambiguous → facade `decided = 0`, → OCCT oracle on the sim).
+// `overlapVolume` is the BRepAlgoAPI_Common volume (native COMMON on the native
+// engine, BRepGProp on the OCCT oracle); `minDistance` the boundary clearance
+// (BRepExtrema_DistShapeShape). The witness box + point are the penetration
+// evidence, present only on CLASH.
+struct InterferenceData {
+    int state = 2;                 // 0 clear, 1 touching, 2 clash
+    double overlapVolume = 0.0;    // COMMON volume (>0 on clash)
+    double minDistance = 0.0;      // boundary clearance (clear/touching)
+    bool hasWitness = false;
+    double witLoX = 0.0, witLoY = 0.0, witLoZ = 0.0;  // overlap AABB min
+    double witHiX = 0.0, witHiY = 0.0, witHiZ = 0.0;  // overlap AABB max
+    double witPX = 0.0, witPY = 0.0, witPZ = 0.0;     // representative interior point
+};
+
 // AP242 PMI census (converted to CCPmiSummary by the facade). Per-class counts of
 // the recognised PMI annotation entities in a STEP file — a read-only, engine-
 // independent parse (no geometry import). See native::exchange::PmiSummary.
@@ -489,6 +507,19 @@ public:
     virtual Result<ValidityData> check_solid(EngineShape body) {
         (void)body;
         return engine_unsupported("check_solid");
+    }
+    // ── interference / clash detection (MOAT M-GS GS7; additive) ─────────────────
+    // Classify the interference of two solids A and B — CLASH (interiors overlap
+    // with positive volume) / TOUCHING (boundary contact, no interior overlap) /
+    // CLEAR (positive clearance) — plus the overlap volume, the min clearance, and a
+    // witness (overlap AABB + interior point) on clash. NativeEngine classifies its
+    // own bodies at the mesh level (B3 membership + Möller tri–tri) and fills the
+    // overlap volume from the native boolean COMMON, with a two-sided volume
+    // self-verify and an honest decline where the mesh evidence is ambiguous; the
+    // OCCT adapter is the BRepAlgoAPI_Common + BRepExtrema_DistShapeShape oracle.
+    virtual Result<InterferenceData> interference(EngineShape a, EngineShape b) {
+        (void)a; (void)b;
+        return engine_unsupported("interference");
     }
     virtual Result<std::vector<double>> bounding_box(EngineShape body) {
         (void)body;

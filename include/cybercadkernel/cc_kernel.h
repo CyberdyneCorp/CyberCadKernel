@@ -71,6 +71,39 @@ typedef struct {
     int valid;                   /* 1 = definite closed-form foot; 0 = declined */
 } CCProjection;
 
+/* Interference / clash STATE in a CCInterference::state. */
+enum CCClashState {
+    CC_CLASH_CLEAR = 0,     /* a positive clearance gap (no contact) */
+    CC_CLASH_TOUCHING = 1,  /* boundary contact, no interior overlap (distance ~= 0) */
+    CC_CLASH_CLASH = 2      /* interiors overlap over a set of positive volume */
+};
+
+/* Interference / clash result between two solids (MOAT M-GS GS7, ADDITIVE). Answers
+ * the assembly-mate question "do these two solids interfere?": `state` is a
+ * CCClashState (CLEAR / TOUCHING / CLASH); `clash` is 1 iff state == CLASH.
+ * `overlap_volume` (mm^3) is the volume of the intersection A n B (> 0 only on a
+ * CLASH; the native engine computes it via the native boolean COMMON, the OCCT
+ * oracle via BRepAlgoAPI_Common + BRepGProp). `min_distance` (mm) is the minimum
+ * boundary clearance (meaningful for CLEAR/TOUCHING; BRepExtrema_DistShapeShape on
+ * the oracle). `has_witness` is 1 when a CLASH witness is present: witness_lo/hi are
+ * the overlap AABB corners and witness_point is a representative point in the
+ * overlap interior. `decided` is 1 for a definite verdict; it is 0 on an HONEST
+ * DECLINE (a non-watertight/ambiguous native pose, or a clash whose overlap volume
+ * the native engine cannot robustly compute), in which case cc_interference returns
+ * 0 and cc_last_error is set — the native engine NEVER reports a wrong clash flag or
+ * overlap volume. */
+typedef struct {
+    int state;             /* CCClashState */
+    int clash;             /* 1 iff state == CC_CLASH_CLASH */
+    int decided;           /* 1 = definite verdict; 0 = honest decline */
+    double overlap_volume; /* mm^3 (> 0 only on clash) */
+    double min_distance;   /* mm (boundary clearance; clear/touching) */
+    int has_witness;       /* 1 = the witness_* fields are meaningful (clash) */
+    double witness_lo[3];  /* overlap AABB min corner */
+    double witness_hi[3];  /* overlap AABB max corner */
+    double witness_point[3]; /* a representative interior point of the overlap */
+} CCInterference;
+
 /* First-failing (or undecidable) check code in a CCValidityReport::first_failure.
  * 0 = none (the solid is valid). */
 enum CCValidityCheck {
@@ -527,6 +560,18 @@ int cc_principal_moments(CCShapeId body, double *out3);
  * unknown body / no B-rep engine (out zeroed) — NEVER reports valid==1 for a body
  * it cannot verify. */
 int cc_check_solid(CCShapeId body, CCValidityReport *out);
+
+/* Interference / clash detection between two solids (MOAT M-GS GS7, ADDITIVE — the
+ * assembly-mate value). Fills *out with the CLASH / TOUCHING / CLEAR verdict, the
+ * overlap volume, the min boundary clearance, and (on a clash) a witness AABB +
+ * interior point. Returns 1 when a DEFINITE verdict was produced (out->decided == 1)
+ * or 0 on an HONEST DECLINE (out->decided == 0, cc_last_error set) or unknown body
+ * (out zeroed). Under the native engine both bodies must be built native (a mixed
+ * native/OCCT pair is rejected); the overlap volume comes from the native boolean
+ * COMMON with a two-sided self-verify, and a pose whose overlap cannot be robustly
+ * computed DECLINES to the OCCT BRepAlgoAPI_Common + BRepExtrema oracle — a wrong
+ * clash flag or overlap volume is NEVER returned. */
+int cc_interference(CCShapeId a, CCShapeId b, CCInterference *out);
 
 /* Exact axis-aligned bounding box of the B-rep (not the tessellation). Fills
  * out6 = [minX,minY,minZ, maxX,maxY,maxZ]. Returns 1 on success, 0 otherwise. */

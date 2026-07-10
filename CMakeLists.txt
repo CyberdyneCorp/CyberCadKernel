@@ -331,6 +331,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_step
         test_native_inertia
         test_native_validity
+        test_native_interference
         test_native_project
         test_native_solid_enum
         test_native_engine)
@@ -687,6 +688,14 @@ if(CYBERCAD_BUILD_TESTS)
     # checker + the cc_check_solid facade wiring; no numsci link.
     set(test_native_validity_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_validity.cpp")
+    # MOAT M-GS GS7 native CLASH / INTERFERENCE — host GATE (a): the OCCT-free
+    # closed-form proof of cc_interference over the NativeEngine. Overlapping boxes
+    # → CLASH at the exact intersection-box volume (native boolean COMMON) + witness;
+    # disjoint → CLEAR at the exact gap; face-touching → TOUCHING (zero-volume
+    # contact); nested → CLASH; and a non-watertight operand → honest Unknown decline.
+    # Header-only mesh classifier + the cc_interference facade wiring; no numsci link.
+    set(test_native_interference_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_interference.cpp")
     # MOAT M-DM DM4 native point PROJECTION — host GATE (a), the OCCT-free closed-form
     # proof of projectPointOnFace: plane (drop the normal component) / cylinder & sphere
     # (radial push to R) feet + distances, and honest declines (cone / ambiguous axis /

@@ -32,7 +32,9 @@
 // ── OCCT query headers (this TU only) ─────────────────────────────────────────
 #include <Bnd_Box.hxx>
 #include <BRepBndLib.hxx>
+#include <BRepAlgoAPI_Common.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepGProp.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
@@ -203,6 +205,67 @@ Result<ValidityData> OcctEngine::check_solid(EngineShape body) {
         out.finite = !shape->IsNull();
         out.noSelfIntersection = ok;
         out.certified = true;
+        return out;
+    });
+}
+
+// ── Interference / clash of two solids (MOAT M-GS GS7) ─────────────────────────
+// The BRepAlgoAPI_Common + BRepExtrema_DistShapeShape ORACLE the native mesh-level
+// classifier is verified against on the sim gate. CLASH iff the COMMON has positive
+// volume; otherwise the minimum boundary distance (DistShapeShape) decides TOUCHING
+// (≈0, no interior overlap) vs CLEAR (>0). The witness box + point on CLASH are the
+// COMMON solid's bounding box + its centre of mass — a genuine interior point.
+Result<InterferenceData> OcctEngine::interference(EngineShape a, EngineShape b) {
+    return occt::occtGuard([&]() -> Result<InterferenceData> {
+        const TopoDS_Shape* sa = occt::unwrap(a);
+        const TopoDS_Shape* sb = occt::unwrap(b);
+        if (sa == nullptr || sb == nullptr) return make_error("interference: unknown body");
+
+        InterferenceData out;
+
+        // Overlap volume via COMMON. A clean empty/failed common ⇒ no interior overlap.
+        double vc = 0.0;
+        TopoDS_Shape common;
+        {
+            BRepAlgoAPI_Common k(*sa, *sb);
+            if (k.IsDone() && !k.Shape().IsNull()) {
+                common = k.Shape();
+                GProp_GProps g;
+                BRepGProp::VolumeProperties(common, g);
+                vc = g.Mass();
+            }
+        }
+
+        // Boundary clearance via DistShapeShape (0 on contact / penetration).
+        double dist = 0.0;
+        {
+            BRepExtrema_DistShapeShape ext(*sa, *sb);
+            if (ext.IsDone() && ext.NbSolution() > 0) dist = ext.Value();
+        }
+
+        if (vc > 1e-12) {
+            out.state = 2;  // clash
+            out.overlapVolume = vc;
+            // Witness = the COMMON solid's tight box + its centre of mass.
+            Bnd_Box box;
+            BRepBndLib::AddOptimal(common, box, /*useTri=*/Standard_False,
+                                   /*useShapeTol=*/Standard_False);
+            if (!box.IsVoid()) {
+                Standard_Real xmin, ymin, zmin, xmax, ymax, zmax;
+                box.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+                out.hasWitness = true;
+                out.witLoX = xmin; out.witLoY = ymin; out.witLoZ = zmin;
+                out.witHiX = xmax; out.witHiY = ymax; out.witHiZ = zmax;
+                GProp_GProps gc;
+                BRepGProp::VolumeProperties(common, gc);
+                const gp_Pnt c = gc.CentreOfMass();
+                out.witPX = c.X(); out.witPY = c.Y(); out.witPZ = c.Z();
+            }
+            return out;
+        }
+
+        out.minDistance = dist;
+        out.state = (dist <= 1e-7) ? 1 : 0;  // touching vs clear
         return out;
     });
 }

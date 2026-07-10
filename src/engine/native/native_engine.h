@@ -260,6 +260,11 @@ public:
     Result<ProjectionData> project_point_on_face(EngineShape body, int faceId, double px, double py,
                                                  double pz) override;
     Result<ValidityData> check_solid(EngineShape body) override;  // MOAT M-GS GS6
+    // MOAT M-GS GS7 — CLASH / interference of two NATIVE solids (mesh-level B3
+    // membership + Möller tri–tri classification; overlap volume from the native
+    // boolean COMMON with a two-sided self-verify; honest decline → OCCT). Mixed
+    // native/OCCT operands are rejected; all-OCCT operands forward to the oracle.
+    Result<InterferenceData> interference(EngineShape a, EngineShape b) override;
     Result<std::vector<double>> face_axis(EngineShape body, int faceId) override;
     Result<std::vector<double>> ref_plane_from_face(EngineShape body, int faceId) override;
     Result<std::vector<double>> ref_axis_from_edge(EngineShape body, int edgeId) override;

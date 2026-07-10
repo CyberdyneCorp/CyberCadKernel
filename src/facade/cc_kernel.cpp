@@ -26,6 +26,7 @@ using cyber::active_engine;
 using cyber::EdgePolylineData;
 using cyber::EngineShape;
 using cyber::FaceMeshData;
+using cyber::InterferenceData;
 using cyber::MassData;
 using cyber::MeshData;
 using cyber::ProfileSeg;
@@ -796,6 +797,34 @@ int cc_check_solid(CCShapeId body, CCValidityReport* out) {
                                "overlap) — verdict declined");
                 return 0;
             }
+            return 1;
+        },
+        0);
+}
+
+int cc_interference(CCShapeId a, CCShapeId b, CCInterference* out) {
+    return cyber::guard(
+        [&]() -> int {
+            CCInterference zero{};
+            zero.state = CC_CLASH_CLEAR;
+            if (out) *out = zero;
+            auto r = active_engine()->interference(resolve(a), resolve(b));
+            if (!r) {
+                set_last_error(r.error().message);
+                return 0;  // honest decline / unknown body — out already zeroed
+            }
+            const InterferenceData& d = r.value();
+            CCInterference rep{};
+            rep.state = d.state;
+            rep.clash = (d.state == CC_CLASH_CLASH) ? 1 : 0;
+            rep.decided = 1;
+            rep.overlap_volume = d.overlapVolume;
+            rep.min_distance = d.minDistance;
+            rep.has_witness = d.hasWitness ? 1 : 0;
+            rep.witness_lo[0] = d.witLoX; rep.witness_lo[1] = d.witLoY; rep.witness_lo[2] = d.witLoZ;
+            rep.witness_hi[0] = d.witHiX; rep.witness_hi[1] = d.witHiY; rep.witness_hi[2] = d.witHiZ;
+            rep.witness_point[0] = d.witPX; rep.witness_point[1] = d.witPY; rep.witness_point[2] = d.witPZ;
+            if (out) *out = rep;
             return 1;
         },
         0);

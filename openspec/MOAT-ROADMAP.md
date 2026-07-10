@@ -1076,6 +1076,28 @@ tests. Substages:
   fixtures — matched on every one. **Honest decline:** the self-intersection check returns UNDECIDABLE
   (report `decided=0`, never a false `valid`) where no-self-intersection is not robustly certifiable
   (e.g. a general freeform patch). Gates trustworthy import (with M5) and any healing UX.
+- **GS7 — Interference / clash detection** — a native `cc_interference(a, b, CCInterference*)` between
+  two solids (the assembly + mates value): CLASH (interiors overlap over positive volume) / TOUCHING
+  (boundary contact, no interior overlap) / CLEAR (positive clearance), plus the overlap VOLUME, the
+  min clearance, and a witness (overlap AABB + interior point) on clash. Reuses B3 membership + the M0
+  mesh vocabulary + the native boolean COMMON — no new geometry.
+  **✅ NATIVE (landed).** Header-only, OCCT-free `src/native/analysis/interference.h::meshInterference`
+  + `InterferenceResult` / `ClashState`, behind the additive `int cc_interference(a, b, CCInterference*)`
+  / `CCInterference` / `CCClashState` (ABI additive-only; no existing signature changed) with
+  `NativeEngine::interference`, an `IEngine` default, and `OcctEngine::interference` (the
+  `BRepAlgoAPI_Common`+`BRepGProp` / `BRepExtrema_DistShapeShape` oracle). CLASH is detected
+  COPLANAR-SAFELY (a boundary vertex/triangle-centroid classified strictly `In` the other — a shared
+  face reads `On`, so a flush TOUCH never mis-fires; a raw Möller tri–tri crossing was tried and
+  REJECTED for over-reporting at a shared seam). The overlap volume is the native boolean COMMON with a
+  TWO-SIDED self-verify (COMMON watertight AND `vc ≤ min(V(A),V(B))`); a null/non-watertight/out-of-band
+  COMMON or a mesh-soup operand DECLINES to OCCT — a wrong overlap is never returned. **Verified both
+  gates:** GATE A host closed-form (`tests/native/test_native_interference.cpp`, 8/8) — overlapping
+  boxes → CLASH at the exact intersection-box volume + witness; disjoint → CLEAR at the exact gap;
+  face-touching → TOUCHING vol 0; nested → CLASH; non-watertight → UNKNOWN decline. GATE B sim
+  (`tests/sim/native_interference_parity.mm` via `run-sim-native-interference.sh`, 8/8) — CLASH/TOUCHING/
+  CLEAR state + overlap volume vs `BRepAlgoAPI_Common`+`BRepGProp`+`BRepExtrema_DistShapeShape`, matched
+  on every pose (volumes 1/2/8 to machine precision). **Sharpened next blocker:** a freeform-operand
+  overlap (the COMMON the planar/analytic native boolean cannot yet build) still declines to OCCT.
 - *Oracle:* `HLRBRep_Algo` / `BRepAlgoAPI_Section` / `BRepExtrema_DistShapeShape` / `BRepLProp` on
   visible-segment sets / section-curve length+topology / min-distance / curvature values.
 - *Bounded.* GS2/GS3/GS4 reuse landed native machinery; **GS1 (HLR) is the substantial one** and the

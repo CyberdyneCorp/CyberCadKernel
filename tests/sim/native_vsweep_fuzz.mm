@@ -36,31 +36,31 @@
 //                     the cross-section at fraction f the linear blend of the two polygons —
 //                     area A(f) is quadratic in f, so a 3-point Simpson volume is EXACT
 //                     (PRIMARY arbiter), handling the general A→B morph.
-//   GUIDED_STRAIGHT   a polygon sweep along a straight +Z spine WITH a guide rail, drawn inside
-//                     the native EXACT envelope (see the NATIVE GUIDED ENVELOPE note below): one
-//                     of two exact regimes per trial — {CONSTANT section + splaying guide → a
-//                     similar-polygon frustum} or {morphing section + guide parallel to the
-//                     spine (scale≡1)}. The guide scale s(f)=dist(spine(f),guide(f))/dist(...,0)
-//                     is linear in f, so the section area A(f)=A_morph(f)·s(f)² is degree ≤4 —
-//                     integrated by a 5-point (composite Simpson over 4 intervals) quadrature
-//                     EXACT for a quartic (PRIMARY arbiter).
+//   GUIDED_STRAIGHT   a polygon sweep along a straight +Z spine WITH a guide rail. Since
+//                     moat-vsfix ALL THREE guided regimes are native (see the NATIVE GUIDED
+//                     ENVELOPE note below): {CONSTANT section + splaying guide → a similar-
+//                     polygon frustum}, {morphing section + guide parallel to the spine
+//                     (scale≡1)}, and the COUPLED {morphing section + splaying guide}. The
+//                     guide scale s(f)=dist(spine(f),guide(f))/dist(...,0) is (piecewise-)linear
+//                     in f, so the section area A(f)=A_morph(f)·s(f)² is degree ≤4 — integrated
+//                     by a 5-point BOOLE quadrature EXACT for a quartic (PRIMARY arbiter),
+//                     capturing the coupled cross-term exactly.
 //
-// ── NATIVE GUIDED ENVELOPE (a REPORTED native limitation, deliberately NOT fuzzed) ──────
-// The native STRAIGHT-spine guided builder (build_variable_sweep_tube, nStations==2 for a
-// straight spine) places the morphed+guide-scaled section only at f=0 and f=1 and RULES
-// LINEARLY between them. That two-station ruling reproduces the continuous guide-scale law
-// EXACTLY when EITHER the section is constant (A==B; the frustum prismatoid is exact) OR the
-// guide scale is constant (s≡1; the plain morph). But when BOTH the section morphs AND the
-// guide scale varies, the ruling DROPS a morph×scale cross-term: the mid cross-section of the
-// linear ruling is 0.5·s0·A + 0.5·s1·B, whereas the true continuously-scaled mid section is
-// s(0.5)·mid(A,B), differing by 0.25·(1−k)·(A−B) (k = s1/s0), non-zero only in the coupled
-// regime. Confirmed by FIRST-PRINCIPLES math AND two independent oracles (OCCT's 24-section
-// densified MakePipeShell + the exact polygon-clip Simpson integral AGREE to ~1e-4; native
-// diverges 1–20% scaling with the guide splay). This is native being LESS correct (NOT
-// oracle-inaccurate); it is REPORTED as a product limitation (`src/native/construct/sweep.h`
-// straight-spine guided variable-sweep needs ≥3 stations to track a coupled morph×scale law)
-// and is byte-unchanged here. The guided family is therefore certified only in the two exact
-// sub-regimes; the coupled regime is documented, not laundered by a widened tolerance.
+// ── NATIVE GUIDED ENVELOPE (the coupled morph×scale regime is now NATIVE — moat-vsfix) ──────
+// The native STRAIGHT-spine guided builder (build_variable_sweep_tube) rules between densified
+// stations. In the two LINEAR sub-regimes — the section constant (A==B) OR the guide scale
+// constant (s≡1) — the section-radius law g(f)=morph(f)·scale(f) is linear, so it stays at TWO
+// stations and reproduces the continuous law EXACTLY (byte-identical to the pre-fix path). When
+// BOTH the section morphs AND the guide scale varies, g(f) is a genuine non-linear PRODUCT and a
+// two-station linear ruling would DROP the morph×scale cross-term: the mid section of the linear
+// ruling is 0.5·s0·A + 0.5·s1·B whereas the true continuously-scaled mid section is s(0.5)·
+// mid(A,B), differing by 0.25·(1−k)·(A−B) (k = s1/s0), non-zero only in the coupled regime — the
+// M6-breadth-19 divergence (1–20% vs OCCT MakePipeShell AND the exact polygon-clip integral).
+// moat-vsfix FIXES this: the straight guided builder now DENSIFIES to bound the coupled area-
+// integral error (straightCoupledStations), so the swept volume converges to the exact ∫A(f)·H
+// closed form as stations grow. The guided family is therefore certified in ALL THREE regimes
+// here — including the coupled one, against the EXACT closed form (Boole's rule, never a widened
+// tolerance).
 //   CIRCLE_CURVED     circle(r0)→circle(r1) morph along a smooth planar quarter-arc spine, no
 //                     guide — a curved morph tube. NO simple closed form → arbitrated against
 //                     OCCT MakePipeShell (deflection-bounded band) + watertight/Euler χ=2.
@@ -320,9 +320,13 @@ std::vector<double> radialPoly(int n, const std::vector<double>& radii, double r
 // blend) at each fraction f∈[0,1], each vertex ADDITIONALLY scaled by the guide splay s(f),
 // in a fixed perpendicular frame, and rules between adjacent stations. The cross-section at
 // fraction f is the planar polygon P(f) with vertex k = ((A_k + (B_k−A_k)f))·s(f). Its signed
-// area A(f) is a polynomial in f of degree ≤ 4 (blend contributes ≤2, guide-scale² ≤2). The
-// exact volume is ∫₀¹ A(f) · H df where H is the straight spine length. A composite Simpson
-// over 4 intervals (5 samples) is EXACT for a quartic.
+// area A(f) is a polynomial in f of degree ≤ 4 (the vertex-blend contributes ≤2 and the
+// guide-scale² a further ≤2, INCLUDING the coupled morph×scale cross-term). The exact volume
+// is ∫₀¹ A(f) · H df with H the straight spine length. BOOLE'S rule (5 samples, weights
+// 2h/45·[7,32,12,32,7]) is EXACT for a quartic (verified: even the coupled morph×scale case,
+// whose area carries the full f⁴ term, is integrated to machine precision — Simpson's n=4
+// left a ~5e-4 quartic residual, Boole's leaves none), so this is the tight PRIMARY arbiter
+// for the coupled guided regime the fix now makes native.
 double straightSweepVolumeClosedForm(const std::vector<double>& A, const std::vector<double>& B,
                                      double H, const std::function<double(double)>& scaleAt) {
     const int n = static_cast<int>(A.size() / 2);
@@ -335,10 +339,10 @@ double straightSweepVolumeClosedForm(const std::vector<double>& A, const std::ve
         }
         return polyArea(P);
     };
-    // Composite Simpson over [0,1] with 4 sub-intervals (h=0.25): (h/3)[f0+4f1+2f2+4f3+f4].
+    // Boole's rule over [0,1] with h=0.25: (2h/45)[7f0+32f1+12f2+32f3+7f4] — exact ≤ degree 5.
     const double h = 0.25;
     const double s0 = areaAt(0.0), s1 = areaAt(0.25), s2 = areaAt(0.5), s3 = areaAt(0.75), s4 = areaAt(1.0);
-    const double integral = (h / 3.0) * (s0 + 4.0 * s1 + 2.0 * s2 + 4.0 * s3 + s4);
+    const double integral = (2.0 * h / 45.0) * (7.0 * s0 + 32.0 * s1 + 12.0 * s2 + 32.0 * s3 + 7.0 * s4);
     return integral * H;
 }
 
@@ -592,26 +596,25 @@ Trial genAndRun(Rng& rng) {
             break;
         }
         case F_GUIDED_STRAIGHT: {
-            // GUIDED straight sweep, drawn inside the native EXACT envelope. The native
-            // straight-spine builder uses a TWO-station linear ruling (build_variable_sweep_tube
-            // nStations=2 for a straight spine): it places the morphed+guide-scaled section only
-            // at f=0 and f=1 and rules linearly between them. That ruling reproduces the
-            // continuous guide-scale law EXACTLY in two disjoint regimes, and DROPS a
-            // morph×scale cross-term when BOTH the section morphs AND the guide scale varies
-            // (the mid cross-section of a linear ruling is 0.5·s0·A + 0.5·s1·B, whereas the true
-            // continuously-scaled mid section is s(0.5)·mid(A,B) — they differ by
-            // 0.25·(1−k)·(A−B), non-zero only when k≠1 AND A≠B). See the harness header
-            // "NATIVE GUIDED ENVELOPE" note; the coupled regime is a REPORTED native limitation,
-            // not certified here (never a widened tolerance). So each guided trial draws ONE of
-            // the two exact regimes:
-            //   regime 0 — CONSTANT section (A==B) + SPLAYING guide → a similar-polygon frustum;
-            //              the two-station prismatoid V=(H/3)(A0+√(A0A1)+A1) is EXACT.
-            //   regime 1 — MORPHING section + guide PARALLEL to the spine (gx1==gx0) → scale≡1,
-            //              the plain no-guide morph reached WITH a guide present (exercises the
-            //              guided code path with the guide-scale law evaluating to 1).
+            // GUIDED straight sweep. The native straight-spine builder places the morphed+guide-
+            // scaled section at densified stations (build_variable_sweep_tube — 2 stations in the
+            // linear sub-regimes, MORE when the coupled morph×scale law is non-linear) and rules
+            // between them. Since moat-vsfix the COUPLED regime (BOTH a morphing section AND a
+            // splaying guide) is native too: the builder densifies to bound the morph×scale
+            // area-integral so the swept volume converges to the exact ∫A(f)·H law. So each guided
+            // trial draws ONE of THREE regimes, all closed-form-arbitrated (Boole's rule, exact
+            // for the ≤quartic section area including the cross-term):
+            //   regime 0 — CONSTANT section (A==B) + SPLAYING guide → a similar-polygon frustum
+            //              (a linear g(f), 2 stations exact).
+            //   regime 1 — MORPHING section + guide PARALLEL to the spine (scale≡1) → the plain
+            //              morph reached WITH a guide present (linear g(f), 2 stations exact).
+            //   regime 2 — COUPLED: MORPHING section AND a SPLAYING guide simultaneously (the
+            //              M6-breadth-19 case). g(f)=morph(f)·scale(f) is non-linear; the fix
+            //              densifies to track the cross-term. Certified here against the exact
+            //              closed form (no widened tolerance).
             const int n = 3 + static_cast<int>(rng.below(6));
             const double rot = rng.range(0.0, kPi / 6.0);
-            const int regime = static_cast<int>(rng.below(2));
+            const int regime = static_cast<int>(rng.below(3));
             if (regime == 0) {
                 const double R = rng.range(2.5, 6.0);
                 A = ngonPoly(n, R, rot); B = ngonPoly(n, R, rot);         // constant section
@@ -621,7 +624,7 @@ Trial genAndRun(Rng& rng) {
                 scaleAt = [gx0, gx1](double f) { return (gx0 + (gx1 - gx0) * f) / gx0; };
                 std::snprintf(db, sizeof db, "guided[const-sect+splay] n=%d R=%.3f gx0=%.3f gx1=%.3f H=%.3f",
                               n, R, gx0, gx1, H);
-            } else {
+            } else if (regime == 1) {
                 const double R0 = rng.range(2.5, 6.0), R1 = rng.range(1.5, 5.0);
                 A = ngonPoly(n, R0, rot); B = ngonPoly(n, R1, rot);       // morphing section
                 spine = straightSpine;
@@ -630,6 +633,16 @@ Trial genAndRun(Rng& rng) {
                 scaleAt = [](double) { return 1.0; };
                 std::snprintf(db, sizeof db, "guided[morph+parallel-guide] n=%d R0=%.3f R1=%.3f gx=%.3f H=%.3f",
                               n, R0, R1, gx, H);
+            } else {
+                // COUPLED morph×scale (M6-breadth-19): morphing section AND a splaying guide.
+                const double R0 = rng.range(2.5, 6.0), R1 = rng.range(1.5, 5.0);
+                A = ngonPoly(n, R0, rot); B = ngonPoly(n, R1, rot);       // morphing section
+                spine = straightSpine;
+                const double gx0 = rng.range(4.0, 8.0), gx1 = rng.range(6.0, 14.0);  // splay
+                guide = {gx0, 0, 0, gx1, 0, H};
+                scaleAt = [gx0, gx1](double f) { return (gx0 + (gx1 - gx0) * f) / gx0; };
+                std::snprintf(db, sizeof db, "guided[COUPLED morph×scale] n=%d R0=%.3f R1=%.3f gx0=%.3f gx1=%.3f H=%.3f",
+                              n, R0, R1, gx0, gx1, H);
             }
             break;
         }

@@ -1125,14 +1125,73 @@ inline bool perpFrame(const math::Vec3& tangent, math::Vec3& uDir, math::Vec3& v
   return true;
 }
 
+// The maximum RELATIVE VOLUME error of the coupled morph×scale law tolerated on a
+// STRAIGHT guided morph before densifying. The section RADIUS at fraction f scales as
+// g(f) = morph(f)·scale(f); the section AREA (hence the swept volume, ∫ area · dz on a
+// straight spine) scales as g(f)². A single ruled band chords g LINEARLY across the band,
+// so its area varies as (chord of g)² — and ∫(chord g)² ≠ ∫g² whenever g is non-linear,
+// i.e. when the section BOTH morphs (A→B) AND is guide-scaled (the coupled morph×scale
+// cross-term, M6-breadth-19; the linear chord drops the product's curvature). Densifying
+// until the piecewise-linear-g area integral matches the true g² integral to within this
+// bound makes the enclosed volume converge to the exact ∫ area law. 0.002 (0.2% of
+// volume) drives the coupled circle→circle + splaying-guide case to a tight, converging
+// match with a handful of stations. It NEVER densifies the two exact sub-regimes (pure
+// morph with constant scale, or pure guide-scale with A==B) because g is then LINEAR ⇒
+// (chord g) == g ⇒ zero integral error ⇒ nStations stays 2 (byte-identical old path).
+inline constexpr double kMaxCoupledVolErr = 0.002;
+
+// Station count for a STRAIGHT guided morph, driven by the coupled morph×scale
+// non-linearity via its exact VOLUME contribution. r(f) = morphR0 + (morphR1−morphR0)·f
+// is the section circumradius envelope (the A→B linear morph) and sc(f) = guideScaleAt(f)
+// the guide splay; the swept volume ∝ ∫₀¹ g(f)² df with g = r·sc. This finds the fewest
+// UNIFORM bands whose piecewise-linear-g area integral ∫(chord g)² matches the true ∫g²
+// to within kMaxCoupledVolErr. If g is linear — no morph (morphR0==morphR1) OR no scale
+// variation (sc≡const), the two exact sub-regimes — the chord equals g and it returns 2
+// (the old collapse). A multi-segment / curved-guide non-uniform sc(f) is handled through
+// guideScaleAt too. Bounded by kMaxDensifyStations.
+inline std::size_t straightCoupledStations(double morphR0, double morphR1,
+                                           const std::function<double(double)>& guideScaleAt) {
+  const double dr = morphR1 - morphR0;
+  const auto g = [&](double f) { return (morphR0 + dr * f) * guideScaleAt(f); };
+
+  // True area integral ∫₀¹ g² df on a fine grid (midpoint rule, converged reference).
+  constexpr int kFine = 4096;
+  double trueInt = 0.0;
+  for (int i = 0; i < kFine; ++i) {
+    const double gv = g((i + 0.5) / kFine);
+    trueInt += gv * gv;
+  }
+  trueInt /= kFine;
+  if (!(trueInt > kProfileTol * kProfileTol)) return 2;  // degenerate envelope → scale guard
+
+  // For nb bands, the section radius is the piecewise-linear interpolant of g at the band
+  // nodes; the swept area varies as its square. Grow nb until ∫(chord g)² matches ∫g².
+  for (std::size_t nb = 1; nb < kMaxDensifyStations; ++nb) {
+    double chordInt = 0.0;
+    for (int i = 0; i < kFine; ++i) {
+      const double f = (i + 0.5) / kFine;
+      const double bf = f * nb;
+      const std::size_t b = std::min(static_cast<std::size_t>(std::floor(bf)), nb - 1);
+      const double t = bf - static_cast<double>(b);
+      const double ga = g(static_cast<double>(b) / nb), gb = g(static_cast<double>(b + 1) / nb);
+      const double gc = ga + (gb - ga) * t;
+      chordInt += gc * gc;
+    }
+    chordInt /= kFine;
+    if (std::fabs(chordInt - trueInt) / trueInt <= kMaxCoupledVolErr) return nb + 1;
+  }
+  return kMaxDensifyStations;
+}
+
 // The guide-scaled morph tube. Densify the cleaned spine (arc length) so each band's
-// tangent turn stays under kMaxBandTurn (0 turns for a straight spine ⇒ 2 stations),
-// transport the A→B morph with either the perpendicular frame (straight spine — a single
-// constant frame, matching loft_along_rail) or the RMF (curved spine, zero spurious twist),
-// scale each station's section by guideScaleAt(f) (1.0 when there is no guide), and tile
-// the rings into a watertight tube. Guards a non-positive guide scale and a self-folding
-// morph (a section rim overtaking the spine step) → NULL → OCCT. `localA`/`localB` are the
-// centred profile loops (equal size ≥ 3, caller-checked).
+// tangent turn stays under kMaxBandTurn (0 turns for a straight spine ⇒ 2 stations UNLESS
+// the coupled morph×scale law is non-linear, then densified to track its curvature —
+// M6-breadth-19), transport the A→B morph with either the perpendicular frame (straight
+// spine — a single constant frame, matching loft_along_rail) or the RMF (curved spine,
+// zero spurious twist), scale each station's section by guideScaleAt(f) (1.0 when there is
+// no guide), and tile the rings into a watertight tube. Guards a non-positive guide scale
+// and a self-folding morph (a section rim overtaking the spine step) → NULL → OCCT.
+// `localA`/`localB` are the centred profile loops (equal size ≥ 3, caller-checked).
 inline topo::Shape build_variable_sweep_tube(const std::vector<math::Point3>& spine,
                                              const std::vector<math::Point3>& localA,
                                              const std::vector<math::Point3>& localB,
@@ -1141,11 +1200,21 @@ inline topo::Shape build_variable_sweep_tube(const std::vector<math::Point3>& sp
   const std::size_t nProf = localA.size();
   const bool straight = spineIsStraight(spine);
 
-  // Station count: a straight spine collapses to two stations (one ruled band per morph
-  // edge, matching MakePipeShell on a straight spine); a curved spine is densified so each
-  // band's tangent turn stays under the weld bound (as build_curved_rail_loft).
+  // Section circumradius of each cap (peak morph magnitude), driving the coupled bound.
+  const double rA = [&] { double r = 0; for (auto& p : localA) r = std::max(r, math::norm(p.asVec())); return r; }();
+  const double rB = [&] { double r = 0; for (auto& p : localB) r = std::max(r, math::norm(p.asVec())); return r; }();
+
+  // Station count. A straight spine normally collapses to two stations (one ruled band per
+  // morph edge, matching MakePipeShell on a straight spine) — but that linear chord drops
+  // the morph×scale cross-term when the section BOTH morphs AND is guide-scaled. So a
+  // straight guided morph is densified to bound the coupled non-linearity (staying at 2 in
+  // the two exact sub-regimes, where g is linear). A curved spine is densified so each
+  // band's tangent turn stays under the weld bound (as build_curved_rail_loft), then raised
+  // to the coupled count so the curved coupled case tracks the product's curvature too.
   std::size_t nStations = 2;
-  if (!straight) {
+  if (straight) {
+    nStations = straightCoupledStations(rA, rB, guideScaleAt);
+  } else {
     const std::vector<math::Vec3> probeTan = stationTangents(spine);
     double totalTurn = 0.0;
     for (std::size_t k = 1; k < probeTan.size(); ++k) {
@@ -1153,6 +1222,7 @@ inline topo::Shape build_variable_sweep_tube(const std::vector<math::Point3>& sp
       totalTurn += std::acos(d);
     }
     if (totalTurn > 1e-4) nStations = static_cast<std::size_t>(std::ceil(totalTurn / kMaxBandTurn)) + 1;
+    nStations = std::max(nStations, straightCoupledStations(rA, rB, guideScaleAt));
     nStations = std::min<std::size_t>(std::max<std::size_t>(nStations, spine.size()), kMaxDensifyStations);
   }
 
@@ -1174,9 +1244,7 @@ inline topo::Shape build_variable_sweep_tube(const std::vector<math::Point3>& sp
 
   const std::size_t n = frames.size();
   const double denom = static_cast<double>(n - 1);
-  const double circumR = std::max(
-      [&] { double r = 0; for (auto& p : localA) r = std::max(r, math::norm(p.asVec())); return r; }(),
-      [&] { double r = 0; for (auto& p : localB) r = std::max(r, math::norm(p.asVec())); return r; }());
+  const double circumR = std::max(rA, rB);
 
   std::vector<std::vector<math::Point3>> rings(n);
   std::vector<math::Point3> centres(n);

@@ -267,6 +267,19 @@ CCShapeId buildGuideScaledSquare() {
     return cc_variable_sweep(sq, 4, sq, 4, spine, 2, guide, 2);
 }
 
+// 4b) COUPLED MORPH×SCALE STRAIGHT (M6-breadth-19 regression): circle r0=5 → r1=2 morph AND
+//     a +X-splaying guide (scale 1→2) SIMULTANEOUSLY along a straight +Z spine of length 12.
+//     The section radius is the PRODUCT of the morph and the splay → a non-linear (quadratic)
+//     coupled law the old 2-station chord dropped (~19% divergence vs OCCT MakePipeShell). The
+//     densified native builder now tracks the cross-term ⇒ deflection-bounded parity.
+CCShapeId buildCoupledMorphScaleStraight() {
+    static const std::vector<double> A = circlePoly(5.0, 64);
+    static const std::vector<double> B = circlePoly(2.0, 64);
+    const double spine[] = {0, 0, 0, 0, 0, 12};
+    const double guide[] = {4, 0, 0, 8, 0, 12};  // splay 4→8 ⇒ scale 1→2
+    return cc_variable_sweep(A.data(), 64, B.data(), 64, spine, 2, guide, 2);
+}
+
 // 4) CIRCLE→CIRCLE SMOOTH-ARC (no guide): r0=4 → r1=2 along a quarter-arc spine (R=40, XZ
 //    plane, 16 segments). Native RMF-transported morph vs OCCT MakePipeShell on the arc.
 CCShapeId buildCircleToCircleArc() {
@@ -321,6 +334,9 @@ int main() {
         {"vsweep constant-square straight", &buildConstantSquareStraight, /*exact*/ true, 0.02, 10.0},
         // 3) Guide-scaled square = frustum: near-exact (both a linear ruled frustum).
         {"vsweep guide-scaled square", &buildGuideScaledSquare, /*exact*/ true, 0.02, 10.0},
+        // 4b) Coupled morph×scale straight (M6-breadth-19): the densified native tube tracks
+        //     the morph×scale cross-term ⇒ deflection-bounded parity vs OCCT MakePipeShell.
+        {"vsweep coupled morph×scale straight", &buildCoupledMorphScaleStraight, /*exact*/ false, 0.02, 12.0},
         // 4) Circle→circle smooth-arc morph: deflection-bounded parity, watertight.
         {"vsweep circle->circle arc", &buildCircleToCircleArc, /*exact*/ false, 0.02, 40.0},
     };

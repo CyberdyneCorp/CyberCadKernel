@@ -171,6 +171,86 @@ CC_TEST(vsweep_guide_scaled_square_frustum) {
   CC_CHECK(std::fabs(vol - vExact) / vExact < 1e-6);
 }
 
+// ── ANALYTIC: COUPLED morph×scale (circle→circle morph + splaying guide) on a straight
+// spine (M6-breadth-19 regression) ───────────────────────────────────────────────────
+// A circle(r0)→circle(r1) morph AND a guide that splays linearly (scale 1→k) simultaneously
+// along a straight +Z spine of length H. The section RADIUS at fraction f is the PRODUCT
+// g(f) = r(f)·sc(f) with r(f) = r0+(r1−r0)f (the morph envelope — a lerp of two concentric
+// regular N-gons is a regular N-gon of the lerped radius) and sc(f) = 1+(k−1)f (the linear
+// splay). The section AREA is C·g(f)² with C = ½N·sin(2π/N) (the exact polygon area factor),
+// so the EXACT swept volume is the polygon-clip closed form
+//     V = C·H·∫₀¹ g(f)² df ,  g(f)² a degree-4 polynomial integrated exactly.
+// Because g is a genuine PRODUCT of two f-linear terms it is non-linear (has an f² cross-
+// term). The old straight-spine builder collapsed to 2 stations and chorded g LINEARLY,
+// dropping the cross-term — a measured 19% volume divergence here. The fix densifies the
+// straight guided morph to bound the coupled area-integral error, so the native volume now
+// matches the closed form to a tight tolerance AND converges as the polygon/deflection
+// tighten. The two exact sub-regimes (pure morph above, pure guide-scale above) are checked
+// to remain exact by their own cases — this case is the coupled cross-term.
+CC_TEST(vsweep_coupled_morph_scale_straight_matches_polygon_clip_integral) {
+  const int N = 128;
+  const double r0 = 5.0, r1 = 2.0, H = 12.0, kScale = 2.0;  // scale splays 1→2 (d0=4 → 8)
+  const std::vector<double> A = circlePoly(r0, N);
+  const std::vector<double> B = circlePoly(r1, N);
+  const double spine[] = {0, 0, 0, 0, 0, H};
+  const double guide[] = {4, 0, 0, 8, 0, H};  // +X offset splaying 4→8 ⇒ scale 1→2
+  const topo::Shape s = cst::build_variable_sweep(A.data(), N, B.data(), N, spine, 2, guide, 2);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+
+  double vol = 0.0;
+  CC_CHECK(validSolid(s, 0.01, vol));
+
+  // Exact polygon-clip closed form: C·H·∫₀¹ [(r0+Δr f)(1+Δs f)]² df, the degree-4 integral
+  // done in closed form (∫fⁿ = 1/(n+1)). C = ½N·sin(2π/N) is the exact N-gon area factor.
+  const double dr = r1 - r0, ds = kScale - 1.0;
+  const double p[3] = {r0 * r0, 2 * r0 * dr, dr * dr};  // (r0+Δr f)²
+  const double q[3] = {1.0, 2 * ds, ds * ds};           // (1+Δs f)²
+  double c[5] = {0, 0, 0, 0, 0};                        // g² = Σ cₖ fᵏ
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) c[i + j] += p[i] * q[j];
+  const double integ = c[0] + c[1] / 2 + c[2] / 3 + c[3] / 4 + c[4] / 5;
+  const double C = 0.5 * N * std::sin(2.0 * kPi / N);  // polyArea(r,N) = C·r²
+  const double vExact = C * H * integ;
+
+  // The coupled case (was 19% off with the 2-station chord) now matches the closed form to
+  // the deflection-bounded coupled tolerance the densifier targets (0.2% volume + mesh).
+  CC_CHECK(std::fabs(vol - vExact) / vExact < 3e-3);
+}
+
+// ── CONVERGENCE: the coupled case tightens toward the closed form as the polygon refines ─
+// The residual is the coupled-band area bound plus the polygon-vs-circle deflection; a finer
+// polygon must not make it worse (monotone-ish convergence sanity, both within the band).
+CC_TEST(vsweep_coupled_morph_scale_converges_with_polygon) {
+  const double r0 = 5.0, r1 = 2.0, H = 12.0, kScale = 2.0;
+  const double spine[] = {0, 0, 0, 0, 0, H};
+  const double guide[] = {4, 0, 0, 8, 0, H};
+  const double dr = r1 - r0, ds = kScale - 1.0;
+  auto exactVol = [&](int N) {
+    const double p[3] = {r0 * r0, 2 * r0 * dr, dr * dr};
+    const double q[3] = {1.0, 2 * ds, ds * ds};
+    double c[5] = {0, 0, 0, 0, 0};
+    for (int i = 0; i < 3; ++i)
+      for (int j = 0; j < 3; ++j) c[i + j] += p[i] * q[j];
+    const double integ = c[0] + c[1] / 2 + c[2] / 3 + c[3] / 4 + c[4] / 5;
+    return 0.5 * N * std::sin(2.0 * kPi / N) * H * integ;
+  };
+  double prevErr = 1.0;
+  for (int N : {48, 96, 192}) {
+    const std::vector<double> A = circlePoly(r0, N);
+    const std::vector<double> B = circlePoly(r1, N);
+    const topo::Shape s = cst::build_variable_sweep(A.data(), N, B.data(), N, spine, 2, guide, 2);
+    CC_CHECK(!s.isNull());
+    if (s.isNull()) return;
+    double vol = 0.0;
+    CC_CHECK(validSolid(s, 0.01, vol));
+    const double err = std::fabs(vol - exactVol(N)) / exactVol(N);
+    CC_CHECK(err < 5e-3);           // always within the coupled band
+    CC_CHECK(err <= prevErr + 1e-4);  // converging (not diverging) as the polygon refines
+    prevErr = err;
+  }
+}
+
 // ── MULTI-STATION CONVERGENCE: a smooth-arc spine morph stays watertight, volume stable ─
 // A circle(r0)→circle(r1) morph along a smooth quarter-arc spine (radius R = 40 ≫ profile,
 // XZ plane). The curved builder densifies to a bounded per-band turn; the solid must be

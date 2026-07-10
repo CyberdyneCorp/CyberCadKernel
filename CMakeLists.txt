@@ -323,6 +323,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_step_reader
         test_native_step_pmi
         test_native_stl
+        test_native_gltf
         test_native_quality
         test_native_drafting
         test_native_section
@@ -638,6 +639,14 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step_pmi.cpp")
     set(test_native_stl_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_stl.cpp")
+    # MOAT exchange — glTF 2.0 (.gltf JSON + .glb binary) + USDZ (STORE-zip, 64-byte
+    # data-aligned) mesh export, the iPad AR / QuickLook / share / render handoff. Host
+    # GATE (a) round-trip (native mesh → glTF/USDZ → re-parse → same vert/tri/bbox) +
+    # GATE (b) structural validity (glTF-2.0 accessor/bufferView/alignment/min-max, the
+    # .glb chunk layout, the .usdz zip container). Facade-driven under the native engine;
+    # pure additive native writers (tessellator untouched); no numsci link.
+    set(test_native_gltf_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_gltf.cpp")
     set(test_native_quality_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_quality.cpp")
     # MOAT M-GS GS1 orthographic HLR — host GATE (a), the OCCT-free analytic proof

@@ -1256,6 +1256,48 @@ CCShapeId cc_stl_import(const char* path) {
         CCShapeId{0});
 }
 
+int cc_gltf_export(CCShapeId body, const char* path, double deflection, int glb) {
+    return cyber::guard(
+        [&]() -> int {
+            // Reuse the neutral tessellation path (no duplicated meshing), then hand
+            // the flat POD to the OCCT-free native glTF writer.
+            auto r = active_engine()->tessellate(resolve(body), deflection);
+            if (!r) {
+                set_last_error(r.error().message);
+                return 0;
+            }
+            const MeshData& m = r.value();
+            if (!cybercad::native::exchange::gltf_export_mesh(m.vertices, m.triangles,
+                                                             path ? path : "", glb != 0)) {
+                set_last_error("glTF export failed to write file");
+                return 0;
+            }
+            return 1;
+        },
+        0);
+}
+
+int cc_usdz_export(CCShapeId body, const char* path, double deflection) {
+    return cyber::guard(
+        [&]() -> int {
+            // Reuse the neutral tessellation path (no duplicated meshing), then hand
+            // the flat POD to the OCCT-free native USDZ writer.
+            auto r = active_engine()->tessellate(resolve(body), deflection);
+            if (!r) {
+                set_last_error(r.error().message);
+                return 0;
+            }
+            const MeshData& m = r.value();
+            if (!cybercad::native::exchange::usdz_export_mesh(m.vertices, m.triangles,
+                                                             path ? path : "")) {
+                set_last_error("USDZ export failed to write file");
+                return 0;
+            }
+            return 1;
+        },
+        0);
+}
+
 // ── tetrahedral volume meshing (Phase-4 additive; TetGen backend optional) ─────
 
 CCTetMesh cc_tet_mesh(CCShapeId body, double deflection, CCVolumeMeshOptions opts) {

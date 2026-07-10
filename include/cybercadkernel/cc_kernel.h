@@ -623,6 +623,29 @@ CCShapeId cc_iges_import(const char *path);
 int cc_stl_export(CCShapeId body, const char *path, double deflection, int binary);
 CCShapeId cc_stl_import(const char *path);
 
+/* glTF 2.0 mesh export (the iPad AR / RealityKit / QuickLook / web-render handoff).
+ * ADDITIVE, mesh-based (native serves; no OCCT fallback needed). `deflection` is the
+ * chord tolerance for the tessellation the writer serialises. Positions are emitted
+ * in METRES (kernel millimetres × 1e-3, glTF's linear unit); connectivity is
+ * preserved index-for-index. glb=1 => a binary .glb container (12-byte header +
+ * JSON chunk + BIN chunk, 4-byte aligned); glb=0 => a self-contained .gltf JSON with
+ * a base64 data-URI buffer. One mesh / one triangle primitive with POSITION + NORMAL
+ * accessors (smooth per-vertex normals derived from mesh geometry), correct
+ * POSITION min/max bounds, and one default metallic-roughness material. Deterministic
+ * (same body + deflection => byte-identical file). A NULL / empty mesh writes an
+ * empty asset and still returns 1. cc_gltf_export returns 1 on success, 0 on failure
+ * (see cc_last_error). Export only (no glTF import). */
+int cc_gltf_export(CCShapeId body, const char *path, double deflection, int glb);
+
+/* USDZ mesh export (Apple QuickLook / RealityKit "View in AR"). ADDITIVE, mesh-based
+ * (native serves). Packs a single ASCII-USD (.usda) UsdGeomMesh layer into a USDZ
+ * container: a STORE-only (uncompressed) ZIP whose entry data is aligned to a 64-byte
+ * boundary per the USDZ spec, so the crate reader can zero-copy map it. Positions in
+ * METRES, metersPerUnit=1, Y-up (the QuickLook convention). Same mesh/deflection
+ * contract as cc_gltf_export. Deterministic. Returns 1 on success, 0 on failure
+ * (see cc_last_error). Export only. */
+int cc_usdz_export(CCShapeId body, const char *path, double deflection);
+
 /* ── Transforms ──────────────────────────────────────────────────────────── */
 
 CCShapeId cc_scale_shape(CCShapeId body, double factor);

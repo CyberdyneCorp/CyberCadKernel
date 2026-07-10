@@ -27,10 +27,12 @@
 #ifndef CYBERCAD_NATIVE_EXCHANGE_H
 #define CYBERCAD_NATIVE_EXCHANGE_H
 
+#include "native/exchange/gltf_writer.h"
 #include "native/exchange/step_reader.h"
 #include "native/exchange/step_writer.h"
 #include "native/exchange/stl_reader.h"
 #include "native/exchange/stl_writer.h"
+#include "native/exchange/usdz_writer.h"
 #include "native/topology/native_topology.h"
 
 #include <string>

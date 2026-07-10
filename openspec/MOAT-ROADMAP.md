@@ -1100,6 +1100,32 @@ on a NATIVE body; the legacy mesh extrude `cc_extrude` forwarded unconditionally
 - *Bounded, cheap.* The largest app-facing OCCT fall-through by call-site count (27 transform +
   10 extrude sites) closed with no new geometry algorithms — pure placement composition.
 
+### M-EX — Runtime mesh exchange: glTF 2.0 + USDZ export · ✅ LANDED (anticipatory app value)
+The iPad **AR / QuickLook / share / web-render** handoff. The app hands a part to RealityKit /
+SceneKit / three.js and to iOS "View in AR", both of which want runtime **mesh** formats, not
+B-rep. Two new ADDITIVE `cc_*` ops export the tessellated mesh the kernel already produces:
+`cc_gltf_export(body, path, deflection, glb)` (glTF 2.0 — `.gltf` JSON with a base64-embedded
+buffer, and `.glb` binary) and `cc_usdz_export(body, path, deflection)` (USDZ — an ASCII-USD
+`UsdGeomMesh` layer in a STORE-zip, 64-byte data-aligned per the USDZ spec).
+- **✅ NATIVE (landed), OCCT-FREE, tessellator UNTOUCHED.** Pure serialisers in
+  `src/native/exchange/{gltf_writer,usdz_writer}.{h,cpp}`, layered exactly like the STL writer:
+  facade → `IEngine::tessellate` → native writer. No new meshing, no OCCT type, no engine virtual,
+  no tessellator change (the watertight indexed mesh is consumed read-only). Positions are emitted
+  in metres (kernel mm × 1e-3, the glTF/USD linear unit); connectivity is preserved index-for-index;
+  smooth per-vertex NORMALs are derived (area-weighted) in the writer. Deterministic (no timestamps /
+  host / build-id — byte-identical on repeat).
+- **NOT the oracle — glTF/USDZ are native-only formats.** Gate (a) host round-trip: native mesh →
+  glTF/USDZ → re-parse → SAME vertex / triangle count + bbox (a 10 mm cube exports exactly 8 verts /
+  12 tris, bounds `[0,0,0]..[0.01,0.01,0.01]` m). Gate (b) structural validity: glTF-2.0
+  accessor/bufferView/4-byte-alignment/POSITION min-max, the `.glb` chunk layout (magic/version/length,
+  JSON+BIN chunks, 4-byte alignment), and the `.usdz` STORE-zip container (method 0, 64-byte data
+  alignment, valid CRC-32 + central directory). Host suite `test_native_gltf` (4 cases) green;
+  independently cross-checked with Python `json` / `zipfile`.
+- **Honest scope.** USDZ ships the ASCII-USD-in-zip path (QuickLook-conformant; ASCII layers are
+  valid inside a `.usdz`). The USD **binary crate** (`.usdc`) encoder is a documented follow-up —
+  a file-size optimisation, not an AR-handoff capability gap. glTF/USDZ **import** is out of scope.
+  No third-party glTF/USD library is vendored. Change: `openspec/changes/moat-gltf-export/`.
+
 ### M8 — `drop-occt` — unlink OCCT · gated on M0–M7 + **M-DM** + **M-GS** + M6 bar
 > **Itemized unlink checklist:** [DROP-OCCT-READINESS.md](DROP-OCCT-READINESS.md) — every OCCT fall-through site classified A (now-native, 65 sites) / B (must-go-native, **now 2 sites** `fillet_edges_g2` + `thread_apply`, neither app-used) / C (IGES decline). Build-unlink PROVEN today (§6 rehearsal: native-only, 0 crash / 0 silent-wrong); ship-quality blocked on **≈ 1.5–3.5 py (mid ~2.5)** of thin-tail kernel breadth **the app does not hit** — the F1–F5 wave closed the app's curved-substrate gaps (canal fillet end-to-end via facade bicyl-COMMON, sphere shell, cone/sphere offset_face, off-center + disjoint booleans, freeform sphere wrap-emboss). Remaining: ff↔ff FUSE + general freeform-B-spline bases + non-convex shell + the 2 zero-app-site B ops. **The real ship-blockers are now non-kernel: app-side kernel adoption (ABI ready, 63/63 symbols) + the IGES decision.** Measured payoff: native 7–20× faster, ~28 MB in-binary / ~112 MB dep lighter, ~11.5 MB less peak RAM ([docs/BENCH-native-vs-occt.md](../docs/BENCH-native-vs-occt.md), [docs/BENCH-memory-native-vs-occt.md](../docs/BENCH-memory-native-vs-occt.md)).
 

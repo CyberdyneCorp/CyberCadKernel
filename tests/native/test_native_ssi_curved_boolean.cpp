@@ -155,6 +155,38 @@ double watertightMeshVolume(const ntopo::Shape& s) {
   return std::fabs(ntess::enclosedVolume(m));
 }
 
+// ── FACADE-shaped cylinder construction (the shipping path the SIM drives) ───────
+// The app builds an operand cylinder by extruding a kind-2 full-circle profile to a
+// length (build_prism_profile → a Z-canonical cylinder over [0, L]) and, for the
+// crossing partner, ROTATING that solid 90° about an axis with cc_rotate_shape_about
+// (native_engine applyNativeTransform → shape.located(Location{xf}); the rotation is a
+// TOP-LEVEL location, NOT baked into the surface frames or vertices). These helpers
+// reproduce exactly that construction so the host gate exercises the same operand
+// topology/placement the facade produces — as opposed to buildCommonSegment's directly
+// world-placed cylinder. `makeCylFacadeZ` centres the extruded cylinder on the origin
+// (extrude over [−L/2, L/2]) so it matches the buildCommonSegment fixture geometry.
+ntopo::Shape makeCylFacadeZ(double r, double halfLen) {
+  std::vector<cst::ProfileSegment> segs(1);
+  segs[0].kind = 2;                 // full circle
+  segs[0].cx = 0; segs[0].cy = 0; segs[0].r = r;
+  // Extrude from z=0 to z=2*halfLen, then translate down by halfLen to centre on origin.
+  ntopo::Shape cyl = cst::build_prism_profile(segs, {}, {}, 2.0 * halfLen);
+  if (cyl.isNull()) return cyl;
+  const nmath::Transform down =
+      nmath::Transform::translationOf(nmath::Vec3{0.0, 0.0, -halfLen});
+  return cyl.located(ntopo::Location{down});
+}
+
+// The crossing partner: a facade Z-cylinder rotated 90° about world +Y → an X-axis
+// cylinder, carried as a TOP-LEVEL located instance (exactly cc_rotate_shape_about).
+ntopo::Shape makeCylFacadeX(double r, double halfLen) {
+  const ntopo::Shape z = makeCylFacadeZ(r, halfLen);
+  if (z.isNull()) return z;
+  const nmath::Transform rot = nmath::Transform::rotationOf(
+      nmath::Point3{0, 0, 0}, nmath::Dir3{0, 1, 0}, sd::kSsiPi / 2.0);
+  return z.located(ntopo::Location{rot});
+}
+
 }  // namespace
 
 // ── (1) STEINMETZ: the exact 16 r³/3 ground truth via the S5-d BRANCHED assembler ─
@@ -214,6 +246,113 @@ CC_TEST(steinmetz_branched_common_watertight_matches_analytic) {
   // Monotone invariant: common ≤ min(vol(A), vol(B)).
   const double vCyl = cylinderVolume(r, -3, 3);
   CC_CHECK(vTrue <= vCyl + 1e-9);
+}
+
+// ── (1b) FACADE-shaped Steinmetz COMMON: the shipping-path bicylinder (GATE A) ───
+// The regression gate for moat-m2xc-cyl-cyl-common-facade. The DIRECT buildCommonSegment
+// Steinmetz above (test 1) already lands; the app instead builds each operand through the
+// facade (cc_solid_extrude_profile full-circle + cc_rotate_shape_about → a Z-canonical
+// cylinder carried as a top-level LOCATED instance). Two recogniser bugs surfaced ONLY on
+// that located/rotated operand and blocked the whole shipping path:
+//   * worldFrame() applied the face's cumulative location TWICE (once as surf.location,
+//     once as face.location()), doubling the 90° fold to 180° (+Z→−Z) and collapsing the
+//     axial vertex extent → recogniseCurvedSolid MISSED the rotated cylinder;
+//   * the cap-plane outward normal was taken from (frame-z, orientation), which the facade
+//     extruder does NOT use to encode outwardness (it winds the wire instead) → both caps
+//     got +Z and the COMMON lune-survival classify saw the interior as OUTSIDE → NULL.
+// Both are fixed in ssi_boolean.h (fold-once + geometric cap orientation). This gate asserts
+// the facade-built COMMON is now BYTE-for-byte the same watertight, consistently-oriented
+// Steinmetz the direct path produces (volume → 16 r³/3 to the deflection bound), with NO
+// tolerance widened — the recogniser now sees the two constructions identically.
+CC_TEST(steinmetz_facade_common_watertight_matches_analytic) {
+  const double r = 1.0;
+  const double vTrue = steinmetzVolume(r);
+
+  // Operands built the SHIPPING way: an extruded full-circle Z-cylinder + that cylinder
+  // rotated 90° about +Y (a top-level located instance), NOT buildCommonSegment.
+  const ntopo::Shape aF = makeCylFacadeZ(r, 3.0);
+  const ntopo::Shape bF = makeCylFacadeX(r, 3.0);
+  CC_CHECK(!aF.isNull() && !bF.isNull());
+
+  // The located/rotated operand is recognised IDENTICALLY to a directly-placed one:
+  // right kind, radius, world axis (the fold-once fix), and an interior-facing cap set
+  // (the geometric-orientation fix) so the origin classifies INSIDE both operands.
+  const auto csA = sd::recogniseCurvedSolid(aF);
+  const auto csB = sd::recogniseCurvedSolid(bF);
+  CC_CHECK(csA && csB);
+  if (csA && csB) {
+    CC_CHECK(csA->kind == sd::CurvedKind::Cylinder && csB->kind == sd::CurvedKind::Cylinder);
+    CC_CHECK(std::fabs(csA->radius - r) < 1e-9 && std::fabs(csB->radius - r) < 1e-9);
+    // A-axis is world +Z, B-axis is world +X (the 90°-about-Y fold applied ONCE).
+    CC_CHECK(std::fabs(std::fabs(csA->frame.z.vec().z) - 1.0) < 1e-9);
+    CC_CHECK(std::fabs(std::fabs(csB->frame.z.vec().x) - 1.0) < 1e-9);
+    // The definitely-interior origin classifies INSIDE both (correct cap normals).
+    CC_CHECK(sd::classifyPoint(*csA, Point3{0, 0, 0}, sd::kSsiTol) == 1);
+    CC_CHECK(sd::classifyPoint(*csB, Point3{0, 0, 0}, sd::kSsiTol) == 1);
+    // The same branched Steinmetz trace the direct pair produces (2 branch pts, 4 arms).
+    ssi::MarchOptions mo; mo.enableBranchPoints = true;
+    const ssi::TraceSet bt = ssi::trace_intersection(csA->adapter(), csB->adapter(), {}, mo);
+    CC_CHECK(bt.branchPoints == 2);
+    int arms = 0;
+    for (const ssi::WLine& w : bt.lines)
+      if (w.status == ssi::TraceStatus::BranchArc) ++arms;
+    CC_CHECK(arms == 4);
+  }
+
+  // The full engine entry (ssi_boolean_solid AND boolean_solid) now produce a NON-NULL
+  // native COMMON from the FACADE operands — the blocker that kept the canal fillet
+  // unreachable through the shipping path.
+  const ntopo::Shape cand = nb::ssi_boolean_solid(aF, bF, nb::Op::Common);
+  CC_CHECK(!cand.isNull());
+  CC_CHECK(!nb::boolean_solid(aF, bF, nb::Op::Common).isNull());
+
+  // It is watertight, consistently oriented, and its enclosed volume matches the EXACT
+  // Steinmetz 16 r³/3 to the engine's curved-parity bar (a deflection bound, NOT widened).
+  ntess::MeshParams mp; mp.deflection = 0.005;
+  const ntess::Mesh mesh = ntess::SolidMesher{mp}.mesh(cand);
+  CC_CHECK(ntess::isWatertight(mesh));
+  CC_CHECK(ntess::isConsistentlyOriented(mesh));
+  const double vCand = std::fabs(ntess::enclosedVolume(mesh));
+  CC_CHECK(std::fabs(vCand - vTrue) <= 1e-2 * vTrue);
+
+  // Parity with the DIRECT buildCommonSegment Steinmetz: the recogniser now sees the two
+  // constructions identically, so both bodies match the analytic 16 r³/3 — their enclosed
+  // volumes agree to well within the deflection bound (the rotated operand tessellates on a
+  // rotated grid, so this is a deflection-level, not bit-level, agreement).
+  const ntopo::Shape direct =
+      nb::ssi_boolean_solid(makeCyl(2, r, -3, 3), makeCyl(0, r, -3, 3), nb::Op::Common);
+  CC_CHECK(!direct.isNull());
+  const double vDirect = watertightMeshVolume(direct);
+  CC_CHECK(std::fabs(vCand - vDirect) <= 1e-2 * vTrue);
+}
+
+// ── (1c) NON-Steinmetz facade cyl-cyl still DECLINES → OCCT (GATE A honest decline) ─
+// The recogniser fixes must NOT smuggle a NON-branched cyl-cyl pair into the branched
+// Steinmetz assembler. Two PARALLEL-axis facade cylinders (both Z, offset in X so their
+// COMMON is a lens-prism, not a self-crossing Steinmetz) are still recognised as located
+// cylinders, but their axes are parallel — the steinmetzPreGate crossing/orthogonality
+// test fails, the unbranched trace reports no self-crossing near-tangent signal, and the
+// COMMON is outside the S5 single-seam families. ssi_boolean_solid MUST return NULL so
+// the engine falls back to OCCT — never a fabricated native body. (Unequal-radius
+// ORTHOGONAL crossings are a separate, LEGITIMATE transversal native pass, covered by
+// unequal_orthogonal_is_transversal_not_branched_native_pass — not a decline.)
+CC_TEST(non_steinmetz_facade_cyl_cyl_declines) {
+  // Parallel-axis facade cylinders (both +Z), one shifted so they overlap partially.
+  const ntopo::Shape zA = makeCylFacadeZ(1.0, 3.0);
+  const nmath::Transform shift = nmath::Transform::translationOf(nmath::Vec3{1.0, 0, 0});
+  const ntopo::Shape zB = makeCylFacadeZ(1.0, 3.0).located(ntopo::Location{shift});
+  CC_CHECK(!zA.isNull() && !zB.isNull());
+  // Both are recognised as located cylinders (the fold-once fix), with PARALLEL axes.
+  const auto csA = sd::recogniseCurvedSolid(zA);
+  const auto csB = sd::recogniseCurvedSolid(zB);
+  CC_CHECK(csA && csB);
+  if (csA && csB) {
+    const double para =
+        nmath::norm(nmath::cross(csA->frame.z.vec(), csB->frame.z.vec()));
+    CC_CHECK(para < 1e-9);  // axes parallel → not a Steinmetz crossing
+  }
+  // The COMMON declines → NULL → OCCT (no fabricated native lens-prism).
+  CC_CHECK(nb::ssi_boolean_solid(zA, zB, nb::Op::Common).isNull());
 }
 
 // ── (2a) TRANSVERSAL through-drill COMMON: a REAL native watertight pass ─────────

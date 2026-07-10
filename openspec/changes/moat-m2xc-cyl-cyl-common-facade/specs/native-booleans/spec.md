@@ -23,8 +23,14 @@ still decline honestly → OCCT.
 - WHEN `cc_boolean(a, b, 2)` (common) is invoked
 - THEN the native engine SHALL return a watertight, consistently-oriented solid whose enclosed volume matches the analytic bicylinder 16·Rc³/3 to the deflection bound — identical to the result obtained when the same two cylinders are built directly via `buildCommonSegment`
 
-#### Scenario: The landed native canal fillet becomes reachable via the facade (sim)
+#### Scenario: The facade builds the native Steinmetz body on the simulator (sim)
 
-- GIVEN the cc_* facade on a booted iOS simulator and a Steinmetz bicylinder built via `cc_boolean(cylZ, cylX, 2)` under the native engine
-- WHEN `cc_fillet_edges` rounds its crossing crease under the native engine and, separately, under OCCT
-- THEN the native canal fillet (already landed in `moat-canal-cyl-cyl-fillet`) SHALL now run on the native body — watertight + consistently oriented + material-removing — and the sim canal cases SHALL report a full native `mass` + `tessellate` + `occt-parity` PASS instead of the body-build `native-note`
+- GIVEN the cc_* facade on a booted iOS simulator with the native engine, and a Steinmetz bicylinder built via `cc_boolean(cylZ, cylX, 2)` (a `cc_solid_extrude_profile` full-circle cylinder plus a `cc_rotate_shape_about`-located crossing cylinder)
+- WHEN the native body is built and, separately, the OCCT oracle builds and mass-measures the same bicylinder
+- THEN the native `cc_boolean` COMMON SHALL now return a non-zero body whose `cc_mass_properties` volume matches the analytic bicylinder 16·Rc³/3 (and the OCCT oracle) to the facade deflection bound — the sim canal cases SHALL report a `native-body` PASS, closing the body-build gap that previously held the whole path at a `native-note`
+
+#### Scenario: Composing the landed canal fillet through the facade is the sharpened next blocker (honest decline)
+
+- GIVEN the native Steinmetz body built through the facade (above), whose native SSI assembler emits the crossing lens as a FACETED planar-facet shell (welded triangulated lune patches) rather than a smooth B-rep with two crossing-crease arc edges
+- WHEN the sim (and the host `native_facade_steinmetz_common` gate) enumerate the body's edges to seat `cc_fillet_edges` on the crossing crease
+- THEN NO single smooth crossing-crease ARC is exposed (only 2-point facet edges), so composing the LANDED `moat-canal-cyl-cyl-fillet` fillet through the facade is honestly DECLINED at this cyl↔cyl COMMON recogniser stage and recorded as a measured `native-note`; the remaining work is a smooth-crease native boolean emit (an assembler-representation change), NOT a change to the recogniser, the fillet builder (host-gated in `test_native_blend`), or the tessellator

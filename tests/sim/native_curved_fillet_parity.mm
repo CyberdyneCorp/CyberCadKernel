@@ -163,6 +163,11 @@ struct Snapshot {
     CCShapeId id = 0;
     CCMassProps mass{0, 0, 0, 0, 0, 0};
     bool activeNative = false;
+    // Canal-path localization: did the Steinmetz BODY build, and was a smooth
+    // crossing-crease ARC found on it (vs only faceted facet edges)?
+    bool bodyBuilt = false;
+    double bodyVolume = 0.0;
+    bool creaseFound = false;
 };
 
 // Build the capped cylinder under `buildEngine`, fillet its top rim under `blendEngine`.
@@ -833,8 +838,12 @@ Snapshot buildAndFilletCanal(double Rc, double L, double r, int buildEngine, int
     Snapshot s;
     s.activeNative = cc_active_engine() == 1;
     if (body != 0) {
+        s.bodyBuilt = true;
+        const CCMassProps bmp = cc_mass_properties(body);
+        s.bodyVolume = bmp.valid ? bmp.volume : 0.0;
         const int crease = findCreaseEdge(body, Rc, 1e-3);
         if (crease != 0) {
+            s.creaseFound = true;
             const int ids[1] = {crease};
             s.id = cc_fillet_edges(body, ids, 1, r);
             if (s.id != 0) s.mass = cc_mass_properties(s.id);
@@ -871,12 +880,31 @@ void runCanalCase(double Rc, double L, double r) {
 
     // Native path via the facade.
     const Snapshot cand = buildAndFilletCanal(Rc, L, r, /*build*/ 1, /*blend*/ 1);
+
+    // BOOLEAN-track gate (moat-m2xc-cyl-cyl-common-facade): the native Steinmetz BODY now
+    // builds through the cc_boolean(cylZ, cylX, common) facade — the gap that previously
+    // kept this whole path at a body-build note. Assert the body built with the analytic
+    // bicylinder volume 16 Rc³/3 to the facade deflection bound.
+    const bool bodyOk = cand.bodyBuilt && cand.bodyVolume > 0.0 &&
+                        std::fabs(cand.bodyVolume - sharp) < 3e-2 * sharp;
+    std::snprintf(detail, sizeof detail, "native body vol=%.6g steinmetz=%.6g rel=%.2e built=%d",
+                  cand.bodyVolume, sharp,
+                  sharp > 0 ? std::fabs(cand.bodyVolume - sharp) / sharp : 0.0, cand.bodyBuilt ? 1 : 0);
+    record(bodyOk, base + " native-body", detail);
+
     if (cand.id == 0 || cand.mass.valid == 0) {
-        // The native cc_boolean declined the bicylinder COMMON body (boolean-track gap). The
-        // fillet builder itself is HOST-gated on a real native Steinmetz; not a fillet fail.
+        // SHARPENED next blocker: the BODY builds, but the native SSI assembler emits the
+        // crossing lens as a FACETED planar-facet shell (buildSteinmetzCommon welds
+        // triangulated lune patches), so there is NO smooth B-rep crossing-crease ARC for
+        // cc_fillet_edges to seat on — findCreaseEdge sees only 2-point facet edges. Composing
+        // the LANDED canal fillet through the facade needs the native boolean to emit a smooth
+        // B-rep crease (an assembler-representation change), beyond the cyl↔cyl COMMON recogniser
+        // slice. Recorded as an honest measured note (not a body-build gap any more).
         std::snprintf(detail, sizeof detail,
-                      "native Steinmetz body not built via cc_boolean facade (boolean-track "
-                      "breadth gap); canal FILLET is host-gated (test_native_blend)");
+                      "native Steinmetz BODY built via facade (vol=%.4g); canal FILLET not "
+                      "composable: faceted shell exposes no smooth crease ARC (creaseFound=%d) "
+                      "→ needs a smooth-crease native boolean emit; canal fillet is host-gated "
+                      "(test_native_blend)", cand.bodyVolume, cand.creaseFound ? 1 : 0);
         record(true, base + " native-note", detail);
         cc_set_engine(0);
         if (oracle.id) cc_shape_release(oracle.id);

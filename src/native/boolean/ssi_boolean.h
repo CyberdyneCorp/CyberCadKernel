@@ -152,18 +152,24 @@ struct CurvedSolid {
   }
 };
 
-// World-place a face's analytic surface frame (fold surface + face location).
-inline math::Ax3 worldFrame(const topo::FaceSurfaceResult& surf, const topo::Shape& face) {
+// World-place a face's analytic surface frame. `surfaceOf(face)` already returns the
+// face's CUMULATIVE location (the Explorer folds the parent solid's placement into each
+// sub-shape's location; surf.location == face.location()), so the frame is world-placed
+// by applying that location ONCE. Applying it a second time (via face.location()) would
+// double-transform — harmless for a world-placed operand whose faces are identity-located
+// (buildCommonSegment), but for a facade operand carried as a top-level located instance
+// (cc_solid_extrude_profile + cc_rotate_shape_about) it doubles the rotation (e.g. a 90°
+// about-Y fold becomes 180°, +Z→−Z), collapsing the axial vertex extent and making
+// recogniseCurvedSolid miss the operand. Fold ONCE, matching feature/wrap_emboss.h.
+inline math::Ax3 worldFrame(const topo::FaceSurfaceResult& surf, const topo::Shape& /*face*/) {
   math::Ax3 f = surf.surface->frame;
-  auto apply = [](math::Ax3& fr, const topo::Location& loc) {
-    if (loc.isIdentity()) return;
-    fr.origin = loc.transform().applyToPoint(fr.origin);
-    fr.x = math::Dir3{loc.transform().applyToVector(fr.x.vec())};
-    fr.y = math::Dir3{loc.transform().applyToVector(fr.y.vec())};
-    fr.z = math::Dir3{loc.transform().applyToVector(fr.z.vec())};
-  };
-  apply(f, surf.location);
-  apply(f, face.location());
+  if (!surf.location.isIdentity()) {
+    const math::Transform& t = surf.location.transform();
+    f.origin = t.applyToPoint(f.origin);
+    f.x = math::Dir3{t.applyToVector(f.x.vec())};
+    f.y = math::Dir3{t.applyToVector(f.y.vec())};
+    f.z = math::Dir3{t.applyToVector(f.z.vec())};
+  }
   return f;
 }
 
@@ -210,11 +216,17 @@ inline std::optional<CurvedSolid> recogniseCurvedSolid(const topo::Shape& s) {
   }
   if (!cs) return std::nullopt;  // no curved face → not this path
 
-  // Axial (v) extent from the solid vertices projected into the surface's v param.
+  // Axial (v) extent from the solid vertices projected into the surface's v param,
+  // plus the vertex centroid — a definitely-interior reference used to orient the
+  // cap-plane normals geometrically (below).
   double vLo = std::numeric_limits<double>::infinity(), vHi = -vLo;
+  math::Vec3 centroidAcc{0, 0, 0};
+  int nVert = 0;
   for (topo::Explorer ex(s, topo::ShapeType::Vertex); ex.more(); ex.next()) {
     const auto p = topo::pointOf(ex.current());
     if (!p) continue;
+    centroidAcc = centroidAcc + (*p - math::Point3{0, 0, 0});
+    ++nVert;
     const math::Vec3 w = *p - cs->frame.origin;
     double v;
     if (cs->kind == CurvedKind::Sphere) {
@@ -225,14 +237,24 @@ inline std::optional<CurvedSolid> recogniseCurvedSolid(const topo::Shape& s) {
     }
     vLo = std::min(vLo, v); vHi = std::max(vHi, v);
   }
-  if (!(vHi - vLo > 1e-9)) return std::nullopt;
+  if (!(vHi - vLo > 1e-9) || nVert == 0) return std::nullopt;
   cs->vLo = vLo; cs->vHi = vHi;
+  const math::Point3 interior =
+      math::Point3{0, 0, 0} + centroidAcc * (1.0 / static_cast<double>(nVert));
 
+  // Cap-plane outward normals. The face's stored (frame-z, orientation) is NOT a
+  // reliable outward-normal encoding across all native constructors: buildCommonSegment
+  // bakes an outward frame per cap, but the facade extruder (build_prism_profile) stores
+  // BOTH caps with a +Z frame + Forward orientation and encodes outwardness only in the
+  // wire winding. Orient each cap normal GEOMETRICALLY instead — point it away from the
+  // solid's interior centroid — so a located/rotated facade cylinder is recognised
+  // identically to a directly world-placed one. (Caps are planar and axis-perpendicular,
+  // so the centroid sits strictly on the interior side of every cap plane.)
   for (const topo::Shape& f : planeFaces) {
     const auto surf = topo::surfaceOf(f);
     const math::Ax3 fr = worldFrame(*surf, f);
     math::Vec3 n = fr.z.vec();
-    if (f.orientation() == topo::Orientation::Reversed) n = -n;
+    if (math::dot(fr.origin - interior, n) < 0.0) n = -n;  // face away from interior
     cs->capPlanes.emplace_back(n, fr.origin);
   }
   return cs;

@@ -129,6 +129,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_transformed_boolean_fuzz.mm \
       native_section_fuzz.mm \
       native_curved_blend_fuzz.mm \
+      native_interference_fuzz.mm \
       native_healing_fuzz.mm \
       native_draft_faces_fuzz.mm \
       native_ssi_s4f_completeness_parity.mm \

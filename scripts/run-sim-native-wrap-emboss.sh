@@ -55,7 +55,7 @@ while IFS= read -r src; do KERNEL_SRCS+=("$src"); done \
 # (construct/prism+revol, WRAP-EMBOSS (Sewing/ShapeFix/Fuse), meshing,
 # mass/bbox queries, and — since occt_exchange.cpp is compiled in — STEP/IGES), so link
 # the SAME broad toolkit set run-sim-native-boolean.sh uses (most-derived → base).
-TKS="TKDESTEP TKDEIGES TKXSBase TKDE TKMesh TKShHealing TKOffset TKFillet TKBool \
+TKS="TKDESTEP TKDEIGES TKXSBase TKDE TKMesh TKShHealing TKHLR TKOffset TKFillet TKBool \
      TKPrim TKBO TKTopAlgo TKGeomAlgo TKBRep TKGeomBase TKG3d TKG2d TKMath TKernel"
 LFLAGS=""; for tk in $TKS; do LFLAGS="$LFLAGS -l$tk"; done
 

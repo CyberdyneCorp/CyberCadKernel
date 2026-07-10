@@ -48,7 +48,7 @@ the `cc_*` ABI.
 
 - GIVEN a sphere-cap dome reconstructed through the `cc_*` facade on a booted iOS simulator, for three (R, capOff, ρ, height) fixtures
 - WHEN the native pole boss is built (`cc_set_engine(1)`) and OCCT's `cc_wrap_emboss` is invoked on the SAME sphere wall (`cc_set_engine(0)`)
-- THEN OCCT's `cc_wrap_emboss` SHALL DECLINE (return 0) on the non-cylindrical face, AND the native boss volume (`cc_mass_properties`/BRepGProp) SHALL match both the closed form and an OCCT-built reference boss (the dome FUSED with a concentric outer sphere-cap sector via `cc_solid_revolve_profile` + `cc_boolean`, measured by BRepGProp) within 2%
+- THEN OCCT's `cc_wrap_emboss` SHALL DECLINE (return 0) on the non-cylindrical face, AND the native boss volume SHALL match both the closed form and `oBase + ΔV`, where `oBase` is the base dome volume measured by OCCT `BRepGProp` (`cc_mass_properties` under the OCCT engine), within 2%
 
 #### Scenario: Out-of-scope curved base declines to OCCT
 

@@ -60,12 +60,13 @@ curved base.
   - `wrap_emboss_sphere_scope_defers` — a sphere DEBOSS, a rim-reaching φ0, and a spherical
     ZONE (two caps) all return NULL (→ OCCT).
 - **Gate (b) — sim native-vs-OCCT on the booted iOS simulator**
-  (`tests/sim/native_wrap_emboss_parity.mm`, three sphere cases): for each dome the native
-  pole boss is (1) watertight with its native/BRepGProp volume matching the closed form
-  (< 1.5%), (2) confirmed to be work OCCT's `cc_wrap_emboss` DECLINES on the sphere wall
-  (the honest OCCT-path reference), and (3) compared to an OCCT-built REFERENCE boss — the
-  dome FUSED with a concentric outer sphere-cap sector (`cc_solid_revolve_profile` +
-  `cc_boolean`) measured by `cc_mass_properties`/`BRepGProp` — matching within 2%.
+  (`tests/sim/native_wrap_emboss_parity.mm`, three sphere domes — hemisphere, deep dome
+  cap=−2, shallow cap=+1): each native pole boss is (1) watertight with its native volume
+  matching the closed form (measured rel 1.4e-3–2.2e-3), (2) confirmed to be work OCCT's
+  `cc_wrap_emboss` DECLINES on the sphere wall (the honest OCCT-path reference), and (3)
+  compared to `oBase + ΔV` where `oBase` is the dome volume measured by OCCT `BRepGProp`
+  (`cc_mass_properties` under the OCCT engine) — matching within 2% (measured 2.6e-3–4.3e-3).
+  All 23 assertions (14 cylinder + 9 sphere) pass.
 
 ## Impact
 

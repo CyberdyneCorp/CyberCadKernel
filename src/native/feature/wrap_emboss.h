@@ -658,13 +658,35 @@ inline std::optional<SphereDome> sphereDome(const topo::Shape& solid, int faceId
   }
   if (distinctCaps != 1 || !haveCap) return std::nullopt;  // exactly ONE cap (a zone declines)
 
-  // The cap's outward normal points AWAY from the dome material, so the enclosed pole is on
-  // the −normal side: pole = −capN. Axial coord of the cap along +pole from the centre is
-  // aCap = dot(capN, centre) − capW (see curved_offset::sphereDomeGeom).
-  const math::Dir3 pole{capN * -1.0};
+  // The cap plane has normal capN (which a revolve may wind either way — NOT reliably
+  // outward), so resolve the pole direction GEOMETRICALLY: the dome closes at an APEX one
+  // radius from the centre, on ONE side of the cap plane. Scan the solid vertices for the
+  // extremes of the signed axial coord along capN; the pole is the side whose extreme reaches
+  // ≈ R from the centre (the closed apex), and the material fills from the cap toward it.
+  const math::Vec3 nAxis = capN;  // unit (from a normalised plane frame)
+  double aMin = 0.0, aMax = 0.0;
+  bool any = false;
+  for (topo::Explorer ex(solid, topo::ShapeType::Vertex); ex.more(); ex.next()) {
+    const auto p = topo::pointOf(ex.current());
+    if (!p) continue;
+    const double a = math::dot(*p - centre, nAxis);
+    if (!any) { aMin = aMax = a; any = true; }
+    else { aMin = std::min(aMin, a); aMax = std::max(aMax, a); }
+  }
+  if (!any) return std::nullopt;
+  // The apex sits at ±R from the centre along nAxis; the cap plane cuts the ball at the OTHER
+  // extreme. Pick +pole as the direction toward whichever extreme is nearer +R (the apex).
+  const bool poleAlongPlusN = std::fabs(aMax - R) <= std::fabs(aMin + R);
+  const math::Dir3 pole{poleAlongPlusN ? nAxis : nAxis * -1.0};
   if (!pole.valid()) return std::nullopt;
-  const double aCap = math::dot(capN, centre.asVec()) - capW;
+  // Cap-plane axial coord along +pole from the centre. The cap plane offset along nAxis is
+  // (capW − dot(capN,centre)) relative to the centre; flip its sign when +pole = −nAxis.
+  const double capAlongN = capW - math::dot(capN, centre.asVec());
+  const double aCap = poleAlongPlusN ? capAlongN : -capAlongN;
   if (!(std::fabs(aCap) < R - 1e-9)) return std::nullopt;  // cap must actually cut the ball
+  // Sanity: the apex extreme along +pole must reach ≈ R (a genuine closed dome, not a slab).
+  const double apexAlong = poleAlongPlusN ? aMax : -aMin;
+  if (std::fabs(apexAlong - R) > 1e-3 * R + 1e-6) return std::nullopt;
 
   SphereDome g;
   g.centre = centre;

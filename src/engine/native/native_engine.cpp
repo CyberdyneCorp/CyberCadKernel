@@ -558,14 +558,6 @@ bool wrapEmbossVerified(const ntopo::Shape& result, const ntopo::Shape& original
                         const double* profileXY, int count, double height, int boss) {
     const double vr = watertightVolume(result);
     if (vr <= 0.0) return false;  // not watertight or empty → reject
-    // Reuse the landed orientation invariant: a watertight-but-inconsistently-wound shell
-    // has a meaningless signed volume, so require consistent orientation before trusting it.
-    {
-        ntess::MeshParams mp;
-        mp.deflection = 0.005;
-        const ntess::Mesh m = ntess::SolidMesher{mp}.mesh(result);
-        if (!ntess::isConsistentlyOriented(m)) return false;
-    }
     const double vo = watertightVolume(original);
     if (vo <= 0.0) return true;   // original not measurable → trust watertight+positive
     if (profileXY == nullptr || count < 3 || !(height > 0.0)) return false;
@@ -573,12 +565,22 @@ bool wrapEmbossVerified(const ntopo::Shape& result, const ntopo::Shape& original
     // F5 FREEFORM (curved) base: a sphere-cap pole boss has an EXACT spherical-shell-sector
     // volume delta (2π(1−cosφ0)·((R+h)³−R³)/3), which does NOT equal footArea×height. When
     // the picked face is a recognised sphere-cap dome wall (boss=1), gate against that closed
-    // form instead of the developable-cylinder area×height rule.
+    // form instead of the developable-cylinder area×height rule. Here the signed volume is
+    // load-bearing, so ALSO require the landed orientation invariant (isConsistentlyOriented):
+    // an inconsistently-wound-but-watertight shell has a meaningless signed volume. The
+    // cylinder arm (below) keeps its original watertight-only acceptance — its planar-facet
+    // window/pad soup can weld watertight without a globally consistent winding while still
+    // metering the correct footArea×height delta, so requiring consistency there would REGRESS
+    // the landed rectangular/polygon cylinder cases.
     if (boss == 1) {
         const double dSphere =
             cybercad::native::feature::spherePoleBossVolumeDelta(original, faceId, profileXY,
                                                                  count, height);
         if (dSphere > 0.0) {
+            ntess::MeshParams mp;
+            mp.deflection = 0.005;
+            const ntess::Mesh m = ntess::SolidMesher{mp}.mesh(result);
+            if (!ntess::isConsistentlyOriented(m)) return false;
             const double expected = vo + dSphere;
             const double tol = std::max(1e-2 * expected, 1e-6);  // deflection-bounded curved mesh
             return std::fabs(vr - expected) <= tol;

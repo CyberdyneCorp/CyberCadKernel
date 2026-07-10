@@ -294,6 +294,31 @@ CC_TEST(wrap_emboss_sphere_pole_boss_watertight_closed_form) {
   CC_CHECK(std::fabs(v - expected) <= 1.5e-2 * expected);  // deflection-bounded curved mesh
 }
 
+CC_TEST(wrap_emboss_sphere_pole_boss_offcenter_caps_closed_form) {
+  // The pole/cap orientation must be resolved GEOMETRICALLY, not from the revolve cap's
+  // frame normal (which can point inward). A DEEP dome (cap below centre, φcap>π/2) and a
+  // SHALLOW cap (cap above centre, φcap<π/2) both emboss to base + the exact shell sector —
+  // this locks the pole-direction bug that a centre-cut (capOff=0) hemisphere masks.
+  struct Case { double R, capOff, rho, height; };
+  const Case cases[] = {{12.0, -2.0, 2.5, 1.5}, {8.0, 1.0, 2.0, 1.0}};
+  for (const Case& cs : cases) {
+    topo::Shape dome = sphereCapDome(cs.R, cs.capOff);
+    bool wt0 = false;
+    const double v0 = vol(dome, wt0);
+    CC_CHECK(wt0);
+    const int fid = sphereFaceId(dome);
+    const std::vector<double> prof = rect(2.0 * cs.rho, 2.0 * cs.rho);
+    topo::Shape e = feat::wrap_emboss(dome, fid, prof.data(), 4, cs.height, 1, 0.005);
+    bool wt = false;
+    const double v = vol(e, wt);
+    CC_CHECK(!e.isNull());
+    CC_CHECK(wt);
+    CC_CHECK(v > v0);
+    const double expected = v0 + poleBossDelta(cs.R, cs.height, cs.rho / cs.R);
+    CC_CHECK(std::fabs(v - expected) <= 1.5e-2 * expected);
+  }
+}
+
 CC_TEST(wrap_emboss_sphere_pole_boss_delta_helper_matches) {
   // The exposed closed-form helper equals the independent formula and is R-consistent.
   const double R = 12.0, height = 1.5;

@@ -300,6 +300,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_topology
         test_native_tessellate
         test_native_display_mesh
+        test_native_display_mesh_fuzz
         test_native_construct
         test_native_profile
         test_native_residuals
@@ -585,6 +586,14 @@ if(CYBERCAD_BUILD_TESTS)
     # no tessellator change. Header-only over math + tessellate/mesh; always-on suite.
     set(test_native_display_mesh_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_display_mesh.cpp")
+    # MOAT M6 render display-mesh DIFFERENTIAL-FUZZ (host arm) — the OCCT-free, seeded
+    # batch generalising the fixed-shape display-mesh contract over random analytic
+    # primitives (sphere/cylinder/cone/box) × varied deflection × crease/LOD/UV. Oracle =
+    # CLOSED-FORM surface distance (deflection bound respected), plus finite/unit-normal/
+    # non-degenerate/fold-watertight/UV-range invariants. DISAGREED==0 bar. Header-only over
+    # render + construct + tessellate + topology (no numsci link); always-on native suite.
+    set(test_native_display_mesh_fuzz_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_display_mesh_fuzz.cpp")
     set(test_native_construct_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_construct.cpp")
     set(test_native_profile_SRC

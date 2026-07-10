@@ -93,9 +93,90 @@ Live smoke: `brep_available=True`, box volume `999.9999999999998`.
 - [x] 6.3 `openspec validate add-python-binding --strict` green.
 
 ## 7. Deferred (out of scope for this change)
-- [ ] 7.1 **pybind11 variant** — the binding is `ctypes`-only; a pybind11 layer
-  (zero-copy NumPy views, richer type stubs) is not implemented.
-- [ ] 7.2 **Interactive `pyvista` render** — only offscreen PNG (trimesh GL /
-  matplotlib fallback) is provided; no interactive `pyvista` viewer.
-- [ ] 7.3 **Wheel packaging** — editable/`pip install -e` only; no binary wheel
-  bundling the dylib is built or published.
+- [ ] 7.1 **pybind11 variant — DEFERRED (intentional).** The binding is
+  `ctypes`-only. Rationale: the ctypes binding is now COMPLETE (all 111 `cc_*`
+  symbols) and working (75 passed / 1 skipped, real geometry). A pybind11 layer
+  would be a parallel *reimplementation* of the same C ABI for marginal gain —
+  slightly faster per-call dispatch and richer compiled type stubs — at the cost
+  of a C++ build-toolchain dependency in the wheel and a second surface to keep in
+  lockstep with the header. The `cc_*` ABI is a plain-C boundary that ctypes
+  consumes with zero build step and copies buffers into NumPy already; there is no
+  functional capability pybind11 would unlock here. Revisit only if profiling shows
+  ctypes dispatch is a real bottleneck for a hot loop.
+- [~] 7.2 **Interactive `pyvista` render — PARTIAL (offscreen provided).** An
+  offscreen PNG render helper usable for an examples gallery is implemented in
+  `viz.render_png` (trimesh GL path with a headless matplotlib `Poly3DCollection`
+  fallback, `PNG_MAGIC`-validated). Full interactive `pyvista` viewing stays
+  optional/out of scope — the offscreen path covers the gallery/CI need without a
+  live GL context.
+- [x] 7.3 **Wheel packaging — DONE.** `python/setup.py` (`build_py` hook) bundles
+  the prebuilt `libcybercadkernel.dylib` into `cybercadkernel/lib/` as package
+  data; `_ffi`/`_cffi` discovery probes that bundled path first. `python -m build
+  --wheel` produces `cybercadkernel-0.1.0-py3-none-any.whl` with the dylib inside;
+  a clean-venv `pip install` of the wheel imports and runs real geometry (box
+  volume `1000`, `brep_available=True`) WITHOUT `CYBERCADKERNEL_DYLIB` set.
+
+## 8. Completion — full `cc_*` API coverage + packaging
+Verification: `CYBERCADKERNEL_DYLIB=…/build-mac/libcybercadkernel.dylib
+python -m pytest python/tests -q` → **75 passed, 1 skipped** (the one skip is the
+offscreen GL render; up from 35 passed). `comm -23` of the header symbols against
+the bound set is EMPTY: **111 / 111** `cc_*` symbols bound (was 74).
+
+- [x] 8.1 **Coverage closed to 100%.** All 37 previously-missing symbols bound in
+  BOTH low-level tables (`_cffi.py` primary + `_ffi.py` parallel, kept in lockstep)
+  with correct `argtypes`/`restype`, by-value struct returns, `T**` out-params, and
+  the matching `_free` counterparts. `test_ffi.py::test_all_abi_symbols_are_bound`
+  guards the count at 111. (**py**)
+- [x] 8.2 **New POD structs mirrored field-for-field** with `ctypes.sizeof` guards
+  cross-checked against a C `sizeof` compiled from the header
+  (`test_ffi.py::test_new_struct_layouts_match_abi`): `CCProjection` 40,
+  `CCInterference` 112, `CCValidityReport` 32, `CCDisplayMesh` 48, `CCTetMesh` 40,
+  `CCVolumeMeshOptions` 32, `CCQualityReport` 64, `CCPmiSummary` 32,
+  `CCDrawingSegment` 32, `CCDrawing` 32, `CCHlrOptions` 24, `CCSectionLoop` 32,
+  `CCSection` 32. (**py**)
+- [x] 8.3 **Pythonic wrappers** in `api.py` for every group, following the existing
+  RAII / `KernelError`-from-`cc_last_error` / copy-then-`_free` patterns: loft
+  family (`loft_circles`, `loft_circle_wire`, `loft_typed`, `loft_along_rails`,
+  `loft_sections`), variable/guided-orientation sweeps, `draft_faces`,
+  `chamfer_edges_asym`, sheet metal (`sheet_base_flange`/`sheet_edge_flange`/
+  `sheet_unfold`), `fill_ngon`, `section_plane`, `hlr_project`,
+  `project_point_on_face`, `check_solid`, `interference`, `display_mesh`,
+  `mesh_quality`, `tet_mesh`/`tet_mesh_surface`, `gltf_export`/`usdz_export`,
+  engine select (`Kernel.engine`/`set_engine`), solid enumeration
+  (`solid_count`/`solid_at`/`solids`), `step_pmi_scan`, and the measurement queries
+  (`measure_distance`/`measure_angle`/`surface_curvature`/`edge_curvature`). Typed
+  result dataclasses added: `DisplayMesh`, `TetMesh`, `QualityReport`,
+  `ValidityReport`, `Interference`, `Projection`, `PmiSummary`, `Section`/
+  `SectionLoop`, `Drawing`. (**py**)
+- [x] 8.4 **Real-geometry tests** for the new features (`test_full_api.py`,
+  `test_engine_and_declines.py`): loft circles → exact cylinder/frustum volume;
+  loft of three square rings → prism `2000`; variable sweep circle→circle → cone;
+  draft strictly reduces volume; asym chamfer removes stock; sheet base flange
+  volume `3000`, edge flange then unfold → flat-pattern area strictly larger;
+  n-gon fill → patch mesh area `50`; section of a box at z=5 → one loop, area `100`,
+  perimeter `40`; HLR of a box → 4 visible + 4 hidden segments; point projection →
+  distance `40` onto z=10; `check_solid` valid box; interference clash overlap `125`
+  / clear gap `5`; `solid_count` of a two-lump fuse == `2` (each lump `1000`); glTF
+  `.glb`/`.gltf` + USDZ export write valid magic-byte files; display mesh has unit
+  normals + UVs; native tet-mesh quality of a regular tet (min dihedral `70.53`,
+  scaled J `1`) and flags a sliver. (**py**)
+- [x] 8.5 **Honest-decline contract asserted** for features this MIT desktop build
+  does not link: measurement/curvature (`CYBERCAD_HAS_NUMSCI` off) and tet meshing
+  (`CYBERCAD_HAS_TETGEN` off) RAISE `CyberCadError` carrying the engine's
+  `cc_last_error` message rather than fabricating a value — so the bindings are
+  verified against a real engine response, not a stub. (**py**)
+- [x] 8.6 **Wheel packaging** (see 7.3). (**build** + **py**)
+- [x] 8.7 **Docs**: `python/README.md` + `docs/python.md` updated to "all 111
+  `cc_*` bound" with the wheel-build recipe and the native-engine / build-flag
+  caveats (native-only section+sheet-metal+PMI; measurement/tet unavailable in the
+  MIT build). `openspec validate --all --strict` green.
+
+> **Engine bug found (reported, NOT worked around).** Building a solid under the
+> NATIVE engine (`cc_set_engine(1)`) and then CONSUMING it under the OCCT engine —
+> `cc_set_engine(0)` then `cc_step_export` / `cc_mass_properties` on that native
+> body — SEGFAULTS. Reproducible on the raw C ABI with pure ctypes (no binding
+> involvement): the OCCT path is handed a native body it cannot read, contradicting
+> the header's "the engine NEVER hands a native body to OCCT" guarantee. This is a
+> kernel/engine defect, out of scope for the (correct) binding; the Python tests
+> keep engine usage consistent (native bodies built AND consumed under the native
+> engine, then restored to OCCT) as the header prescribes, and never trigger it.

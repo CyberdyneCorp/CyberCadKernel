@@ -19,6 +19,11 @@ test = ["pytest>=7", "trimesh>=4", "matplotlib>=3.5"]
 where = ["."]
 include = ["cybercadkernel*"]
 
+# The prebuilt native library is copied into cybercadkernel/lib/ by setup.py's
+# build_py hook and shipped as package data, so the wheel is self-contained.
+[tool.setuptools.package-data]
+cybercadkernel = ["lib/*.dylib", "lib/*.so"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # -ra: summarize skips/xfails at the end (the GL render test skips when headless).

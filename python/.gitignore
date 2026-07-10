@@ -4,3 +4,5 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+# native library bundled into the package at wheel-build time (setup.py)
+cybercadkernel/lib/

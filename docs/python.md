@@ -12,12 +12,17 @@ visualizing the kernel on the desktop. It is **not shipped to iOS**.
 
 ## What it provides
 
-- **Low-level 1:1 `ctypes` binding** (`cybercadkernel/_cffi.py`) — every `cc_*`
-  function and POD struct (`CCMesh`, `CCMassProps`, `CCProfileSeg`,
-  `CCEdgePolyline`, `CCFaceMesh`, `CCShapeId`) with `argtypes`/`restype` set,
-  by-value struct returns, and `T**` out-parameters. An ABI-layout guard
-  (`test_ffi.py`) asserts each struct's `ctypes.sizeof` against a C `sizeof` of
-  the same header.
+- **Low-level 1:1 `ctypes` binding** (`cybercadkernel/_cffi.py`) — **all 111
+  `cc_*` functions** and every POD struct (`CCMesh`, `CCMassProps`,
+  `CCProfileSeg`, `CCEdgePolyline`, `CCFaceMesh`, `CCShapeId`, plus the
+  full-coverage additions `CCProjection`, `CCInterference`, `CCValidityReport`,
+  `CCDisplayMesh`, `CCTetMesh`, `CCVolumeMeshOptions`, `CCQualityReport`,
+  `CCPmiSummary`, `CCDrawing`/`CCDrawingSegment`/`CCHlrOptions`,
+  `CCSection`/`CCSectionLoop`) with `argtypes`/`restype` set, by-value struct
+  returns, and `T**` out-parameters. An ABI-layout guard (`test_ffi.py`) asserts
+  each struct's `ctypes.sizeof` against a C `sizeof` of the same header, and
+  `test_all_abi_symbols_are_bound` pins the bound count at **111 / 111** — the
+  whole header, no gaps. (`_ffi.py` is a parallel table kept in lockstep.)
 - **Pythonic object model** (`cybercadkernel/api.py`):
   - `Kernel` — facade over engine state (`brep_available`, `require_brep`,
     `last_error`, the additive `set_parallel` / `set_gpu_tessellation` toggles)
@@ -137,10 +142,11 @@ it cannot (no error). Every geometry test then gates on the real engine
 (`brep_available`) and asserts exact numbers — a stub build **skips loudly**
 rather than passing a trivially-true check.
 
-Verified suite (macOS arm64, Python 3.11, pytest 7.4): **35 passed, 1 skipped**.
-The single skip is `test_viz.py::test_render_png_gl_offscreen_or_skip` — the
-offscreen **GL** render path (no GL context / pyglet available); the matplotlib
-PNG fallback and the STL round-trip are asserted unconditionally (both
+Verified suite (macOS arm64, pytest): **75 passed, 1 skipped** (up from 35 — the
+new `test_full_api.py` and `test_engine_and_declines.py` cover the full-coverage
+additions). The single skip is `test_viz.py::test_render_png_gl_offscreen_or_skip`
+— the offscreen **GL** render path (no GL context / pyglet available); the
+matplotlib PNG fallback and the STL round-trip are asserted unconditionally (both
 headless-safe). Geometry asserted through Python (exact, `abs=1e-6` unless
 noted):
 
@@ -158,15 +164,67 @@ noted):
 | tessellation | watertight, float64 `(N,3)` verts, int32 `(M,3)` tris; 6 box face-meshes |
 | STEP / IGES round-trip | preserves volume |
 | fillet / translate / scale | volume down / bbox moves / volume cubes |
+| loft circles (equal r) / (taper) | cylinder `πr²h` / frustum volume |
+| loft of 3 square rings | prism `2000.0` |
+| variable sweep circle→circle | cone / frustum (rel `2e-2`) |
+| draft / asym chamfer | strictly reduce volume |
+| sheet base flange 50×30×2 | `3000.0` |
+| edge flange → unfold | flat-pattern area > base area |
+| n-gon fill (10/10 triangle) | patch mesh area `50.0` |
+| section of box at z=5 | 1 loop, area `100.0`, perimeter `40.0` |
+| HLR of box (front view) | 4 visible + 4 hidden segments |
+| point projection onto z=10 | distance `40.0`, foot `(5,5,10)` |
+| `check_solid` of a box | valid, decided, `first_failure == 0` |
+| interference clash / clear | overlap `125.0` / min distance `5.0` |
+| `solid_count` of a two-lump fuse | `2` (each lump `1000`) |
+| glTF `.glb` / `.gltf` / USDZ export | valid magic-byte files |
+| display mesh | unit per-vertex normals + UVs |
+| tet-mesh quality (regular tet) | min dihedral `70.53`, scaled J `1.0` |
+
+The measurement / curvature and tet-meshing wrappers are asserted to **honestly
+decline** (raise `CyberCadError`) on this MIT desktop build, since it links
+neither `CYBERCAD_HAS_NUMSCI` nor `CYBERCAD_HAS_TETGEN`.
 
 Live smoke through Python: `brep_available = True`, box volume
 `999.9999999999998`.
 
+## Wheel packaging
+
+`python -m build` produces a **self-contained wheel** with the native dylib
+inside, so an install needs no `build-mac/` checkout or env var at runtime:
+
+```bash
+python/build_dylib.sh                    # → build-mac/libcybercadkernel.dylib
+cd python && python -m build --wheel      # → dist/cybercadkernel-*.whl (dylib bundled)
+pip install dist/cybercadkernel-*.whl     # imports + runs real geometry as-is
+```
+
+`setup.py`'s `build_py` hook copies the dylib (from `$CYBERCADKERNEL_DYLIB`, else
+`build-mac/`) into `cybercadkernel/lib/` as package data; discovery probes that
+bundled path first. A clean-venv install of the wheel imports and runs real
+geometry (box volume `1000`, `brep_available = True`) with no env var set.
+
 ## Deferred
 
-- **pybind11 variant** — the current binding is `ctypes`-only. A pybind11
-  layer (for zero-copy NumPy views and richer type stubs) is not implemented.
-- **Interactive `pyvista` render** — only offscreen PNG (trimesh GL /
-  matplotlib) is provided; an interactive `pyvista` viewer is not wired up.
-- **Wheel packaging** — the package is editable/`pip install -e` only; no
-  binary wheel bundling the dylib is built or published.
+- **pybind11 variant** — **deferred by design.** The `ctypes` binding is complete
+  (all 111 `cc_*`) and passing on real geometry; a pybind11 layer would only be a
+  parallel reimplementation of the same plain-C ABI for marginal per-call speed
+  and compiled type stubs, at the cost of a C++ build-toolchain dependency in the
+  wheel. No functional capability is gated on it. Revisit only if ctypes dispatch
+  is shown to be a real hot-loop bottleneck.
+- **Interactive `pyvista` render** — partial. An offscreen PNG helper
+  (`viz.render_png`, trimesh GL + headless matplotlib fallback) is provided and
+  covers the examples-gallery / CI need; a live interactive `pyvista` viewer stays
+  optional.
+
+## Known engine defect (not a binding issue)
+
+Building a solid under the **native** engine (`kernel.engine = "native"`) and then
+consuming it under the **OCCT** engine — e.g. `kernel.engine = "occt"` followed by
+`step_export` / `mass_properties` on that native body — **segfaults**. This
+reproduces on the raw C ABI with pure `ctypes` (no binding involvement): the OCCT
+path is handed a native body it cannot read, contradicting the header's guarantee
+that the engine never hands a native body to OCCT. It is a kernel/engine defect,
+outside the (correct) binding. Keep engine usage consistent — build *and* consume
+a native body under the native engine, then restore OCCT — as the header
+prescribes; the test suite does exactly this and never trips it.

@@ -1,0 +1,39 @@
+{
+  "area_mm2": 46236.985,
+  "artifacts": {
+    "glb": "out/04_v_pulley/04_v_pulley.glb",
+    "png": "out/04_v_pulley/04_v_pulley.png",
+    "step": "out/04_v_pulley/04_v_pulley.step",
+    "stl": "out/04_v_pulley/04_v_pulley.stl"
+  },
+  "bbox_max": [
+    60.0,
+    17.0,
+    60.0
+  ],
+  "bbox_min": [
+    -60.0,
+    -17.0,
+    -60.0
+  ],
+  "bbox_size": [
+    120.0,
+    34.0,
+    120.0
+  ],
+  "center_of_mass": [
+    -0.0,
+    0.0,
+    -0.0
+  ],
+  "description": "Single-groove V-belt pulley revolved from one cross-section: bored hub, thin web, and a rim carrying a symmetric ~38 deg V-groove.",
+  "features": [
+    "revolve (hand-built profile)",
+    "integral bore",
+    "V-groove section"
+  ],
+  "name": "04_v_pulley",
+  "render_backend": "matplotlib",
+  "title": "V-belt pulley (single groove)",
+  "volume_mm3": 200504.876
+}

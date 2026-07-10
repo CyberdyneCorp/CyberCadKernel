@@ -1,0 +1,40 @@
+{
+  "area_mm2": 17128.175,
+  "artifacts": {
+    "glb": "out/07_manifold_block/07_manifold_block.glb",
+    "png": "out/07_manifold_block/07_manifold_block.png",
+    "step": "out/07_manifold_block/07_manifold_block.step",
+    "stl": "out/07_manifold_block/07_manifold_block.stl"
+  },
+  "bbox_max": [
+    90.0,
+    40.0,
+    40.0
+  ],
+  "bbox_min": [
+    -0.0,
+    -0.0,
+    0.0
+  ],
+  "bbox_size": [
+    90.0,
+    40.0,
+    40.0
+  ],
+  "center_of_mass": [
+    45.0,
+    20.0,
+    19.849
+  ],
+  "description": "Manifold block with a through horizontal gallery, two vertical ports that intersect it internally, four corner mounting holes and a chamfered top rim.",
+  "features": [
+    "box primitive",
+    "intersecting cross-drillings",
+    "corner hole pattern",
+    "edge chamfer"
+  ],
+  "name": "07_manifold_block",
+  "render_backend": "matplotlib",
+  "title": "Hydraulic manifold block",
+  "volume_mm3": 142866.0
+}

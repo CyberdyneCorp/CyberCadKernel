@@ -1,0 +1,39 @@
+{
+  "area_mm2": 26906.36,
+  "artifacts": {
+    "glb": "out/06_spur_gear_simplified/06_spur_gear_simplified.glb",
+    "png": "out/06_spur_gear_simplified/06_spur_gear_simplified.png",
+    "step": "out/06_spur_gear_simplified/06_spur_gear_simplified.step",
+    "stl": "out/06_spur_gear_simplified/06_spur_gear_simplified.stl"
+  },
+  "bbox_max": [
+    54.836,
+    54.836,
+    16.0
+  ],
+  "bbox_min": [
+    -54.836,
+    -54.836,
+    -0.0
+  ],
+  "bbox_size": [
+    109.672,
+    109.672,
+    16.0
+  ],
+  "center_of_mass": [
+    -0.0,
+    -0.031,
+    8.0
+  ],
+  "description": "Stylised 20-tooth spur gear: a blank with a circular array of trapezoidal tooth-gap cuts, a central bore and a keyway. Not a true involute profile.",
+  "features": [
+    "cylinder primitive",
+    "circular boolean pattern",
+    "boolean cut (bore + keyway)"
+  ],
+  "name": "06_spur_gear_simplified",
+  "render_backend": "matplotlib",
+  "title": "Spur gear (simplified, 20 teeth)",
+  "volume_mm3": 127711.826
+}

@@ -1,0 +1,40 @@
+{
+  "area_mm2": 27917.519,
+  "artifacts": {
+    "glb": "out/01_pipe_flange/01_pipe_flange.glb",
+    "png": "out/01_pipe_flange/01_pipe_flange.png",
+    "step": "out/01_pipe_flange/01_pipe_flange.step",
+    "stl": "out/01_pipe_flange/01_pipe_flange.stl"
+  },
+  "bbox_max": [
+    60.0,
+    60.0,
+    14.0
+  ],
+  "bbox_min": [
+    -60.0,
+    -60.0,
+    -0.0
+  ],
+  "bbox_size": [
+    120.0,
+    120.0,
+    14.0
+  ],
+  "center_of_mass": [
+    0.0,
+    -0.0,
+    7.0
+  ],
+  "description": "Round flange: a thick disc with a central pipe bore and a 6-hole bolt circle, outer rim filleted.",
+  "features": [
+    "extruded discs",
+    "boolean cut",
+    "circular hole pattern",
+    "edge fillet"
+  ],
+  "name": "01_pipe_flange",
+  "render_backend": "matplotlib",
+  "title": "Pipe flange (6-bolt raised face)",
+  "volume_mm3": 122776.847
+}

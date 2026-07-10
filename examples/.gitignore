@@ -1,0 +1,13 @@
+# Python bytecode caches from running the example scripts.
+__pycache__/
+*.pyc
+
+# Never commit the built engine dylib or its build tree (regenerated locally via
+# scripts/build-macos-dylib.sh). Already covered by the repo-root .gitignore's
+# /build-*/ rule; repeated here for clarity when working inside examples/.
+/build-mac/
+
+# The committed gallery keeps STEP + STL + glTF + PNG per piece. If a future
+# piece produces an oversized mesh export you don't want in git, ignore it here,
+# e.g.:
+#   out/<name>/<name>.stl

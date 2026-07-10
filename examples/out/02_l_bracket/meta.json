@@ -1,0 +1,40 @@
+{
+  "area_mm2": 18710.976,
+  "artifacts": {
+    "glb": "out/02_l_bracket/02_l_bracket.glb",
+    "png": "out/02_l_bracket/02_l_bracket.png",
+    "step": "out/02_l_bracket/02_l_bracket.step",
+    "stl": "out/02_l_bracket/02_l_bracket.stl"
+  },
+  "bbox_max": [
+    70.0,
+    60.0,
+    70.0
+  ],
+  "bbox_min": [
+    -0.0,
+    -0.0,
+    0.0
+  ],
+  "bbox_size": [
+    70.0,
+    60.0,
+    70.0
+  ],
+  "center_of_mass": [
+    20.193,
+    30.0,
+    19.8
+  ],
+  "description": "Right-angle mounting bracket: two plates fused with a triangular gusset, a mounting hole per flange, filleted inner corner, chamfered outer edges.",
+  "features": [
+    "boolean fuse",
+    "boolean cut",
+    "edge fillet",
+    "edge chamfer"
+  ],
+  "name": "02_l_bracket",
+  "render_backend": "matplotlib",
+  "title": "L-bracket with gusset",
+  "volume_mm3": 95902.851
+}

@@ -434,6 +434,25 @@ construction + the M0 mesher + M2 booleans.
   `cc_boolean` facade still declines (a BOOLEAN-track breadth gap, not a fillet gap), so the app
   reaches this arm only once that lands. Unequal-radius / non-orthogonal / TORUS / elliptical
   (cyl↔oblique-plane) creases still decline → OCCT.
+- **Status — CURVED offset_face LANDED (`moat-m3co-curved-offset-face`) → the curved analogue of
+  the planar `offset_face` NATIVE.** `cc_offset_face` now LANDS on the CYLINDER LATERAL WALL of a
+  capped cylinder: the offset of a cylinder surface is a coaxial cylinder, so
+  `src/native/blend/curved_offset.h` recognises the pure capped cylinder WHOLESALE about the
+  picked Cylinder face and re-radiuses the whole body to `Rc+d` as a planar-facet soup (wall band
+  + two disc caps, shared N angular samples) welded watertight through `assembleSolid` (**NO
+  tessellator change** — byte-identical firewall trivially met). It is candidate #2 in
+  `NativeEngine::offset_face` (after the planar arm), gated by the correctly-signed volume
+  self-verify (grow `d>0` → Vr>Vo, shrink `d<0` → 0<Vr<Vo). Both gates green: GATE a host-analytic
+  (grow/shrink watertight + `isConsistentlyOriented`, matching `π(Rc+d)²H`; planar-cap / `Rc+d≤0`
+  / zero / box decline; full host ctest 67/67) + GATE b SIM (`native_curved_offset_parity.mm`,
+  21/21) — the shipped OCCT `cc_offset_face` is PLANAR-ONLY, so the harness builds the ground-truth
+  oracle directly (`BRepPrimAPI_MakeCylinder(Rc+d, H)` + `BRepGProp`) and confirms native vol
+  relO/relX ≤ 6.4e-3, area ≤ 2.4e-3, watertight, χ=2, bbox ≤ 2·defl, grow/shrink direction, while
+  OCCT-through-facade honestly declines the curved wall as designed. SCOPE (honest): a cone /
+  sphere / stepped-shaft / multi-radius / tilted-cap wall, or a picked planar cap, → NULL → OCCT
+  (`BRepOffsetAPI`). Next: cone-frustum / sphere-cap wall offset (the surface offset is no longer a
+  same-family surface — a cone offsets to a coaxial cone at a shifted apex, a sphere to a concentric
+  sphere — a bounded per-family extension of the same self-verified re-radius).
 
 ### M4 — General STEP / AP242 import (+ IGES stays dropped) · ~1.5–3 py · needs M0
 The remaining import breadth on the landed AP203+ reader: **foreign rational/general B-spline

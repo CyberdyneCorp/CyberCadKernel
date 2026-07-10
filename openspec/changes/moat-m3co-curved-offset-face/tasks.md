@@ -19,11 +19,17 @@
 - [x] 3.4 Full host `ctest` green (67/67).
 
 ## 4. Gate B — sim (native-vs-OCCT parity)
-- [ ] 4.1 Add a curved-offset case to a sim parity harness (cyl wall radial offset) vs OCCT
-  `BRepOffsetAPI` + `BRepGProp`.
-- [ ] 4.2 Run on the booted simulator; case PASSes.
+- [x] 4.1 Add `tests/sim/native_curved_offset_parity.mm` (own `main()`) + runner
+  `scripts/run-sim-native-curved-offset.sh` + a SKIP entry in `scripts/run-sim-suite.sh`.
+  Drive `cc_offset_face` under the NativeEngine (shipping path) on a capped-cylinder wall
+  (grow + shrink, ≥2 radii/heights); the shipped OCCT `cc_offset_face` is PLANAR-ONLY, so
+  the harness builds the ground-truth oracle DIRECTLY (`BRepPrimAPI_MakeCylinder(Rc+d, H)`
+  + `BRepGProp`, the exact `π(Rc+d)²H`), asserts OCCT-through-facade honestly DECLINES the
+  curved wall, and forwards an out-of-slice CONE wall to OCCT (native NULL).
+- [x] 4.2 Run on the booted simulator; all cases PASS (volume relO/relX, area, watertight,
+  Euler χ=2, bbox, direction; cone-wall honest decline).
 
 ## 5. Validate
 - [x] 5.1 `openspec validate moat-m3co-curved-offset-face --strict`.
 - [x] 5.2 `src/native/**` OCCT-free, tessellator untouched, `cc_*` ABI additive-only.
-- [ ] 5.3 Update readiness M3 offset_face row when the sim gate lands.
+- [x] 5.3 Update readiness M3 offset_face row when the sim gate lands.

@@ -97,6 +97,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_construct_parity.mm native_construct_profiles_parity.mm native_loft_parity.mm \
       native_sweep_parity.mm native_construct_tails_parity.mm native_thread_parity.mm native_boolean_parity.mm \
       native_curved_boolean_parity.mm \
+      native_curved_offset_parity.mm \
       native_blend_parity.mm native_step_parity.mm \
       native_geomcompletion_parity.mm native_numerics_parity.mm \
       native_analysis_parity.mm \

@@ -32,3 +32,10 @@ OCCT (`BRepOffsetAPI`).
 - GIVEN a native body and one of: a picked PLANAR cap face, a shrink with `Rc + d ≤ 0`, a zero offset, a cone / sphere / stepped-shaft / multi-radius body, or a non-cylinder solid, with the native engine active and no OCCT
 - WHEN `cc_offset_face` (curved arm) is invoked
 - THEN the curved builder SHALL return a NULL result (the planar cap is served by the planar arm; everything else falls through to OCCT `BRepOffsetAPI`) AND SHALL NEVER emit an unverified or wrong-shaped solid, and a native void SHALL NEVER be handed to OCCT
+
+#### Scenario: Native curved offset matches the OCCT ground-truth oracle (sim gate)
+
+- GIVEN a capped cylinder built through the `cc_*` facade and the NativeEngine active on a booted iOS simulator (OCCT linked as the oracle only)
+- WHEN `cc_offset_face(B, wallFace, d)` is invoked for a grow (`d>0`) and a shrink (`d<0`), `Rc+d>0`, over ≥2 radii / heights
+- THEN the native result SHALL match the OCCT ground-truth oracle — the coaxial capped cylinder at radius `Rc+d` (`BRepPrimAPI_MakeCylinder(Rc+d, H)`, measured with `BRepGProp`) — on volume (rel ≤ 1e-2 vs OCCT and vs the exact `π(Rc+d)²·H`), area (rel ≤ 3e-2, facet band), watertightness, Euler χ = 2, per-axis bbox (≤ 2·deflection), and the grow/shrink direction
+- AND the shipped OCCT `cc_offset_face` (planar-only) SHALL honestly DECLINE the same curved wall through the facade, and an out-of-slice cone-frustum wall SHALL return native NULL (OCCT owns it)

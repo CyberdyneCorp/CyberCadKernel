@@ -361,6 +361,15 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_ssi_marching)
         set(test_native_ssi_marching_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_marching.cpp")
+        # HOST exact-oracle SSI differential fuzzer — the no-OCCT, machine-precision
+        # complement to the SIM/OCCT freeform SSI fuzzer. Leg 1 is S1 analytic breadth
+        # (closed-form oracle, always-compiled core), leg 2 is a NURBS↔analytic
+        # known-answer test driving the real seed_intersection + trace_intersection
+        # pipeline, whose definitions call the least_squares / lstsq substrate — so this
+        # host suite builds only under CYBERCAD_HAS_NUMSCI (mirroring test_native_ssi_seeding).
+        list(APPEND CYBERCAD_TESTS test_native_ssi_exact_fuzz)
+        set(test_native_ssi_exact_fuzz_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_exact_fuzz.cpp")
         # MOAT M2b / B2 freeform face-split — host GATE (a), the OCCT-free analytic
         # tiling proof. Its fixture seam is the real S3 trace (trace_intersection),
         # whose definition is under CYBERCAD_HAS_NUMSCI, so this host suite builds only

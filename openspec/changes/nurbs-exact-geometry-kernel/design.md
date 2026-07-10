@@ -85,6 +85,14 @@ BsplineCurveData reparamCurve(const BsplineCurveData& c, double a, double b);
 Each surface op applies the corresponding curve op along every row (V-dir) or column (U-dir)
 of the control net, reusing the curve core so the two never diverge:
 
+The surface result structs mirror the curve ones, with the geometry field named `.surface`
+(not `.curve`):
+
+```cpp
+struct KnotRemovalResultS  { int removed = 0; double maxError = 0.0; BsplineSurfaceData surface; };
+struct DegreeReduceResultS { bool ok = false; double maxError = 0.0; BsplineSurfaceData surface; };
+```
+
 ```cpp
 BsplineSurfaceData  insertKnotSurface (const BsplineSurfaceData& s, ParamDir d, double val, int r = 1);
 BsplineSurfaceData  refineKnotSurface (const BsplineSurfaceData& s, ParamDir d, std::span<const double> newKnots);

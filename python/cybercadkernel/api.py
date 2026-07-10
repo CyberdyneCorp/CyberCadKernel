@@ -33,11 +33,22 @@ import numpy as np
 
 from . import _cffi
 from ._cffi import (
+    CCDisplayMesh,
+    CCDrawing,
     CCEdgePolyline,
     CCFaceMesh,
+    CCHlrOptions,
+    CCInterference,
     CCMassProps,
     CCMesh,
+    CCPmiSummary,
     CCProfileSeg,
+    CCProjection,
+    CCQualityReport,
+    CCSection,
+    CCTetMesh,
+    CCValidityReport,
+    CCVolumeMeshOptions,
     KernelLibraryNotFound,
 )
 
@@ -58,6 +69,16 @@ __all__ = [
     "SubShapeKind",
     "CyberCadError",
     "KernelLibraryNotFound",
+    "DisplayMesh",
+    "TetMesh",
+    "QualityReport",
+    "ValidityReport",
+    "Interference",
+    "Projection",
+    "PmiSummary",
+    "SectionLoop",
+    "Section",
+    "Drawing",
 ]
 
 
@@ -274,6 +295,161 @@ class EdgePolyline:
     points: np.ndarray  # (P, 3) float64
 
 
+@dataclass
+class DisplayMesh:
+    """A render-quality shading mesh: positions, per-vertex smooth normals with
+    crease-angle hard edges, optional UVs, and triangle indices — all owned
+    NumPy arrays."""
+
+    positions: np.ndarray  # (N, 3) float64
+    normals: np.ndarray  # (N, 3) float64 unit normals
+    triangles: np.ndarray  # (M, 3) int32
+    uvs: "np.ndarray | None" = None  # (N, 2) float64 or None
+
+    @property
+    def vertex_count(self) -> int:
+        return int(self.positions.shape[0])
+
+    @property
+    def triangle_count(self) -> int:
+        return int(self.triangles.shape[0])
+
+
+@dataclass
+class TetMesh:
+    """A tetrahedral volume mesh as owned NumPy arrays.
+
+    ``nodes`` is ``(N, 3)`` float64; ``elements`` is
+    ``(E, nodes_per_element)`` int32 (4 for linear C3D4, 10 for quadratic
+    C3D10), 0-based indices into ``nodes``.
+    """
+
+    nodes: np.ndarray
+    elements: np.ndarray
+    nodes_per_element: int
+    order: int
+
+    @property
+    def node_count(self) -> int:
+        return int(self.nodes.shape[0])
+
+    @property
+    def element_count(self) -> int:
+        return int(self.elements.shape[0])
+
+
+@dataclass(frozen=True)
+class QualityReport:
+    """Native tet-mesh quality census (angles in degrees)."""
+
+    min_dihedral_angle: float
+    max_dihedral_angle: float
+    min_scaled_jacobian: float
+    mean_scaled_jacobian: float
+    max_aspect_ratio: float
+    elements_below_threshold: int
+    flagged_elements: np.ndarray  # (K,) int32 ids of below-threshold tets
+    valid: bool
+
+
+@dataclass(frozen=True)
+class ValidityReport:
+    """Structural-validity breakdown of a solid (``cc_check_solid``)."""
+
+    valid: bool
+    decided: bool
+    finite: bool
+    closed_manifold: bool
+    consistent_orientation: bool
+    no_degenerate: bool
+    no_self_intersection: bool
+    first_failure: int
+
+
+@dataclass(frozen=True)
+class Interference:
+    """Clash verdict between two solids (``cc_interference``).
+
+    ``state`` is 0 CLEAR, 1 TOUCHING, 2 CLASH.
+    """
+
+    state: int
+    clash: bool
+    decided: bool
+    overlap_volume: float
+    min_distance: float
+    has_witness: bool
+    witness_lo: "tuple[float, float, float] | None"
+    witness_hi: "tuple[float, float, float] | None"
+    witness_point: "tuple[float, float, float] | None"
+
+
+@dataclass(frozen=True)
+class Projection:
+    """Foot-of-perpendicular of a point onto a face's analytic surface."""
+
+    foot: tuple[float, float, float]
+    distance: float
+    valid: bool
+
+
+@dataclass(frozen=True)
+class PmiSummary:
+    """AP242 PMI / GD&T annotation census of a STEP file (``cc_step_pmi_scan``)."""
+
+    dimensions: int
+    tolerances: int
+    datums: int
+    datum_targets: int
+    notes: int
+    annotation_geometry: int
+    unknown: int
+    total: int
+
+
+@dataclass(frozen=True)
+class SectionLoop:
+    """One closed section loop on a cut plane.
+
+    ``shape`` tags the analytic form (0 polygon, 1 circle, 2 ellipse).
+    """
+
+    points: np.ndarray  # (P, 3) float64
+    shape: int
+    length: float
+    area: float
+
+
+@dataclass(frozen=True)
+class Section:
+    """Planar section curves of a solid (``cc_section_plane``)."""
+
+    loops: list[SectionLoop]
+    total_length: float
+    total_area: float
+
+    @property
+    def loop_count(self) -> int:
+        return len(self.loops)
+
+
+@dataclass(frozen=True)
+class Drawing:
+    """Orthographic hidden-line-removal result: disjoint visible + hidden
+    2-D drawing-plane segments (each ``(4,)`` = ``[ax, ay, bx, by]`` in mm)."""
+
+    visible: np.ndarray  # (V, 4) float64
+    hidden: np.ndarray  # (H, 4) float64
+
+    @property
+    def visible_count(self) -> int:
+        return int(self.visible.shape[0])
+
+    @property
+    def hidden_count(self) -> int:
+        return int(self.hidden.shape[0])
+
+
 # ── ctypes marshalling helpers ─────────────────────────────────────────────────
 
 
@@ -330,6 +506,79 @@ def _mesh_from_ccmesh(cm: CCMesh) -> Mesh:
     else:
         tris = np.zeros(0, dtype=np.int32)
     return Mesh(vertices=verts, triangles=tris)
+
+
+def _tet_mesh_from_cc(tm: CCTetMesh, op: str) -> TetMesh:
+    """Copy an engine-owned :class:`CCTetMesh` into a :class:`TetMesh`, then free
+    the C buffers. Raises on an empty result (honest decline / unavailable)."""
+    try:
+        ncount = int(tm.nodeCount)
+        ecount = int(tm.elementCount)
+        npe = int(tm.nodesPerElement) or 4
+        if ncount <= 0 or ecount <= 0 or not tm.nodes or not tm.elements:
+            raise _fail(op)
+        nodes = (
+            np.ctypeslib.as_array(tm.nodes, shape=(ncount * 3,)).copy().reshape(-1, 3)
+        )
+        elements = (
+            np.ctypeslib.as_array(tm.elements, shape=(ecount * npe,))
+            .copy()
+            .astype(np.int32)
+            .reshape(-1, npe)
+        )
+        return TetMesh(
+            nodes=nodes,
+            elements=elements,
+            nodes_per_element=npe,
+            order=int(tm.order),
+        )
+    finally:
+        _cffi.lib().cc_tet_mesh_free(tm)
+
+
+def _quality_from_cc(qr: CCQualityReport) -> QualityReport:
+    """Copy an engine-owned :class:`CCQualityReport` into a :class:`QualityReport`,
+    then free the flagged-element buffer."""
+    try:
+        below = int(qr.elements_below_threshold)
+        if below > 0 and qr.flagged_elements:
+            flagged = (
+                np.ctypeslib.as_array(qr.flagged_elements, shape=(below,))
+                .copy()
+                .astype(np.int32)
+            )
+        else:
+            flagged = np.zeros(0, dtype=np.int32)
+        return QualityReport(
+            min_dihedral_angle=float(qr.min_dihedral_angle),
+            max_dihedral_angle=float(qr.max_dihedral_angle),
+            min_scaled_jacobian=float(qr.min_scaled_jacobian),
+            mean_scaled_jacobian=float(qr.mean_scaled_jacobian),
+            max_aspect_ratio=float(qr.max_aspect_ratio),
+            elements_below_threshold=below,
+            flagged_elements=flagged,
+            valid=bool(qr.valid),
+        )
+    finally:
+        _cffi.lib().cc_quality_report_free(qr)
+
+
+def _cc_tetmesh_from_tetmesh(tm: TetMesh) -> CCTetMesh:
+    """Pack a Python :class:`TetMesh` back into a borrowed :class:`CCTetMesh`
+    view (its buffers are owned by the NumPy arrays, which the caller must keep
+    alive for the duration of the C call). Used to feed ``cc_mesh_quality``."""
+    nodes = np.ascontiguousarray(tm.nodes, dtype=np.float64).reshape(-1)
+    elems = np.ascontiguousarray(tm.elements, dtype=np.int32).reshape(-1)
+    cc = CCTetMesh()
+    cc.nodes = nodes.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    cc.nodeCount = int(tm.node_count)
+    cc.elements = elems.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    cc.elementCount = int(tm.element_count)
+    cc.nodesPerElement = int(tm.nodes_per_element)
+    cc.order = int(tm.order)
+    # keep the backing arrays alive on the struct so they outlive the C call
+    cc._keepalive = (nodes, elems)  # type: ignore[attr-defined]
+    return cc
 
 
 # ── Shape ───────────────────────────────────────────────────────────────────
@@ -428,11 +677,61 @@ class Shape:
         )
         return self._wrap(nid, "chamfer_edges")
 
+    def chamfer_edges_asym(
+        self, edge_ids: Sequence[int], distance1: float, distance2: float
+    ) -> "Shape":
+        """Asymmetric two-distance chamfer (``distance1`` on the first / wall
+        face, ``distance2`` on the second / cap face)."""
+        ids = _c_int_array(edge_ids)
+        nid = _cffi.lib().cc_chamfer_edges_asym(
+            self.id, ids, len(edge_ids), float(distance1), float(distance2)
+        )
+        return self._wrap(nid, "chamfer_edges_asym")
+
+    def draft_faces(
+        self,
+        face_ids: Sequence[int],
+        neutral_origin: Sequence[float],
+        pull_dir: Sequence[float],
+        angle_deg: float,
+    ) -> "Shape":
+        """Taper the given planar side faces about the neutral plane for mold
+        release. A positive ``angle_deg`` draws material in as the face recedes
+        from the neutral plane along ``+pull_dir``."""
+        ids = _c_int_array(face_ids)
+        o = _c_double_array([neutral_origin[0], neutral_origin[1], neutral_origin[2]])
+        p = _c_double_array([pull_dir[0], pull_dir[1], pull_dir[2]])
+        nid = _cffi.lib().cc_draft_faces(
+            self.id, ids, len(face_ids), o, p, float(angle_deg)
+        )
+        return self._wrap(nid, "draft_faces")
+
     def shell(self, face_ids: Sequence[int], thickness: float) -> "Shape":
         """Hollow the solid, removing the given faces, with wall ``thickness``."""
         ids = _c_int_array(face_ids)
         nid = _cffi.lib().cc_shell(self.id, ids, len(face_ids), float(thickness))
         return self._wrap(nid, "shell")
+
+    # ── Sheet metal (native engine only) ─────────────────────────────────────
+    def sheet_edge_flange(
+        self, edge_id: int, height: float, bend_radius: float, angle_deg: float
+    ) -> "Shape":
+        """Add a bent flange off a straight rim ``edge_id`` of a base flange.
+
+        Native engine only (``kernel.engine = "native"``).
+        """
+        nid = _cffi.lib().cc_sheet_edge_flange(
+            self.id, int(edge_id), float(height), float(bend_radius), float(angle_deg)
+        )
+        return self._wrap(nid, "sheet_edge_flange")
+
+    def sheet_unfold(self, k_factor: float = 0.4) -> "Shape":
+        """Flat-pattern unfold of a single-bend sheet-metal part.
+
+        Native engine only; ``k_factor`` ∈ [0, 1] is the neutral-fibre position.
+        """
+        nid = _cffi.lib().cc_sheet_unfold(self.id, float(k_factor))
+        return self._wrap(nid, "sheet_unfold")
 
     def offset_face(self, face_id: int, distance: float) -> "Shape":
         """Offset a single face by ``distance`` (positive = outward)."""
@@ -591,6 +890,130 @@ class Shape:
         if not ok:
             raise _fail("principal_moments")
         return (float(out3[0]), float(out3[1]), float(out3[2]))
+
+    def check_solid(self) -> ValidityReport:
+        """Structural-validity report of the solid (raises on an honest decline)."""
+        out = CCValidityReport()
+        ok = _cffi.lib().cc_check_solid(self.id, ctypes.byref(out))
+        if not ok:
+            raise _fail("check_solid")
+        return ValidityReport(
+            valid=bool(out.valid),
+            decided=bool(out.decided),
+            finite=bool(out.finite),
+            closed_manifold=bool(out.closed_manifold),
+            consistent_orientation=bool(out.consistent_orientation),
+            no_degenerate=bool(out.no_degenerate),
+            no_self_intersection=bool(out.no_self_intersection),
+            first_failure=int(out.first_failure),
+        )
+
+    def interference(self, other: "Shape") -> Interference:
+        """Clash / touching / clear verdict against ``other`` (raises on decline)."""
+        out = CCInterference()
+        ok = _cffi.lib().cc_interference(self.id, other.id, ctypes.byref(out))
+        if not ok:
+            raise _fail("interference")
+        has_w = bool(out.has_witness)
+        return Interference(
+            state=int(out.state),
+            clash=bool(out.clash),
+            decided=bool(out.decided),
+            overlap_volume=float(out.overlap_volume),
+            min_distance=float(out.min_distance),
+            has_witness=has_w,
+            witness_lo=tuple(out.witness_lo) if has_w else None,
+            witness_hi=tuple(out.witness_hi) if has_w else None,
+            witness_point=tuple(out.witness_point) if has_w else None,
+        )
+
+    def project_point_on_face(
+        self, face_id: int, point: Sequence[float]
+    ) -> Projection:
+        """Foot-of-perpendicular of ``point`` onto face ``face_id``'s surface.
+
+        Raises on an honest decline (cone / torus / freeform / ambiguous pose).
+        """
+        pr: CCProjection = _cffi.lib().cc_project_point_on_face(
+            self.id, int(face_id), float(point[0]), float(point[1]), float(point[2])
+        )
+        if not pr.valid:
+            raise _fail("project_point_on_face")
+        return Projection(
+            foot=(float(pr.footX), float(pr.footY), float(pr.footZ)),
+            distance=float(pr.distance),
+            valid=True,
+        )
+
+    # ── Connected-solid enumeration ──────────────────────────────────────────
+    def solid_count(self) -> int:
+        """Number of connected solid lumps in this body."""
+        return int(_cffi.lib().cc_shape_solid_count(self.id))
+
+    def solid_at(self, index: int) -> "Shape":
+        """The ``index``-th connected solid lump as its own :class:`Shape`."""
+        nid = _cffi.lib().cc_shape_solid_at(self.id, int(index))
+        return self._wrap(nid, "solid_at")
+
+    def solids(self) -> list["Shape"]:
+        """Every connected solid lump as an independent :class:`Shape`."""
+        return [self.solid_at(i) for i in range(self.solid_count())]
+
+    # ── Measurement & curvature (requires a CYBERCAD_HAS_NUMSCI build) ────────
+    def measure_distance(
+        self, kind_a: int, id_a: int, kind_b: int, id_b: int
+    ) -> tuple[float, tuple[float, float, float], tuple[float, float, float]]:
+        """Minimum distance between two sub-shapes.
+
+        Returns ``(gap, witness_on_a, witness_on_b)``. ``kind_*`` uses
+        :class:`SubShapeKind`. Raises on an honest decline (or on a build without
+        the numerical-science backend).
+        """
+        out7 = (ctypes.c_double * 7)()
+        ok = _cffi.lib().cc_measure_distance(
+            self.id, int(kind_a), int(id_a), int(kind_b), int(id_b), out7
+        )
+        if not ok:
+            raise _fail("measure_distance")
+        return (
+            float(out7[0]),
+            (float(out7[1]), float(out7[2]), float(out7[3])),
+            (float(out7[4]), float(out7[5]), float(out7[6])),
+        )
+
+    def measure_angle(
+        self, kind_a: int, id_a: int, kind_b: int, id_b: int
+    ) -> float:
+        """Angle (radians) between two line/plane sub-shapes. Raises on decline."""
+        out = ctypes.c_double()
+        ok = _cffi.lib().cc_measure_angle(
+            self.id, int(kind_a), int(id_a), int(kind_b), int(id_b), ctypes.byref(out)
+        )
+        if not ok:
+            raise _fail("measure_angle")
+        return float(out.value)
+
+    def surface_curvature(
+        self, face_id: int, u: float, v: float
+    ) -> tuple[float, float, float, float]:
+        """Surface curvature ``(K, H, k1, k2)`` at face ``face_id`` param ``(u, v)``."""
+        out4 = (ctypes.c_double * 4)()
+        ok = _cffi.lib().cc_surface_curvature(
+            self.id, int(face_id), float(u), float(v), out4
+        )
+        if not ok:
+            raise _fail("surface_curvature")
+        return (float(out4[0]), float(out4[1]), float(out4[2]), float(out4[3]))
+
+    def edge_curvature(self, edge_id: int, t: float) -> float:
+        """Edge curvature κ at edge ``edge_id`` parameter ``t``. Raises on decline."""
+        out = ctypes.c_double()
+        ok = _cffi.lib().cc_edge_curvature(
+            self.id, int(edge_id), float(t), ctypes.byref(out)
+        )
+        if not ok:
+            raise _fail("edge_curvature")
+        return float(out.value)
 
     def bounding_box(self) -> BoundingBox:
         """Exact axis-aligned bounding box of the B-rep."""
@@ -805,6 +1228,174 @@ class Shape:
                 raise CyberCadError(f"tessellate failed: {err}")
         return mesh
 
+    def display_mesh(
+        self,
+        deflection: float = 0.1,
+        crease_angle_deg: float = 30.0,
+        lod_target_tris: int = 0,
+        want_uvs: bool = False,
+    ) -> DisplayMesh:
+        """Render-quality display mesh: smooth per-vertex normals with
+        crease-angle hard edges, optional UVs and LOD decimation."""
+        out = CCDisplayMesh()
+        n = _cffi.lib().cc_display_mesh(
+            self.id,
+            float(deflection),
+            float(crease_angle_deg),
+            int(lod_target_tris),
+            1 if want_uvs else 0,
+            ctypes.byref(out),
+        )
+        if n == 0:
+            raise _fail("display_mesh")
+        try:
+            vcount = int(out.vertexCount)
+            tcount = int(out.triangleCount)
+            pos = np.ctypeslib.as_array(out.positions, shape=(vcount * 3,)).copy()
+            nrm = np.ctypeslib.as_array(out.normals, shape=(vcount * 3,)).copy()
+            tris = np.ctypeslib.as_array(out.triangles, shape=(tcount * 3,)).copy()
+            uvs = None
+            if out.uvs:
+                uvs = (
+                    np.ctypeslib.as_array(out.uvs, shape=(vcount * 2,))
+                    .copy()
+                    .reshape(-1, 2)
+                )
+            return DisplayMesh(
+                positions=pos.reshape(-1, 3),
+                normals=nrm.reshape(-1, 3),
+                triangles=tris.astype(np.int32).reshape(-1, 3),
+                uvs=uvs,
+            )
+        finally:
+            _cffi.lib().cc_display_mesh_free(ctypes.byref(out))
+
+    def section_plane(
+        self, origin: Sequence[float], normal: Sequence[float]
+    ) -> Section:
+        """Planar section curves where a cut plane carves this solid.
+
+        Native engine only (``kernel.engine = "native"``). Raises on an honest
+        decline / empty section.
+        """
+        o = _c_double_array([origin[0], origin[1], origin[2]])
+        n = _c_double_array([normal[0], normal[1], normal[2]])
+        sec: CCSection = _cffi.lib().cc_section_plane(self.id, o, n)
+        try:
+            if sec.loopCount <= 0 or not sec.loops:
+                raise _fail("section_plane")
+            loops: list[SectionLoop] = []
+            for i in range(int(sec.loopCount)):
+                lp = sec.loops[i]
+                pc = int(lp.pointCount)
+                if pc > 0 and lp.pointsXYZ:
+                    pts = (
+                        np.ctypeslib.as_array(lp.pointsXYZ, shape=(pc * 3,))
+                        .copy()
+                        .reshape(-1, 3)
+                    )
+                else:
+                    pts = np.zeros((0, 3), dtype=np.float64)
+                loops.append(
+                    SectionLoop(
+                        points=pts,
+                        shape=int(lp.shape),
+                        length=float(lp.length),
+                        area=float(lp.area),
+                    )
+                )
+            return Section(
+                loops=loops,
+                total_length=float(sec.totalLength),
+                total_area=float(sec.totalArea),
+            )
+        finally:
+            _cffi.lib().cc_section_free(sec)
+
+    def hlr_project(
+        self,
+        view_dir: Sequence[float],
+        up: Sequence[float],
+        deflection: float = 0.0,
+        samples_per_edge: int = 0,
+        surface_offset: float = 0.0,
+    ) -> Drawing:
+        """Orthographic hidden-line-removal onto a drawing plane.
+
+        ``view_dir`` is the camera direction; ``up`` an up hint (not parallel).
+        Returns disjoint visible + hidden 2-D segment sets. Raises on an honest
+        decline (a curved-silhouette / freeform body in this slice).
+        """
+        vd = _c_double_array([view_dir[0], view_dir[1], view_dir[2]])
+        u = _c_double_array([up[0], up[1], up[2]])
+        opts = CCHlrOptions(
+            deflection=float(deflection),
+            samplesPerEdge=int(samples_per_edge),
+            surfaceOffset=float(surface_offset),
+        )
+        dr: CCDrawing = _cffi.lib().cc_hlr_project(self.id, vd, u, opts)
+        try:
+
+            def _segs(ptr, count):
+                count = int(count)
+                if count <= 0 or not ptr:
+                    return np.zeros((0, 4), dtype=np.float64)
+                out = np.empty((count, 4), dtype=np.float64)
+                for i in range(count):
+                    s = ptr[i]
+                    out[i] = (s.ax, s.ay, s.bx, s.by)
+                return out
+
+            visible = _segs(dr.visible, dr.visibleCount)
+            hidden = _segs(dr.hidden, dr.hiddenCount)
+            if visible.shape[0] == 0 and hidden.shape[0] == 0:
+                raise _fail("hlr_project")
+            return Drawing(visible=visible, hidden=hidden)
+        finally:
+            _cffi.lib().cc_drawing_free(dr)
+
+    def tet_mesh(
+        self,
+        deflection: float = 0.5,
+        order: int = 10,
+        target_element_size: float = 0.0,
+        grading: float = 1.4,
+        min_scaled_jacobian: float = 0.02,
+    ) -> TetMesh:
+        """Tetrahedral volume mesh of this body.
+
+        Requires a ``CYBERCAD_HAS_TETGEN`` build; raises :class:`CyberCadError`
+        (honest "tet meshing unavailable" decline) otherwise.
+        """
+        opts = CCVolumeMeshOptions(
+            order=int(order),
+            target_element_size=float(target_element_size),
+            grading=float(grading),
+            min_scaled_jacobian=float(min_scaled_jacobian),
+        )
+        tm: CCTetMesh = _cffi.lib().cc_tet_mesh(self.id, float(deflection), opts)
+        return _tet_mesh_from_cc(tm, "tet_mesh")
+
+    def gltf_export(
+        self, path: str, deflection: float = 0.1, glb: bool = True
+    ) -> None:
+        """Export this body as glTF 2.0. ``glb=True`` writes a binary .glb,
+        ``glb=False`` a self-contained .gltf JSON. Raises on failure."""
+        ok = _cffi.lib().cc_gltf_export(
+            self.id, str(path).encode("utf-8"), float(deflection), 1 if glb else 0
+        )
+        if not ok:
+            raise _fail("gltf_export")
+
+    def usdz_export(self, path: str, deflection: float = 0.1) -> None:
+        """Export this body as a USDZ package (Apple QuickLook AR). Raises on
+        failure."""
+        ok = _cffi.lib().cc_usdz_export(
+            self.id, str(path).encode("utf-8"), float(deflection)
+        )
+        if not ok:
+            raise _fail("usdz_export")
+
     def step_export(self, path: str) -> None:
         """Write this body to a STEP file (raises on failure)."""
         ok = _cffi.lib().cc_step_export(self.id, str(path).encode("utf-8"))
@@ -893,6 +1484,28 @@ class Kernel:
     def set_gpu_tessellation(self, enabled: bool) -> None:
         """Toggle the GPU tessellation path (no-op on builds without Metal)."""
         self.gpu_tessellation = enabled
+
+    # ── Active engine selection (OCCT default vs the native C++20 engine) ─────
+    @property
+    def engine(self) -> str:
+        """The active engine: ``"native"`` if the NativeEngine is on, else
+        ``"occt"`` (the build default)."""
+        return "native" if _cffi.lib().cc_active_engine() else "occt"
+
+    @engine.setter
+    def engine(self, which: str) -> None:
+        if which not in ("native", "occt"):
+            raise ValueError("engine must be 'native' or 'occt'")
+        _cffi.lib().cc_set_engine(1 if which == "native" else 0)
+
+    def set_engine(self, native: bool) -> None:
+        """Activate the native engine (``True``) or restore OCCT (``False``).
+
+        Some features (sheet metal, planar section curves, native booleans) are
+        native-only; call ``set_engine(True)`` before using them and build the
+        operands under the same engine.
+        """
+        _cffi.lib().cc_set_engine(1 if native else 0)
 
     # ── internal: adopt a returned id, raising on 0 ──────────────────────────
     def _shape(self, shape_id: int, op: str) -> Shape:
@@ -1000,6 +1613,192 @@ class Kernel:
         g, gn = _flatten_xyz(guide_xyz)
         return self._shape(
             _cffi.lib().cc_guided_sweep(p, pn, q, qn, g, gn), "guided_sweep"
+        )
+
+    def guided_orient_sweep(
+        self,
+        profile_xy: Iterable[Sequence[float]],
+        path_xyz: Iterable[Sequence[float]],
+        guide_xyz: Iterable[Sequence[float]],
+    ) -> Shape:
+        """Sweep whose section orientation is steered by a guide wire (the guide
+        fixes the section frame, not its size — distinct from
+        :meth:`guided_sweep`)."""
+        p, pn = _flatten_xy(profile_xy)
+        q, qn = _flatten_xyz(path_xyz)
+        g, gn = _flatten_xyz(guide_xyz)
+        return self._shape(
+            _cffi.lib().cc_guided_orient_sweep(p, pn, q, qn, g, gn),
+            "guided_orient_sweep",
+        )
+
+    def variable_sweep(
+        self,
+        profile_a_xy: Iterable[Sequence[float]],
+        profile_b_xy: Iterable[Sequence[float]],
+        spine_xyz: Iterable[Sequence[float]],
+        guide_xyz: Iterable[Sequence[float]] | None = None,
+    ) -> Shape:
+        """Variable-section sweep: morph profile A → profile B (same vertex
+        count) along ``spine_xyz``, optionally scaled by a ``guide_xyz`` rail.
+
+        A circle→circle radius-varying morph along a straight spine is a cone.
+        """
+        a, an = _flatten_xy(profile_a_xy)
+        b, bn = _flatten_xy(profile_b_xy)
+        s, sn = _flatten_xyz(spine_xyz)
+        if guide_xyz is None:
+            g, gn = None, 0
+        else:
+            g, gn = _flatten_xyz(guide_xyz)
+        return self._shape(
+            _cffi.lib().cc_variable_sweep(a, an, b, bn, s, sn, g, gn),
+            "variable_sweep",
+        )
+
+    def loft_circles(
+        self,
+        center1: Sequence[float],
+        normal1: Sequence[float],
+        radius1: float,
+        center2: Sequence[float],
+        normal2: Sequence[float],
+        radius2: float,
+    ) -> Shape:
+        """Loft between two true circles → a smooth conical / cylindrical B-rep."""
+        c1 = _c_double_array([center1[0], center1[1], center1[2]])
+        n1 = _c_double_array([normal1[0], normal1[1], normal1[2]])
+        c2 = _c_double_array([center2[0], center2[1], center2[2]])
+        n2 = _c_double_array([normal2[0], normal2[1], normal2[2]])
+        return self._shape(
+            _cffi.lib().cc_loft_circles(
+                c1, n1, float(radius1), c2, n2, float(radius2)
+            ),
+            "loft_circles",
+        )
+
+    def loft_circle_wire(
+        self,
+        center: Sequence[float],
+        normal: Sequence[float],
+        radius: float,
+        wire_xyz: Iterable[Sequence[float]],
+    ) -> Shape:
+        """Loft a true-circle section to an arbitrary polygon wire."""
+        c = _c_double_array([center[0], center[1], center[2]])
+        n = _c_double_array([normal[0], normal[1], normal[2]])
+        w, wn = _flatten_xyz(wire_xyz)
+        return self._shape(
+            _cffi.lib().cc_loft_circle_wire(c, n, float(radius), w, wn),
+            "loft_circle_wire",
+        )
+
+    def loft_along_rails(
+        self,
+        rail_xyz: Iterable[Sequence[float]],
+        guide_xyz: Iterable[Sequence[float]],
+        profile_a_xy: Iterable[Sequence[float]],
+        profile_b_xy: Iterable[Sequence[float]],
+    ) -> Shape:
+        """Two-rail loft: a spine plus a guide steering the section shape."""
+        r, rn = _flatten_xyz(rail_xyz)
+        g, gn = _flatten_xyz(guide_xyz)
+        a, an = _flatten_xy(profile_a_xy)
+        b, bn = _flatten_xy(profile_b_xy)
+        return self._shape(
+            _cffi.lib().cc_loft_along_rails(r, rn, g, gn, a, an, b, bn),
+            "loft_along_rails",
+        )
+
+    def loft_sections(
+        self, sections_xyz: Sequence[Iterable[Sequence[float]]]
+    ) -> Shape:
+        """Ruled loft through 2..N ordered planar section wires (each a list of
+        ``(x, y, z)`` points, ≥3 each)."""
+        flat: list[float] = []
+        counts: list[int] = []
+        for sec in sections_xyz:
+            c = 0
+            for pt in sec:
+                flat.extend((float(pt[0]), float(pt[1]), float(pt[2])))
+                c += 1
+            counts.append(c)
+        arr = _c_double_array(flat)
+        cnt = _c_int_array(counts)
+        return self._shape(
+            _cffi.lib().cc_solid_loft_sections(arr, cnt, len(counts)),
+            "loft_sections",
+        )
+
+    def loft_typed(
+        self,
+        segs_a: Sequence["CCProfileSeg"],
+        frame_a: Sequence[float],
+        segs_b: Sequence["CCProfileSeg"],
+        frame_b: Sequence[float],
+        spline_a: Sequence[float] = (),
+        spline_b: Sequence[float] = (),
+    ) -> Shape:
+        """General loft between two TYPED section profiles, each on its own plane
+        frame (``origin(3) + u(3) + v(3)`` = 9 doubles). ``segs_*`` are
+        :class:`CCProfileSeg` loops (kind 0 line / 1 arc / 2 circle / 3 spline);
+        ``spline_*`` are the flat ``x, y`` spline side-channels."""
+        seg_a = (CCProfileSeg * len(segs_a))(*segs_a)
+        seg_b = (CCProfileSeg * len(segs_b))(*segs_b)
+        sa = _c_double_array(list(spline_a))
+        sb = _c_double_array(list(spline_b))
+        fa = _c_double_array([float(x) for x in frame_a])
+        fb = _c_double_array([float(x) for x in frame_b])
+        return self._shape(
+            _cffi.lib().cc_loft_typed(
+                seg_a, len(segs_a), sa, len(spline_a), fa,
+                seg_b, len(segs_b), sb, len(spline_b), fb,
+            ),
+            "loft_typed",
+        )
+
+    def fill_ngon(
+        self,
+        boundary_xyz: Sequence[Sequence[float]],
+        edge_kinds: Sequence[int] | None = None,
+        arc_mids: Sequence[Sequence[float]] | None = None,
+        grid_n: int = 8,
+    ) -> Shape:
+        """Fill an N-sided (3..6) analytic boundary loop with a smooth patch,
+        returned as a mesh-backed body. Native engine only.
+
+        ``boundary_xyz`` are the N corner points in order; ``edge_kinds[i]`` is
+        0 (straight) or 1 (arc); ``arc_mids`` gives one mid-arc point per arc
+        side in arc order.
+        """
+        flat: list[float] = []
+        n = 0
+        for c in boundary_xyz:
+            flat.extend((float(c[0]), float(c[1]), float(c[2])))
+            n += 1
+        b = _c_double_array(flat)
+        kinds = _c_int_array(list(edge_kinds)) if edge_kinds else None
+        if arc_mids:
+            mids_flat: list[float] = []
+            for m in arc_mids:
+                mids_flat.extend((float(m[0]), float(m[1]), float(m[2])))
+            mids = _c_double_array(mids_flat)
+        else:
+            mids = None
+        return self._shape(
+            _cffi.lib().cc_fill_ngon(b, n, kinds, mids, int(grid_n)),
+            "fill_ngon",
+        )
+
+    def sheet_base_flange(
+        self, profile_xy: Iterable[Sequence[float]], thickness: float
+    ) -> Shape:
+        """Base sheet-metal flange: a closed 2-D polygon extruded by
+        ``thickness``. Native engine only (``kernel.engine = "native"``)."""
+        arr, n = _flatten_xy(profile_xy)
+        return self._shape(
+            _cffi.lib().cc_sheet_base_flange(arr, n, float(thickness)),
+            "sheet_base_flange",
         )
 
     def extrude_with_holes(
@@ -1125,6 +1924,73 @@ class Kernel:
         return self._shape(
             _cffi.lib().cc_stl_import(str(path).encode("utf-8")), "stl_import"
         )
+
+    def step_pmi_scan(self, path: str) -> PmiSummary:
+        """Read-only AP242 PMI / GD&T annotation census of a STEP file.
+
+        Native engine only (``kernel.engine = "native"``). Does not import
+        geometry. Raises on failure.
+        """
+        out = CCPmiSummary()
+        ok = _cffi.lib().cc_step_pmi_scan(str(path).encode("utf-8"), ctypes.byref(out))
+        if not ok:
+            raise _fail("step_pmi_scan")
+        return PmiSummary(
+            dimensions=int(out.dimensions),
+            tolerances=int(out.tolerances),
+            datums=int(out.datums),
+            datum_targets=int(out.datum_targets),
+            notes=int(out.notes),
+            annotation_geometry=int(out.annotation_geometry),
+            unknown=int(out.unknown),
+            total=int(out.total),
+        )
+
+    # ── Tetrahedral volume meshing (requires a CYBERCAD_HAS_TETGEN build) ─────
+    def tet_mesh_surface(
+        self,
+        vertices: np.ndarray,
+        triangles: np.ndarray,
+        order: int = 10,
+        target_element_size: float = 0.0,
+        grading: float = 1.4,
+        min_scaled_jacobian: float = 0.02,
+    ) -> TetMesh:
+        """Tet-mesh a raw closed triangle surface (no B-rep needed).
+
+        ``vertices`` is ``(N, 3)`` float; ``triangles`` is ``(M, 3)`` 0-based
+        int. Requires a ``CYBERCAD_HAS_TETGEN`` build; raises otherwise.
+        """
+        v = np.ascontiguousarray(vertices, dtype=np.float64).reshape(-1)
+        t = np.ascontiguousarray(triangles, dtype=np.int32).reshape(-1)
+        vp = v.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+        tp = t.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+        opts = CCVolumeMeshOptions(
+            order=int(order),
+            target_element_size=float(target_element_size),
+            grading=float(grading),
+            min_scaled_jacobian=float(min_scaled_jacobian),
+        )
+        tm: CCTetMesh = _cffi.lib().cc_tet_mesh_surface(
+            vp, v.size // 3, tp, t.size // 3, opts
+        )
+        return _tet_mesh_from_cc(tm, "tet_mesh_surface")
+
+    def mesh_quality(
+        self, tet_mesh: TetMesh, min_scaled_jacobian: float = 0.02
+    ) -> QualityReport:
+        """Native tet-mesh quality census (always available, TetGen-independent).
+
+        Raises on empty / degenerate input.
+        """
+        cc = _cc_tetmesh_from_tetmesh(tet_mesh)
+        qr: CCQualityReport = _cffi.lib().cc_mesh_quality(
+            cc, float(min_scaled_jacobian)
+        )
+        report = _quality_from_cc(qr)
+        if not report.valid:
+            raise _fail("mesh_quality")
+        return report
 
     # ── Reference geometry (pure point math, no shape handle) ─────────────────
     def ref_plane_from_points(

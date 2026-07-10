@@ -27,20 +27,30 @@ The low-level 1:1 ctypes binding lives in :mod:`cybercadkernel._cffi`.
 
 from __future__ import annotations
 
-from ._cffi import KernelLibraryNotFound
+from ._cffi import CCProfileSeg, KernelLibraryNotFound
 from .api import (
     BooleanOp,
     BoundingBox,
     CyberCadError,
+    DisplayMesh,
+    Drawing,
     EdgePolyline,
     FaceMesh,
+    Interference,
     Kernel,
     MassProps,
     Mesh,
+    PmiSummary,
+    Projection,
+    QualityReport,
     ReferenceAxis,
     ReferencePlane,
+    Section,
+    SectionLoop,
     Shape,
     SubShapeKind,
+    TetMesh,
+    ValidityReport,
 )
 
 # Backwards-compatible alias: the exception was historically ``KernelError``.
@@ -61,6 +71,17 @@ __all__ = [
     "CyberCadError",
     "KernelError",
     "KernelLibraryNotFound",
+    "DisplayMesh",
+    "TetMesh",
+    "QualityReport",
+    "ValidityReport",
+    "Interference",
+    "Projection",
+    "PmiSummary",
+    "Section",
+    "SectionLoop",
+    "Drawing",
+    "CCProfileSeg",
 ]
 
 __version__ = "0.1.0"

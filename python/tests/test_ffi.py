@@ -23,6 +23,35 @@ def test_struct_layouts_match_abi():
     assert ctypes.sizeof(_cffi.CCShapeId) == 8
 
 
+def test_new_struct_layouts_match_abi():
+    # Sizes cross-checked against a C `sizeof` compiled from cc_kernel.h
+    # (CC_KERNEL_NO_PROTOTYPES) on this platform (LP64, arm64 macOS). These guard
+    # the POD structs used by the full-coverage additions (projection, clash,
+    # validity, display/tet mesh, quality, PMI, drawing/HLR, section) from drifting.
+    assert ctypes.sizeof(_cffi.CCProjection) == 40
+    assert ctypes.sizeof(_cffi.CCInterference) == 112
+    assert ctypes.sizeof(_cffi.CCValidityReport) == 32
+    assert ctypes.sizeof(_cffi.CCDisplayMesh) == 48
+    assert ctypes.sizeof(_cffi.CCTetMesh) == 40
+    assert ctypes.sizeof(_cffi.CCVolumeMeshOptions) == 32
+    assert ctypes.sizeof(_cffi.CCQualityReport) == 64
+    assert ctypes.sizeof(_cffi.CCPmiSummary) == 32
+    assert ctypes.sizeof(_cffi.CCDrawingSegment) == 32
+    assert ctypes.sizeof(_cffi.CCDrawing) == 32
+    assert ctypes.sizeof(_cffi.CCHlrOptions) == 24
+    assert ctypes.sizeof(_cffi.CCSectionLoop) == 32
+    assert ctypes.sizeof(_cffi.CCSection) == 32
+
+
+def test_all_abi_symbols_are_bound():
+    # 100% coverage guard: every cc_* symbol declared in the header must have a
+    # signature in the _cffi table (kept in lockstep with _ffi).
+    lib = _cffi.lib()
+    for name in _cffi._SIGS:
+        assert callable(getattr(lib, name)), name
+    assert len(_cffi._SIGS) == 111
+
+
 def test_raw_extrude_box_volume():
     lib = _cffi.lib()
     prof = (ctypes.c_double * 8)(0, 0, 10, 0, 10, 10, 0, 10)

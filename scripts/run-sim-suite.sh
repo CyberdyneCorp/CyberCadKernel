@@ -143,6 +143,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_slab_disjoint_cut_parity.mm \
       native_dm3_dm4_parity.mm \
       native_draft_faces_parity.mm \
+      native_surfacing_parity.mm \
       native_sheetmetal_selftest.mm \
       native_analytic_fillet_parity.mm \
       native_step_mapped_item_parity.mm \

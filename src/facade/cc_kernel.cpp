@@ -717,6 +717,16 @@ CCShapeId cc_sheet_unfold(CCShapeId body, double kFactor) {
         CCShapeId{0});
 }
 
+CCShapeId cc_fill_ngon(const double* boundaryXYZ, int cornerCount, const int* edgeKinds,
+                       const double* arcMids, int gridN) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            auto r = active_engine()->fill_ngon(boundaryXYZ, cornerCount, edgeKinds, arcMids, gridN);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
+}
+
 CCShapeId cc_fillet_face(CCShapeId body, int faceId, double radius) {
     return cyber::guard(
         [&]() -> CCShapeId {

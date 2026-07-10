@@ -34,6 +34,11 @@
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeHalfSpace.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepFill_Filling.hxx>
+#include <GC_MakeSegment.hxx>
+#include <GC_MakeArcOfCircle.hxx>
+#include <TopoDS_Edge.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAdaptor_Surface.hxx>
@@ -338,6 +343,45 @@ ShapeResult OcctEngine::draft_faces(EngineShape body, const int* faceIds, int fa
         maker.Build();
         if (!maker.IsDone()) { return make_error("draft_faces: draft failed"); }
         return occt::addIfValid(maker.Shape(), "draft_faces: invalid");
+    });
+}
+
+// ── surface — bounded N-sided fill (BRepFill_Filling oracle) ────────────────────
+// Build the N analytic boundary edges (straight segments + circular arcs) and fill the
+// loop with BRepFill_Filling, returning the resulting patch FACE. This is the OCCT
+// ORACLE the native tessellated Coons/Gregory patch is verified against (area / bbox /
+// boundary-coincidence). `gridN` is a native tessellation knob and is unused here.
+ShapeResult OcctEngine::fill_ngon(const double* boundaryXYZ, int cornerCount,
+                                  const int* edgeKinds, const double* arcMids, int gridN) {
+    (void)gridN;
+    return occt::occtGuard([&]() -> ShapeResult {
+        if (boundaryXYZ == nullptr || cornerCount < 3 || cornerCount > 6)
+            return make_error("fill_ngon: bad arguments");
+        auto pt = [&](const double* a, int k) {
+            return gp_Pnt(a[k * 3], a[k * 3 + 1], a[k * 3 + 2]);
+        };
+        BRepFill_Filling filler;
+        int arcSeen = 0;
+        for (int i = 0; i < cornerCount; ++i) {
+            const int j = (i + 1) % cornerCount;
+            const gp_Pnt a = pt(boundaryXYZ, i), b = pt(boundaryXYZ, j);
+            TopoDS_Edge e;
+            if (edgeKinds != nullptr && edgeKinds[i] == 1) {
+                if (arcMids == nullptr) return make_error("fill_ngon: arc missing mid");
+                const gp_Pnt m = pt(arcMids, arcSeen++);
+                GC_MakeArcOfCircle arc(a, m, b);
+                if (!arc.IsDone()) return make_error("fill_ngon: bad arc");
+                e = BRepBuilderAPI_MakeEdge(arc.Value()).Edge();
+            } else {
+                GC_MakeSegment seg(a, b);
+                if (!seg.IsDone()) return make_error("fill_ngon: bad segment");
+                e = BRepBuilderAPI_MakeEdge(seg.Value()).Edge();
+            }
+            filler.Add(e, GeomAbs_C0);
+        }
+        filler.Build();
+        if (!filler.IsDone()) return make_error("fill_ngon: filling failed");
+        return occt::addIfValid(filler.Face(), "fill_ngon: invalid patch");
     });
 }
 

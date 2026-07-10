@@ -289,6 +289,8 @@ public:
     ShapeResult draft_faces(EngineShape body, const int* faceIds, int faceCount,
                             const double* neutralOrigin, const double* pullDir,
                             double angleDeg) override;
+    ShapeResult fill_ngon(const double* boundaryXYZ, int cornerCount, const int* edgeKinds,
+                          const double* arcMids, int gridN) override;
     ShapeResult fillet_face(EngineShape body, int faceId, double radius) override;
     ShapeResult split_plane(EngineShape body, double ox, double oy, double oz, double nx, double ny,
                             double nz, int keepPositive) override;

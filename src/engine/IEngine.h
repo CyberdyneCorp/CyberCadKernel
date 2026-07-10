@@ -425,6 +425,15 @@ public:
         (void)body; (void)kFactor;
         return engine_unsupported("sheet_unfold");
     }
+    // ── surface — bounded N-sided fill / surface patch (MOAT surfacing) ─────────
+    // Fill an N-sided (3–6) analytic boundary loop with a tessellated Coons/Gregory
+    // patch surface. Native: BOUNDED mesh patch (→ mesh-backed body). OCCT: the
+    // BRepFill_Filling oracle. See cc_fill_ngon for the boundary encoding + scope bound.
+    virtual ShapeResult fill_ngon(const double* boundaryXYZ, int cornerCount,
+                                  const int* edgeKinds, const double* arcMids, int gridN) {
+        (void)boundaryXYZ; (void)cornerCount; (void)edgeKinds; (void)arcMids; (void)gridN;
+        return engine_unsupported("fill_ngon");
+    }
 
     virtual ShapeResult fillet_face(EngineShape body, int faceId, double radius) {
         (void)body; (void)faceId; (void)radius;

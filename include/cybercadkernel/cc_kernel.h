@@ -604,6 +604,36 @@ CCShapeId cc_sheet_edge_flange(CCShapeId body, int edgeId, double height, double
  * cc_sheet_edge_flange; any other body HONEST-DECLINES (return 0). */
 CCShapeId cc_sheet_unfold(CCShapeId body, double kFactor);
 
+/* ── Surface — bounded N-sided fill / surface patch (MOAT surfacing) ────────────
+ * Fill an N-sided (3 ≤ N ≤ 6) boundary LOOP of ANALYTIC edges (straight segments +
+ * circular arcs) with a smooth interpolating PATCH surface, returned as a MESH-BACKED
+ * body (the tessellated patch — served by cc_mass_properties (area) / cc_bounding_box /
+ * cc_tessellate / cc_face_meshes, like an imported STL soup). ADDITIVE.
+ *
+ * BOUNDARY ENCODING (all POD, mirroring the point-array construct ops):
+ *   boundaryXYZ  — cornerCount corner points (x,y,z triplets), the loop in ORDER
+ *                  (implicitly closed: side i runs corner i → corner (i+1) mod N).
+ *   cornerCount  — the number of sides N (3..6).
+ *   edgeKinds    — per side: 0 = straight segment to the next corner, 1 = circular arc.
+ *                  May be NULL ⇒ all straight.
+ *   arcMids      — for EACH arc side (edgeKinds[i]==1), one mid-arc point (x,y,z) fixing
+ *                  the arc plane + bulge, packed in arc order. NULL when there are no arcs.
+ *   gridN        — samples per side (≥ 2); the native tessellation density.
+ *
+ * SCOPE BOUND (NOT a general NURBS kernel): the patch is a Coons / Gregory transfinite
+ * interpolant EVALUATED to a TESSELLATED TRIANGLE MESH — NOT a stored trimmed-NURBS
+ * surface. A planar loop reduces to the exact planar polygon (patch area = polygon area).
+ *
+ * ENGINE NOTE. Under the native engine (cc_set_engine(1)) the patch is built NATIVELY
+ * (self-verified: non-degenerate, positive area, boundary samples on their analytic
+ * curves) and returned as a mesh-backed body. A non-analytic boundary edge, an N outside
+ * 3..6, a degenerate / self-intersecting boundary, or a request the bounded patch cannot
+ * honestly meet HONEST-DECLINES → OCCT BRepFill_Filling (on iOS/macOS where OCCT is
+ * linked); on the OCCT-free host such a native-only decline returns 0 with cc_last_error.
+ * A native void is NEVER handed to OCCT. Returns 0 on failure. */
+CCShapeId cc_fill_ngon(const double *boundaryXYZ, int cornerCount, const int *edgeKinds,
+                       const double *arcMids, int gridN);
+
 /* Project the 3-D point (px,py,pz) onto the analytic surface of face `faceId`
  * (1-based, cc_subshape_ids order) of `body` — MOAT M-DM DM4, ADDITIVE. Returns the
  * closed-form foot-of-perpendicular + minimum distance (see CCProjection). The native

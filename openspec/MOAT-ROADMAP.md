@@ -1301,6 +1301,50 @@ honest-declined). Three ADDITIVE `cc_*` ops in a NEW module `src/native/sheetmet
   slice builds one contiguous cross-section) and an edge/relief solver. Change:
   `openspec/changes/moat-sheet-metal/`.
 
+### M-SURF — Surface: bounded N-sided fill / surface patch · **LANDED (first slice)** · independent
+The SolidWorks/OCCT-class **N-sided fill / boundary surface patch** capability — fill an N-sided
+boundary loop with a smooth patch and complete it into a watertight body — landed as a BOUNDED
+FIRST SLICE. One NEW OCCT-free module `src/native/surface/` (header-only: `ngon_fill.h` +
+`fill_solid.h` + `native_surface.h`) and one ADDITIVE `cc_*` op.
+- **THE SCOPE BOUND (non-negotiable — this is NOT a general NURBS kernel).** The boundary loop is
+  3–6 ANALYTIC / POLYLINE sides (straight segments + circular arcs). The fill patch is a **Coons /
+  Gregory transfinite interpolant EVALUATED to a TESSELLATED triangle-grid MESH** — NOT a stored
+  trimmed-NURBS surface, and NO general NURBS surface representation or evaluator is added beyond
+  what a Coons/Gregory patch over the given boundary curves needs. The output is a mesh/solid-
+  completing patch, NOT a NURBS B-rep face. A case needing true NURBS surfacing is honest-declined
+  → OCCT. This bound is what keeps the campaign from becoming a general NURBS kernel.
+- **`cc_fill_ngon(boundaryXYZ, cornerCount, edgeKinds, arcMids, gridN)`** — fill an N-sided analytic
+  boundary loop with the tessellated Coons/Gregory patch; returns a MESH-BACKED body (the patch
+  surface, served by `cc_mass_properties`/`cc_bounding_box`/`cc_tessellate`/`cc_face_meshes` like an
+  imported STL soup). Native builds it; a non-analytic / >6-sided / degenerate / self-intersecting
+  boundary honest-declines → OCCT `BRepFill_Filling`. The native `surface::fillHoleSolid(openShell)`
+  (used by the host gate) completes an OPEN shell's single free-boundary loop into a WATERTIGHT solid
+  by welding the patch to the shell on shared boundary points (reusing `boolean::assembleSolid` + a
+  flood-fill orient + the heal self-verify semantics) — the smooth generalization of the landed
+  planar heal `cap_hole.h`.
+- **Two gates GREEN.** Gate (a) host `test_native_surfacing` (6 cases, OCCT-free): planar N-gon
+  patch area = exact polygon area (≤ 1e-9 rel, N=3..6); a box's missing planar face restored
+  WATERTIGHT / χ-consistent at the EXACT original volume; a non-planar SADDLE 4-sided analytic
+  boundary interpolated (on-boundary residual 0), welded watertight + consistently oriented, area
+  CONVERGING as gridN doubles; honest declines (>6-sided / degenerate / collinear-arc). Gate (b) sim
+  `native_surfacing_parity.mm` (own `main()`, native-vs-OCCT on the booted simulator, 12/12): patch
+  AREA matches OCCT `BRepFill_Filling` (exact for planar square/hexagon, ≤ 0.16% deflection-bounded
+  for the saddle + arc-side), native patch bbox CONTAINED in OCCT's (energy-minimizing) fill bbox,
+  and every native boundary sample lies on the OCCT face (maxDist ~1e-16 — boundary-coincidence), +
+  the heptagon honest-decline. Runner `scripts/run-sim-native-surfacing.sh` (no numsci needed — the
+  module never touches the seam tracer) + `run-sim-suite.sh` SKIP entry.
+- **Honest-declined (out of the first slice, measured `NGonDecline`):** a non-analytic (spline)
+  boundary edge (`NonAnalyticBoundary`); N < 3 or N > 6 (`TooManySides`); a degenerate / zero-length /
+  duplicate-corner / collinear-arc boundary (`DegenerateBoundary`); a self-intersecting patch or a
+  weld that fails the watertight+oriented self-verify (`SelfIntersecting`); a G2 request the bounded
+  patch cannot meet (`NotConverged`). Never a wrong / leaky / self-intersecting patch, never a
+  widened tolerance.
+- **Sharpened next blocker:** a NON-ANALYTIC boundary (a spline/freeform edge in the loop) and G2
+  (curvature-continuous) fill — both need a real NURBS surface fit / energy minimization, which is
+  deliberately OUT of this bounded slice (→ OCCT `BRepOffsetAPI_MakeFilling` with tangency
+  constraints). A >6-sided non-planar loop and a boundary whose Gregory reduction self-intersects
+  also defer. Change: `openspec/changes/moat-nfill-surface-patch/`.
+
 ### M8 — `drop-occt` — unlink OCCT · gated on M0–M7 + **M-DM** + **M-GS** + M6 bar
 > **Itemized unlink checklist:** [DROP-OCCT-READINESS.md](DROP-OCCT-READINESS.md) — every OCCT fall-through site classified A (now-native, 65 sites) / B (must-go-native, **now 2 sites** `fillet_edges_g2` + `thread_apply`, neither app-used) / C (IGES decline). Build-unlink PROVEN today (§6 rehearsal: native-only, 0 crash / 0 silent-wrong); ship-quality blocked on **≈ 1.5–3.5 py (mid ~2.5)** of thin-tail kernel breadth **the app does not hit** — the F1–F5 wave closed the app's curved-substrate gaps (canal fillet end-to-end via facade bicyl-COMMON, sphere shell, cone/sphere offset_face, off-center + disjoint booleans, freeform sphere wrap-emboss). Remaining: ff↔ff FUSE + general freeform-B-spline bases + non-convex shell + the 2 zero-app-site B ops. **The real ship-blockers are now non-kernel: app-side kernel adoption (ABI ready, 63/63 symbols) + the IGES decision.** Measured payoff: native 7–20× faster, ~28 MB in-binary / ~112 MB dep lighter, ~11.5 MB less peak RAM ([docs/BENCH-native-vs-occt.md](../docs/BENCH-native-vs-occt.md), [docs/BENCH-memory-native-vs-occt.md](../docs/BENCH-memory-native-vs-occt.md)).
 

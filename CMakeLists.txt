@@ -322,6 +322,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_chamfer_face
         test_native_wrap_emboss
         test_native_sheetmetal
+        test_native_surfacing
         test_native_step_writer
         test_native_step_reader
         test_native_step_pmi
@@ -651,6 +652,15 @@ if(CYBERCAD_BUILD_TESTS)
     # topology; no numsci link, so it lives in the always-on native suite.
     set(test_native_corner_chamfer_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_corner_chamfer.cpp")
+    # MOAT SURFACE bounded N-sided fill (src/native/surface) — host GATE (a), the OCCT-free
+    # proof of the tessellated Coons/Gregory fill patch: planar N-gon area = exact polygon
+    # area, a box's missing planar face restored watertight at the EXACT original volume, a
+    # non-planar saddle boundary interpolated (on-boundary residual 0) + welded watertight +
+    # consistently oriented + area converging as gridN doubles, and the honest declines
+    # (>6-sided / degenerate / collinear-arc boundary). Header-only over surface/boolean/
+    # tessellate/topology/construct; no numsci link, always-on native suite.
+    set(test_native_surfacing_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_surfacing.cpp")
     # MOAT M2 FULL-FACE chamfer weld (chamfer_face): chamfer every convex edge bounding a
     # picked planar face by assembling the landed corner weld. On a box face all four
     # corners are 2-edge dihedrals (never a triple), so it welds watertight at the EXACT

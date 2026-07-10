@@ -42,6 +42,7 @@
 #include "native/feature/draft_faces.h"
 #include "native/feature/wrap_emboss.h"
 #include "native/sheetmetal/sheetmetal.h"  // MOAT M-SM: base/edge flange + unfold
+#include "native/surface/native_surface.h"  // MOAT surface: bounded N-sided fill patch
 #include "native/heal/native_heal.h"
 #include "native/math/transform.h"  // M-TX: affine placement for native transforms
 #include "native/tessellate/native_tessellate.h"
@@ -2855,6 +2856,53 @@ ShapeResult NativeEngine::stl_import(const char* path) {
     std::optional<ntess::Mesh> mesh = cybercad::native::exchange::stl_read(path, err);
     if (!mesh) return make_error("stl_import: " + err);
     return track(wrapNativeMesh(std::move(*mesh)));
+}
+
+// NATIVE bounded N-sided fill (MOAT surface). Build the analytic boundary loop from
+// the POD arrays and evaluate the tessellated Coons/Gregory patch (surface::fillNGon).
+// SCOPE BOUND: 3–6 straight/arc sides; the patch is a MESH interpolant, NOT a NURBS
+// surface. Returns a MESH-BACKED body (the patch surface, like an imported STL soup —
+// served by mass_properties/bounding_box/tessellate/face_meshes). A non-analytic /
+// >6-sided / degenerate / self-intersecting boundary HONEST-DECLINES: on the OCCT-free
+// host it errors; where OCCT is linked the facade routes to the BRepFill_Filling
+// oracle. A native void is NEVER handed to OCCT.
+ShapeResult NativeEngine::fill_ngon(const double* boundaryXYZ, int cornerCount,
+                                    const int* edgeKinds, const double* arcMids, int gridN) {
+    namespace nsf = cybercad::native::surface;
+    if (boundaryXYZ == nullptr || cornerCount < 3 || cornerCount > 6)
+        return fallback().fill_ngon(boundaryXYZ, cornerCount, edgeKinds, arcMids, gridN);
+
+    auto pt = [](const double* a, int k) {
+        return nmath::Point3{a[k * 3], a[k * 3 + 1], a[k * 3 + 2]};
+    };
+    nsf::Boundary boundary;
+    boundary.sides.reserve(cornerCount);
+    int arcSeen = 0;
+    for (int i = 0; i < cornerCount; ++i) {
+        const int j = (i + 1) % cornerCount;
+        nsf::BoundarySide s;
+        s.start = pt(boundaryXYZ, i);
+        s.end = pt(boundaryXYZ, j);
+        s.arc = (edgeKinds != nullptr && edgeKinds[i] == 1);
+        if (s.arc) {
+            if (arcMids == nullptr)
+                return fallback().fill_ngon(boundaryXYZ, cornerCount, edgeKinds, arcMids, gridN);
+            s.mid = pt(arcMids, arcSeen++);
+        }
+        boundary.sides.push_back(s);
+    }
+
+    nsf::NGonOptions opts;
+    opts.gridN = gridN >= 2 ? gridN : 12;
+    nsf::NGonDecline why = nsf::NGonDecline::Ok;
+    const nsf::NGonPatch patch = nsf::fillNGon(boundary, opts, &why);
+    // Self-verify boundary-coincidence + a non-degenerate patch, else honest decline
+    // (never a wrong patch): the patch must have triangles, positive area, and every
+    // boundary sample must lie on its analytic curve (residual ~0 by construction).
+    if (!patch.valid || patch.mesh.triangleCount() == 0 ||
+        !(ntess::surfaceArea(patch.mesh) > 0.0) || patch.onBoundaryResidual > 1e-6)
+        return fallback().fill_ngon(boundaryXYZ, cornerCount, edgeKinds, arcMids, gridN);
+    return track(wrapNativeMesh(patch.mesh));
 }
 
 }  // namespace cyber

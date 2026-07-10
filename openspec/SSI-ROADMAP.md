@@ -653,6 +653,53 @@ Remaining S5 work: general (non-Steinmetz) branched pairs, transversal/apex cone
 pairs, cone∩cone, the two-circle / apex-crossing / transversal cone∩sphere crossings, and more
 curved-curved families.
 
+## NURBS Layer 2 — general-freeform measurement pass (empirical decline map) · ✅ MEASURED 2026-07-10
+
+Before scoping further S4 slices, the general NURBS↔NURBS boundary was measured empirically
+with two differential fuzzers (verification only; `src/native` untouched, `cc_*` unchanged):
+
+- **SIM native-vs-OCCT freeform fuzzer** (`tests/sim/native_ssi_freeform_fuzz.mm`,
+  `scripts/run-sim-native-ssi-freeform-fuzz.sh`) — random valid NURBS↔NURBS surface pairs
+  (bicubic-ish, rational + non-rational, positioned to intersect) driven through the real
+  `seed_intersection`+`trace_intersection` pipeline vs OCCT `GeomAPI_IntSS`. Fixed tol onSurf
+  `1e-6` / onCurve `1e-3` / occt `1e-7`, never widened.
+- **HOST exact-oracle fuzzer** (`tests/native/test_native_ssi_exact_fuzz.cpp`) — S1 analytic
+  breadth + NURBS↔analytic known-answer (rational NURBS exactly representing quadrics ∩ plane),
+  closed-form oracle, no OCCT, machine precision.
+
+**Result — the no-silent-wrong invariant HELD for general NURBS SSI: `DISAGREED == 0`** across
+800 SIM trials (10 seeds × N=40 ×2) + the HOST sweep. Native never traced a curve off both
+surfaces and never declared completeness with a fabricated locus; the HOST leg confirmed the
+traces it *does* produce are exact (nodes on both surfaces + on the known analytic curve to
+`1e-15…1e-11`). **No real native SSI bug was found** — every early "native wrong" flag traced
+to a harness/OCCT-oracle bug where native was in fact correct (conic-threshold `θ vs π/2−α`;
+`GeomAPI_ProjectPointOnSurf` missing the global foot on wavy freeform patches; fit-bow measured
+instead of corrected nodes), fixed harness-side without widening any tolerance.
+
+**Decline rate ≈ 25% (24/96 canonical), and the histogram REDIRECTS the S4 priority:**
+
+| decline reason | share of declines |
+|---|---|
+| **multi-branch** (OCCT found a loop native's seeding missed) | **83%** |
+| **small-loop** (partial branch coverage) | **17%** |
+| near-tangent marching stall | **0%** |
+| no-seed / corrector-failed | **0%** |
+
+**Key finding — the frontier is SEEDING-RECALL, not the near-tangent marching moat.** The
+marcher steps through freeform grazes cleanly (the `near-tangent` decline bucket stayed empty
+even on tightly-tuned glancing paraboloids); the declines are almost entirely
+OCCT-found-a-branch-native-didn't. So the **highest-recovery next slice is targeted
+seeding-recall on uncovered parameter cells** — generalize the existing
+`completeness_critic` / `criticTargetedReseed` path (S4-f, already recovering small loops on
+canonical fixtures) to arbitrary freeform multi-loop poses — NOT further S4-c/d near-tangent
+march-through work. This reprioritizes the S4-d…f tail below.
+
+**Also surfaced (a distinct S2/S3 slice):** the freeform `SurfaceAdapter` does not declare
+**periodic/seam parametrization**, so a rational-NURBS full circle traces as an open arc
+(~99.6% coverage) with a small seam gap; declaring `uPeriod` currently trips the near-tangent
+detector on rational parametric-speed variation. A periodic-seam-aware adapter + seam-crossing
+closure is a clean, bounded slice independent of the multi-loop recall work.
+
 ## Sequencing & effort
 
 ```

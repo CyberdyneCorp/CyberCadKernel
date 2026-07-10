@@ -88,6 +88,35 @@ std::vector<double> hexagon(double a) {
   return {a, 0, h, s, -h, s, -a, 0, -h, -s, h, -s};
 }
 
+// A SPHERE-CAP dome about the +Y axis (like the curved_shell test): one coaxial Sphere
+// wall (radius R, centre at the origin) closed at the pole (0,R), cut by ONE axis-normal cap
+// plane at y=capOff. Meridian: base disc (0,capOff)→(rimBase,capOff), then arc to (0,R).
+topo::Shape sphereCapDome(double R, double capOff) {
+  const double rimBase = std::sqrt(R * R - capOff * capOff);
+  cst::ProfileSegment base;
+  base.kind = 0;
+  base.x0 = 0; base.y0 = capOff; base.x1 = rimBase; base.y1 = capOff;
+  cst::ProfileSegment arc;
+  arc.kind = 1;
+  arc.x0 = rimBase; arc.y0 = capOff; arc.x1 = 0; arc.y1 = R; arc.cx = 0; arc.cy = 0; arc.r = R;
+  return cst::build_revolution_profile({base, arc}, cst::RevolveAxis{0, 0, 0, 1}, 2.0 * M_PI);
+}
+
+// The 1-based id of the (first) Sphere wall face.
+int sphereFaceId(const topo::Shape& s) {
+  const topo::ShapeMap m = topo::mapShapes(s, topo::ShapeType::Face);
+  for (std::size_t i = 1; i <= m.size(); ++i) {
+    const auto surf = topo::surfaceOf(m.shape(static_cast<int>(i)));
+    if (surf && surf->surface->kind == topo::FaceSurface::Kind::Sphere) return static_cast<int>(i);
+  }
+  return 0;
+}
+
+// The exact shell-sector volume delta of a pole boss: 2π(1−cosφ0)·((R+h)³−R³)/3.
+double poleBossDelta(double R, double h, double phi0) {
+  return 2.0 * M_PI * (1.0 - std::cos(phi0)) * (std::pow(R + h, 3) - std::pow(R, 3)) / 3.0;
+}
+
 }  // namespace
 
 CC_TEST(wrap_emboss_rectangular_pad_watertight_volume_grown) {
@@ -239,6 +268,64 @@ CC_TEST(wrap_emboss_offcentre_footprint) {
   CC_CHECK(wt);
   const double expected = v0 + 6.0 * 8.0 * height;  // (7−1)×(6−(−2)) = 48
   CC_CHECK(std::fabs(v - expected) <= 1e-2 * expected);
+}
+
+// ── F5 FREEFORM (curved) base: sphere-cap pole boss ─────────────────────────────────
+
+CC_TEST(wrap_emboss_sphere_pole_boss_watertight_closed_form) {
+  // A hemisphere dome (R=10, cap at y=0). Emboss a circular pole boss whose profile in-radius
+  // ρ=3 (a 6×6 square in arc-length) → φ0=ρ/R=0.3 rad, raised height=2. Watertight, volume
+  // GROWN by the EXACT spherical-shell-sector delta 2π(1−cosφ0)·((R+h)³−R³)/3.
+  const double R = 10.0, height = 2.0;
+  topo::Shape dome = sphereCapDome(R, 0.0);
+  bool wt0 = false;
+  const double v0 = vol(dome, wt0);
+  CC_CHECK(wt0);
+  const int fid = sphereFaceId(dome);
+  CC_CHECK(fid != 0);
+  const std::vector<double> prof = rect(6.0, 6.0);  // in-radius ρ = 3
+  topo::Shape e = feat::wrap_emboss(dome, fid, prof.data(), 4, height, 1, 0.005);
+  bool wt = false;
+  const double v = vol(e, wt);
+  CC_CHECK(!e.isNull());
+  CC_CHECK(wt);
+  CC_CHECK(v > v0);  // a raised pole boss GROWS the volume
+  const double expected = v0 + poleBossDelta(R, height, 3.0 / R);
+  CC_CHECK(std::fabs(v - expected) <= 1.5e-2 * expected);  // deflection-bounded curved mesh
+}
+
+CC_TEST(wrap_emboss_sphere_pole_boss_delta_helper_matches) {
+  // The exposed closed-form helper equals the independent formula and is R-consistent.
+  const double R = 12.0, height = 1.5;
+  topo::Shape dome = sphereCapDome(R, -2.0);  // a deep dome (cap below centre)
+  const int fid = sphereFaceId(dome);
+  const std::vector<double> prof = rect(5.0, 5.0);  // ρ = 2.5
+  const double d = feat::spherePoleBossVolumeDelta(dome, fid, prof.data(), 4, height);
+  CC_CHECK(d > 0.0);
+  CC_CHECK(std::fabs(d - poleBossDelta(R, height, 2.5 / R)) <= 1e-9 * d);
+}
+
+CC_TEST(wrap_emboss_sphere_scope_defers) {
+  const double R = 10.0;
+  topo::Shape dome = sphereCapDome(R, 0.0);
+  const int fid = sphereFaceId(dome);
+  // A DEBOSS pole cap on a sphere is out of scope → NULL (only raised boss is native).
+  const std::vector<double> prof = rect(6.0, 6.0);
+  CC_CHECK(feat::wrap_emboss(dome, fid, prof.data(), 4, 2.0, 0, 0.01).isNull());
+  // A footprint whose pole cap reaches the rim (ρ ≈ R·π/2 → φ0 ≥ φcap) → NULL.
+  const std::vector<double> huge = rect(40.0, 40.0);  // ρ=20 → φ0=2 rad > π/2
+  CC_CHECK(feat::wrap_emboss(dome, fid, huge.data(), 4, 2.0, 1, 0.01).isNull());
+  // The delta helper returns 0 for an out-of-scope boss (rim-reaching φ0).
+  CC_CHECK(feat::spherePoleBossVolumeDelta(dome, fid, huge.data(), 4, 2.0) == 0.0);
+  // A spherical ZONE (two cap planes) is not a pure sphere-cap dome → NULL.
+  // (Built as a band: caps at y=−3 and y=+3.) The recogniser rejects two distinct caps.
+  cst::ProfileSegment b0; b0.kind = 0; b0.x0 = 0; b0.y0 = -3; b0.x1 = std::sqrt(R*R-9); b0.y1 = -3;
+  cst::ProfileSegment ar; ar.kind = 1; ar.x0 = std::sqrt(R*R-9); ar.y0 = -3; ar.x1 = std::sqrt(R*R-9); ar.y1 = 3; ar.cx = 0; ar.cy = 0; ar.r = R;
+  cst::ProfileSegment t0; t0.kind = 0; t0.x0 = std::sqrt(R*R-9); t0.y0 = 3; t0.x1 = 0; t0.y1 = 3;
+  topo::Shape zone = cst::build_revolution_profile({b0, ar, t0}, cst::RevolveAxis{0, 0, 0, 1}, 2.0 * M_PI);
+  const int zf = sphereFaceId(zone);
+  if (zf != 0)
+    CC_CHECK(feat::wrap_emboss(zone, zf, prof.data(), 4, 2.0, 1, 0.01).isNull());
 }
 
 CC_RUN_ALL();

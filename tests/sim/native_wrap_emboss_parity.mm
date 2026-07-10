@@ -257,6 +257,156 @@ std::vector<double> hexProfile(double a) {
     return {a, 0, hh, s, -hh, s, -a, 0, -hh, -s, hh, -s};
 }
 
+// ── F5 FREEFORM (curved) base: sphere-cap pole boss ────────────────────────────────
+// A sphere-cap dome about the +Y axis: base disc (0,capOff)->(rimBase,capOff), then an arc
+// to the pole (0,R) centred at the origin, revolved 2π about +Y. Built with the ACTIVE
+// engine. Faces: one Sphere wall (or angular sectors), one axis-normal disc cap.
+CCShapeId buildSphereDome(double R, double capOff) {
+    const double rimBase = std::sqrt(R * R - capOff * capOff);
+    CCProfileSeg segs[2]{};
+    segs[0].kind = 0; segs[0].x0 = 0; segs[0].y0 = capOff; segs[0].x1 = rimBase; segs[0].y1 = capOff;
+    segs[1].kind = 1; segs[1].x0 = rimBase; segs[1].y0 = capOff; segs[1].x1 = 0; segs[1].y1 = R;
+    segs[1].cx = 0; segs[1].cy = 0; segs[1].r = R;
+    return cc_solid_revolve_profile(segs, 2, 0, 0, 0, 1, nullptr, 0, 2.0 * kPi);
+}
+
+// The 1-based id of a Sphere wall face. `cc_face_axis` returns the axis for a cylinder/cone/
+// sphere face but false for a plane, and it is OCCT-only — so resolve the id under the OCCT
+// engine (where cc_face_axis works) and reuse it for the native body: both engines revolve
+// the SAME meridian into the SAME deterministic face ordering, so the sphere-wall id is
+// identical. Falls back to id 1 if no face reports an axis. Call with the OCCT engine active.
+int findSphereFace(CCShapeId body) {
+    int* ids = nullptr;
+    const int n = cc_subshape_ids(body, 2, &ids);
+    int found = 0;
+    for (int i = 0; i < n && found == 0; ++i) {
+        double ax6[6];
+        if (cc_face_axis(body, ids[i], ax6)) found = ids[i];
+    }
+    cc_ints_free(ids);
+    return found != 0 ? found : 1;
+}
+
+// The exact spherical-shell-sector volume delta: 2π(1−cosφ0)·((R+h)³−R³)/3.
+double poleBossDelta(double R, double h, double phi0) {
+    return 2.0 * kPi * (1.0 - std::cos(phi0)) *
+           ((R + h) * (R + h) * (R + h) - R * R * R) / 3.0;
+}
+
+// One native SPHERE pole-boss case. OCCT's cc_wrap_emboss DECLINES a non-cylindrical face,
+// so there is no OCCT wrap_emboss oracle here; instead we (a) verify the native result is
+// watertight and its BRepGProp/native volume matches the EXACT closed form, and (b) cross-
+// check that OCCT indeed declines the sphere wrap (the honest OCCT-path reference), and (c)
+// compare the native embossed volume to an OCCT-built REFERENCE boss volume measured with
+// cc_mass_properties (BRepGProp under OCCT): the dome fused with a concentric outer sphere-
+// cap sector of half-angle φ0 at radius R+h. `profInR` = the profile in-radius ρ (φ0=ρ/R).
+void runSphereCase(const char* name, double R, double capOff, double profInR, double height) {
+    char detail[512];
+    char lbl[96];
+    std::snprintf(lbl, sizeof lbl, "%s R=%.1f cap=%.1f x%g", name, R, capOff, height);
+    const std::string base = lbl;
+    const double phi0 = profInR / R;
+
+    // A square footprint whose in-radius is profInR (side = 2·profInR).
+    const std::vector<double> prof = rectProfile(2.0 * profInR, 2.0 * profInR);
+
+    // Resolve the sphere-wall face id under OCCT (cc_face_axis works there); both engines
+    // revolve the same meridian into the same deterministic face ordering, so the id is the
+    // same on the native body.
+    cc_set_engine(0);
+    const CCShapeId probe = buildSphereDome(R, capOff);
+    const int nFace = probe ? findSphereFace(probe) : 1;
+    if (probe) cc_shape_release(probe);
+
+    // (a) NATIVE sphere pole boss.
+    cc_set_engine(1);
+    const CCShapeId nDome = buildSphereDome(R, capOff);
+    const CCMassProps nBase = nDome ? cc_mass_properties(nDome) : CCMassProps{0, 0, 0, 0, 0, 0};
+    const CCShapeId nBoss = nDome ? cc_wrap_emboss(nDome, nFace, prof.data(), 4, height, 1) : 0;
+    const CCMassProps nMass = nBoss ? cc_mass_properties(nBoss) : CCMassProps{0, 0, 0, 0, 0, 0};
+    const CCMesh nMesh = nBoss ? cc_tessellate(nBoss, 0.01) : CCMesh{nullptr, 0, nullptr, 0};
+    const bool nativeActive = cc_active_engine() == 1;
+
+    if (nBoss == 0 || nMass.valid == 0 || nBase.valid == 0) {
+        std::snprintf(detail, sizeof detail, "native active=%d sphere emboss->0 (%s)",
+                      nativeActive ? 1 : 0, cc_last_error());
+        record(false, base + " native", detail);
+        if (nMesh.triangleCount) cc_mesh_free(nMesh);
+        if (nBoss) cc_shape_release(nBoss);
+        if (nDome) cc_shape_release(nDome);
+        cc_set_engine(0);
+        return;
+    }
+
+    const double expected = nBase.volume + poleBossDelta(R, height, phi0);
+    const double volRelX = std::fabs(nMass.volume - expected) / expected;
+    const bool signOk = nMass.volume > nBase.volume;  // a raised boss GROWS the volume
+    const bool wt = nMesh.triangleCount > 0 && meshWatertight(nMesh);
+    const double meshVol = nMesh.triangleCount > 0 ? meshVolume(nMesh) : 0.0;
+    const double meshRel = nMass.volume > 0.0 ? std::fabs(meshVol - nMass.volume) / nMass.volume : 1.0;
+    const bool nativeOk = nativeActive && signOk && wt && volRelX < 1.5e-2 && meshRel < 2e-2;
+    std::snprintf(detail, sizeof detail,
+                  "vol n=%.6g expect=%.6g relX=%.2e wt=%d meshRel=%.2e", nMass.volume, expected,
+                  volRelX, wt ? 1 : 0, meshRel);
+    record(nativeOk, base + " native-closed-form", detail);
+
+    // (b) OCCT wrap_emboss on the SAME sphere wall must DECLINE (non-cylindrical face) — the
+    // honest OCCT-path reference: the native arm is doing work OCCT's wrap_emboss cannot.
+    cc_set_engine(0);
+    const CCShapeId oDome = buildSphereDome(R, capOff);
+    const int oFace = oDome ? findSphereFace(oDome) : 0;
+    const CCShapeId oWrap = oDome ? cc_wrap_emboss(oDome, oFace, prof.data(), 4, height, 1) : 0;
+    record(oWrap == 0, base + " occt-declines-sphere-wrap",
+           oWrap == 0 ? "cc_wrap_emboss returned 0 on a sphere wall (as expected)"
+                      : "OCCT unexpectedly built a sphere wrap");
+    if (oWrap) cc_shape_release(oWrap);
+
+    // (c) OCCT-built REFERENCE boss (BRepGProp volume): fuse the dome with a concentric outer
+    // sphere-cap SECTOR of half-angle φ0 at radius R+h. That sector's meridian is: axis point
+    // (0, (R+h)cosφ0) -> outer arc to the pole (0,R+h) -> radial line back toward the axis at
+    // the base circle radius R sinφ0? To keep the reference a pure additive boss whose fused
+    // volume == base + shell-sector, build the sector as the region between radius R and R+h
+    // over φ∈[0,φ0]: revolve meridian [inner arc (Rsinφ0,Rcosφ0)->(0,R); radial (0,R)->(0,R+h)
+    // wait -> use two arcs + the φ0 radial spoke]. Simpler and EXACT: the boss solid = (outer
+    // ball-cap of half-angle φ0, radius R+h) MINUS (inner ball-cap φ0, radius R); its fused
+    // union with the dome adds exactly the shell sector. Build each ball-cap-sector by
+    // revolving [spoke centre->rim, arc rim->pole].
+    auto ballCapSector = [&](double rad) -> CCShapeId {
+        const double rim = rad * std::sin(phi0);
+        const double axz = rad * std::cos(phi0);  // axial coord of the φ0 rim
+        CCProfileSeg s[2]{};
+        s[0].kind = 0; s[0].x0 = 0; s[0].y0 = axz; s[0].x1 = rim; s[0].y1 = axz;   // spoke
+        s[1].kind = 1; s[1].x0 = rim; s[1].y0 = axz; s[1].x1 = 0; s[1].y1 = rad;   // arc to pole
+        s[1].cx = 0; s[1].cy = 0; s[1].r = rad;
+        return cc_solid_revolve_profile(s, 2, 0, 0, 0, 1, nullptr, 0, 2.0 * kPi);
+    };
+    const CCShapeId outerCap = ballCapSector(R + height);
+    const CCShapeId innerCap = ballCapSector(R);
+    const CCShapeId shellSector =
+        (outerCap && innerCap) ? cc_boolean(outerCap, innerCap, 1 /*CUT*/) : 0;  // outer − inner
+    const CCShapeId refBoss = (oDome && shellSector) ? cc_boolean(oDome, shellSector, 0 /*FUSE*/) : 0;
+    const CCMassProps refMass = refBoss ? cc_mass_properties(refBoss) : CCMassProps{0, 0, 0, 0, 0, 0};
+    if (refMass.valid) {
+        const double volRelRef = std::fabs(nMass.volume - refMass.volume) / refMass.volume;
+        std::snprintf(detail, sizeof detail, "native=%.6g occt-ref(BRepGProp)=%.6g rel=%.2e",
+                      nMass.volume, refMass.volume, volRelRef);
+        record(volRelRef < 2e-2, base + " native-vs-occt-ref", detail);
+    } else {
+        std::snprintf(detail, sizeof detail, "OCCT reference boss build failed (%s)", cc_last_error());
+        record(false, base + " native-vs-occt-ref", detail);
+    }
+    if (refBoss) cc_shape_release(refBoss);
+    if (shellSector) cc_shape_release(shellSector);
+    if (innerCap) cc_shape_release(innerCap);
+    if (outerCap) cc_shape_release(outerCap);
+    if (oDome) cc_shape_release(oDome);
+
+    if (nMesh.triangleCount) cc_mesh_free(nMesh);
+    cc_shape_release(nBoss);
+    cc_shape_release(nDome);
+    cc_set_engine(0);
+}
+
 }  // namespace
 
 int main() {
@@ -276,6 +426,14 @@ int main() {
     const std::vector<double> hx = hexProfile(5.0);
     runCase("emboss-hex", 10.0, 20.0, hx.data(), 6, 2.0, 1);
     runCase("deboss-hex", 10.0, 20.0, hx.data(), 6, 2.0, 0);
+
+    // F5 — sphere-cap pole boss (FREEFORM/curved base). OCCT's wrap_emboss declines the
+    // sphere wall, so each case checks the native closed-form volume, the OCCT decline, and
+    // a native-vs-OCCT-reference-boss (BRepGProp) volume comparison.
+    std::printf("== F5 native sphere-cap pole boss vs OCCT reference ==\n");
+    runSphereCase("sphere-boss", 10.0, 0.0, 3.0, 2.0);    // hemisphere, φ0=0.3
+    runSphereCase("sphere-boss", 12.0, -2.0, 2.5, 1.5);   // deep dome, φ0≈0.208
+    runSphereCase("sphere-boss", 8.0, 1.0, 2.0, 1.0);     // shallow cap, φ0=0.25
     std::printf("== %d passed, %d failed ==\n", g_passed, g_failed);
     std::fflush(stdout);
     std::_Exit(g_failed == 0 ? 0 : 1);

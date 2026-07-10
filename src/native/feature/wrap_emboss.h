@@ -571,7 +571,229 @@ inline std::vector<nb::Polygon> buildPolyCylinder(const CylWall& wall, const Foo
   return polys;
 }
 
+// ── F5 FREEFORM (curved) BASE: sphere-cap pole boss ─────────────────────────────────
+// The cylinder base above is DEVELOPABLE (arc-length preserves area, so the embossed
+// volume is exactly footprint-area × height). A sphere base is NON-developable — no
+// arc-length map both tiles the wall and keeps the raised-region volume equal to
+// area × height. The tractable analytic-curved slice is therefore an AXISYMMETRIC pole
+// boss: raise a CIRCULAR pole-cap patch of the sphere-cap dome RADIALLY from R to R+height
+// over the polar-angle window φ ∈ [0, φ0]. The raised region is a SPHERICAL-SHELL SECTOR
+// with the EXACT closed-form volume
+//     ΔV = 2π(1 − cos φ0) · ((R+height)³ − R³) / 3        (solid angle × radial shell),
+// so the result is watertight AND its volume delta is analytic — the same two-gate rigor
+// as the cylinder arm, on a genuinely curved (freeform) base. The pole-cap half-angle φ0
+// is derived from the profile's arc-length half-extent ρ (φ0 = ρ / R) taken as the profile
+// bounding-box in-radius; the footprint is the pole DISC (an axisymmetric circular pattern
+// wrapped onto the pole), NOT the wrapped profile outline — that keeps the volume EXACT.
+//
+// SCOPE (honest): native ONLY for a raised (boss=1) pole cap of a PURE sphere-cap dome
+// (recognised wholesale: every face a coaxial sphere of the same centre/R, or EXACTLY ONE
+// axis-normal cap that cuts the ball), with 0 < φ0 < the dome's own polar opening (the boss
+// disc must sit strictly inside the dome, away from the rim). A deboss pole cap, a
+// non-sphere/non-cone freeform base, an off-centre / multi-radius sphere, a spherical zone
+// (two caps), or a φ0 that reaches the rim → NULL → OCCT (which itself declines a
+// non-cylindrical wrap_emboss, so the sim gate compares native volume to an OCCT concentric-
+// sphere reference measured by BRepGProp — see native_wrap_emboss_parity.mm).
+
+// The pure sphere-cap dome resolved about a picked Sphere wall: centre, pole direction
+// (toward the closed pole, away from the cap), outer radius R, and the cap-plane axial coord
+// capA along +pole from the centre (dome material = axial ≥ capA). Recognised WHOLESALE.
+struct SphereDome {
+  math::Point3 centre;
+  math::Dir3 pole;    // unit axis from the centre toward the closed pole
+  double R = 0.0;
+  double capA = 0.0;  // cap-plane axial coord along +pole from centre
+};
+
+inline std::optional<SphereDome> sphereDome(const topo::Shape& solid, int faceId) {
+  const topo::ShapeMap fmap = topo::mapShapes(solid, topo::ShapeType::Face);
+  if (faceId < 1 || static_cast<std::size_t>(faceId) > fmap.size()) return std::nullopt;
+  const auto pick = topo::surfaceOf(fmap.shape(faceId));
+  if (!pick || pick->surface->kind != topo::FaceSurface::Kind::Sphere) return std::nullopt;
+  math::Ax3 pf = pick->surface->frame;
+  if (!pick->location.isIdentity())
+    pf.origin = pick->location.transform().applyToPoint(pf.origin);
+  const math::Point3 centre = pf.origin;
+  const double R = pick->surface->radius;
+  if (!(R > kWeEps)) return std::nullopt;
+
+  // Every face must be THIS ball (same centre/R) or an axis-normal planar cap. A full
+  // revolve fragments both wall and cap into sectors, so match by GEOMETRY and collect the
+  // one distinct cap plane (normal + signed offset w = n·p).
+  bool haveCap = false;
+  math::Vec3 capN{0, 0, 0};
+  double capW = 0.0;
+  int distinctCaps = 0;
+  for (std::size_t fi = 1; fi <= fmap.size(); ++fi) {
+    const auto surf = topo::surfaceOf(fmap.shape(static_cast<int>(fi)));
+    if (!surf) return std::nullopt;
+    if (surf->surface->kind == topo::FaceSurface::Kind::Sphere) {
+      math::Point3 c = surf->surface->frame.origin;
+      if (!surf->location.isIdentity()) c = surf->location.transform().applyToPoint(c);
+      if (math::norm(c - centre) > 1e-6) return std::nullopt;                 // off-centre
+      if (std::fabs(surf->surface->radius - R) > 1e-6) return std::nullopt;   // different R
+    } else if (surf->surface->kind == topo::FaceSurface::Kind::Plane) {
+      math::Ax3 fr = surf->surface->frame;
+      if (!surf->location.isIdentity()) {
+        const math::Transform& t = surf->location.transform();
+        fr.origin = t.applyToPoint(fr.origin);
+        fr.z = math::Dir3{t.applyToVector(fr.z.vec())};
+      }
+      const math::Vec3 n = fr.z.vec();
+      const double w = math::dot(n, fr.origin.asVec());
+      if (!haveCap) {
+        capN = n;
+        capW = w;
+        haveCap = true;
+        ++distinctCaps;
+      } else {
+        const bool same = std::fabs(math::dot(n, capN) - 1.0) < 1e-6 && std::fabs(w - capW) < 1e-6;
+        const bool flipped = std::fabs(math::dot(n, capN) + 1.0) < 1e-6 &&
+                             std::fabs(w + capW) < 1e-6;  // same plane, opposite winding
+        if (!same && !flipped) ++distinctCaps;
+      }
+    } else {
+      return std::nullopt;  // cylinder / cone / freeform → not a pure sphere-cap dome
+    }
+  }
+  if (distinctCaps != 1 || !haveCap) return std::nullopt;  // exactly ONE cap (a zone declines)
+
+  // The cap's outward normal points AWAY from the dome material, so the enclosed pole is on
+  // the −normal side: pole = −capN. Axial coord of the cap along +pole from the centre is
+  // aCap = dot(capN, centre) − capW (see curved_offset::sphereDomeGeom).
+  const math::Dir3 pole{capN * -1.0};
+  if (!pole.valid()) return std::nullopt;
+  const double aCap = math::dot(capN, centre.asVec()) - capW;
+  if (!(std::fabs(aCap) < R - 1e-9)) return std::nullopt;  // cap must actually cut the ball
+
+  SphereDome g;
+  g.centre = centre;
+  g.pole = pole;
+  g.R = R;
+  g.capA = aCap;
+  return g;
+}
+
+// The profile's arc-length in-radius ρ: half the SMALLER bbox extent (a circle inscribed in
+// the footprint bbox). φ0 = ρ / R. Using the in-radius keeps the raised pole DISC strictly
+// inside a footprint the caller drew, and gives the exact axisymmetric closed form.
+inline double profileInRadius(const double* profileXY, int count) {
+  double xmin = profileXY[0], xmax = profileXY[0], ymin = profileXY[1], ymax = profileXY[1];
+  for (int i = 1; i < count; ++i) {
+    xmin = std::min(xmin, profileXY[i * 2]);
+    xmax = std::max(xmax, profileXY[i * 2]);
+    ymin = std::min(ymin, profileXY[i * 2 + 1]);
+    ymax = std::max(ymax, profileXY[i * 2 + 1]);
+  }
+  return 0.5 * std::min(xmax - xmin, ymax - ymin);
+}
+
+// A point on a concentric sphere of radius `rad` at longitude u and polar angle φ from the
+// pole (φ=0 at the pole, increasing toward the cap): axial coord along pole = rad·cosφ, off-
+// axis radius = rad·sinφ. (ex,ey) span the plane ⟂ pole.
+inline math::Point3 poleSpherePt(const SphereDome& g, const math::Vec3& ex, const math::Vec3& ey,
+                                 double rad, double u, double phi) {
+  const double a = rad * std::cos(phi);
+  const double rho = rad * std::sin(phi);
+  const math::Vec3 p = g.centre.asVec() + g.pole.vec() * a + (ex * std::cos(u) + ey * std::sin(u)) * rho;
+  return math::Point3{p.x, p.y, p.z};
+}
+
+// Build the sphere-cap dome with a RAISED circular pole cap (φ ∈ [0,φ0] lifted R→R+height)
+// as a planar-facet soup, welded on shared u-samples across the boss-rim seam. Parts:
+//   * base dome wall from the CAP latitude up to the boss-rim latitude φ0 at radius R;
+//   * boss OUTER cap: the φ∈[0,φ0] pole cap at radius R+height (curved patch);
+//   * boss RIM wall: the annular frustum from R to R+height along the φ0 circle;
+//   * the flat disc cap at capA closing the dome bottom.
+// Empty on degeneracy. The φ0-rim ring on the base wall shares vertices with the rim wall.
+inline std::vector<nb::Polygon> buildSpherePoleBoss(const SphereDome& g, double phi0, double height,
+                                                    double defl) {
+  const double R = g.R, Rout = R + height;
+  if (!(height > kWeEps) || !(phi0 > kWeEps)) return {};
+  // The dome's own polar opening (cap latitude): φ from the pole to the cap plane is
+  // φcap = acos(capA / R). The boss must sit strictly inside → φ0 < φcap.
+  const double phiCap = std::acos(std::clamp(g.capA / R, -1.0, 1.0));
+  if (!(phi0 < phiCap - 1e-6)) return {};
+
+  const math::Vec3 pole = g.pole.vec();
+  math::Vec3 seed = std::fabs(pole.x) < 0.9 ? math::Vec3{1, 0, 0} : math::Vec3{0, 1, 0};
+  math::Vec3 exV = seed - pole * math::dot(seed, pole);
+  const double exn = math::norm(exV);
+  if (!(exn > kWeEps)) return {};
+  exV = exV * (1.0 / exn);
+  const math::Vec3 eyV = math::cross(pole, exV);
+
+  const int N = sagittaSteps(R, kWeTwoPi, defl, 8, 256);  // longitude samples (shared seam)
+  std::vector<nb::Polygon> polys;
+  polys.reserve(static_cast<std::size_t>(N) * 8 + 4);
+
+  auto pt = [&](double rad, double u, double phi) { return poleSpherePt(g, exV, eyV, rad, u, phi); };
+  auto uAt = [&](int i) { return kWeTwoPi * i / N; };
+
+  // Base dome wall: φ from φ0 down to φcap at radius R (latitude bands). Outward = radial.
+  const int Mbase = sagittaSteps(R, std::fabs(phiCap - phi0), defl, 2, 128);
+  for (int j = 0; j < Mbase; ++j) {
+    const double p0 = phi0 + (phiCap - phi0) * j / Mbase;
+    const double p1 = phi0 + (phiCap - phi0) * (j + 1) / Mbase;
+    for (int i = 0; i < N; ++i) {
+      const double u0 = uAt(i), u1 = uAt(i + 1), um = 0.5 * (u0 + u1);
+      const math::Vec3 outN =
+          (pole * std::cos(0.5 * (p0 + p1)) + (exV * std::cos(um) + eyV * std::sin(um)) * std::sin(0.5 * (p0 + p1)));
+      emitTri(polys, pt(R, u0, p0), pt(R, u1, p0), pt(R, u1, p1), outN);
+      emitTri(polys, pt(R, u0, p0), pt(R, u1, p1), pt(R, u0, p1), outN);
+    }
+  }
+  // Boss OUTER cap: φ ∈ [0,φ0] at radius Rout. Top band closes to the pole as triangles.
+  const int Mboss = sagittaSteps(Rout, phi0, defl, 2, 128);
+  for (int j = 0; j < Mboss; ++j) {
+    const double p0 = phi0 * j / Mboss, p1 = phi0 * (j + 1) / Mboss;
+    for (int i = 0; i < N; ++i) {
+      const double u0 = uAt(i), u1 = uAt(i + 1), um = 0.5 * (u0 + u1);
+      const double pm = 0.5 * (p0 + p1);
+      const math::Vec3 outN =
+          (pole * std::cos(pm) + (exV * std::cos(um) + eyV * std::sin(um)) * std::sin(pm));
+      emitTri(polys, pt(Rout, u0, p0), pt(Rout, u1, p0), pt(Rout, u1, p1), outN);
+      emitTri(polys, pt(Rout, u0, p0), pt(Rout, u1, p1), pt(Rout, u0, p1), outN);
+    }
+  }
+  // Boss RIM wall: annular frustum at longitude, from radius R to Rout along the φ0 circle.
+  // Outward hint points radially away from the pole axis at φ0 (the ring's exterior side).
+  for (int i = 0; i < N; ++i) {
+    const double u0 = uAt(i), u1 = uAt(i + 1), um = 0.5 * (u0 + u1);
+    const math::Vec3 outw = (exV * std::cos(um) + eyV * std::sin(um)) * std::sin(phi0) +
+                            pole * std::cos(phi0);
+    emitTri(polys, pt(R, u0, phi0), pt(R, u1, phi0), pt(Rout, u1, phi0), outw);
+    emitTri(polys, pt(R, u0, phi0), pt(Rout, u1, phi0), pt(Rout, u0, phi0), outw);
+  }
+  // Flat disc cap at the cap plane (φcap circle at radius R). Outward = −pole.
+  {
+    std::vector<math::Point3> rim;
+    rim.reserve(static_cast<std::size_t>(N));
+    for (int i = 0; i < N; ++i) rim.push_back(pt(R, uAt(i), phiCap));
+    emitFlat(polys, std::move(rim), pole * -1.0);
+  }
+  return polys;
+}
+
 }  // namespace detail
+
+// The exact closed-form embossed-volume DELTA for the sphere-cap pole boss: a spherical-
+// shell sector, ΔV = 2π(1 − cos φ0)·((R+h)³ − R³)/3. Exposed for the engine self-verify and
+// host/sim gates. Returns 0 when the picked face is not a recognised sphere-cap dome wall or
+// the boss is out of scope (so the caller uses the cylinder area×height gate instead).
+inline double spherePoleBossVolumeDelta(const topo::Shape& solid, int faceId,
+                                        const double* profileXY, int count, double height) {
+  if (profileXY == nullptr || count < 3 || !(height > detail::kWeEps)) return 0.0;
+  const auto g = detail::sphereDome(solid, faceId);
+  if (!g) return 0.0;
+  const double rho = detail::profileInRadius(profileXY, count);
+  if (!(rho > detail::kWeEps)) return 0.0;
+  const double phi0 = rho / g->R;
+  const double phiCap = std::acos(std::clamp(g->capA / g->R, -1.0, 1.0));
+  if (!(phi0 > detail::kWeEps) || !(phi0 < phiCap - 1e-6)) return 0.0;
+  const double Rout = g->R + height;
+  return detail::kWeTwoPi * (1.0 - std::cos(phi0)) * (Rout * Rout * Rout - g->R * g->R * g->R) / 3.0;
+}
 
 // Wrap a footprint onto the CYLINDER lateral face `faceId` of `solid` and emboss (boss=1,
 // RAISE a pad to R+height) or deboss (boss=0, RECESS a pocket to R−height). Three native
@@ -579,9 +801,11 @@ inline std::vector<nb::Polygon> buildPolyCylinder(const CylWall& wall, const Foo
 //   * raised RECTANGLE (control) — the original byte-identical build.
 //   * T1 DEBOSS RECTANGLE — the mirror inward pocket (volume shrinks).
 //   * T2 NON-RECTANGULAR polygon — an N-vertex simple closed loop, embossed or debossed.
-// Returns the built solid (welded watertight) or a NULL Shape (→ OCCT) when the input is
-// out of the native slice: a non-cylindrical / freeform base (T3 declines — no native
-// cone/sphere path), a self-intersecting / degenerate profile, a footprint that runs off
+// A fourth arm handles a RAISED pole cap on a sphere-cap dome (F5 curved base, exact
+// shell-sector volume). Returns the built solid (welded watertight) or a NULL Shape (→ OCCT)
+// when the input is out of the native slice: a non-cylindrical, non-sphere-cap freeform base
+// (T3 declines — no native cone / general-spline path), a self-intersecting / degenerate
+// profile, a footprint that runs off
 // the wall or spans ≥ a full turn, a deboss depth ≥ the radius, or non-positive height.
 // `vMid` is the wall's axial middle (matching the OCCT oracle's V-mid centring). The
 // ENGINE re-verifies watertight + signed volume and falls to OCCT on any failure.
@@ -589,7 +813,22 @@ inline topo::Shape wrap_emboss(const topo::Shape& solid, int faceId, const doubl
                                int count, double height, int boss, double deflection = 0.01) {
   if (boss != 0 && boss != 1) return {};   // only emboss / deboss
   if (!(height > detail::kWeEps)) return {};
-  const auto wall = detail::cylinderWall(solid, faceId);  // T3: non-cylinder → decline
+
+  // F5 FREEFORM (curved) base: a RAISED pole cap on a sphere-cap dome. The tractable
+  // analytic-curved slice — exact spherical-shell-sector volume. Only boss=1 (a pole
+  // deboss / non-sphere freeform base is declined below → OCCT).
+  if (boss == 1) {
+    if (const auto g = detail::sphereDome(solid, faceId)) {
+      const double rho = detail::profileInRadius(profileXY, count);
+      if (!(rho > detail::kWeEps)) return {};
+      const double phi0 = rho / g->R;
+      std::vector<nb::Polygon> spolys = detail::buildSpherePoleBoss(*g, phi0, height, deflection);
+      if (spolys.size() < 6) return {};  // out of scope (φ0 reaches the rim / degenerate)
+      return nb::assembleSolid(spolys);
+    }
+  }
+
+  const auto wall = detail::cylinderWall(solid, faceId);  // T3: other freeform → decline
   if (!wall) return {};
   const double vMid = 0.5 * (wall->vLo + wall->vHi);
 

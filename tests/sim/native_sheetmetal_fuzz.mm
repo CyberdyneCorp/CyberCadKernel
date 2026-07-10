@@ -41,10 +41,11 @@
 //                   positive volume. Read through the SHIPPING facade from cc_check_solid's
 //                   per-check breakdown (closed_manifold ∧ consistent_orientation ∧ no_degenerate
 //                   ∧ finite) AND cc_mass_properties (watertight ∧ vol>0) — the SAME contract the
-//                   product's own common.h::verifySolid + the host Gate (a) enforce. (cc_check_solid's
-//                   separate GS6 no_self_intersection sub-check false-positives on the tessellated-
-//                   cylinder bend; see the NATIVE-CHECK-INACCURATE note below — it is recorded, not
-//                   gated, because the geometry is correct by every arbiter here.)
+//                   product's own common.h::verifySolid + the host Gate (a) enforce. (GS6 FIXED:
+//                   cc_check_solid's no_self_intersection sub-check previously false-positived on the
+//                   tessellated-cylinder bend; the straddle + coplanar-disjoint gate in
+//                   analysis/validity.h closed it, so NATIVE-CHECK-INACCURATE is now 0 — the branch
+//                   below is retained as a dormant guard that would still flag a genuine regression.)
 //
 // ── THE THREE OPS × RANDOM INPUTS ─────────────────────────────────────────────────────
 //   base-flange       a RANDOM simple polygon profile (rectangle / regular n-gon / convex
@@ -71,17 +72,19 @@
 // DISAGREE is a REAL NATIVE BUG (the closed form / invariant is ground truth), reported with
 // seed + case index + the parameter tuple for a reproducible localize.
 //
-// ── ONE MEASURED NATIVE-CHECK NOTE (NATIVE-CHECK-INACCURATE, not a DISAGREE) ───────────
-// cc_check_solid's GS6 `no_self_intersection` sub-check FALSE-POSITIVES on the edge-flange
-// BEND (a fan of near-coplanar planar strips approximating a true cylinder) — it reports the
-// otherwise-valid folded part as self-intersecting. This reproduces on the BASE commit with
-// the LANDED code (native_sheetmetal_selftest.mm's `edge_flange cc_check_solid valid` FAILs
-// there too), so it is a PRE-EXISTING GS6-vs-tessellated-cylinder product interaction, NOT a
-// fold-geometry fault and NOT introduced here. The fold body is CORRECT by every geometric
-// arbiter this fuzzer owns (watertight / oriented / χ=2 / volume==closed-form), so the fuzzer
-// validity gate uses those geometric sub-checks and records the GS6 self-X result separately as
-// NATIVE-CHECK-INACCURATE (reported for a future product GS6 fix; logged, never a bar failure —
-// the sibling fuzzers' ORACLE-INACCURATE analogue for a domain with no OCCT oracle).
+// ── ONE MEASURED NATIVE-CHECK NOTE (NATIVE-CHECK-INACCURATE — now RESOLVED) ────────────
+// cc_check_solid's GS6 `no_self_intersection` sub-check previously FALSE-POSITIVED on the
+// edge-flange BEND (a fan of near-coplanar planar strips approximating a true cylinder): the
+// Möller triangle–triangle test read the TANGENT SEAM where the coarse base/end-cap facets
+// meet the fine bend strips (a T-junction with no shared vertex INDEX) as a crossing, and
+// declined on the coplanar-disjoint neighbours. FIXED in analysis/validity.h (GS6): a
+// transversal crossing is now accepted only when each triangle STRADDLES the other's plane
+// (pierces to both sides), and coplanar pairs are decided by a 2D SAT overlap test so
+// coplanar-DISJOINT neighbours no longer force an undecided decline. The folded body was — and
+// is — CORRECT by every geometric arbiter this fuzzer owns (watertight / oriented / χ=2 /
+// volume==closed-form); with the fix, NATIVE-CHECK-INACCURATE is 0. The classifier branch is
+// KEPT as a dormant guard: were GS6 ever to regress, it would surface here as
+// NATIVE-CHECK-INACCURATE rather than corrupt the DISAGREED bar.
 //
 // ── THE BAR ──────────────────────────────────────────────────────────────────────────
 //   Exit 0 IFF DISAGREED == 0, with each of the three ops having ≥1 AGREED trial. Run over
@@ -192,15 +195,15 @@ void tally(Verdict v, int op) {
 // cc_check_solid's per-check breakdown (closed_manifold ∧ consistent_orientation ∧ no_degenerate
 // ∧ finite) AND cc_mass_properties (watertight ∧ volume>0).
 //
-// ── GS6 SELF-INTERSECTION on the tessellated-cylinder bend (a MEASURED native-check note) ───
+// ── GS6 SELF-INTERSECTION on the tessellated-cylinder bend (MEASURED — now RESOLVED) ────────
 // cc_check_solid's `no_self_intersection` (GS6, first_failure code 5) is a SEPARATE native
-// M0-mesh surface — NOT part of the sheet-metal builder's contract. It reports a FALSE POSITIVE
-// on the edge-flange BEND: the bend is a fan of near-coplanar planar strips approximating a true
-// cylinder, and adjacent tight-bend facets read as "self-intersecting" to the mesh detector even
-// though the body is genuinely watertight / oriented / χ=2 / volume-exact. This reproduces on the
-// BASE commit with the LANDED code (native_sheetmetal_selftest.mm's `edge_flange cc_check_solid
-// valid` line FAILs there too) — a PRE-EXISTING GS6-vs-tessellated-cylinder interaction, not a
-// fold-geometry fault. We record it (`gs6SelfX`) and classify it NATIVE_CHECK_INACCURATE (logged,
+// M0-mesh surface — NOT part of the sheet-metal builder's contract. It PREVIOUSLY reported a
+// FALSE POSITIVE on the edge-flange BEND: the bend is a fan of near-coplanar planar strips
+// approximating a true cylinder, and the tangent seam where those fine strips meet the coarse
+// base/end-cap facets read as "self-intersecting" even though the body is genuinely watertight /
+// oriented / χ=2 / volume-exact. FIXED in analysis/validity.h (GS6, straddle + coplanar-SAT
+// gate); the selftest's `edge_flange cc_check_solid valid` line now PASSES. We still record it
+// (`gs6SelfX`) and classify it NATIVE_CHECK_INACCURATE (dormant guard; logged,
 // measured, reported for a future GS6 product fix), NEVER a bar DISAGREE — the geometry is correct
 // by every arbiter this fuzzer certifies.
 struct Built {

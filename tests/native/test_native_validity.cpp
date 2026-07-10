@@ -24,10 +24,15 @@
 
 #include "cybercadkernel/cc_kernel.h"
 #include "native/analysis/validity.h"
+#include "native/sheetmetal/sheetmetal.h"          // GS6 bend-strip regression fixture
+#include "native/tessellate/native_tessellate.h"   // SolidMesher (host, no OCCT)
+#include "native/topology/native_topology.h"
 
 namespace an = cybercad::native::analysis;
 namespace tess = cybercad::native::tessellate;
 namespace nm = cybercad::native::math;
+namespace sm = cybercad::native::sheetmetal;
+namespace topo = cybercad::native::topology;
 
 static int g_pass = 0, g_fail = 0;
 static void check(const char* name, bool ok) {
@@ -54,6 +59,44 @@ static tess::Mesh twoBoxes(const nm::Vec3& d) {
   const auto base = static_cast<std::uint32_t>(m.vertices.size());
   for (const auto& p : o.vertices) m.vertices.push_back({p.x + d.x, p.y + d.y, p.z + d.z});
   for (const auto& t : o.triangles) m.addTriangle(t.a + base, t.b + base, t.c + base);
+  return m;
+}
+
+// A single-bend sheet-metal edge-flange solid, meshed to the M0 boundary
+// triangulation the checker consumes — the tessellated-cylinder BEND STRIP whose
+// false-positive self-intersection is GS6. Built OCCT-FREE via the native builder +
+// SolidMesher. Returns an empty mesh if the fold declines (params out of the slice).
+static tess::Mesh bendStripMesh(double L, double W, double t, double r, double h, double th) {
+  const double rect[8] = {0, 0, L, 0, L, W, 0, W};
+  sm::SheetMetalDecline why = sm::SheetMetalDecline::Ok;
+  const topo::Shape base = sm::baseFlange(rect, 4, t, &why);
+  int rim = -1;
+  const topo::ShapeMap map = topo::mapShapes(base, topo::ShapeType::Edge);
+  for (std::size_t i = 1; i <= map.size(); ++i)
+    if (sm::efdetail::isFlangeableRim(base, static_cast<int>(i), sm::BasePlate{L, W, t})) {
+      rim = static_cast<int>(i); break;
+    }
+  const topo::Shape folded = sm::edgeFlange(base, rim, h, r, th, &why);
+  if (folded.isNull()) return {};
+  tess::MeshParams mp;
+  mp.deflection = 0.005;
+  return tess::SolidMesher(mp).mesh(folded);
+}
+
+// Two COPLANAR, positively-OVERLAPPING triangles welded into a (non-manifold) mesh —
+// the genuine coplanar-overlap case the checker must still refuse to certify. Guards
+// the coplanar-DISJOINT resolver against over-correction (it must not silently pass a
+// real overlap). Both triangles lie in z=0; the second is shifted so it overlaps the
+// first's interior. Adjacent same-plane facets (a bare edge/vertex touch) are the
+// benign case handled elsewhere; this one truly overlaps in area.
+static tess::Mesh coplanarOverlapPair() {
+  tess::Mesh m;
+  // Triangle A and triangle B, coplanar in z=0, overlapping quadrant. No shared index.
+  const nm::Point3 v[6] = {{0, 0, 0}, {4, 0, 0}, {0, 4, 0},   // A
+                           {1, 1, 0}, {5, 1, 0}, {1, 5, 0}};  // B (shifted into A)
+  for (const auto& p : v) m.vertices.push_back(p);
+  m.addTriangle(0, 1, 2);
+  m.addTriangle(3, 4, 5);
   return m;
 }
 
@@ -147,9 +190,59 @@ static void test_facade() {
   cc_set_engine(0);
 }
 
+// ── GS6 self-intersection: tessellated-cylinder BEND STRIP false-positive fix ──
+// The curved bend region of a sheet-metal edge flange is a faceted cylindrical strip
+// welded to the flat base and wedge end-caps. Its facets meet along TANGENT SEAMS
+// (T-junctions with no shared vertex INDEX): the coarse base-top face abuts fine bend
+// strips, and the fan-triangulated end-caps abut those strips. The pre-fix checker
+// (a) reported those tangent-seam touches as a Möller "crossing" and (b) declined on
+// the coplanar-disjoint neighbours. The straddle gate + coplanar-disjoint resolver
+// close both: a bend-strip solid — VALID (watertight, oriented, χ=2, OCCT-accepted) —
+// must now certify. A genuinely self-intersecting solid, and a genuine coplanar
+// OVERLAP, must STILL fail (over-correction guard).
+static void test_gs6_bend_strip() {
+  std::printf("[GS6 validity — tessellated-cylinder bend strip (false-positive fix)]\n");
+  struct Case { double L, W, t, r, h, th; const char* tag; };
+  const double kPi = 3.14159265358979323846;
+  const Case cases[] = {
+      {40, 20, 2, 3, 15, kPi / 2, "90deg r3 t2"},
+      {40, 20, 2, 3, 15, kPi * 0.75, "135deg r3 t2"},
+      {30, 15, 1, 1, 8, 1.5, "tight r1==t1"},
+      {30, 15, 1, 0.5, 8, 2.0, "very tight r0.5"},
+      {50, 25, 3, 5, 20, kPi / 3, "60deg r5 t3"},
+  };
+  for (const Case& c : cases) {
+    const tess::Mesh m = bendStripMesh(c.L, c.W, c.t, c.r, c.h, c.th);
+    char nm1[96], nm2[96], nm3[96];
+    std::snprintf(nm1, sizeof nm1, "bend %-16s: built + watertight", c.tag);
+    std::snprintf(nm2, sizeof nm2, "bend %-16s: no_self_intersection (no false +)", c.tag);
+    std::snprintf(nm3, sizeof nm3, "bend %-16s: VALID (certified)", c.tag);
+    check(nm1, !m.vertices.empty() && tess::isWatertight(m));
+    const an::ValidityReport r = an::checkSolidMesh(m);
+    check(nm2, r.noSelfIntersection);
+    check(nm3, r.valid());
+  }
+
+  // Over-correction guard #1: a genuine interpenetrating solid still FAILS. Two
+  // boxes overlapping in a volume cross transversally (facets straddle) → caught.
+  {
+    const an::ValidityReport r = an::checkSolidMesh(twoBoxes({1.0, 0.5, 0.5}));
+    check("guard: genuine self-intersect still noSelfIntersection == 0", !r.noSelfIntersection);
+    check("guard: genuine self-intersect still NOT valid", !r.valid());
+  }
+  // Over-correction guard #2: a genuine coplanar OVERLAP is still refused (not
+  // certified) — the coplanar-disjoint resolver must not pass a real area overlap.
+  {
+    const an::ValidityReport r = an::checkSolidMesh(coplanarOverlapPair());
+    check("guard: coplanar overlap NOT certified (declined)", !r.selfIntersectionCertified);
+    check("guard: coplanar overlap NOT valid", !r.valid());
+  }
+}
+
 int main() {
   std::printf("=== test_native_validity (MOAT M-GS GS6, host-analytic gate) ===\n");
   test_fixtures();
+  test_gs6_bend_strip();
   test_facade();
   std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;

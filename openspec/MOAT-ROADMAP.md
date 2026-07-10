@@ -1235,6 +1235,15 @@ tests. Substages:
   fixtures — matched on every one. **Honest decline:** the self-intersection check returns UNDECIDABLE
   (report `decided=0`, never a false `valid`) where no-self-intersection is not robustly certifiable
   (e.g. a general freeform patch). Gates trustworthy import (with M5) and any healing UX.
+  **GS6 finding (M6 sheet-metal fuzz, fixed):** the self-intersection test false-positived on
+  tessellated-cylinder BEND STRIPS — the Möller triangle–triangle test read the tangent seam where
+  fine bend-strip facets meet the coarse base/end-cap facets (a T-junction, no shared vertex index)
+  as a crossing, and declined on the coplanar-disjoint neighbours. Fixed in `validity.h` with a
+  STRADDLE gate (a crossing is accepted only when each triangle pierces to BOTH sides of the other's
+  plane) plus a 2D-SAT coplanar-OVERLAP resolver (coplanar-disjoint neighbours are `Separate`, not an
+  undecided decline); a genuine crossing/overlap is still caught. Regression in
+  `tests/native/test_native_validity.cpp` (bend strip now certifies; interpenetrating solid + coplanar
+  overlap still fail). ABI byte-unchanged.
 - **GS7 — Interference / clash detection** — a native `cc_interference(a, b, CCInterference*)` between
   two solids (the assembly + mates value): CLASH (interiors overlap over positive volume) / TOUCHING
   (boundary contact, no interior overlap) / CLEAR (positive clearance), plus the overlap VOLUME, the

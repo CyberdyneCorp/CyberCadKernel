@@ -271,6 +271,16 @@ inline topo::Shape edgeFromPiece(const Piece& poles, const math::Ax3& fr) {
 
 // Build a planar face from an ordered loop of pieces, oriented so its normal matches
 // `wantOutward` (of.outwardN) — pick Forward/Reversed by the loop's signed-area sign.
+//
+// NOTE (byte-frozen; consumed by multi_face_weld/strip_weld/two_operand/inter_solid_seam):
+// this picks orientation from the 3-D loop signed area. That is CORRECT for the analytic
+// keep-faces those callers build (their loop winding tracks the operand frame), but it is
+// NOT the rule the M0 mesher uses: the mesher forces the UV OUTER loop CCW regardless of
+// the input edge order, so the meshed normal of a Forward planar face is ALWAYS +fr.z,
+// independent of `loopSignedArea`. For a cross-section CAP synthesised from a freshly
+// chained loop (`orderLoop`) the loop-area sign is arbitrary, so this rule can flip the
+// cap the wrong way — the off-centre keep-face volume defect. Cap synthesis must use
+// `planarFaceFromLoopByNormal` below, which matches the mesher's actual convention.
 inline topo::Shape planarFaceFromLoop(const std::vector<Piece>& loop, const math::Ax3& fr,
                                       const math::Vec3& wantOutward) {
   std::vector<topo::Shape> edges;
@@ -282,6 +292,26 @@ inline topo::Shape planarFaceFromLoop(const std::vector<Piece>& loop, const math
   // Forward face normal = sign(area)·fr.z. Choose orientation so it aligns to wantOutward.
   const double fwdDot = (area >= 0.0 ? 1.0 : -1.0) * math::dot(fr.z.vec(), wantOutward);
   const topo::Orientation o = fwdDot >= 0.0 ? topo::Orientation::Forward : topo::Orientation::Reversed;
+  return topo::ShapeBuilder::makeFace(s, topo::ShapeBuilder::makeWire(std::move(edges)), {}, o);
+}
+
+// F4 (off-centre-accurate cap): build a planar face whose MESHED normal matches
+// `wantOutward`, using the M0 mesher's ACTUAL convention. The mesher re-triangulates the
+// UV outer loop forced CCW, so a Forward planar face always meshes with normal +fr.z and
+// a Reversed one with −fr.z — independent of the incoming 3-D loop winding. Hence the sole
+// correct rule is: Forward iff fr.z already points toward `wantOutward`, else Reversed.
+// This makes an OFF-CENTRE cross-section cap (whose chained loop winding is arbitrary) come
+// out coherently outward, so the welded solid is CONSISTENTLY ORIENTED and its
+// `enclosedVolume` is trustworthy at every cut offset — not just the symmetric centre.
+inline topo::Shape planarFaceFromLoopByNormal(const std::vector<Piece>& loop, const math::Ax3& fr,
+                                              const math::Vec3& wantOutward) {
+  std::vector<topo::Shape> edges;
+  for (const Piece& pc : loop) edges.push_back(edgeFromPiece(pc, fr));
+  topo::FaceSurface s{};
+  s.kind = topo::FaceSurface::Kind::Plane;
+  s.frame = fr;
+  const topo::Orientation o =
+      math::dot(fr.z.vec(), wantOutward) >= 0.0 ? topo::Orientation::Forward : topo::Orientation::Reversed;
   return topo::ShapeBuilder::makeFace(s, topo::ShapeBuilder::makeWire(std::move(edges)), {}, o);
 }
 
@@ -461,7 +491,9 @@ inline topo::Shape halfSpaceCut(const FreeformOperand& op, const math::Plane& P,
   if (!orderLoop(capPieces, weldTol, capLoop)) return fail(HalfSpaceCutDecline::SectionLoopOpen);
   if (!loopSimple(capLoop, capFrame)) return fail(HalfSpaceCutDecline::SectionLoopNotSimple);
   const math::Vec3 outwardCap = (side == KeepSide::Below ? 1.0 : -1.0) * P.pos.z.vec();
-  faces.push_back(planarFaceFromLoop(capLoop, capFrame, outwardCap));
+  // F4: the cap loop winding is arbitrary (freshly chained), so orient by the mesher's
+  // actual +fr.z convention — the off-centre-accurate rule — not the 3-D loop area sign.
+  faces.push_back(planarFaceFromLoopByNormal(capLoop, capFrame, outwardCap));
 
   // (4) weld → Solid.
   if (faces.size() < 4) return fail(HalfSpaceCutDecline::WeldOpen);
@@ -512,10 +544,12 @@ inline topo::Shape freeformHalfSpaceCut(const topo::Shape& operand, const math::
   const topo::Shape cut = halfSpaceCut(*op, P, side, *sr.split, seam3d, &b4);
   if (cut.isNull()) return fail(b4);
 
-  // (5) mandatory self-verify: mesh the result; require watertight (NEVER emit a leak).
+  // (5) mandatory self-verify: mesh the result; require a CONSISTENTLY-ORIENTED closed
+  // 2-manifold (NEVER emit a leak, and never a watertight-but-mis-wound shell whose signed
+  // enclosedVolume would be untrustworthy — the off-centre cap-orientation guard).
   tess::MeshParams mp; mp.deflection = meshDeflection;
   const tess::Mesh m = tess::SolidMesher(mp).mesh(cut);
-  if (!tess::isWatertight(m)) return fail(HalfSpaceCutDecline::NotWatertight);
+  if (!tess::isConsistentlyOriented(m)) return fail(HalfSpaceCutDecline::NotWatertight);
 
   if (why) *why = HalfSpaceCutDecline::Ok;
   return cut;

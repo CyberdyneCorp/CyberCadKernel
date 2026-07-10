@@ -261,7 +261,10 @@ inline topo::Shape assembleLump(const InterSolidSeam& seam) {
   // A's kept material (= the trace plane's +z, which points INTO the removed slab).
   const math::Ax3 capFrame = seam.tracePlane.pos;
   const math::Vec3 outward = capFrame.z.vec();
-  faces.push_back(hscdetail::planarFaceFromLoop(seam.capLoop, capFrame, outward));
+  // F4: orient the cross-section cap by the mesher's actual +fr.z convention (the
+  // off-centre-accurate rule), so the lump is CONSISTENTLY ORIENTED and its enclosedVolume
+  // is trustworthy at every slab-face offset — not just a symmetric-centre cut.
+  faces.push_back(hscdetail::planarFaceFromLoopByNormal(seam.capLoop, capFrame, outward));
   if (faces.size() < 4) return {};
   return topo::ShapeBuilder::makeSolid({topo::ShapeBuilder::makeShell(std::move(faces))});
 }
@@ -377,11 +380,12 @@ inline topo::Shape freeformSlabDisjointCut(const topo::Shape& A, const topo::Sha
                                        SlabCutDecline::LumpOpenHigh, &bad);
   if (lumpHi.isNull()) return fail(bad);
 
-  // (5) each lump must mesh WATERTIGHT.
+  // (5) each lump must mesh a CONSISTENTLY-ORIENTED closed 2-manifold (watertight AND
+  // coherently wound — so its signed enclosedVolume is trustworthy off-centre).
   tess::MeshParams mp; mp.deflection = deflection;
   const tess::Mesh meshLo = tess::SolidMesher(mp).mesh(lumpLo);
   const tess::Mesh meshHi = tess::SolidMesher(mp).mesh(lumpHi);
-  if (!tess::isWatertight(meshLo) || !tess::isWatertight(meshHi))
+  if (!tess::isConsistentlyOriented(meshLo) || !tess::isConsistentlyOriented(meshHi))
     return fail(SlabCutDecline::NotWatertight);
 
   // (6) confirm the two lumps are genuinely DISJOINT along the slab axis.
@@ -391,7 +395,7 @@ inline topo::Shape freeformSlabDisjointCut(const topo::Shape& A, const topo::Sha
   // (7) assemble the two-body Compound and run the MANDATORY combined self-verify.
   const topo::Shape result = topo::ShapeBuilder::makeCompound({lumpLo, lumpHi});
   const tess::Mesh m = tess::SolidMesher(mp).mesh(result);
-  if (!tess::isWatertight(m)) return fail(SlabCutDecline::NotWatertight);
+  if (!tess::isConsistentlyOriented(m)) return fail(SlabCutDecline::NotWatertight);
   const double vA = std::fabs(tess::enclosedVolume(tess::SolidMesher(mp).mesh(opA->solid)));
   const double v = std::fabs(tess::enclosedVolume(m));
   const SlabCutDecline vd = verifyVolume(v, vA, analyticCutVolume, deflection);

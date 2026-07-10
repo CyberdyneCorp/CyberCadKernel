@@ -300,6 +300,21 @@ int main() {
     closure("prism", vB, vA, ffx::fullVolume(), 0.04);
   }
 
+  // ── Fixture 3 (F4): bowl-lidded PRISM, OFF-CENTRE plane x=0.10, both keep sides ──
+  // The frozen keep-face was volume-exact only for the symmetric-centre cut (~29% over at
+  // x=0.10). With the cross-section cap oriented by the mesher's real +fr.z convention
+  // (planarFaceFromLoopByNormal), the OFF-CENTRE cut is consistently oriented and its
+  // volume matches OCCT's BRepAlgoAPI_Cut + BRepGProp at the same 2% band as the centre.
+  {
+    const double defl = 0.008, spatial = 1.5 * defl;
+    const nm::Point3 o{0.10, 0, 0}; const nm::Vec3 n{1, 0, 0};
+    const nt::Shape prism = ffx::buildOperand();
+    const TopoDS_Shape occtPrism = buildOcctPrism();
+    const double vB = compareOne("prism-off/below", prism, occtPrism, o, n, false, defl, relTol, spatial);
+    const double vA = compareOne("prism-off/above", prism, occtPrism, o, n, true, defl, relTol, spatial);
+    closure("prism-off", vB, vA, ffx::fullVolume(), 0.04);
+  }
+
   std::printf("== %d passed, %d failed ==\n", g_pass, g_fail);
   std::fflush(stdout);
   std::_Exit(g_fail == 0 ? 0 : 1);

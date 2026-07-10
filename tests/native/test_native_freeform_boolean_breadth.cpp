@@ -20,6 +20,7 @@
 #include "native/tessellate/solid_mesher.h"
 
 #include "native/first_freeform_boolean_breadth_fixture.h"
+#include "slab_disjoint_cut_fixture.h"
 #include "harness.h"
 
 #include <cmath>
@@ -29,6 +30,7 @@ namespace tess = cybercad::native::tessellate;
 namespace fmath = cybercad::native::math;
 namespace ffx = first_freeform_boolean_fixture;
 namespace bfx = first_freeform_boolean_breadth_fixture;
+namespace sfx = slab_disjoint_cut_fixture;
 
 namespace {
 // A deflection at which the shared-curved-edge weld coincides for BOTH keep-sides (see the
@@ -171,6 +173,63 @@ CC_TEST(weld_robust_across_full_deflection_sweep) {
       const double v = meshVolume(common, d, wt);
       CC_CHECK(wt);
       CC_CHECK(std::fabs(v - bfx::commonVolume()) <= relBand(d) * bfx::commonVolume());
+    }
+  }
+}
+
+// ── F4 GATE (a): OFF-CENTRE half-space cut is volume-accurate at every offset ──
+// The frozen keep-face was volume-exact ONLY for a cut through the operand's symmetric
+// centre (measured relerr 0.5% at x=0, 7% at ±0.03, 29% at ±0.10 — a watertight-but-
+// mis-wound cap whose signed volume was untrustworthy off-centre). With the cross-section
+// cap oriented by the mesher's real +fr.z convention (planarFaceFromLoopByNormal), an
+// OFF-CENTRE freeformHalfSpaceCut is now CONSISTENTLY ORIENTED and matches the closed-form
+// integrator ∫∫ (H0 + a(x²+y²)) dA to within the deflection band at x∈{±0.03,±0.10} — for
+// BOTH complementary keep-sides. This is the F4 enabler's direct proof.
+CC_TEST(offcentre_half_space_cut_matches_closed_form) {
+  const auto solid = ffx::buildOperand();
+  const double d = 0.004;
+  auto planeAtX = [](double c) {
+    fmath::Ax3 fr;
+    fr.origin = fmath::Point3{c, 0, 0};
+    fr.x = fmath::Dir3{fmath::Vec3{0, 1, 0}};
+    fr.y = fmath::Dir3{fmath::Vec3{0, 0, 1}};
+    fr.z = fmath::Dir3{fmath::Vec3{1, 0, 0}};  // normal +x
+    return fmath::Plane{fr};
+  };
+  // Closed-form: A ∩ {x≥c} (Above) and A ∩ {x≤c} (Below), via the exact polygon integrator.
+  auto cfAbove = [](double c) { return ffx::polyVolume(sfx::clipX(true, c)); };
+  auto cfBelow = [](double c) { return ffx::polyVolume(sfx::clipX(false, c)); };
+
+  for (const double c : {0.03, 0.10, -0.03, -0.10}) {
+    // Above (keep x≥c)
+    {
+      bo::HalfSpaceCutDecline why = bo::HalfSpaceCutDecline::Ok;
+      const auto r = bo::freeformHalfSpaceCut(solid, planeAtX(c), bo::KeepSide::Above, d, &why);
+      CC_CHECK(why == bo::HalfSpaceCutDecline::Ok);
+      CC_CHECK(!r.isNull());
+      if (!r.isNull()) {
+        tess::MeshParams mp; mp.deflection = d;
+        const tess::Mesh m = tess::SolidMesher(mp).mesh(r);
+        CC_CHECK(tess::isConsistentlyOriented(m));   // trustworthy signed volume
+        const double v = std::fabs(tess::enclosedVolume(m));
+        const double cf = cfAbove(c);
+        CC_CHECK(std::fabs(v - cf) <= 0.02 * cf);    // was up to 29% — now < 1%
+      }
+    }
+    // Below (keep x≤c) — the complementary keep-side, same accuracy
+    {
+      bo::HalfSpaceCutDecline why = bo::HalfSpaceCutDecline::Ok;
+      const auto r = bo::freeformHalfSpaceCut(solid, planeAtX(c), bo::KeepSide::Below, d, &why);
+      CC_CHECK(why == bo::HalfSpaceCutDecline::Ok);
+      CC_CHECK(!r.isNull());
+      if (!r.isNull()) {
+        tess::MeshParams mp; mp.deflection = d;
+        const tess::Mesh m = tess::SolidMesher(mp).mesh(r);
+        CC_CHECK(tess::isConsistentlyOriented(m));
+        const double v = std::fabs(tess::enclosedVolume(m));
+        const double cf = cfBelow(c);
+        CC_CHECK(std::fabs(v - cf) <= 0.02 * cf);
+      }
     }
   }
 }

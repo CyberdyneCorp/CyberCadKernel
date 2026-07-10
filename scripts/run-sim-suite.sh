@@ -124,6 +124,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_walled_bowl_midwall_parity.mm \
       native_chain_seam_parity.mm \
       native_split_plane_parity.mm \
+      native_slab_disjoint_cut_parity.mm \
       native_dm3_dm4_parity.mm \
       native_analytic_fillet_parity.mm \
       native_step_mapped_item_parity.mm \

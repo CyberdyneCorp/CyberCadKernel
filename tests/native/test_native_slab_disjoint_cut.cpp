@@ -1,26 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Host GATE (a) for MOAT M2b freeform↔analytic DISJOINT (MULTI-LUMP) CUT — the OCCT-FREE
-// analytic proof that `freeformSlabDisjointCut` composes the landed inter-solid-seam weld
-// into the FIRST native freeform boolean whose result is TWO disconnected bodies, and that
-// its mandatory two-sided self-verify HONEST-DECLINES a wrong-volume weld (never leaks).
+// Host GATE (a) for MOAT M2b/F4 freeform↔analytic DISJOINT (MULTI-LUMP) CUT — the OCCT-FREE
+// analytic proof that `freeformSlabDisjointCut` composes the (now off-centre-accurate)
+// inter-solid-seam weld into the FIRST native freeform boolean whose result is TWO
+// disconnected bodies, and that it now WELDS at the closed-form two-body volume.
 //
 // The fixture is the bowl-lidded convex-quad prism `A` parted by a central axis-aligned
 // slab `B` (x∈[−0.10,0.10]) into two lumps A∩{x≤−0.10} ⊎ A∩{x≥+0.10}
 // (slab_disjoint_cut_fixture.h). We assert:
 //   * the pipeline REACHES the weld: B1 admits A (one freeform wall), B is an all-planar
 //     slab, the opposite-parallel slab pair straddling A's wall is located, and both lumps
-//     assemble through the landed inter-solid-seam machinery;
-//   * the DISJOINT MECHANISM is sound — in upper-bound mode the verb returns a WATERTIGHT
+//     assemble through the inter-solid-seam machinery;
+//   * the DISJOINT MECHANISM is sound — the verb returns a CONSISTENTLY-ORIENTED WATERTIGHT
 //     `Compound` of EXACTLY TWO `Solid`s whose world AABBs are separated along the slab
 //     axis (genuinely two connected components — the new topological outcome);
 //   * the closed-form CUT-volume oracle is self-consistent (V(A−B)+V(A∩B)=V(A));
-//   * the mandatory TWO-SIDED self-verify HONEST-DECLINES `VolumeInconsistent` when the
-//     closed-form volume is supplied — the byte-frozen inter-solid-seam keep-face
-//     machinery over-estimates the volume of an OFF-CENTRE cross-section (MEASURED: the
-//     lump volume exceeds the closed form well beyond the deflection band), so the verb
-//     refuses to emit a wrong-volume solid → NULL → OCCT; a leaky/wrong result is NEVER
-//     emitted; no tolerance is widened;
+//   * F4 WELD: with the closed-form CUT volume supplied, the two-sided self-verify now
+//     ACCEPTS the weld — the off-centre cross-section cap is oriented by the mesher's real
+//     +fr.z convention (planarFaceFromLoopByNormal), so each lump is consistently oriented
+//     and the combined enclosed volume matches the closed form within the deflection band
+//     (MEASURED: relerr < 1% at d∈{0.006,0.008,0.010}, down from the frozen cap's ~29%);
 //   * the honest-decline battery: a non-operand A and a non-slab B each decline with a
 //     measured blocker.
 // Requires CYBERCAD_HAS_NUMSCI (the composition traces the real M1 seam on each face).
@@ -71,12 +70,11 @@ CC_TEST(slab_closed_form_partition_is_consistent) {
   CC_CHECK(sfx::slabVolume() > 0.001 * v);    // the removed band is non-degenerate
 }
 
-// ── The DISJOINT MECHANISM: upper-bound mode welds a watertight two-body Compound ──
-// Without the closed-form band the verb still self-verifies (both lumps + the combined
-// compound WATERTIGHT, the two lumps DISJOINT along the slab axis, 0 < V ≤ V(A)) and
+// ── The DISJOINT MECHANISM: welds a CONSISTENTLY-ORIENTED two-body Compound ──
+// Without the closed-form band the verb self-verifies (both lumps + the combined compound
+// CONSISTENTLY ORIENTED, the two lumps DISJOINT along the slab axis, 0 < V ≤ V(A)) and
 // returns a `Compound` of EXACTLY TWO `Solid`s — the new topological outcome no landed
-// verb produces. (The volume is the frozen keep-face machinery's off-centre estimate;
-// the TWO-SIDED gate below is what makes the shipped verb refuse a wrong-volume result.)
+// verb produces.
 CC_TEST(slab_disjoint_mechanism_welds_two_body_compound) {
   const topo::Shape A = ffx::buildOperand();
   const topo::Shape B = sfx::buildSlabB();
@@ -89,39 +87,35 @@ CC_TEST(slab_disjoint_mechanism_welds_two_body_compound) {
     CC_CHECK(solidCount(r) == 2);                  // TWO disconnected bodies
     tess::MeshParams mp; mp.deflection = d;
     const tess::Mesh m = tess::SolidMesher(mp).mesh(r);
-    CC_CHECK(tess::isWatertight(m));               // a closed 2-manifold (two lumps)
+    CC_CHECK(tess::isConsistentlyOriented(m));      // coherently-wound closed 2-manifold
     const double v = std::fabs(tess::enclosedVolume(m));
     CC_CHECK(v > 0.0 && v <= ffx::fullVolume() * 1.05);   // 0 < V ≤ V(A)
   }
 }
 
-// ── HONEST TWO-SIDED DECLINE: the wrong off-centre volume is caught, never shipped ──
-// With the closed-form CUT volume supplied, the verb's TWO-SIDED band rejects the
-// byte-frozen keep-face machinery's off-centre OVER-estimate: the meshed compound volume
-// exceeds the closed form well beyond the deflection band, so the verb returns NULL →
-// OCCT with `VolumeInconsistent`. This is the load-bearing no-silent-wrong invariant —
-// the disjoint compound is topologically real, but its off-centre VOLUME is not trusted,
-// so it is HONEST-DECLINED rather than emitted as a correct result.
-CC_TEST(slab_two_sided_verify_declines_offcentre_wrong_volume) {
+// ── F4 WELD: the off-centre-accurate cap makes the two-sided gate ACCEPT the weld ──
+// With the closed-form CUT volume supplied, the verb's TWO-SIDED band now ACCEPTS the
+// disjoint compound: the off-centre cross-section cap is oriented by the mesher's real
+// +fr.z convention (planarFaceFromLoopByNormal), so each lump is consistently oriented and
+// the combined enclosed volume matches the closed form within the deflection band. This is
+// the F4 payoff — the frozen keep-face's ~29% off-centre over-estimate is gone, turning the
+// former `VolumeInconsistent` honest-decline into a full, volume-accurate WELD.
+CC_TEST(slab_two_sided_verify_welds_at_closed_form) {
   const topo::Shape A = ffx::buildOperand();
   const topo::Shape B = sfx::buildSlabB();
   const double cf = sfx::cutVolume();
   for (double d : {0.01, 0.008, 0.006}) {
     bo::SlabCutDecline why = bo::SlabCutDecline::Ok;
     const topo::Shape r = bo::freeformSlabDisjointCut(A, B, d, &why, cf);
-    CC_CHECK(r.isNull());                                  // NULL → OCCT (disciplined)
-    CC_CHECK(why == bo::SlabCutDecline::VolumeInconsistent);  // the measured off-centre blocker
-  }
-  // MEASURE the blocker: the upper-bound compound volume materially exceeds the closed
-  // form (the over-estimate the two-sided gate rejects) — proving the decline is real,
-  // not a spurious threshold.
-  bo::SlabCutDecline w = bo::SlabCutDecline::Ok;
-  const topo::Shape mech = bo::freeformSlabDisjointCut(A, B, 0.008, &w);  // no band
-  CC_CHECK(!mech.isNull());
-  if (!mech.isNull()) {
-    tess::MeshParams mp; mp.deflection = 0.008;
-    const double v = std::fabs(tess::enclosedVolume(tess::SolidMesher(mp).mesh(mech)));
-    CC_CHECK(v > cf * 1.10);   // > 10% over the closed form (measured ~29%)
+    CC_CHECK(!r.isNull());                          // WELDS (no longer VolumeInconsistent)
+    CC_CHECK(why == bo::SlabCutDecline::Ok);
+    if (r.isNull()) continue;
+    CC_CHECK(solidCount(r) == 2);
+    tess::MeshParams mp; mp.deflection = d;
+    const tess::Mesh m = tess::SolidMesher(mp).mesh(r);
+    CC_CHECK(tess::isConsistentlyOriented(m));
+    const double v = std::fabs(tess::enclosedVolume(m));
+    CC_CHECK(std::fabs(v - cf) < 0.02 * cf);        // MEASURED: relerr < 1% (was ~29%)
   }
 }
 

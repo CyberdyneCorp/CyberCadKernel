@@ -1,25 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// native_slab_disjoint_cut_parity.mm — MOAT M2b freeform↔analytic DISJOINT (MULTI-LUMP)
+// native_slab_disjoint_cut_parity.mm — MOAT M2b/F4 freeform↔analytic DISJOINT (MULTI-LUMP)
 // CUT SIM GATE (b): native-vs-OCCT on a booted iOS simulator.
 //
 // The native verb `freeformSlabDisjointCut` (src/native/boolean/slab_disjoint_cut.h,
 // OCCT-FREE) parts a bowl-lidded convex-quad prism `A` with a central axis-aligned slab
 // `B` into TWO lumps, composing recognise[B1] → slab-pair → per-lump inter-solid-seam weld
-// → disjoint-check → TWO-SIDED self-verify, and returns EITHER a `Compound` of two
-// watertight `Solid`s (upper-bound mode) OR — with the closed-form volume supplied —
-// HONEST-DECLINES to NULL when the byte-frozen keep-face machinery over-estimates the
-// OFF-CENTRE cross-section volume. This harness GROUNDS both facets against OCCT:
+// (now off-centre-accurate: the cross-section cap is oriented by the mesher's real +fr.z
+// convention, planarFaceFromLoopByNormal) → disjoint-check → TWO-SIDED self-verify, and
+// returns a `Compound` of two CONSISTENTLY-ORIENTED watertight `Solid`s at the closed-form
+// two-body volume. This harness GROUNDS the WELD against OCCT:
 //   * OCCT's `BRepAlgoAPI_Cut(A, B)` (the ORACLE) yields a compound of EXACTLY TWO solids
 //     (the genuine disjoint parting) whose total volume matches the closed form
 //     V(A∩{x≤−s}) + V(A∩{x≥+s});
 //   * the native verb's DISJOINT MECHANISM matches OCCT's TOPOLOGY — a two-solid compound,
-//     watertight, disjoint along the slab axis — the new outcome no landed native verb
-//     produces;
-//   * the native verb's TWO-SIDED self-verify HONEST-DECLINES (VolumeInconsistent) because
-//     its meshed volume exceeds the OCCT/closed-form value beyond the deflection band, so
-//     OCCT (the oracle) owns the correct-volume result; the native path NEVER emits a
-//     wrong/leaky solid.
+//     consistently oriented, watertight, disjoint along the slab axis — the new outcome
+//     no landed native verb produces;
+//   * F4 WELD: with the closed-form volume supplied, the native two-sided self-verify now
+//     ACCEPTS the weld and its meshed volume MATCHES OCCT's BRepGProp CUT volume within the
+//     deflection band — the frozen keep-face's ~29% off-centre over-estimate is gone.
 //
 // OCCT is the ORACLE ONLY, never linked into src/native. Build:
 // scripts/run-sim-native-slab-disjoint-cut.sh. Gate (a) (host, no OCCT) is
@@ -220,34 +219,30 @@ int main() {
     if (mechOk) {
       ntess::MeshParams mp; mp.deflection = d;
       const ntess::Mesh m = ntess::SolidMesher(mp).mesh(mech);
-      std::snprintf(b2, sizeof b2, "%s wt=%d v=%.5f occt=%.5f", tag, ntess::isWatertight(m),
-                    std::fabs(ntess::enclosedVolume(m)), vCut);
-      report("native", "mechanism-watertight", ntess::isWatertight(m), b2);
+      std::snprintf(b2, sizeof b2, "%s consistent=%d v=%.5f occt=%.5f", tag,
+                    ntess::isConsistentlyOriented(m), std::fabs(ntess::enclosedVolume(m)), vCut);
+      report("native", "mechanism-consistent", ntess::isConsistentlyOriented(m), b2);
     }
 
-    // (2) HONEST TWO-SIDED DECLINE — with the closed form supplied, the off-centre
-    //     over-estimate is rejected → NULL → OCCT owns the correct-volume result.
+    // (2) F4 WELD — with the closed form supplied, the two-sided self-verify ACCEPTS the
+    //     weld: a consistently-oriented two-body compound whose volume MATCHES OCCT's.
     bo::SlabCutDecline wv = bo::SlabCutDecline::Ok;
     const nt::Shape verified = bo::freeformSlabDisjointCut(A, Bslab, d, &wv, cf);
-    std::snprintf(b2, sizeof b2, "%s null=%d decline=%s", tag, verified.isNull(),
-                  bo::slabCutDeclineName(wv));
-    report("native", "two-sided-declines", verified.isNull() &&
-               wv == bo::SlabCutDecline::VolumeInconsistent, b2);
-  }
-
-  // (3) the native over-estimate is a REAL blocker: the mechanism volume exceeds OCCT's
-  //     correct CUT volume beyond the band (proving the decline is measured, not spurious).
-  {
-    bo::SlabCutDecline w = bo::SlabCutDecline::Ok;
-    const nt::Shape mech = bo::freeformSlabDisjointCut(A, Bslab, 0.008, &w);
-    double v = 0.0;
-    if (!mech.isNull()) {
-      ntess::MeshParams mp; mp.deflection = 0.008;
-      v = std::fabs(ntess::enclosedVolume(ntess::SolidMesher(mp).mesh(mech)));
+    const bool weldOk = !verified.isNull() && wv == bo::SlabCutDecline::Ok &&
+                        nativeSolidCount(verified) == 2;
+    if (weldOk) {
+      ntess::MeshParams mp; mp.deflection = d;
+      const ntess::Mesh m = ntess::SolidMesher(mp).mesh(verified);
+      const double v = std::fabs(ntess::enclosedVolume(m));
+      std::snprintf(b2, sizeof b2, "%s v=%.5f occt=%.5f rel=%.2f%% consistent=%d", tag, v, vCut,
+                    100.0 * (v - vCut) / vCut, ntess::isConsistentlyOriented(m));
+      report("native", "weld-matches-occt",
+             ntess::isConsistentlyOriented(m) && std::fabs(v - vCut) / vCut < vrel, b2);
+    } else {
+      std::snprintf(b2, sizeof b2, "%s null=%d decline=%s", tag, verified.isNull(),
+                    bo::slabCutDeclineName(wv));
+      report("native", "weld-matches-occt", false, b2);
     }
-    std::snprintf(buf, sizeof buf, "native=%.5f OCCT=%.5f over=%.1f%%", v, vCut,
-                  100.0 * (v - vCut) / vCut);
-    report("native", "overestimate-vs-occt", v > vCut * 1.10, buf);
   }
 
   std::printf("[SD] SUMMARY %d passed / %d failed\n", g_pass, g_fail);

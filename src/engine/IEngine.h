@@ -275,6 +275,18 @@ public:
         (void)guideCount;
         return engine_unsupported("guided_orient_sweep");
     }
+    // Variable-section / guide+spine sweep: a section that MORPHS from A→B along the spine,
+    // optionally guide-SCALED by the guide rail's splay. Superset of loft_along_rail (adds a
+    // guide scale) and guided_sweep (adds an A→B morph). Native for a straight/smooth-curved
+    // planar spine; OCCT BRepOffsetAPI_MakePipeShell (multi-section) otherwise.
+    virtual ShapeResult variable_sweep(const double* profileA_XY, int aCount,
+                                       const double* profileB_XY, int bCount,
+                                       const double* spineXYZ, int spineCount,
+                                       const double* guideXYZ, int guideCount) {
+        (void)profileA_XY; (void)aCount; (void)profileB_XY; (void)bCount; (void)spineXYZ;
+        (void)spineCount; (void)guideXYZ; (void)guideCount;
+        return engine_unsupported("variable_sweep");
+    }
     virtual ShapeResult wrap_emboss(EngineShape body, int faceId, const double* profileXY, int count,
                                     double depth, int boss) {
         (void)body; (void)faceId; (void)profileXY; (void)count; (void)depth; (void)boss;

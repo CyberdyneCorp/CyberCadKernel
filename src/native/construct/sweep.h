@@ -1073,6 +1073,191 @@ inline topo::Shape build_loft_along_rail(const double* railXYZ, int railCount,
   return build_ruled_loft(secA, secB);
 }
 
+namespace detail {
+
+// ── VARIABLE-SECTION / GUIDE+SPINE SWEEP (moat-vsweep) ────────────────────────────
+// A section that MORPHS from profile A (at the spine start) to profile B (at the spine
+// end) along the spine, each station's section = linear interpolate(A,B,f) in the RMF
+// frame, OPTIONALLY scaled uniformly by a guide rail's splay from the spine there. This
+// is a genuine SUPERSET of cc_loft_along_rail (which morphs A→B without a scale law) and
+// cc_guided_sweep (which guide-scales a CONSTANT section without a morph): variable_sweep
+// does BOTH in one op — a Shapr3D-style shaping boss whose section both changes shape and
+// is steered wider/narrower by a guide.
+//
+// The OCCT oracle is BRepOffsetAPI_MakePipeShell in MULTI-SECTION mode (Add(wireA) at the
+// spine start, Add(wireB) at the end, morphed along the spine), with the guide folded in
+// as a per-station uniform section SCALE (dist(spine(f),guide(f)) / dist(spine(0),guide(0)),
+// the same splay law cc_guided_sweep uses). With NO guide it reduces EXACTLY to the
+// cc_loft_along_rail morph (a MakePipeShell two-section morph) — so a no-guide straight
+// spine reuses that exact perpendicular-framed ruled loft, and a no-guide curved spine
+// reuses build_curved_rail_loft. Only when a guide is supplied (or on a curved guided
+// morph) does variable_sweep run its own RMF-transported guide-scaled morph tube.
+
+// Sample a polyline at parameter fraction f in [0,1] over its RAW vertices treated as
+// evenly spaced (matching the guided_sweep / lerpPoly oracle correspondence). count >= 2.
+inline math::Point3 samplePolyEven(const double* xyz, int count, double f) {
+  const double s = f * (count - 1);
+  int i0 = std::min(static_cast<int>(std::floor(s)), count - 2);
+  if (i0 < 0) i0 = 0;
+  const double t = s - i0;
+  const math::Point3 a{xyz[i0 * 3], xyz[i0 * 3 + 1], xyz[i0 * 3 + 2]};
+  const math::Point3 b{xyz[(i0 + 1) * 3], xyz[(i0 + 1) * 3 + 1], xyz[(i0 + 1) * 3 + 2]};
+  return math::Point3{a.asVec() + (b.asVec() - a.asVec()) * t};
+}
+
+// Perpendicular frame at a single (straight-spine) tangent — the loft_along_rail /
+// occt perpendicularFrame law: uDir = tan × ref, vDir = tan × uDir, ref = +Z unless the
+// tangent is ~∥ Z, then +X. Returns false on a degenerate tangent.
+inline bool perpFrame(const math::Vec3& tangent, math::Vec3& uDir, math::Vec3& vDir) {
+  const double tl = math::norm(tangent);
+  if (tl < kProfileTol) return false;
+  const math::Vec3 t = tangent / tl;
+  const math::Vec3 ref =
+      std::fabs(math::dot(t, math::Vec3{0, 0, 1})) > 0.95 ? math::Vec3{1, 0, 0} : math::Vec3{0, 0, 1};
+  uDir = math::cross(t, ref);
+  const double un = math::norm(uDir);
+  if (un < kProfileTol) return false;
+  uDir = uDir / un;
+  vDir = math::cross(t, uDir);
+  const double vn = math::norm(vDir);
+  if (vn < kProfileTol) return false;
+  vDir = vDir / vn;
+  return true;
+}
+
+// The guide-scaled morph tube. Densify the cleaned spine (arc length) so each band's
+// tangent turn stays under kMaxBandTurn (0 turns for a straight spine ⇒ 2 stations),
+// transport the A→B morph with either the perpendicular frame (straight spine — a single
+// constant frame, matching loft_along_rail) or the RMF (curved spine, zero spurious twist),
+// scale each station's section by guideScaleAt(f) (1.0 when there is no guide), and tile
+// the rings into a watertight tube. Guards a non-positive guide scale and a self-folding
+// morph (a section rim overtaking the spine step) → NULL → OCCT. `localA`/`localB` are the
+// centred profile loops (equal size ≥ 3, caller-checked).
+inline topo::Shape build_variable_sweep_tube(const std::vector<math::Point3>& spine,
+                                             const std::vector<math::Point3>& localA,
+                                             const std::vector<math::Point3>& localB,
+                                             const std::function<double(double)>& guideScaleAt) {
+  if (spine.size() < 2 || localA.size() != localB.size() || localA.size() < 3) return {};
+  const std::size_t nProf = localA.size();
+  const bool straight = spineIsStraight(spine);
+
+  // Station count: a straight spine collapses to two stations (one ruled band per morph
+  // edge, matching MakePipeShell on a straight spine); a curved spine is densified so each
+  // band's tangent turn stays under the weld bound (as build_curved_rail_loft).
+  std::size_t nStations = 2;
+  if (!straight) {
+    const std::vector<math::Vec3> probeTan = stationTangents(spine);
+    double totalTurn = 0.0;
+    for (std::size_t k = 1; k < probeTan.size(); ++k) {
+      const double d = std::clamp(math::dot(probeTan[k - 1], probeTan[k]), -1.0, 1.0);
+      totalTurn += std::acos(d);
+    }
+    if (totalTurn > 1e-4) nStations = static_cast<std::size_t>(std::ceil(totalTurn / kMaxBandTurn)) + 1;
+    nStations = std::min<std::size_t>(std::max<std::size_t>(nStations, spine.size()), kMaxDensifyStations);
+  }
+
+  const std::vector<math::Point3> dense = resamplePolylineByArcLength(spine, nStations);
+  if (dense.size() < 2) return {};
+  const std::vector<math::Vec3> tan = stationTangents(dense);
+
+  // Per-station frames: straight → one perpendicular frame held constant (matching the
+  // loft_along_rail oracle); curved → RMF (twist-free transport).
+  std::vector<SweepFrame> frames;
+  if (straight) {
+    math::Vec3 uDir, vDir;
+    if (!perpFrame(dense.back() - dense.front(), uDir, vDir)) return {};
+    frames.resize(dense.size());
+    for (std::size_t s = 0; s < dense.size(); ++s) frames[s] = SweepFrame{dense[s], uDir, vDir, tan[s]};
+  } else {
+    frames = rmfFrames(dense, tan);
+  }
+
+  const std::size_t n = frames.size();
+  const double denom = static_cast<double>(n - 1);
+  const double circumR = std::max(
+      [&] { double r = 0; for (auto& p : localA) r = std::max(r, math::norm(p.asVec())); return r; }(),
+      [&] { double r = 0; for (auto& p : localB) r = std::max(r, math::norm(p.asVec())); return r; }());
+
+  std::vector<std::vector<math::Point3>> rings(n);
+  std::vector<math::Point3> centres(n);
+  std::vector<math::Vec3> normals(n);
+  std::vector<double> scales(n);
+  for (std::size_t s = 0; s < n; ++s) {
+    const double f = static_cast<double>(s) / denom;
+    const double sc = guideScaleAt(f);
+    if (!(sc > 0.0)) return {};  // collapsing / non-positive guide scale → OCCT
+    scales[s] = sc;
+    std::vector<math::Point3> ring(nProf);
+    for (std::size_t i = 0; i < nProf; ++i) {
+      const double u = (localA[i].x + (localB[i].x - localA[i].x) * f) * sc;
+      const double v = (localA[i].y + (localB[i].y - localA[i].y) * f) * sc;
+      ring[i] = frames[s].origin + frames[s].x * u + frames[s].y * v;
+    }
+    rings[s] = std::move(ring);
+    centres[s] = frames[s].origin;
+    normals[s] = math::cross(frames[s].x, frames[s].y);
+  }
+
+  // Self-fold guard: a rim point must not overtake the spine step (reuse the section-sweep
+  // guard with no twist — a pure scale/morph can still fold if a station collapses).
+  if (sectionSweepUnsafe(centres, scales, circumR, /*totalTwist*/ 0.0)) return {};
+  return assembleRingTube(rings, centres, normals);
+}
+
+}  // namespace detail
+
+// ─────────────────────────────────────────────────────────────────────────────
+// build_variable_sweep — cc_variable_sweep entry point. Sweep a section that MORPHS
+// from profile A (spine start) to profile B (spine end) along the spine, each station's
+// section = linear interpolate(A,B,f) placed by the section frame, OPTIONALLY scaled
+// uniformly by a guide rail's splay from the spine (dist(spine(f),guide(f)) /
+// dist(spine(0),guide(0)) — same law as cc_guided_sweep). A NULL/short guide (guideCount
+// < 2) means NO guide (scale ≡ 1).
+//
+// NATIVE:
+//   * NO GUIDE + STRAIGHT spine → the exact loft_along_rail ruled morph (perpendicular
+//     frame). A circle→circle radius-varying morph is a truncated cone; a constant
+//     section is the plain ruled sweep.
+//   * NO GUIDE + CURVED (smooth) spine → the RMF-transported morph (build_curved_rail_loft).
+//   * WITH GUIDE (straight or smooth curved spine) → the RMF/perp-framed guide-scaled
+//     morph tube (build_variable_sweep_tube) when it welds watertight and does not self-fold.
+// NULL (→ OCCT MakePipeShell multi-section) on: mismatched section vertex counts
+// (aCount != bCount — the ruled morph pairs vertex k→k), a degenerate profile / spine,
+// a coincident guide start, a non-positive guide scale, or a self-folding morph.
+// ─────────────────────────────────────────────────────────────────────────────
+inline topo::Shape build_variable_sweep(const double* profileA_XY, int aCount,
+                                        const double* profileB_XY, int bCount,
+                                        const double* spineXYZ, int spineCount,
+                                        const double* guideXYZ, int guideCount) {
+  if (profileA_XY == nullptr || profileB_XY == nullptr || spineXYZ == nullptr) return {};
+  if (aCount < 3 || bCount < 3 || spineCount < 2) return {};
+  if (aCount != bCount) return {};  // ruled morph pairs vertex k→k → equal counts only
+
+  const bool hasGuide = guideXYZ != nullptr && guideCount >= 2;
+
+  // No guide → reuse the landed loft-along-rail morph (straight = perpendicular ruled loft,
+  // curved = RMF-transported morph). This keeps the well-tested no-guide path byte-identical.
+  if (!hasGuide)
+    return build_loft_along_rail(spineXYZ, spineCount, profileA_XY, aCount, profileB_XY, bCount);
+
+  // Guided morph: guide-splay scale law (as build_guided_sweep). d0 = spine-start↔guide-start
+  // distance; a coincident guide start → OCCT.
+  const math::Point3 p0{spineXYZ[0], spineXYZ[1], spineXYZ[2]};
+  const double d0 = math::distance(p0, detail::samplePolyEven(guideXYZ, guideCount, 0.0));
+  if (d0 < 1e-6) return {};
+  const auto scaleAt = [&](double f) {
+    return math::distance(detail::samplePolyEven(spineXYZ, spineCount, f),
+                          detail::samplePolyEven(guideXYZ, guideCount, f)) /
+           d0;
+  };
+
+  std::vector<math::Point3> spine = detail::cleanPath(spineXYZ, spineCount);
+  if (spine.size() < 2) return {};
+  if (!detail::spineIsStraight(spine) && !detail::spineIsPlanar(spine)) return {};  // non-planar → OCCT
+  return detail::build_variable_sweep_tube(spine, detail::centredProfile(profileA_XY, aCount),
+                                           detail::centredProfile(profileB_XY, bCount), scaleAt);
+}
+
 }  // namespace cybercad::native::construct
 
 #endif  // CYBERCAD_NATIVE_CONSTRUCT_SWEEP_H

@@ -911,6 +911,114 @@ ShapeResult OcctEngine::loft_along_rail(const double* railXYZ, int railCount,
     });
 }
 
+// ── Variable-section / guide+spine sweep (moat-vsweep) ──────────────────────────
+// Sweep a section that MORPHS from profile A (spine start) to profile B (spine end) along
+// the spine, each station's section the linear interpolation of A and B, OPTIONALLY scaled
+// uniformly by the guide rail's splay from the spine (scale(f) = dist(spine(f),guide(f)) /
+// dist(spine(0),guide(0))). Built as a MULTI-SECTION BRepOffsetAPI_MakePipeShell: sample
+// the spine at (nSections) stations, place a perpendicular-framed morphed+scaled section
+// wire at each, Add them all, sweep along the spine. With NO guide (guideCount<2) this is
+// the two-section loft_along_rail morph (nSections==2, scale≡1). This is the ORACLE the
+// native cc_variable_sweep is verified against.
+ShapeResult OcctEngine::variable_sweep(const double* profileA_XY, int aCount,
+                                       const double* profileB_XY, int bCount,
+                                       const double* spineXYZ, int spineCount,
+                                       const double* guideXYZ, int guideCount) {
+    return occt::occtGuard([&]() -> ShapeResult {
+        if (profileA_XY == nullptr || profileB_XY == nullptr || spineXYZ == nullptr) {
+            return make_error("variable_sweep: null input");
+        }
+        if (aCount < 3 || bCount < 3 || spineCount < 2 || aCount != bCount) {
+            return make_error("variable_sweep: bad section/spine counts");
+        }
+        TopoDS_Wire spine;
+        gp_Pnt startPt, endPt;
+        gp_Vec startTan, endTan;
+        if (!buildSpineWire(spineXYZ, spineCount, spine, startPt, startTan, endPt, endTan)) {
+            return make_error("variable_sweep: degenerate spine");
+        }
+        const bool hasGuide = guideXYZ != nullptr && guideCount >= 2;
+
+        // Sample the spine at fraction f in [0,1] over its RAW vertices (evenly spaced),
+        // with a per-station tangent from the adjacent segments — matching the native
+        // samplePolyEven / stationTangents correspondence.
+        auto spineAt = [&](double f) -> gp_Pnt {
+            const double s = f * (spineCount - 1);
+            int i0 = std::min(static_cast<int>(std::floor(s)), spineCount - 2);
+            if (i0 < 0) i0 = 0;
+            const double t = s - i0;
+            const gp_Pnt a(spineXYZ[i0 * 3], spineXYZ[i0 * 3 + 1], spineXYZ[i0 * 3 + 2]);
+            const gp_Pnt b(spineXYZ[(i0 + 1) * 3], spineXYZ[(i0 + 1) * 3 + 1], spineXYZ[(i0 + 1) * 3 + 2]);
+            return gp_Pnt(a.X() + (b.X() - a.X()) * t, a.Y() + (b.Y() - a.Y()) * t,
+                          a.Z() + (b.Z() - a.Z()) * t);
+        };
+        auto guideAt = [&](double f) -> gp_Pnt {
+            const double s = f * (guideCount - 1);
+            int i0 = std::min(static_cast<int>(std::floor(s)), guideCount - 2);
+            if (i0 < 0) i0 = 0;
+            const double t = s - i0;
+            const gp_Pnt a(guideXYZ[i0 * 3], guideXYZ[i0 * 3 + 1], guideXYZ[i0 * 3 + 2]);
+            const gp_Pnt b(guideXYZ[(i0 + 1) * 3], guideXYZ[(i0 + 1) * 3 + 1], guideXYZ[(i0 + 1) * 3 + 2]);
+            return gp_Pnt(a.X() + (b.X() - a.X()) * t, a.Y() + (b.Y() - a.Y()) * t,
+                          a.Z() + (b.Z() - a.Z()) * t);
+        };
+        double d0 = 1.0;
+        if (hasGuide) {
+            d0 = startPt.Distance(guideAt(0.0));
+            if (d0 < 1.0e-6) return make_error("variable_sweep: coincident guide start");
+        }
+
+        // The morphed+scaled section (x,y) at fraction f: interpolate A→B, then scale.
+        std::vector<double> morph(static_cast<std::size_t>(aCount) * 2);
+        auto sectionAt = [&](double f, gp_Vec tan, gp_Pnt origin, TopoDS_Wire& out) -> bool {
+            gp_Vec uDir, vDir;
+            if (!perpendicularFrame(tan, uDir, vDir)) return false;
+            const double sc =
+                hasGuide ? origin.Distance(guideAt(f)) / d0 : 1.0;
+            if (!(sc > 0.0)) return false;
+            for (int i = 0; i < aCount; ++i) {
+                morph[i * 2] = (profileA_XY[i * 2] + (profileB_XY[i * 2] - profileA_XY[i * 2]) * f) * sc;
+                morph[i * 2 + 1] =
+                    (profileA_XY[i * 2 + 1] + (profileB_XY[i * 2 + 1] - profileA_XY[i * 2 + 1]) * f) * sc;
+            }
+            return buildRailSectionWire(morph.data(), aCount, origin, uDir, vDir, out);
+        };
+
+        // Station count: no guide + straight-ish spine → 2 sections (the loft_along_rail
+        // morph); a guide (or curved spine) → a densified multi-section morph so the
+        // pipe-shell tracks the scale law. Cap for safety.
+        int nSections = 2;
+        if (hasGuide || spineCount > 2) nSections = std::max(spineCount, 24);
+        nSections = std::min(nSections, 256);
+
+        BRepOffsetAPI_MakePipeShell mk(spine);
+        mk.SetTransitionMode(BRepBuilderAPI_RoundCorner);
+        for (int s = 0; s < nSections; ++s) {
+            const double f = static_cast<double>(s) / (nSections - 1);
+            // Per-station tangent: adjacent-vertex chord, endpoints use the end tangents.
+            gp_Vec tan;
+            if (s == 0) tan = startTan;
+            else if (s == nSections - 1) tan = endTan;
+            else {
+                const gp_Pnt pm = spineAt(f - 0.5 / (nSections - 1));
+                const gp_Pnt pp = spineAt(f + 0.5 / (nSections - 1));
+                tan = gp_Vec(pm, pp);
+                if (tan.Magnitude() < 1.0e-9) tan = startTan;
+            }
+            TopoDS_Wire w;
+            if (!sectionAt(f, tan, spineAt(f), w)) {
+                return make_error("variable_sweep: section wire failed");
+            }
+            mk.Add(w, Standard_False /*withContact*/, Standard_True /*withCorrection*/);
+        }
+        if (!mk.IsReady()) return make_error("variable_sweep: pipe shell not ready");
+        mk.Build();
+        if (!mk.IsDone()) return make_error("variable_sweep: pipe shell build failed");
+        if (!mk.MakeSolid()) return make_error("variable_sweep: make-solid failed");
+        return occt::addIfValid(mk.Shape(), "variable_sweep: invalid solid");
+    });
+}
+
 // ── App-parity loft variants (ADDITIVE) ────────────────────────────────────────
 // These MATCH the app's reference KernelBridge.mm construction exactly so that, during
 // the OCCT-transition, the kernel is behaviourally identical to the app's inline bridge.

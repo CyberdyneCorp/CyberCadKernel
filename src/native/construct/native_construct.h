@@ -108,6 +108,18 @@
 //                                    straight rail). A CURVED / kinked rail (genuine
 //                                    pipe-shell morph) or mismatched section counts →
 //                                    NULL (OCCT MakePipeShell). cc_loft_along_rail.
+//   build_variable_sweep(A,B,spine,  NATIVE variable-section / guide+spine sweep. A section
+//                        guide)       that MORPHS from A (spine start) to B (spine end) along
+//                                    the spine, each station = interpolate(A,B,f) placed by
+//                                    the perpendicular (straight) / RMF (curved) frame,
+//                                    OPTIONALLY scaled by the guide splay dist(spine,guide)/d0
+//                                    (guide null / count<2 → no guide, reduces to the
+//                                    loft_along_rail morph). A circle→circle radius-varying
+//                                    morph along a straight spine is a truncated cone. NULL
+//                                    (OCCT MakePipeShell multi-section) on mismatched counts,
+//                                    a non-planar spine, a coincident guide start, a non-
+//                                    positive guide scale, or a self-folding morph.
+//                                    cc_variable_sweep.
 //
 //   ── Tier-D (#4b, thread.h) ────────────────────────────────────────────────────
 //   build_tapered_shank(r,fh,th,ppm) GENUINELY NATIVE. Revolve a shank silhouette 360°

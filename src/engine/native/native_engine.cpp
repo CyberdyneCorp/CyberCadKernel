@@ -1153,6 +1153,21 @@ ShapeResult NativeEngine::guided_orient_sweep(const double* p, int pc, const dou
         return fallback().guided_orient_sweep(p, pc, path, pathc, g, gc);
     return track(wrapNative(std::move(solid)));
 }
+// variable_sweep — the variable-section / guide+spine sweep (moat-vsweep). A section that
+// MORPHS from A→B along the spine, optionally guide-SCALED. NATIVE for a straight or
+// smooth-curved (planar) spine that welds watertight (the no-guide case reuses the landed
+// loft_along_rail morph; a guided morph runs the RMF/perp-framed guide-scaled morph tube).
+// SELF-VERIFIED robustly watertight + positive enclosed volume before being kept native; a
+// mismatched-count / degenerate / coincident-guide-start / self-folding morph (build returns
+// NULL) or a candidate that fails the gate → forward the SAME args to the OCCT MakePipeShell
+// multi-section oracle (honest coexistence, never a faked or leaky solid).
+ShapeResult NativeEngine::variable_sweep(const double* a, int ac, const double* b, int bc,
+                                         const double* sp, int spc, const double* g, int gc) {
+    ntopo::Shape solid = ncst::build_variable_sweep(a, ac, b, bc, sp, spc, g, gc);
+    if (solid.isNull() || !robustlyWatertight(solid) || !(watertightVolume(solid) > 0.0))
+        return fallback().variable_sweep(a, ac, b, bc, sp, spc, g, gc);
+    return track(wrapNative(std::move(solid)));
+}
 // ── NATIVE wrap-emboss (Phase 4 #7 native-wrap-emboss) with mandatory self-verify ──
 // Native tracks on a native body's CYLINDER lateral face: a raised RECTANGULAR pad
 // (control), a recessed rectangular POCKET (T1 deboss), and an N-vertex POLYGON footprint

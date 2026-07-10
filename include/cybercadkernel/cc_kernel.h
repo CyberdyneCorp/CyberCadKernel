@@ -436,6 +436,24 @@ CCShapeId cc_guided_orient_sweep(const double *profileXY, int profileCount,
                                  const double *pathXYZ, int pathCount,
                                  const double *guideXYZ, int guideCount);
 
+/* Variable-section / guide+spine sweep (Shapr3D-style shaping boss). Sweep a section
+ * that MORPHS from profile A (x,y pairs, ≥3 points, at the spine START) to profile B
+ * (SAME vertex count, at the spine END) along the 3D polyline spine (x,y,z triples,
+ * ≥2 points). Each station's section is the linear interpolation of A and B placed in
+ * the frame perpendicular to the spine, ADDITIONALLY scaled uniformly by an OPTIONAL
+ * guide rail's splay from the spine there (scale(f) = dist(spine(f),guide(f)) /
+ * dist(spine(0),guide(0))). Pass guideXYZ=NULL or guideCount<2 for NO guide (scale ≡ 1),
+ * which reduces EXACTLY to cc_loft_along_rail. This is a superset of cc_loft_along_rail
+ * (adds a guide scale law) and cc_guided_sweep (adds an A→B morph). A circle→circle
+ * radius-varying morph along a straight spine is a truncated cone. Native for a straight
+ * or smooth-curved (planar) spine that welds watertight; OCCT MakePipeShell (multi-
+ * section) otherwise. Returns 0 on degenerate input (aCount != bCount, < 3 profile
+ * points, < 2 spine points, a coincident guide start, or a self-folding morph). ADDITIVE. */
+CCShapeId cc_variable_sweep(const double *profileA_XY, int aCount,
+                            const double *profileB_XY, int bCount,
+                            const double *spineXYZ, int spineCount,
+                            const double *guideXYZ, int guideCount);
+
 CCShapeId cc_wrap_emboss(CCShapeId body, int faceId,
                          const double *profileXY, int count, double depth, int boss);
 

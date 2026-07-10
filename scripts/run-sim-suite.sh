@@ -29,7 +29,9 @@ SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 # native mesh to the OCCT BRepMesh AND the exact B-rep area/volume), the Phase-4
 # native-construction parity harnesses native_construct_parity.mm
 # (run-sim-native-construct.sh), native_loft_parity.mm (run-sim-native-loft.sh, Tier B)
-# native_sweep_parity.mm (run-sim-native-sweep.sh, Tier C — sweep / pipe-shell) and
+# native_sweep_parity.mm (run-sim-native-sweep.sh, Tier C — sweep / pipe-shell),
+# native_vsweep_parity.mm (run-sim-native-vsweep.sh, moat-vsweep — variable-section /
+# guide+spine sweep vs MakePipeShell multi-section) and
 # native_thread_parity.mm (run-sim-native-thread.sh, Tier D — threads / tapered shank),
 # the Phase-4 native-BOOLEANS (#5) parity harness native_boolean_parity.mm
 # (run-sim-native-boolean.sh — its own main(); drives cc_boolean under both engines via
@@ -105,7 +107,7 @@ SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.mm \
       native_topology_parity.mm native_tessellate_parity.mm native_tessellation_parity.mm \
       native_construct_parity.mm native_construct_profiles_parity.mm native_loft_parity.mm \
-      native_sweep_parity.mm native_construct_tails_parity.mm native_thread_parity.mm native_boolean_parity.mm \
+      native_sweep_parity.mm native_vsweep_parity.mm native_construct_tails_parity.mm native_thread_parity.mm native_boolean_parity.mm \
       native_curved_boolean_parity.mm \
       native_curved_offset_parity.mm \
       native_blend_parity.mm native_step_parity.mm \

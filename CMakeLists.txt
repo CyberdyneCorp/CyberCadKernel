@@ -305,6 +305,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_residuals
         test_native_loft
         test_native_sweep
+        test_native_vsweep
         test_native_thread
         test_native_boolean
         test_native_curved_boolean
@@ -591,6 +592,13 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_loft.cpp")
     set(test_native_sweep_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_sweep.cpp")
+    # moat-vsweep — variable-section / guide+spine sweep host GATE (a): the OCCT-free
+    # closed-form proof (circle→circle straight morph = truncated cone; constant section =
+    # prism; guide-scaled square = frustum; curved-arc morph watertight + χ=2 stable) + the
+    # honest declines. Header-only over construct/tessellate/topology; no numsci link, so it
+    # lives in the always-on native suite.
+    set(test_native_vsweep_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_vsweep.cpp")
     set(test_native_thread_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_thread.cpp")
     set(test_native_boolean_SRC

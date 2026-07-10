@@ -1028,6 +1028,39 @@ feature-tree construction the other stages cover. Substages:
 - *Bounded* (well-understood synchronous-modeling engineering), not asymptotic. **Gates a
   fully-OCCT-free *app*, though not the kernel's geometry primitives.**
 
+- **construct — VARIABLE-SECTION SWEEP — `cc_variable_sweep` (guide+spine morphing boss)** ✅ *(straight + smooth-planar slice landed — native)*
+  — sweep a section that MORPHS from profile A (spine start) to profile B (spine end) along the
+  spine while OPTIONALLY being STEERED by a guide rail that scales the section (Shapr3D-style shaping
+  boss; the SolidWorks/Fusion swept-boss-with-guide+profile-morph; anticipatory app value). Additive
+  `cc_variable_sweep(profileA_XY, aCount, profileB_XY, bCount, spineXYZ, spineCount, guideXYZ,
+  guideCount)` — a strict SUPERSET of `cc_loft_along_rail` (adds a guide scale law) and
+  `cc_guided_sweep` (adds an A→B morph); the genuinely new capability is A≠B AND a guide together.
+  Native `build_variable_sweep` (`src/native/construct/sweep.h`, OCCT-FREE, header-only) places each
+  station's section `interpolate(A,B,f)·guideScale(f)` (`guideScale = dist(spine,guide)/d0`, the
+  landed `guided_sweep` law) by the perpendicular frame (straight spine — the `loft_along_rail` law)
+  or the double-reflection RMF (smooth-curved spine — the `build_curved_rail_loft` law), tiles the
+  rings with the landed `assembleRingTube`, and self-fold-guards with `sectionSweepUnsafe`. The
+  NO-GUIDE path forwards to the landed `build_loft_along_rail` byte-identically (the landed sweep/loft
+  substrate is byte-frozen; the new builder only calls it). `native_engine.cpp::variable_sweep` keeps
+  a native result only when it self-verifies robustly watertight + positive volume, else forwards to
+  `OcctEngine::variable_sweep` = the `BRepOffsetAPI_MakePipeShell` MULTI-SECTION + `BRepGProp` oracle
+  (per-station morphed+scaled section wires). GATE (a) HOST 8/8 (`test_native_vsweep` — circle→circle
+  straight = TRUNCATED CONE `πH/3·(r0²+r0r1+r1²)`, constant section = prism, guide-scaled square =
+  FRUSTUM `(H/3)(A0+A1+√(A0A1))`, curved-arc morph watertight + χ=2 volume-stable, + declines
+  mismatched-counts / coincident-guide / collapsing-guide / degenerate). GATE (b) SIM
+  (`native_vsweep_parity.mm`, `run-sim-native-vsweep.sh`, booted sim, 13/13) vs OCCT
+  `MakePipeShell`: straight morph vol/area/centroid/bbox rel ≈ 1e-14 (machine-exact), curved-arc
+  morph rel ≈ 4.4e-4 within the deflection bound, watertight. HONEST DECLINE (→ OCCT, measured):
+  mismatched section vertex counts (ruled morph pairs k→k), a NON-PLANAR guided spine (genuine
+  corrected-Frenet the RMF frame does not reproduce — **the sharpened next blocker: non-planar guided
+  morph via the guide surface**), a coincident/collapsing guide, a self-folding morph. OpenSpec change
+  `moat-vsweep-variable-section`. Bounded per family. ~0.5–1 py.
+- *Oracle:* `BRepOffsetAPI_MakePipeShell` (multi-section, with the guide/law options) + `BRepGProp`
+  (volume/area/watertight/χ=2/bbox/Hausdorff); a circle→circle straight morph also has the closed-form
+  truncated-cone volume, a guide-scaled square the frustum prismatoid volume.
+- *Bounded* (well-understood swept-solid engineering on the landed sweep/loft substrate), not
+  asymptotic.
+
 ### M-GS — Kernel geometry services for drafting & analysis · ~2.5–5 py · needs tessellate + M2
 **Added from the app audit: the CyberCad app's 2D-drawing and measurement features depend on OCCT
 geometry *services* the native kernel does not provide** (distinct from solid-modeling primitives).

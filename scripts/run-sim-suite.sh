@@ -98,6 +98,16 @@ SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 # BRepOffsetAPI_DraftAngle + BRepGProp on volume / area / watertight / bbox / Hausdorff;
 # header-only draft verb over the numsci-gated split-plane substrate, links the OCCT
 # oracle slice, NOT the whole kernel).
+# NURBS roadmap Layer 1 exact-NURBS geometry kernel — native_nurbs_ops_parity.mm
+# (run-sim-native-nurbs-ops.sh — its own main(); models run-sim-native-math.sh: globs
+# src/native/math/*.cpp OCCT-FREE (incl. the new bspline_ops.cpp) + this .mm, links the
+# TKG3d/TKGeomBase/TKG2d/TKMath/TKernel oracle slice. Diffs insertKnot/refine/elevate/
+# removeKnot/split/decompose for curves AND surfaces, non-rational + rational, against
+# Geom_BSplineCurve::InsertKnot/InsertKnots/IncreaseDegree/RemoveKnot/Segment,
+# GeomConvert_BSplineCurveToBezierCurve, and the surface InsertUKnot/InsertVKnot/
+# IncreaseDegree/RemoveUKnot/RemoveVKnot/Segment equivalents on the resulting
+# (poles,weights,knots,degree) + a dense sampled-point compare. Builds only once
+# src/native/math/bspline_ops.h lands — authored in parallel with that module).
 # Phase-3 suite — phase3_suite.cpp
 # (its own main()) plus its checks_*.cpp modules (which record against
 # phase3_checks.h's Ctx, not checks.h's) — has run-sim-phase3-suite.sh. What remains
@@ -153,6 +163,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_analytic_fillet_parity.mm \
       native_step_mapped_item_parity.mm \
       native_abi_parity.mm \
+      native_nurbs_ops_parity.mm \
       native_heal_parity.mm \
       phase3_suite.cpp checks_reference_geometry.cpp checks_wrap_emboss.cpp \
       checks_thread_boolean.cpp checks_full_round_fillet.cpp checks_g2_fillet.cpp"

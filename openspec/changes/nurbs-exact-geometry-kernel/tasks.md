@@ -38,9 +38,11 @@
       error bound; non-positive weight guarded; degenerate/endpoint params handled.
 
 ## 5. SIM native-vs-OCCT parity gate  — SEPARATE FOLLOW-UP TRACK (not this pass)
-- [ ] 5.1 `tests/sim/native_nurbs_ops_parity.mm` + `run-sim-suite.sh` wiring (SKIP-list
+- [x] 5.1 `tests/sim/native_nurbs_ops_parity.mm` + `run-sim-suite.sh` wiring (SKIP-list
+## 5. SIM native-vs-OCCT parity gate
+- [x] 5.1 `tests/sim/native_nurbs_ops_parity.mm` + `run-sim-suite.sh` wiring (SKIP-list
       convention for the `.mm` own-main harness).
-- [ ] 5.2 Diff insert / elevate / remove / segment against OCCT `BSplCLib` /
+- [x] 5.2 Diff insert / elevate / remove / segment against OCCT `BSplCLib` /
       `Geom_BSplineCurve` / `Geom_BSplineSurface` — resulting `(poles,weights,knots,degree)`
       and sampled points within a fixed tolerance.
 

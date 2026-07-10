@@ -999,8 +999,32 @@ feature-tree construction the other stages cover. Substages:
   feet + declines cone/axis/centre/foreign). GATE (b) SIM vs `GeomAPI_ProjectPointOnSurf` — foot coords +
   distance to machine precision (0). HONEST DECLINE: cone / torus / freeform, and ambiguous poses (point on
   a cylinder axis / at a sphere centre) → OCCT. ~0.5–1 py.
-- *Oracle:* `BRepFeat` / `BRepAlgoAPI` / `ShapeUpgrade` on the re-solved solid (volume/watertight/
-  topology); DM1 also has a closed-form partition oracle (the two pieces sum to the whole).
+- **feature — DRAFT ANGLE — `cc_draft_faces` (mold-release taper)** ✅ *(prismatic slice landed — native)*
+  — taper one or more PLANAR side faces about a planar NEUTRAL plane along a PULL direction (the
+  molding/manufacturing feature every pro CAD ships; anticipatory app value). Additive
+  `cc_draft_faces(body, faceIds, count, neutralOrigin[3], pullDir[3], angleDeg)`. Native
+  `feature::draftFaces` (`src/native/feature/draft_faces.h`, OCCT-FREE, header-only) pivots each
+  drafted face on its trace line `L = F ∩ N` (the trace stays fixed on the neutral plane; the face
+  tilts by θ about the pull axis, `n̂' = Rot(t̂, φ)·n̂_F`), derives every drafted plane UP FRONT from
+  the ORIGINAL face geometry, and — because a draft only removes stock — applies each as an inward
+  DM1 `nb::splitByPlane` TRIM (no grow), then re-audits the composite (watertight closed 2-manifold,
+  single lump χ=2, consistently oriented, volume strictly SMALLER than the original). Deriving the
+  planes from the untouched original sidesteps the coplanar-triangle fragmentation that breaks a
+  naïve per-face DM2 re-solve (the DIAGNOSE finding: a second DM2 step reads a half-face triangle and
+  its area-based volume oracle then rejects the correct solid). `native_engine.cpp::draft_faces`
+  serves a native all-planar body (self-verified) and forwards an OCCT body;
+  `OcctEngine::draft_faces` = the `BRepOffsetAPI_DraftAngle` + `BRepGProp` oracle. GATE (a) HOST 7/7
+  (`test_native_draft_faces` — single-side wedge `V₀ − ½·H·(H·tanθ)·D` fp-exact, four-side FRUSTUM
+  `(H/3)(A_bot+A_top+√(A_bot·A_top))`, off-axis wedge invariance, + declines curved-base /
+  non-planar-neutral / cap-face / degenerate-angle). GATE (b) SIM (`native_draft_faces_parity.mm`,
+  booted sim, 31/31) vs OCCT `BRepOffsetAPI_DraftAngle`: volume/area/bbox/Hausdorff rel ≤ ~2.4e-16
+  (machine-exact), watertight, oriented, χ=2. HONEST DECLINE (→ OCCT, measured): curved base (not
+  all-planar), non-planar neutral (degenerate pull), a face perpendicular to the pull axis (a cap —
+  no trace line, **the sharpened next blocker: curved-face draft**), a degenerate/≥90° angle, a
+  self-intersecting draft. OpenSpec change `moat-draft-angle`. Bounded per family. ~0.5–1 py.
+- *Oracle:* `BRepFeat` / `BRepAlgoAPI` / `ShapeUpgrade` / `BRepOffsetAPI_DraftAngle` on the re-solved
+  solid (volume/watertight/topology); DM1 also has a closed-form partition oracle (the two pieces
+  sum to the whole).
 - *Bounded* (well-understood synchronous-modeling engineering), not asymptotic. **Gates a
   fully-OCCT-free *app*, though not the kernel's geometry primitives.**
 

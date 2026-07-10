@@ -546,6 +546,16 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_replace_face_general)
         set(test_native_replace_face_general_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_replace_face_general.cpp")
+        # MOAT feature DRAFT ANGLE — host GATE (a), the OCCT-free closed-form proof of
+        # the native draft (taper planar side faces about a neutral plane). draftFaces
+        # derives the tilted target plane per face (pivot on the trace with the neutral
+        # plane) and re-solves via the DM2 verb; the box wedge / frustum taper has the
+        # exact closed-form oracle, and a curved base / non-planar neutral / cap face /
+        # degenerate angle declines. The re-solve probes the real S3 seam, so this host
+        # suite builds only under CYBERCAD_HAS_NUMSCI. Header-only verb; no lib change.
+        list(APPEND CYBERCAD_TESTS test_native_draft_faces)
+        set(test_native_draft_faces_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_draft_faces.cpp")
     endif()
 
     # The tet-mesher test drives the real TetGen backend, so it is added ONLY when

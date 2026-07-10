@@ -30,6 +30,7 @@
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <BRepOffsetAPI_MakeOffset.hxx>
+#include <BRepOffsetAPI_DraftAngle.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeHalfSpace.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
@@ -297,6 +298,46 @@ ShapeResult OcctEngine::replace_face_to_plane(EngineShape body, int faceId, doub
         BRepAlgoAPI_Cut cut(*sp, mkHS.Solid());
         if (!cut.IsDone()) { return make_error("replace_face_to_plane: cut failed"); }
         return occt::addIfValid(cut.Shape(), "replace_face_to_plane: invalid");
+    });
+}
+
+// ── draft angle ─────────────────────────────────────────────────────────────
+// Taper `faceCount` planar side faces about the NEUTRAL plane (origin `neutralOrigin`,
+// normal = pull direction `pullDir`) by `angleDeg`. This is the OCCT ORACLE the native
+// prismatic draft is gated against (BRepOffsetAPI_DraftAngle::Add(face, dir, angleRad,
+// neutralPlane); the pull direction is the withdrawal direction and the neutral plane is
+// the pivot). A REVERSED-orientation face draws material in for a positive angle exactly
+// as the native convention does. Each requested face is added; IsDone/BRepCheck gate.
+ShapeResult OcctEngine::draft_faces(EngineShape body, const int* faceIds, int faceCount,
+                                    const double* neutralOrigin, const double* pullDir,
+                                    double angleDeg) {
+    return occt::occtGuard([&]() -> ShapeResult {
+        const TopoDS_Shape* sp = occt::unwrap(body);
+        if (sp == nullptr) { return make_error("draft_faces: invalid body"); }
+        if (faceIds == nullptr || faceCount < 1 || neutralOrigin == nullptr || pullDir == nullptr)
+            return make_error("draft_faces: bad arguments");
+        const double plen = std::sqrt(pullDir[0] * pullDir[0] + pullDir[1] * pullDir[1] +
+                                      pullDir[2] * pullDir[2]);
+        if (plen < 1e-9) { return make_error("draft_faces: degenerate pull direction"); }
+        const gp_Dir pull(pullDir[0] / plen, pullDir[1] / plen, pullDir[2] / plen);
+        const gp_Pln neutral(gp_Pnt(neutralOrigin[0], neutralOrigin[1], neutralOrigin[2]), pull);
+        const double angleRad = angleDeg * M_PI / 180.0;
+
+        const std::vector<TopoDS_Face> faces = occt::facesByIds(*sp, faceIds, faceCount);
+        if (static_cast<int>(faces.size()) != faceCount)
+            return make_error("draft_faces: a face id did not resolve");
+
+        BRepOffsetAPI_DraftAngle maker(*sp);
+        for (const TopoDS_Face& f : faces) {
+            BRepAdaptor_Surface surf(f);
+            if (surf.GetType() != GeomAbs_Plane)
+                return make_error("draft_faces: non-planar face");  // planar side faces only
+            maker.Add(f, pull, angleRad, neutral);
+            if (!maker.AddDone()) { return make_error("draft_faces: face not addable"); }
+        }
+        maker.Build();
+        if (!maker.IsDone()) { return make_error("draft_faces: draft failed"); }
+        return occt::addIfValid(maker.Shape(), "draft_faces: invalid");
     });
 }
 

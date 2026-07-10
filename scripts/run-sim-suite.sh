@@ -91,6 +91,11 @@ SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 # state + overlap volume vs BRepAlgoAPI_Common + BRepGProp + BRepExtrema_DistShapeShape;
 # header-only over src/native/{math,tessellate,boolean}, links the OCCT oracle slice,
 # NOT the whole kernel).
+# MOAT feature DRAFT ANGLE — native_draft_faces_parity.mm (run-sim-native-draft-faces.sh —
+# its own main(); drives cc_draft_faces under the native engine vs the OCCT oracle
+# BRepOffsetAPI_DraftAngle + BRepGProp on volume / area / watertight / bbox / Hausdorff;
+# header-only draft verb over the numsci-gated split-plane substrate, links the OCCT
+# oracle slice, NOT the whole kernel).
 # Phase-3 suite — phase3_suite.cpp
 # (its own main()) plus its checks_*.cpp modules (which record against
 # phase3_checks.h's Ctx, not checks.h's) — has run-sim-phase3-suite.sh. What remains
@@ -106,7 +111,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_blend_parity.mm native_step_parity.mm \
       native_geomcompletion_parity.mm native_numerics_parity.mm \
       native_analysis_parity.mm \
-      native_interference_parity.mm \
+      native_interference_parity.mm native_display_mesh_parity.mm \
       native_reference_parity.mm \
       native_ssi_parity.mm \
       native_ssi_seeding_recall.mm native_ssi_seeding_parity.mm \
@@ -132,6 +137,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_split_plane_parity.mm \
       native_slab_disjoint_cut_parity.mm \
       native_dm3_dm4_parity.mm \
+      native_draft_faces_parity.mm \
       native_analytic_fillet_parity.mm \
       native_step_mapped_item_parity.mm \
       native_abi_parity.mm \

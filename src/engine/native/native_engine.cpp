@@ -39,6 +39,7 @@
 #include "native/drafting/native_drafting.h"
 #include "native/section/native_section.h"
 #include "native/exchange/native_exchange.h"
+#include "native/feature/draft_faces.h"
 #include "native/feature/wrap_emboss.h"
 #include "native/heal/native_heal.h"
 #include "native/math/transform.h"  // M-TX: affine placement for native transforms
@@ -1550,6 +1551,50 @@ ShapeResult NativeEngine::replace_face_to_plane(EngineShape body, int f, double 
     // Honest decline: identical to the pre-DM2 native-body behaviour (never → OCCT).
     return make_error("operation not supported on a native body yet: replace_face_to_plane"
                       " (native scope: convex planar-polyhedron move-face → OCCT-only)");
+}
+// ── NATIVE DRAFT ANGLE (additive; consumes DM1 split + the DM2 face read + mesh audit) ─
+// The app's molding/manufacturing draft: taper one or more PLANAR side faces of a solid
+// about a planar NEUTRAL plane by an angle, so the walls taper along a PULL direction for
+// mold release. An OCCT body forwards to the OCCT BRepOffsetAPI_DraftAngle oracle. A
+// NATIVE all-planar (prismatic) body is drafted by feature::draftFaces: each drafted
+// plane is derived from the ORIGINAL face geometry (pivot on its trace with the neutral
+// plane) and applied as an inward nb::splitByPlane trim, then the composite is
+// SELF-VERIFIED (watertight closed 2-manifold, single lump χ=2, consistently oriented,
+// volume strictly SMALLER than the original — a draft only removes stock). Anything
+// outside the prismatic slice — a curved base (non-all-planar), a non-planar neutral
+// (degenerate pull), a face perpendicular to the pull axis (a cap, no trace line), a
+// degenerate/≥90° angle, or a self-intersecting draft — yields NULL and the SAME honest
+// decline the prior fall-through produced (a native void is NEVER handed to OCCT).
+ShapeResult NativeEngine::draft_faces(EngineShape body, const int* faceIds, int faceCount,
+                                      const double* neutralOrigin, const double* pullDir,
+                                      double angleDeg) {
+    if (!isNative(body))
+        return fallback().draft_faces(body, faceIds, faceCount, neutralOrigin, pullDir, angleDeg);
+
+#ifdef CYBERCAD_HAS_NUMSCI
+    // The inward trims reuse splitByPlane's tilted probe, which traces the NUMSCI-only
+    // seam; without the substrate this path is absent and we fall to the honest decline.
+    const auto* holder = static_cast<const NativeShape*>(body.get());
+    if (!holder->isMesh && faceIds != nullptr && faceCount >= 1 && neutralOrigin != nullptr &&
+        pullDir != nullptr) {
+        namespace ndraft = cybercad::native::feature;
+        namespace nm = cybercad::native::math;
+        ndraft::DraftFacesDecline why = ndraft::DraftFacesDecline::Ok;
+        const double angleRad = angleDeg * 3.14159265358979323846 / 180.0;
+        ntopo::Shape result = ndraft::draftFaces(
+            holder->shape, faceIds, faceCount, angleRad,
+            nm::Point3{neutralOrigin[0], neutralOrigin[1], neutralOrigin[2]},
+            nm::Vec3{pullDir[0], pullDir[1], pullDir[2]}, &why);
+        // draftFaces already self-verifies watertight + χ=2 + oriented + shrink; the
+        // engine's own watertightVolume audit is a redundant last gate (never a leaky solid).
+        if (!result.isNull() && watertightVolume(result) > 0.0)
+            return track(wrapNative(std::move(result)));
+    }
+#endif
+    // Honest decline: a native void is NEVER handed to OCCT (which would misread it).
+    return make_error("operation not supported on a native body yet: draft_faces"
+                      " (native scope: prismatic planar-face draft about a planar neutral;"
+                      " curved base / non-planar neutral / cap face / self-intersecting → OCCT-only)");
 }
 // ── NATIVE M3 fillet_face (additive; reuses the landed multi-edge dihedral fillet) ──
 // The app's `cc_fillet_face(body, faceId, radius)` — round EVERY edge bounding the

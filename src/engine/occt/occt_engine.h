@@ -283,6 +283,9 @@ public:
     ShapeResult replace_face(EngineShape body, int faceId, double offset, double tiltDeg) override;
     ShapeResult replace_face_to_plane(EngineShape body, int faceId, double px, double py, double pz,
                                       double nx, double ny, double nz) override;
+    ShapeResult draft_faces(EngineShape body, const int* faceIds, int faceCount,
+                            const double* neutralOrigin, const double* pullDir,
+                            double angleDeg) override;
     ShapeResult fillet_face(EngineShape body, int faceId, double radius) override;
     ShapeResult split_plane(EngineShape body, double ox, double oy, double oz, double nx, double ny,
                             double nz, int keepPositive) override;

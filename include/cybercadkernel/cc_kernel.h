@@ -526,6 +526,30 @@ CCShapeId cc_replace_face_to_plane(CCShapeId body, int faceId,
                                    double px, double py, double pz,
                                    double nx, double ny, double nz);
 
+/* DRAFT ANGLE — taper `faceCount` PLANAR side faces of a solid (1-based face ids, the
+ * same ids cc_subshape_ids/cc_fillet_edges use) about the NEUTRAL PLANE (a point
+ * `neutralOrigin[3]` on it, and the PULL direction `pullDir[3]` = its normal) by
+ * `angleDeg` degrees. Each drafted face pivots on its trace line with the neutral plane
+ * — the trace stays put and the face tilts by the draft angle about the pull axis, so
+ * the walls taper for mold release; the adjacent faces re-trim to keep the solid
+ * watertight. A POSITIVE angle draws material IN as the face recedes from the neutral
+ * plane along +pull (standard draft convention). Returns a new solid, or 0 on failure
+ * (cc_last_error set). ADDITIVE.
+ *
+ * ENGINE NOTE. Under the native engine (cc_set_engine(1)) a NATIVE all-planar
+ * (prismatic) body is drafted natively: each drafted plane is derived from the original
+ * face geometry and applied as an inward half-space trim, then the composite is
+ * SELF-VERIFIED (watertight closed 2-manifold, single lump χ=2, consistently oriented,
+ * volume strictly SMALLER than the original — a draft only removes stock) and DISCARDED
+ * if it fails — never a wrong/leaky solid. A curved base / non-planar neutral / a face
+ * perpendicular to the pull axis (a cap, no trace line) / a degenerate or ≥90° angle /
+ * a self-intersecting result falls to the OCCT oracle
+ * (BRepOffsetAPI_DraftAngle + BRepGProp), on iOS/macOS where OCCT is linked; on the
+ * OCCT-free host such a native-only draft returns 0 with an honest error. An OCCT body
+ * forwards to OCCT unchanged. */
+CCShapeId cc_draft_faces(CCShapeId body, const int *faceIds, int faceCount,
+                         const double *neutralOrigin, const double *pullDir, double angleDeg);
+
 /* Project the 3-D point (px,py,pz) onto the analytic surface of face `faceId`
  * (1-based, cc_subshape_ids order) of `body` — MOAT M-DM DM4, ADDITIVE. Returns the
  * closed-form foot-of-perpendicular + minimum distance (see CCProjection). The native

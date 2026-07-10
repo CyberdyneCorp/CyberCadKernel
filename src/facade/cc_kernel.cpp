@@ -665,6 +665,17 @@ CCShapeId cc_replace_face_to_plane(CCShapeId body, int faceId, double px, double
         CCShapeId{0});
 }
 
+CCShapeId cc_draft_faces(CCShapeId body, const int* faceIds, int faceCount,
+                         const double* neutralOrigin, const double* pullDir, double angleDeg) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            auto r = active_engine()->draft_faces(resolve(body), faceIds, faceCount, neutralOrigin,
+                                                  pullDir, angleDeg);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
+}
+
 CCShapeId cc_fillet_face(CCShapeId body, int faceId, double radius) {
     return cyber::guard(
         [&]() -> CCShapeId {

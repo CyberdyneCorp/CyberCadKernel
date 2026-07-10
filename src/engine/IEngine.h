@@ -391,6 +391,13 @@ public:
         (void)body; (void)faceId; (void)px; (void)py; (void)pz; (void)nx; (void)ny; (void)nz;
         return engine_unsupported("replace_face_to_plane");
     }
+    virtual ShapeResult draft_faces(EngineShape body, const int* faceIds, int faceCount,
+                                    const double* neutralOrigin, const double* pullDir,
+                                    double angleDeg) {
+        (void)body; (void)faceIds; (void)faceCount; (void)neutralOrigin; (void)pullDir;
+        (void)angleDeg;
+        return engine_unsupported("draft_faces");
+    }
     virtual ShapeResult fillet_face(EngineShape body, int faceId, double radius) {
         (void)body; (void)faceId; (void)radius;
         return engine_unsupported("fillet_face");

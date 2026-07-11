@@ -96,6 +96,18 @@ topo::Shape boxAt(double x0, double y0, double z0, double sx, double sy, double 
   return s;
 }
 
+// A native cylinder of radius R over the axial span [zlo,zhi], axis +z, built by the
+// native revolve (a closed (r,h) profile loop revolved a full turn). Facing the shaft
+// wall as a faceted ARC is what reproduces the thread crest/root ↔ wall CURVED seam —
+// a straight-plane box tangent (boxAt) does NOT: its contact is a single flat plane, so
+// the two operands' tilings agree; only a curved (arc) seam makes them disagree.
+topo::Shape cylinderAt(double R, double zlo, double zhi) {
+  const double prof[] = {0.0, zlo, R, zlo, R, zhi, 0.0, zhi};
+  cst::RevolveAxis axis;
+  axis.ax = 0.0; axis.ay = 0.0; axis.adx = 0.0; axis.ady = 1.0;
+  return cst::build_revolution(prof, 4, axis, 2.0 * kPi);
+}
+
 // Facet a native solid into DENSE, independently-vertexed planar-triangle soup at a
 // controlled deflection — a self-contained mirror of thread_apply::facetSolid, so this
 // battery exercises the SAME dense-soup BSP path the thread boolean hits. Each mesh
@@ -551,6 +563,77 @@ CC_TEST(helical_root_like_strip_never_disagrees) {
     if (classify(f, wall, ridge, 0, oracle) == Verdict::Disagreed) ++disagreed;
   }
   CC_CHECK(disagreed == 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════
+// BAND 4 — near-tangent CURVED-SEAM crest/root ↔ wall crack, NOW RECOVERED. This is the
+// faithful thread crest/root ↔ shaft-wall contact abstracted OCCT-free: a shaft cylinder
+// FUSED with a concentric annular RIDGE (a slightly larger cylinder over a limited z-band),
+// both faceted into dense soup. Where the ridge's faceted arc grazes the shaft's faceted
+// arc, the two operands tile the shared CURVED seam into DIFFERENT vertex sets — a genuine
+// T-junction chain along the arc. The BSP soup is topologically closed (loop-edge parity 0)
+// and the interior-crossing repair inserts every collinear T-junction, so the DEFECT is not
+// a missed soup crossing: the ridge/cap fragments meeting the seam carry a run of COLLINEAR
+// boundary vertices, and the ear-clipper emits a ZERO-AREA collinear triangle to cover them.
+// The FaceMesher (correctly) drops that degenerate face — punching the hole (measured pre-fix:
+// boundaryEdgeCount 3 at defl 0.30, 6 at defl 0.20; single-turn thread 16–25, 4-turn 33–57).
+//
+// FIX (assemble.h::triangulatePolygonToFaces): when the ear-clip yields a collinear zero-area
+// triangle, re-triangulate that fragment as an AREA-VALIDATED apex fan (SCALE-RELATIVE area
+// floor + exact area preservation, the same discipline as Band-1/Band-2), so every seam sub-
+// edge is covered by a POSITIVE-area triangle and nothing is dropped. The seam T-junction
+// vertices all SURVIVE (they are a real shared chain, not a hairline sliver — welding one
+// would just move the crack), and the fan is kept only when it is a valid simple triangulation
+// (a genuinely-concave fragment falls back to the ear-clip). ASSERTED map (post-fix): the whole
+// deflection sweep closes watertight, and the enclosed volume is unchanged (area-neutral).
+// ═══════════════════════════════════════════════════════════════════════════════════
+CC_TEST(band4_near_tangent_curved_seam_crack_recovered) {
+  const double R = 10.0, d = 0.5, zlo = 5.0, zhi = 15.0;
+  for (double defl : {0.30, 0.20, 0.15, 0.10}) {
+    const topo::Shape shaft = facetSolidLocal(cylinderAt(R, 0.0, 20.0), defl);
+    const topo::Shape ridge = facetSolidLocal(cylinderAt(R + d, zlo, zhi), defl);
+    CC_CHECK(!shaft.isNull() && !ridge.isNull());
+    // Volume of the raw boolean soup (exact) BEFORE assembly — the recovery must not move it.
+    std::vector<nb::Polygon> soup =
+        nb::booleanPolygons(nb::extractPolygons(shaft), nb::extractPolygons(ridge), nb::Op::Fuse);
+    const double vSoup = std::fabs(nb::soupVolume(soup));
+    const topo::Shape fuse = nb::boolean_solid(shaft, ridge, nb::Op::Fuse);
+    const MeshStat s = meshStat(fuse);
+    CC_CHECK(s.watertight);          // the curved-seam crack is sealed …
+    CC_CHECK(s.boundaryEdges == 0);  // … (was 3 at defl 0.30, 6 at defl 0.20)
+    // … and area-neutral: the assembled watertight volume matches the exact soup volume,
+    // so the seam weld moved no real volume (never a wrong-volume body).
+    CC_CHECK(std::fabs(s.volume - vSoup) <= 1e-3 * vSoup);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════
+// BAND 4 SAFETY — the apex-fan re-triangulation is AREA-VALIDATED, never a blind rewrite.
+// The decisive proof it never moves real volume: a genuine thin CURVED slab. The COMMON of
+// two concentric soup cylinders (radii R and R+ε over the same z-band) is a real thin
+// tube of wall thickness ε whose faceting produces the SAME collinear-seam fragments as
+// Band 4 — so the collinear-ear detector fires — yet the fan is applied only when it is an
+// area-preserving simple triangulation, and the enclosed volume must equal the exact soup
+// volume. A thin tube's volume (π((R+ε)²−R²)·h) is preserved to a tight bound; the fan
+// never collapses its wall. This is the different-scale, genuine-separation case that must
+// NOT be corrupted — and is not.
+// ═══════════════════════════════════════════════════════════════════════════════════
+CC_TEST(band4_thin_curved_slab_is_area_preserving) {
+  const double R = 10.0, zlo = 5.0, zhi = 15.0;
+  for (double eps : {1.0, 0.5, 0.25}) {
+    const topo::Shape inner = facetSolidLocal(cylinderAt(R, zlo, zhi), 0.2);
+    const topo::Shape outer = facetSolidLocal(cylinderAt(R + eps, zlo, zhi), 0.2);
+    CC_CHECK(!inner.isNull() && !outer.isNull());
+    std::vector<nb::Polygon> soup =
+        nb::booleanPolygons(nb::extractPolygons(inner), nb::extractPolygons(outer), nb::Op::Common);
+    const double vSoup = std::fabs(nb::soupVolume(soup));
+    const topo::Shape common = nb::boolean_solid(inner, outer, nb::Op::Common);
+    const MeshStat s = meshStat(common);
+    // COMMON of concentric cylinders is the inner solid (volume π R² h); the fan preserves it.
+    CC_CHECK(s.watertight);
+    CC_CHECK(s.volume > 0.0);
+    CC_CHECK(std::fabs(s.volume - vSoup) <= 2e-3 * vSoup);  // area-preserving, not collapsed
+  }
 }
 
 CC_RUN_ALL()

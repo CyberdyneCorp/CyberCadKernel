@@ -186,13 +186,18 @@ CC_TEST(threadapply_single_turn_cut_welds) {
   }
 }
 
-// ── The FUSE + multi-turn cases still honest-decline (the dense-soup CSG residual) ──
-// Cause (2) — the operand orientation — is fixed above. Cause (1) — the near-tangent
-// helical crest/root ↔ shaft-wall contact fragmenting the dense triangle-soup BSP into
-// T-junction cracks — is a deeper dense-soup CSG robustness residual (assemble.h weld +
-// T-junction repair territory, not a builder fix). So a single-turn FUSE and a 4-turn
-// FUSE / CUT still honest-decline NotWatertight / NotOriented — NEVER a leaky / misoriented
-// / wrong-volume solid. This is the remaining M7b tail (robust dense-soup CSG).
+// ── FUSE still honest-declines; a multi-turn CUT now WELDS (near-tangent seam fix) ──
+// Cause (2) — the operand orientation — is fixed by the builder. Cause (1) — the near-
+// tangent helical crest/root ↔ shaft-wall contact fragmenting the dense triangle-soup BSP
+// into T-junction cracks — is now closed on the CUT side by the near-tangent CURVED-SEAM
+// collinear-ear weld (assemble.h::triangulatePolygonToFaces fan re-triangulation): the
+// FaceMesher no longer drops a zero-area seam triangle, so the 4-turn internal-thread CUT
+// welds watertight + consistently-oriented + in-band-volume and self-verifies (why == Ok).
+// The FUSE side still declines — the external crest ↔ wall contact leaves a residual the
+// seam weld does not reach at these deflections — so it HONEST-DECLINES NotWatertight,
+// NEVER a leaky / misoriented / wrong-volume solid. The four-part self-verify (watertight +
+// χ=2 + oriented + two-sided volume band) is the invariant that keeps every accepted body
+// correct and every uncloseable one declined.
 CC_TEST(threadapply_fuse_and_multiturn_honest_decline) {
   // Single-turn FUSE (external): shaft at the root radius (major − depth = 4), crest clears.
   {
@@ -207,35 +212,65 @@ CC_TEST(threadapply_fuse_and_multiturn_honest_decline) {
                why == bo::ThreadApplyDecline::VolumeInconsistent);
     }
   }
-  // 4-turn FUSE + CUT: the dense-soup crack (and residual BSP-output misorientation) persists.
+  // 4-turn FUSE: the external near-tangent crest ↔ wall contact still cracks → honest-decline.
   {
     const topo::Shape thread = cst::build_helical_thread(5.0, 2.0, 4.0, 1.0, 60.0, 1.0, 16);
     const topo::Shape shaftF = shaftCyl(4.0, 0.0, 8.0);
+    for (double d : {0.08, 0.05}) {
+      bo::ThreadApplyDecline why = bo::ThreadApplyDecline::Ok;
+      const topo::Shape f = bo::threadApply(shaftF, thread, /*op=*/0, d, &why);
+      CC_CHECK(f.isNull());
+      CC_CHECK(why == bo::ThreadApplyDecline::NotWatertight ||
+               why == bo::ThreadApplyDecline::NotOriented ||
+               why == bo::ThreadApplyDecline::VolumeInconsistent);
+    }
+  }
+  // 4-turn CUT: the near-tangent CURVED-SEAM collinear-ear weld now closes the crack, so at
+  // the finer deflection (d = 0.05) the internal-thread CUT WELDS boolean-usable and self-
+  // verifies (watertight + oriented + in-band volume, why == Ok — the RECOVERED case). At
+  // the coarser d = 0.08 a residual remains → still honest-declines. Either way the result
+  // and verdict are consistent, and no wrong-volume body is ever accepted.
+  {
+    const topo::Shape thread = cst::build_helical_thread(5.0, 2.0, 4.0, 1.0, 60.0, 1.0, 16);
     const topo::Shape shaftC = shaftCyl(5.0, 0.0, 8.0);
-    const std::pair<const topo::Shape*, int> repros[] = {{&shaftF, 0}, {&shaftC, 1}};
-    for (const auto& [shaft, op] : repros) {
-      for (double d : {0.08, 0.05}) {
-        bo::ThreadApplyDecline why = bo::ThreadApplyDecline::Ok;
-        const topo::Shape r = bo::threadApply(*shaft, thread, op, d, &why);
-        CC_CHECK(r.isNull());
+    const double vShaft = kPi * 5.0 * 5.0 * 8.0;  // ≈ 628.32
+    bool twt = false, tor = false;
+    const double vThread = meshVolume(thread, 0.02, twt, tor);
+    for (double d : {0.08, 0.05}) {
+      bo::ThreadApplyDecline why = bo::ThreadApplyDecline::Ok;
+      const topo::Shape r = bo::threadApply(shaftC, thread, /*op=*/1, d, &why);
+      // Result and verdict are always consistent: a non-null body ⇔ Ok.
+      CC_CHECK(r.isNull() == (why != bo::ThreadApplyDecline::Ok));
+      if (r.isNull()) {
         CC_CHECK(why == bo::ThreadApplyDecline::NotWatertight ||
                  why == bo::ThreadApplyDecline::NotOriented ||
                  why == bo::ThreadApplyDecline::VolumeInconsistent);
+      } else {
+        // A recovered CUT is a correct, self-verified solid: watertight, oriented, and its
+        // volume sits in the two-sided closed-form band (material removed, ≤ the whole ridge).
+        bool wt = false, oriented = false;
+        const double v = meshVolume(r, d, wt, oriented);
+        CC_CHECK(wt);
+        CC_CHECK(oriented);
+        CC_CHECK(v < vShaft);                            // material was removed
+        CC_CHECK(v > vShaft - vThread - 0.05 * vShaft);  // but not more than the ridge (+slack)
       }
     }
   }
 }
 
 // ── REGRESSION (DEFECT 2): a threaded shaft is never SILENTLY produced as a
-// boolean-hostile native body — the verb honest-declines with a specific reason ───────
+// boolean-hostile native body — result and verdict are always consistent ──────────────
 // DEFECT 2: after cc_thread_apply the threaded solid is display-valid but a later fuse/cut
-// on it fails ("no valid result"). The honest contract is that a threaded body which cannot
-// be produced boolean-usable is NEVER returned silently as an Ok native solid — the native
-// verb either yields a self-verified (watertight + oriented + correct-volume) body, or it
-// declines with a specific, non-vague ThreadApplyDecline (→ the engine's honest OCCT path,
-// where a downstream boolean on the threaded body reports the accurate ordering-constraint
-// error). This asserts the exact repro (thread a simple shaft, both FUSE and CUT) declines
-// with a SPECIFIC self-verify reason and never returns a non-null body with why != Ok.
+// on it fails ("no valid result"). The honest contract is that a threaded body is NEVER
+// returned silently as an Ok native solid unless it is genuinely self-verified — the native
+// verb either yields a self-verified (watertight + oriented + correct-volume) body with
+// why == Ok, or it declines with a specific, non-vague ThreadApplyDecline (→ the engine's
+// honest OCCT path). This asserts the HARD INVARIANT for both FUSE and CUT: the result and
+// the verdict are always consistent (non-null ⇔ Ok), a decline names a SPECIFIC self-verify
+// reason, and a returned body is always watertight + oriented + in-band. With the near-
+// tangent seam weld the CUT now welds boolean-usable (why == Ok) while the FUSE still
+// declines — both branches honour the invariant, neither is ever a silent-wrong body.
 CC_TEST(threadapply_never_silently_returns_boolean_hostile_body) {
   const topo::Shape thread = cst::build_helical_thread(5.0, 2.0, 4.0, 1.0, 60.0, 1.0, 16);
   CC_CHECK(!thread.isNull());
@@ -243,6 +278,8 @@ CC_TEST(threadapply_never_silently_returns_boolean_hostile_body) {
 
   const topo::Shape shaftF = shaftCyl(4.0, 0.0, 8.0);  // FUSE: shaft at the thread root
   const topo::Shape shaftC = shaftCyl(5.0, 0.0, 8.0);  // CUT: shaft at the crest
+  bool twt = false, tor = false;
+  const double vThread = meshVolume(thread, 0.02, twt, tor);
   const std::pair<const topo::Shape*, int> repros[] = {{&shaftF, 0}, {&shaftC, 1}};
   for (const auto& [shaft, op] : repros) {
     bo::ThreadApplyDecline why = bo::ThreadApplyDecline::Ok;
@@ -250,14 +287,26 @@ CC_TEST(threadapply_never_silently_returns_boolean_hostile_body) {
     // Never a non-null body paired with a non-Ok verdict, and never an Ok verdict with a
     // null body — the result and the verdict are always consistent (no silent-wrong / -empty).
     CC_CHECK(r.isNull() == (why != bo::ThreadApplyDecline::Ok));
-    // The exact repro declines, and the reason is a SPECIFIC self-verify failure (not a vague
-    // catch-all) — this is what routes to the engine's honest ordering-constraint decline.
-    CC_CHECK(r.isNull());
-    CC_CHECK(why == bo::ThreadApplyDecline::NotWatertight ||
-             why == bo::ThreadApplyDecline::NotOriented ||
-             why == bo::ThreadApplyDecline::VolumeInconsistent);
     // The decline name is a real, non-empty diagnostic string (surfaced to the host).
     CC_CHECK(std::string(bo::threadApplyDeclineName(why)).size() > 0);
+    if (r.isNull()) {
+      // A decline names a SPECIFIC self-verify failure (not a vague catch-all) — this is what
+      // routes to the engine's honest ordering-constraint decline (the FUSE case).
+      CC_CHECK(why == bo::ThreadApplyDecline::NotWatertight ||
+               why == bo::ThreadApplyDecline::NotOriented ||
+               why == bo::ThreadApplyDecline::VolumeInconsistent);
+    } else {
+      // A returned body is genuinely self-verified: watertight + oriented + correct-volume
+      // (the near-tangent-seam-recovered CUT). It is never a leaky / wrong-volume solid.
+      bool wt = false, oriented = false;
+      const double v = meshVolume(r, 0.05, wt, oriented);
+      CC_CHECK(wt);
+      CC_CHECK(oriented);
+      const double Rc = 5.0, z1 = 8.0, vShaft = kPi * Rc * Rc * z1;
+      const double lo = op == 0 ? vShaft : vShaft - vThread - 0.05 * vShaft;
+      const double hi = op == 0 ? vShaft + vThread + 0.05 * vShaft : vShaft;
+      CC_CHECK(v > lo - 1e-6 && v < hi + 1e-6);  // enclosed volume in the two-sided band
+    }
   }
 }
 

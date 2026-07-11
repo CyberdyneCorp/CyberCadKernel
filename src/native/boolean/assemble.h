@@ -164,6 +164,122 @@ inline topo::Shape triangleFace(const topo::Shape& a, const topo::Shape& b, cons
   return topo::ShapeBuilder::makeFace(s, wire, {}, topo::Orientation::Forward);
 }
 
+// ── Near-tangent CURVED-SEAM collinear-ear repair ───────────────────────────────
+// The ear-clipper (uv_triangulate) tiles a fragment loop by clipping ANY convex ear,
+// including — for a fragment whose boundary carries a run of COLLINEAR vertices —
+// a near-zero-area COLLINEAR ear. That happens on the near-tangent CURVED SEAM the
+// thread crest/root ↔ shaft-wall contact produces: the seam arc is a genuine shared
+// T-junction chain (e.g. 0.87, 1.74, 3.18 all on one seam line), so a cap fragment
+// meeting the wall along it has 3+ collinear boundary vertices. The ear-clip emits a
+// zero-area triangle spanning them; the assembled B-rep hands it to the FaceMesher,
+// which correctly DROPS the degenerate face — and that drop punches a hole, because
+// the seam sub-edges the degenerate triangle carried are then unpaired (the classic
+// near-tangent T-junction crack: boundaryEdgeCount 3–6 per seam, single-turn 16–25).
+//
+// This is NOT closeable by welding a vertex (the collinear vertices are a REAL shared
+// T-junction chain, not a hairline sliver) — removing one would just move the crack to
+// the neighbour that shares it. The seam vertices must all SURVIVE; what must change is
+// the fan so the seam sub-edges are covered by NON-degenerate triangles. A simple
+// fragment that produced a collinear ear is star-shaped from its off-seam apex, so a
+// FAN from the vertex of maximum perpendicular deviation covers every seam sub-edge
+// with a positive-area triangle. The fan is accepted only when it is a VALID simple
+// triangulation whose signed area matches the ear-clip's (same scale-relative +
+// area-preservation discipline as the Band-1 sliver weld) — otherwise the original
+// ear-clip is kept, so a genuinely-concave fragment is never mis-fanned.
+
+// Signed twice-area of a 2D loop (shoelace); >0 ⇒ CCW.
+inline double loopTwiceArea(const std::vector<tess::UV>& uv) {
+  double a2 = 0.0;
+  const std::size_t n = uv.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    const tess::UV& p = uv[i];
+    const tess::UV& q = uv[(i + 1) % n];
+    a2 += p.u * q.v - q.u * p.v;
+  }
+  return a2;
+}
+
+// Signed twice-area of triangle (a,b,c) in UV; sign = winding.
+inline double triTwiceArea(const tess::UV& a, const tess::UV& b, const tess::UV& c) {
+  return (b.u - a.u) * (c.v - a.v) - (c.u - a.u) * (b.v - a.v);
+}
+
+// Choose the fan apex: the vertex farthest (perpendicular) from the chord between the
+// loop's two most-separated vertices — a robust "most off-line" pick that makes a near-
+// flat fragment star-shaped. Returns -1 when the loop's longest chord is degenerate.
+inline int fanApex(const std::vector<tess::UV>& uv) {
+  const int n = static_cast<int>(uv.size());
+  int i0 = 0, i1 = 0;
+  double best = -1.0;
+  for (int i = 0; i < n; ++i)
+    for (int j = i + 1; j < n; ++j) {
+      const double du = uv[i].u - uv[j].u, dv = uv[i].v - uv[j].v;
+      const double d2 = du * du + dv * dv;
+      if (d2 > best) { best = d2; i0 = i; i1 = j; }
+    }
+  const double bu = uv[i1].u - uv[i0].u, bv = uv[i1].v - uv[i0].v;
+  const double blen = std::sqrt(bu * bu + bv * bv);
+  if (!(blen > 0.0)) return -1;
+  int apex = 0;
+  double bestPerp = -1.0;
+  for (int i = 0; i < n; ++i) {
+    const double perp = std::fabs((uv[i].u - uv[i0].u) * bv - (uv[i].v - uv[i0].v) * bu) / blen;
+    if (perp > bestPerp) { bestPerp = perp; apex = i; }
+  }
+  return apex;
+}
+
+// Try to triangulate `uv` (a simple loop, no holes) as a FAN from the vertex of
+// maximum perpendicular deviation from the loop's dominant base line (fanApex) — the
+// robust choice for a near-flat fragment whose ear-clip produced a collinear zero-area
+// ear. Returns the fan triangles only if it is a VALID simple triangulation:
+//   * every fan triangle has |area| above a scale-relative floor (no residual sliver),
+//   * all fan triangles share the loop's winding sign (no fold-over → the apex sees the
+//     whole boundary, i.e. the loop is star-shaped from the apex),
+//   * the summed fan area equals the loop area to a tight relative bound (area-neutral
+//     → the fan tiles exactly the fragment, nothing added or lost).
+// Any failure returns empty → caller keeps the original ear-clip (no regression on a
+// genuinely-concave fragment the apex cannot see).
+inline std::vector<tess::UVTri> fanTriangulate(const std::vector<tess::UV>& uv) {
+  const int n = static_cast<int>(uv.size());
+  if (n < 3) return {};
+  const double loopA2 = loopTwiceArea(uv);
+  if (std::fabs(loopA2) <= 0.0) return {};  // degenerate loop — nothing to gain
+  const int apex = fanApex(uv);
+  if (apex < 0) return {};
+
+  const double areaFloor = 1e-6 * std::fabs(loopA2);  // scale-relative, never absolute
+  const double sign = loopA2 > 0.0 ? 1.0 : -1.0;
+  std::vector<tess::UVTri> out;
+  out.reserve(static_cast<std::size_t>(n - 2));
+  double fanA2 = 0.0;
+  for (int k = 1; k + 1 < n; ++k) {
+    const int i = (apex + k) % n;
+    const int j = (apex + k + 1) % n;
+    const double ta2 = triTwiceArea(uv[apex], uv[i], uv[j]);
+    if (ta2 * sign < areaFloor) return {};  // sliver or fold-over → not star-shaped
+    fanA2 += ta2;
+    out.push_back(tess::UVTri{apex, i, j});
+  }
+  // Area-neutral: the fan must tile exactly the fragment (no self-overlap / gap).
+  if (std::fabs(fanA2 - loopA2) > 1e-6 * std::fabs(loopA2)) return {};
+  return out;
+}
+
+// Does a triangle list contain a near-collinear (near-zero-area) triangle relative to
+// the loop's own scale? Such a triangle is the ear-clip's collinear-seam artifact that
+// the FaceMesher will drop (opening the crack).
+inline bool hasCollinearTriangle(const std::vector<tess::UV>& uv,
+                                 const std::vector<tess::UVTri>& tris) {
+  const double areaFloor = 1e-6 * std::fabs(loopTwiceArea(uv));
+  if (!(areaFloor > 0.0)) return false;
+  for (const tess::UVTri& t : tris)
+    if (std::fabs(triTwiceArea(uv[static_cast<std::size_t>(t.a)], uv[static_cast<std::size_t>(t.b)],
+                               uv[static_cast<std::size_t>(t.c)])) < areaFloor)
+      return true;
+  return false;
+}
+
 // Triangulate a Polygon into a set of triangular planar Faces (shared pool
 // vertices) and append them to `faces`.
 //
@@ -178,6 +294,12 @@ inline topo::Shape triangleFace(const topo::Shape& a, const topo::Shape& b, cons
 // across a solid edge) share those vertices, so the welded mesh closes. The
 // polygon is projected to its plane's 2D frame, ear-clipped (uv_triangulate,
 // hole-free), and each 2D triangle mapped back to the shared 3D vertices.
+//
+// NEAR-TANGENT CURVED SEAM: when the ear-clip emits a collinear zero-area triangle
+// (the seam-arc T-junction chain — see fanTriangulate above), that triangle would be
+// DROPPED by the FaceMesher and punch a hole. We re-triangulate such a fragment as an
+// area-validated apex fan so the seam sub-edges are covered by positive-area triangles;
+// if the fan is not a valid simple triangulation the ear-clip is kept unchanged.
 inline void triangulatePolygonToFaces(const Polygon& poly, VertexPool& pool,
                                       std::vector<topo::Shape>& faces) {
   const math::Dir3 nz{poly.plane.normal};
@@ -198,8 +320,18 @@ inline void triangulatePolygonToFaces(const Polygon& poly, VertexPool& pool,
 
   std::vector<int> loop(poly.size());
   for (int i = 0; i < static_cast<int>(poly.size()); ++i) loop[i] = i;
-  const std::vector<tess::UVTri> tris =
+  std::vector<tess::UVTri> tris =
       tess::triangulatePolygon(uv, std::vector<std::vector<int>>{loop});
+
+  // If the ear-clip produced a collinear (near-zero-area) triangle — the near-tangent
+  // curved-seam artifact that the FaceMesher would drop and thereby crack — replace the
+  // triangulation with an area-validated apex fan that covers every seam sub-edge with a
+  // positive-area triangle. Kept only if the fan is a valid simple triangulation (else
+  // the original ear-clip stands, so a genuinely-concave fragment is never mis-fanned).
+  if (hasCollinearTriangle(uv, tris)) {
+    std::vector<tess::UVTri> fan = fanTriangulate(uv);
+    if (!fan.empty()) tris = std::move(fan);
+  }
 
   for (const tess::UVTri& t : tris) {
     const topo::Shape& va = verts[static_cast<std::size_t>(t.a)];

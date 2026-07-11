@@ -42,14 +42,29 @@
 // seam-weld contract the tessellator relies on (tessellate/trim.h note), promoted here
 // to a first-class, densely-verified guard with an honest deviation report.
 //
+// TOLERANT-TOPOLOGY HEALING (this slice adds a bounded first pass).
+//   Common near-valid loops are HEALED into valid ones before classification, every heal
+//   SCALE-RELATIVE and REGION-PRESERVING (a heal never flips an interior/exterior point's
+//   In/Out verdict — see healLoop / HealReport):
+//     * GAP CLOSING — consecutive segment endpoints within a scale-relative tol but not
+//       coincident are SNAPPED coincident (the loop is welded closed). A loop with a
+//       genuinely LARGE gap (beyond tol) still DECLINES (Unknown) — never force-welded.
+//     * NEAR-COINCIDENT PCURVE SNAP — two loop vertices within tol are snapped to a shared
+//       location so adjacent pcurves share the boundary exactly.
+//     * PINCH-POINT detection — a loop that self-touches at an interior point is DETECTED
+//       and reported (the healed loop is declined honestly, not silently repaired into a
+//       different region).
+//   healLoop() is the primitive; classify() runs it (opt-in via ClassifyOptions::heal).
+//
 // SCOPE / RESIDUALS. This is a data-model + robustness slice, not a heavy algorithm:
-//   * classify() handles well-formed simple loops robustly; general tolerant-topology
-//     HEALING (auto-closing gapped loops, resolving self-touching pinch points into a
-//     valid topology, snapping near-coincident pcurves) is a documented residual — those
-//     cases are declined honestly (Unknown), not silently repaired.
+//   * Healing covers the common near-valid cases above (small gaps, near-coincident
+//     vertices, pinch detection). GENERAL non-manifold repair — resolving a detected
+//     pinch by SPLITTING the loop into two valid faces, healing across surface seams,
+//     re-parametrizing a badly-drifting pcurve — remains a documented residual: those
+//     cases are declined honestly (Unknown / pinch reported), not silently repaired.
 //   * constructPcurve is non-rational (bspline_fit is non-rational); a genuinely
 //     rational edge is fitted as a non-rational approximation and its true fidelity
-//     deviation is reported (never a widened/faked tolerance).
+//     deviation is reported (never a widened/faked tolerance) — the rational-residual.
 //
 // OCCT-FREE. Uses ONLY src/native/math + src/native/topology + (guarded)
 // src/native/numerics. clang++ -std=c++20. fp64, deterministic.
@@ -146,12 +161,73 @@ std::optional<TrimmedNurbsFace> makeTrimmedFace(const Shape& face);
 struct ClassifyOptions {
   int flattenSegments = 48;  ///< polyline samples per pcurve segment
   double onEdgeTol = 1e-9;   ///< relative on-edge band (× loop UV extent)
+  bool heal = true;          ///< run the tolerant-topology healing pre-pass (see healLoop)
+  double healGapTol = 1e-6;  ///< relative gap-close band (× loop UV extent); see HealOptions
 };
 
 /// Classify (u,v) against the trimmed region. Robust even-odd ray-cast in UV with
-/// honest OnBoundary / Unknown handling (see Containment).
+/// honest OnBoundary / Unknown handling (see Containment). With opts.heal (default on)
+/// each loop is run through healLoop() first: small gaps / near-coincident vertices are
+/// welded closed; a genuinely large gap or a self-touching pinch still declines Unknown.
 Containment classify(const TrimmedNurbsFace& face, const ParamPoint& p,
                      const ClassifyOptions& opts = {});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TOLERANT-TOPOLOGY HEALING — the bounded first pass (see the file header).
+//
+// healLoop() operates on the FLATTENED loop polyline (the same polyline classify()
+// ray-casts), because that is where a gap between two adjacent pcurve segments, or a
+// near-coincident pair of vertices, actually shows up. Every heal is SCALE-RELATIVE
+// (tolerances × the loop's UV extent) and REGION-PRESERVING: a vertex is only moved by
+// less than the gap tolerance, so no interior/exterior test point farther than that
+// band from the boundary can change its In/Out verdict — a heal never flips the region.
+//
+// The three cases, in order:
+//   1. GAP CLOSING / vertex snap — if two consecutive polyline vertices (including the
+//      implicit closing edge) are within `gapTol` but not exactly coincident, they are
+//      merged to their midpoint (welded). This closes a small inter-segment gap AND
+//      snaps two near-coincident pcurve endpoints to a shared location.
+//   2. LARGE-GAP decline — if, after welding the small gaps, the loop's closing edge (or
+//      any inter-vertex step that was NOT a within-tol join) still spans more than
+//      `gapTol`, that is a GENUINE gap: healed=false, decline honestly (do NOT force-weld
+//      an arbitrarily large gap into a fabricated region).
+//   3. PINCH detection — if the welded polyline has a repeated NON-adjacent vertex, the
+//      loop self-touches (a pinch); pinch=true is reported and the loop is declined
+//      (split-or-decline: this slice declines honestly, it does not fabricate a split).
+// ─────────────────────────────────────────────────────────────────────────────
+struct HealOptions {
+  double gapTol = 1e-6;  ///< relative gap/snap band (× loop UV extent) — welds gaps ≤ this
+};
+
+struct HealReport {
+  bool healed = false;       ///< true ⇔ the loop is valid (possibly after welding); safe to classify
+  bool changed = false;      ///< true ⇔ any vertex was moved/merged by a heal
+  bool pinch = false;        ///< true ⇔ a self-touching pinch point was DETECTED (declined honestly)
+  bool largeGap = false;     ///< true ⇔ a gap beyond gapTol remained (declined honestly)
+  int gapsClosed = 0;        ///< number of small gaps / near-coincident pairs welded
+  double maxGapClosed = 0.0; ///< largest gap distance actually welded (UV space)
+  double residualGap = 0.0;  ///< the remaining (un-welded) gap that forced a large-gap decline
+  double tolerance = 0.0;    ///< the scale-relative gap tolerance actually applied
+};
+
+/// Heal a flattened loop polyline in place: weld small gaps / near-coincident vertices,
+/// decline a genuine large gap, detect a pinch. Returns the report; `poly` is the healed
+/// polyline (valid to ray-cast iff report.healed). Region-preserving (see above).
+///
+/// `joinGaps` (optional) carries the raw gap distance at each segment JOIN (segment k's
+/// end → segment k+1's start, plus the closing join). It lets healLoop distinguish a real
+/// inter-segment GAP from an ordinary long shape edge: a join gap ≤ tol is welded; a join
+/// gap > tol is a GENUINE large gap → largeGap=true, healed=false (honest decline, never
+/// force-welded). Pass empty to heal purely from consecutive-vertex proximity.
+HealReport healLoop(std::vector<ParamPoint>& poly,
+                    const std::vector<double>& joinGaps = {},
+                    const HealOptions& opts = {});
+
+/// Flatten `loop` (join-gap-aware) and heal it. Returns the report (the healed polyline is
+/// discarded — use when only the diagnosis / heal ops are wanted). This is the entry that
+/// distinguishes small inter-segment gaps (welded) from genuine large gaps (declined) and
+/// self-touching pinches (reported). `flatten` is the per-segment sample count.
+HealReport healTrimLoop(const TrimLoop& loop, const HealOptions& opts = {}, int flatten = 48);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pcurve fidelity guard — the load-bearing robustness property.

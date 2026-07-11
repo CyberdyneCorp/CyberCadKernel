@@ -264,7 +264,155 @@ bool loopWellFormed(const std::vector<ParamPoint>& poly) noexcept {
   return true;
 }
 
+// UV distance between two param points.
+double dist2d(const ParamPoint& a, const ParamPoint& b) noexcept {
+  const double du = a.u - b.u, dv = a.v - b.v;
+  return std::sqrt(du * du + dv * dv);
+}
+
+// Flatten a loop for HEALING and record the raw gap at every segment JOIN.
+//   * The polyline keeps every sampled vertex (only EXACT bit-identical consecutive dups
+//     from oversampling a single segment are dropped) — so a small inter-segment gap of,
+//     say, 1e-7 between one segment's end and the next segment's start stays VISIBLE (the
+//     production flattenLoop's 1e-15 dedup would erase gaps below 1e-15 only, but the raw
+//     form here also feeds the join-gap vector below).
+//   * joinGaps[k] = ‖end of segment k − start of segment k+1‖ for k=0..S-2, and the last
+//     entry = ‖end of the LAST segment − start of the FIRST segment‖ (the closing join).
+//     This is what distinguishes a real GAP from an ordinary long shape edge.
+// Append a sampled vertex, skipping an EXACT bit-identical consecutive dup (oversampling of
+// one segment — not a gap; a real gap is a nonzero step that survives).
+void appendUnique(std::vector<ParamPoint>& poly, const ParamPoint& p) {
+  if (!poly.empty() && p.u == poly.back().u && p.v == poly.back().v) return;
+  poly.push_back(p);
+}
+
+std::vector<ParamPoint> flattenLoopForHeal(const TrimLoop& loop, int segsPerSegment,
+                                           std::vector<double>& joinGaps) {
+  std::vector<ParamPoint> poly;
+  joinGaps.clear();
+  if (loop.empty()) return poly;
+  const int n = std::max(2, segsPerSegment);
+  const ParamPoint firstStart = segmentValue(loop.front(), 0.0);
+  ParamPoint prevEnd = firstStart;
+  for (std::size_t s = 0; s < loop.size(); ++s) {
+    const PcurveSegment& seg = loop[s];
+    if (s > 0) joinGaps.push_back(dist2d(prevEnd, segmentValue(seg, 0.0)));  // gap into seg
+    for (int i = 0; i <= n; ++i)
+      appendUnique(poly, segmentValue(seg, static_cast<double>(i) / n));
+    prevEnd = segmentValue(seg, 1.0);
+  }
+  joinGaps.push_back(dist2d(prevEnd, firstStart));  // closing join
+  return poly;
+}
+
 }  // namespace
+
+// ─────────────────────────────────────────────────────────────────────────────
+// healLoop — tolerant-topology healing on a flattened loop polyline.
+//
+// REGION-PRESERVATION PROOF (why a heal never flips a classification):
+//   Every weld moves a vertex by at most gapTol/2 (two vertices ≤ gapTol apart are merged
+//   to their midpoint). A ray-cast verdict for a point P changes only if the boundary
+//   crosses P, i.e. only if some boundary point moves across P. No boundary vertex moves
+//   farther than gapTol/2, so a P whose distance to the boundary exceeds gapTol/2 keeps
+//   its verdict. Points within gapTol of the boundary are the OnBoundary band anyway
+//   (classify uses onEdgeTol; a heal is only enabled when gapTol ≥ onEdgeTol scale). A
+//   genuine large gap is NOT welded (declined) and a pinch is NOT split (declined) — so a
+//   heal only ever nudges an already-near-valid loop; it never re-routes the boundary.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+
+// Pass 0 — join-gap triage. A gap at a segment JOIN that exceeds tol is a GENUINE large gap
+// (the loop is not closeable within tolerance): the ONLY reliable way to tell a real gap
+// from a long shape edge (a rectangle's long side is a huge step but is NOT a gap). Records
+// largeGap/residualGap in `rep`; returns true iff a large gap forces a decline.
+bool healTriageLargeGap(const std::vector<double>& joinGaps, double tol, HealReport& rep) {
+  for (const double g : joinGaps)
+    if (g > tol) {
+      rep.largeGap = true;
+      rep.residualGap = std::max(rep.residualGap, g);
+    }
+  return rep.largeGap;
+}
+
+// Pass 1 — weld small consecutive gaps to their midpoint (region-preserving: each vertex
+// moves ≤ tol/2), including the loop's closing edge. Returns the welded polyline; updates
+// gapsClosed / maxGapClosed / changed in `rep`.
+std::vector<ParamPoint> healWeldGaps(const std::vector<ParamPoint>& poly, double tol,
+                                     HealReport& rep) {
+  std::vector<ParamPoint> out;
+  out.reserve(poly.size());
+  for (const ParamPoint& p : poly) {
+    const double d = out.empty() ? -1.0 : dist2d(out.back(), p);
+    if (d > 0.0 && d <= tol) {  // a small gap → weld previous vertex to the midpoint
+      out.back() = ParamPoint{0.5 * (out.back().u + p.u), 0.5 * (out.back().v + p.v)};
+      rep.gapsClosed += 1;
+      rep.maxGapClosed = std::max(rep.maxGapClosed, d);
+      rep.changed = true;
+      continue;
+    }
+    out.push_back(p);
+  }
+  // Closing edge: weld first/last if within tol (the loop's implicit closure).
+  if (out.size() >= 2) {
+    const double d = dist2d(out.front(), out.back());
+    if (d == 0.0) { out.pop_back(); rep.changed = true; }  // already coincident
+    else if (d <= tol) {
+      out.front() = ParamPoint{0.5 * (out.front().u + out.back().u),
+                               0.5 * (out.front().v + out.back().v)};
+      out.pop_back();
+      rep.gapsClosed += 1;
+      rep.maxGapClosed = std::max(rep.maxGapClosed, d);
+      rep.changed = true;
+    }
+  }
+  return out;
+}
+
+// Pass 2 — pinch detection: a repeated NON-adjacent vertex (within tol) means the loop
+// self-touches. Returns true iff a pinch is found.
+bool healHasPinch(const std::vector<ParamPoint>& out, double tol) {
+  const std::size_t n = out.size();
+  for (std::size_t i = 0; i < n; ++i)
+    for (std::size_t k = i + 2; k < n; ++k) {
+      if (i == 0 && k == n - 1) continue;  // adjacent across the closing edge
+      if (dist2d(out[i], out[k]) <= tol) return true;
+    }
+  return false;
+}
+
+}  // namespace
+
+HealReport healLoop(std::vector<ParamPoint>& poly, const std::vector<double>& joinGaps,
+                    const HealOptions& opts) {
+  HealReport rep;
+  if (poly.size() < 2) {  // nothing to weld; validity decided by the raycast/wellformed
+    rep.healed = poly.size() >= 3;
+    return rep;
+  }
+
+  const double extent = std::max(polyExtent(poly), 1e-300);
+  const double tol = opts.gapTol * std::max(extent, 1.0);
+  rep.tolerance = tol;
+
+  if (healTriageLargeGap(joinGaps, tol, rep)) return rep;  // genuine large gap → decline
+
+  std::vector<ParamPoint> out = healWeldGaps(poly, tol, rep);  // weld small gaps + closure
+  poly.swap(out);
+
+  if (poly.size() < 3) return rep;                 // collapsed → degenerate, honest decline
+  if (healHasPinch(poly, tol)) { rep.pinch = true; return rep; }  // self-touch → decline
+
+  rep.healed = true;  // welded (if needed) and non-self-touching → valid to classify
+  return rep;
+}
+
+// healTrimLoop — flatten (join-gap-aware) + heal, discarding the healed polyline.
+HealReport healTrimLoop(const TrimLoop& loop, const HealOptions& opts, int flatten) {
+  std::vector<double> joinGaps;
+  std::vector<ParamPoint> poly = flattenLoopForHeal(loop, flatten, joinGaps);
+  return healLoop(poly, joinGaps, opts);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // makeTrimmedFace — build from an existing topology face Shape.
@@ -311,12 +459,35 @@ std::optional<TrimmedNurbsFace> makeTrimmedFace(const Shape& face) {
 // ─────────────────────────────────────────────────────────────────────────────
 // classify — robust point-in-trimmed-region.
 // ─────────────────────────────────────────────────────────────────────────────
+namespace {
+
+// Prepare one loop's raycast polyline. With healing on, flatten (join-gap-aware), heal,
+// and use the healed polyline iff the heal succeeded; a large gap / pinch / degeneracy
+// makes `ok` false (→ the caller declines Unknown, honestly). With healing off, use the
+// production flattenLoop + loopWellFormed exactly as before (no behaviour change).
+std::vector<ParamPoint> preparedLoop(const TrimLoop& loop, const ClassifyOptions& opts,
+                                     bool& ok) {
+  if (!opts.heal) {
+    std::vector<ParamPoint> poly = flattenLoop(loop, opts.flattenSegments);
+    ok = loopWellFormed(poly);
+    return poly;
+  }
+  std::vector<double> joinGaps;
+  std::vector<ParamPoint> poly = flattenLoopForHeal(loop, opts.flattenSegments, joinGaps);
+  const HealReport rep = healLoop(poly, joinGaps, HealOptions{opts.healGapTol});
+  ok = rep.healed && loopWellFormed(poly);
+  return poly;
+}
+
+}  // namespace
+
 Containment classify(const TrimmedNurbsFace& face, const ParamPoint& p,
                      const ClassifyOptions& opts) {
   if (!face.hasOuter()) return Containment::Unknown;
 
-  const std::vector<ParamPoint> outer = flattenLoop(face.outer, opts.flattenSegments);
-  if (!loopWellFormed(outer)) return Containment::Unknown;
+  bool ok = false;
+  const std::vector<ParamPoint> outer = preparedLoop(face.outer, opts, ok);
+  if (!ok) return Containment::Unknown;
 
   const double extent = std::max(polyExtent(outer), 1e-300);
   const double tol = opts.onEdgeTol * std::max(extent, 1.0);
@@ -329,8 +500,9 @@ Containment classify(const TrimmedNurbsFace& face, const ParamPoint& p,
   // Inside the outer loop: a point inside ANY hole is Out; on a hole edge is
   // OnBoundary; a hole ambiguity is Unknown.
   for (const TrimLoop& hole : face.holes) {
-    const std::vector<ParamPoint> hpoly = flattenLoop(hole, opts.flattenSegments);
-    if (!loopWellFormed(hpoly)) return Containment::Unknown;
+    bool hok = false;
+    const std::vector<ParamPoint> hpoly = preparedLoop(hole, opts, hok);
+    if (!hok) return Containment::Unknown;
     const double hext = std::max(polyExtent(hpoly), 1e-300);
     const double htol = opts.onEdgeTol * std::max(hext, 1.0);
     const int h = raycast(hpoly, p, htol);

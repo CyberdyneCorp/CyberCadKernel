@@ -306,6 +306,146 @@ static void testDegenerate() {
   expectClass(classify(badHole, {0.3, 0.3}), Containment::Unknown, "degenerate hole → Unknown");
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. TOLERANT-TOPOLOGY HEALING (always-on).
+//
+// Airtight oracles for the healing pass. A rectangular outer loop [0.2,0.8]² is the
+// EXACT reference region; each gate injects a specific defect and proves the heal is
+// (a) correct when it should heal, (b) an honest decline when it must not, and — the
+// load-bearing property — (c) REGION-PRESERVING: a heal never flips an interior/exterior
+// point's In/Out verdict versus the exact loop.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// A rectangle [uLo,uHi]×[vLo,vHi] with the FIRST segment's start shifted by (du,dv) so
+// the closing join (last segment end → first segment start) opens a gap of ‖(du,dv)‖.
+// Every other join stays exact. The gap magnitude is exactly the injected shift.
+static TrimLoop rectLoopGapped(double uLo, double uHi, double vLo, double vHi,
+                               double du, double dv) {
+  TrimLoop loop;
+  // Bottom edge starts at the SHIFTED corner (uLo+du, vLo+dv) → the closing edge from
+  // (uLo,vHi) back to the start no longer meets the true corner: an injected gap.
+  loop.push_back(lineSeg(uLo + du, vLo + dv, uHi, vLo));
+  loop.push_back(lineSeg(uHi, vLo, uHi, vHi));
+  loop.push_back(lineSeg(uHi, vHi, uLo, vHi));
+  loop.push_back(lineSeg(uLo, vHi, uLo, vLo));  // ends at the TRUE corner (uLo,vLo)
+  return loop;
+}
+
+// The set of interior/exterior probe points used for the preservation proof.
+struct Probe { double u, v; Containment want; const char* name; };
+static const Probe kProbes[] = {
+    {0.30, 0.30, Containment::In,  "interior (0.30,0.30)"},
+    {0.50, 0.50, Containment::In,  "interior center"},
+    {0.70, 0.70, Containment::In,  "interior (0.70,0.70)"},
+    {0.25, 0.75, Containment::In,  "interior (0.25,0.75)"},
+    {0.10, 0.50, Containment::Out, "exterior left"},
+    {0.90, 0.50, Containment::Out, "exterior right"},
+    {0.50, 0.10, Containment::Out, "exterior below"},
+    {0.50, 0.90, Containment::Out, "exterior above"},
+};
+
+static void testHealing() {
+  const FaceSurface patch = bicubicPatch();
+
+  // ── (1) SMALL injected gap HEALS to closed and classifies IDENTICALLY to the exact
+  //        loop. Inject ε = 1e-8 (× extent ~0.85 ⇒ ~8.5e-9 gap), far under the default
+  //        healGapTol = 1e-6·extent (~8.5e-7). The gapped loop must classify EVERY probe
+  //        the same as the exact loop.
+  TrimmedNurbsFace exact;
+  exact.surface = patch;
+  exact.outer = rectLoop(0.2, 0.8, 0.2, 0.8);
+
+  const double eps = 1e-8;
+  TrimmedNurbsFace gapped;
+  gapped.surface = patch;
+  gapped.outer = rectLoopGapped(0.2, 0.8, 0.2, 0.8, eps, eps);
+
+  for (const Probe& pr : kProbes) {
+    const Containment cExact = classify(exact, {pr.u, pr.v});
+    const Containment cGap = classify(gapped, {pr.u, pr.v});
+    expectClass(cExact, pr.want, pr.name);              // sanity: exact loop is correct
+    expectClass(cGap, cExact, "small gap heals identical");  // heal reproduces exact
+  }
+
+  // The heal REPORT confirms a gap was welded (not a large-gap decline, not a pinch).
+  HealReport hr = healTrimLoop(gapped.outer);
+  expectTrue(hr.healed, "small-gap loop heals (healed)");
+  expectTrue(hr.changed, "small-gap heal moved a vertex (changed)");
+  expectTrue(!hr.largeGap, "small gap is NOT flagged large");
+  expectTrue(!hr.pinch, "small-gap loop is not a pinch");
+  expectTrue(hr.gapsClosed >= 1, "small gap was welded (gapsClosed>=1)");
+  expectLE(hr.maxGapClosed, hr.tolerance, "welded gap is within tolerance");
+
+  // ── (2) LARGE gap (beyond tol) still DECLINES honestly — NOT force-healed. Inject a
+  //        gap of 0.05 (× nothing; absolute ~0.05 ≫ tol ~8.5e-7). classify → Unknown, and
+  //        the report flags largeGap with the residual gap it refused to weld.
+  TrimmedNurbsFace bigGap;
+  bigGap.surface = patch;
+  bigGap.outer = rectLoopGapped(0.2, 0.8, 0.2, 0.8, 0.05, 0.0);
+  expectClass(classify(bigGap, {0.5, 0.5}), Containment::Unknown, "large gap declines Unknown");
+  HealReport bg = healTrimLoop(bigGap.outer);
+  expectTrue(!bg.healed, "large-gap loop declines (not healed)");
+  expectTrue(bg.largeGap, "large gap is flagged (largeGap)");
+  expectTrue(!bg.pinch, "large gap is not a pinch");
+  expectGT(bg.residualGap, bg.tolerance, "residual gap exceeds tolerance");
+
+  // ── (3) PRESERVATION across a SWEEP of gap sizes that heal: for every ε in a band up to
+  //        the tolerance, NO probe's classification ever flips vs the exact loop. This is
+  //        the explicit "a heal never changes the region" proof.
+  const double extent = 0.6 * std::sqrt(2.0);  // rect diagonal ≈ 0.849
+  const double tol = 1e-6 * extent;            // default healGapTol × extent
+  const double gapSizes[] = {1e-10, 1e-9, 1e-8, 1e-7, 0.4 * tol, 0.9 * tol};
+  for (double g : gapSizes) {
+    TrimmedNurbsFace gf;
+    gf.surface = patch;
+    // Split the injected shift across u and v so the gap magnitude is g.
+    const double c = g / std::sqrt(2.0);
+    gf.outer = rectLoopGapped(0.2, 0.8, 0.2, 0.8, c, c);
+    for (const Probe& pr : kProbes)
+      expectClass(classify(gf, {pr.u, pr.v}), pr.want, "preservation: probe unchanged under heal");
+  }
+
+  // ── (4a) NEAR-COINCIDENT PCURVE SNAP: two pcurve endpoints that are within tol but not
+  //         coincident are snapped to share the boundary. The gapped rectangle IS exactly
+  //         this case (the closing pcurve's end and the opening pcurve's start are 1e-8
+  //         apart); the heal welds them → the loop is closed. Verify a point ON the healed
+  //         seam classifies OnBoundary (the snapped seam is a real boundary), and the heal
+  //         reports the snap.
+  TrimmedNurbsFace snap;
+  snap.surface = patch;
+  snap.outer = rectLoopGapped(0.2, 0.8, 0.2, 0.8, eps, eps);
+  expectClass(classify(snap, {0.2, 0.5}), Containment::OnBoundary,
+              "point on snapped seam OnBoundary");
+  HealReport sr = healTrimLoop(snap.outer);
+  expectTrue(sr.healed && sr.gapsClosed >= 1, "near-coincident pcurves snap (welded)");
+
+  // ── (4b) PINCH DETECTION: a bowtie that self-touches at (0.5,0.5) is DETECTED and
+  //         reported (pinch=true), and classify declines Unknown — never fabricated into a
+  //         different region by "healing" the pinch away.
+  TrimmedNurbsFace pinch;
+  pinch.surface = patch;
+  pinch.outer.push_back(lineSeg(0.2, 0.2, 0.5, 0.5));
+  pinch.outer.push_back(lineSeg(0.5, 0.5, 0.8, 0.2));
+  pinch.outer.push_back(lineSeg(0.8, 0.2, 0.5, 0.5));  // revisits the pinch vertex
+  pinch.outer.push_back(lineSeg(0.5, 0.5, 0.2, 0.2));
+  expectClass(classify(pinch, {0.4, 0.35}), Containment::Unknown, "pinch declines Unknown");
+  HealReport pr = healTrimLoop(pinch.outer);
+  expectTrue(pr.pinch, "pinch is DETECTED (pinch=true)");
+  expectTrue(!pr.healed, "pinch is declined honestly (not healed)");
+
+  // ── (5) HEALING TOGGLE: with heal OFF, the small-gap loop is NOT welded. Depending on
+  //        the flatten dedup it either classifies (the 1e-8 gap survives as a stray edge)
+  //        or declines — the point is that the RESULT can differ from the healed one, i.e.
+  //        healing is what closes the gap. Assert the healed classify is In at center while
+  //        confirming the toggle path runs without crashing.
+  ClassifyOptions noHeal;
+  noHeal.heal = false;
+  (void)classify(gapped, {0.5, 0.5}, noHeal);  // must not crash / must be deterministic
+  ClassifyOptions withHeal;  // default heal=true
+  expectClass(classify(gapped, {0.5, 0.5}, withHeal), Containment::In,
+              "healed gapped loop: center In");
+}
+
 #ifdef CYBERCAD_HAS_NUMSCI
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. Pcurve construction round-trip (numsci).
@@ -438,6 +578,7 @@ int main() {
   testContainment();
   testFidelity();
   testDegenerate();
+  testHealing();
 #ifdef CYBERCAD_HAS_NUMSCI
   testConstruction();
   testConstructionOffSurface();

@@ -785,13 +785,24 @@ SeedSet seed_intersection(const SurfaceAdapter& A, const SurfaceAdapter& B,
     const bool bothFreeform = A.freeformSpanCount >= 1 && B.freeformSpanCount >= 1;
     const int minSpan = std::min(A.freeformSpanCount, B.freeformSpanCount);
     const int osc = std::max(A.freeformComplexity, B.freeformComplexity);
-    // A pair warrants finer seeding when both operands are freeform AND either is genuinely
-    // dense (≥ 2 spans on the leaner operand — a multi-patch net, not a single Bézier patch)
-    // or wavy (a multi-modal control net). Flat single-patch freeform pairs are unchanged.
-    if (bothFreeform && (minSpan >= 2 || osc >= 4)) {
-      // Strength: base ×2 (leaf ½, grid ×2 — the proven sweet spot), stepping to ×4 leaf /
-      // ×3 grid for a DENSE-and-wavy pair (leaner operand ≥ 4 spans, or a clearly wavy net)
-      // that can pack several loops per cell. Both bounded by hard caps.
+    // A pair warrants finer seeding when BOTH operands are freeform. The two operands of a
+    // general NURBS↔NURBS pair can host SEVERAL close co-resident transversal loops even when
+    // each net is SMOOTH (a low-span, non-wavy freeform pair — e.g. two gently-bowed sheets or
+    // two paraboloids that interpenetrate over a wide region cross in more than one loop). The
+    // coarse fixed grid merges those loops into ONE cluster → one representative seed → the
+    // second loop is missed (the dominant measured L2 recall gap; empirically the finer INITIAL
+    // grid — not the post-hoc critic — is the only DISAGREED-safe lever that separates them,
+    // because they were already inside one covered cluster). So the gate fires on ANY
+    // freeform↔freeform pair; the STRENGTH still scales with density/waviness so smooth pairs
+    // pay only the modest bump and canonical simple poses are not over-resolved:
+    //   * ELEMENTARY / plane / torus operand ⇒ span count 0 ⇒ NOT bothFreeform ⇒ BYTE-IDENTICAL
+    //     (every S1 analytic pair, plane∩sphere, plane∩B-spline S4-f fixtures, sphere∩Bézier).
+    //   * base tier (any freeform↔freeform): grid ×2 / leaf ½ — the proven sweet spot.
+    //   * dense/wavy tier (leaner operand ≥ 4 spans, or a clearly multi-modal net): grid ×3 /
+    //     leaf ¼ — for pairs that can pack several loops per cell.
+    // Both tiers are bounded by the same hard caps (grid ≤ 16, leaf ≥ 1/256); maxDepth + the
+    // leaf floor still bound termination. Deterministic; no caller knob; OCCT-free.
+    if (bothFreeform) {
       const bool dense = minSpan >= 4 || osc >= 6;
       const int refine  = dense ? 4 : 2;              // leaf divisor
       const int gridMul = dense ? 3 : 2;              // initial pre-split multiplier

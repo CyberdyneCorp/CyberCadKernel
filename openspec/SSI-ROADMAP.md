@@ -653,7 +653,7 @@ Remaining S5 work: general (non-Steinmetz) branched pairs, transversal/apex cone
 pairs, cone∩cone, the two-circle / apex-crossing / transversal cone∩sphere crossings, and more
 curved-curved families.
 
-## NURBS Layer 2 — general-freeform measurement pass (empirical decline map) · ✅ MEASURED 2026-07-10 · ⛔ POST-HOC RECALL CAMPAIGN DECLINED 2026-07-11 · ✅ SCALE-ADAPTIVE INITIAL SEEDING LANDED 2026-07-11 (decline 28.5%→18.8%, DISAGREED==0)
+## NURBS Layer 2 — general-freeform measurement pass (empirical decline map) · ✅ MEASURED 2026-07-10 · ⛔ POST-HOC RECALL CAMPAIGN DECLINED 2026-07-11 · ✅ SCALE-ADAPTIVE INITIAL SEEDING LANDED 2026-07-11 (decline 28.5%→18.8%, DISAGREED==0) · ✅ LOCUS-COVERAGE ORACLE AUDIT + FREEFORM-PAIR SEEDING EXTENSION LANDED 2026-07-11 (true decline 18.8%; audit → 0 over-counts, residual 100% genuine; extension → 18.8%→16.7%/17.4% combined, DISAGREED==0)
 
 Before scoping further S4 slices, the general NURBS↔NURBS boundary was measured empirically
 with two differential fuzzers (verification only; `src/native` untouched, `cc_*` unchanged):
@@ -800,10 +800,77 @@ are BYTE-IDENTICAL and only dense freeform multi-loop poses get finer initial se
   compile error in the committed harness — verified present on clean HEAD, unrelated to this
   change, which touches no `tests/sim` harness.)
 
-Honest framing carried forward: the residual 18.8% is now dominated by the near-tangent grazes
-the seeder correctly refuses (S4-c/d moat) and the OCCT arc-split over-counts (oracle artifact) —
-NOT recoverable by resolution alone. This slice raises the RECALL FLOOR on the co-resident/small
-transversal loops; it is not a completeness proof.
+Honest framing carried forward: the residual 18.8% raises the RECALL FLOOR on the
+co-resident/small transversal loops; it is not a completeness proof. (**The prior belief that
+this residual was partly OCCT arc-split "over-counts" of one native loop was EMPIRICALLY
+FALSIFIED by the locus-coverage oracle audit below: it is 0 — the entire residual is genuine
+native seeding-recall of distinct OCCT loci.**)
+
+### Locus-coverage oracle audit — the TRUE decline is genuine, not an over-count artifact · ✅ DONE 2026-07-11 (true decline 18.8%, 0 over-counts, DISAGREED==0)
+
+The freeform fuzzer's native-vs-OCCT comparison was hardened into an EXPLICIT bidirectional
+LOCUS-COVERAGE oracle (`tests/sim/native_ssi_freeform_fuzz.mm`; SIM harness only, `src/native`
+untouched, `cc_*` unchanged) to settle whether the residual multi-branch declines were genuine
+misses or OCCT `GeomAPI_IntSS` arc-split over-counts (OCCT splits one intersection locus into
+several line components; a component/branch-COUNT comparison would mis-score native's single
+correct loop as a decline whenever OCCT split it into more pieces than native traced).
+
+- **The oracle compares LOCI, not counts.** Per OCCT line: (a) covered by native, (b) uncovered
+  by native but covered by a SIBLING OCCT line native already covered — an arc-split OVER-COUNT
+  credited to native (native traced the same geometric locus once; OCCT just chopped it), or (c)
+  uncovered and on no other OCCT line — a GENUINE distinct locus native missed. The reverse
+  residual now accumulates over genuine-miss lines only, so an over-count-only case falls through
+  to AGREED regardless of how many arc-components OCCT emitted. Fixed onSurf/onCurve tolerances
+  are REUSED, never widened; the DISAGREED gates (native node off both surfaces; native curve off
+  the OCCT locus) are unchanged, so the no-silent-wrong invariant is preserved and STRENGTHENED
+  (an over-count sibling can no longer be counted as native coverage of a locus it does not cover).
+- **Measured (3 seeds, N=48, base 0x5515D1FF0F0F):** AGREED 117 / DECLINED 27 (**18.8%**) /
+  DISAGREED 0 / ORACLE-INACCURATE 0. **LOCUS-COVERAGE AUDIT: 0 AGREED over-count trials, 0
+  over-count decline lines, 39 genuine distinct-locus misses** (worst missed-locus 3D length
+  ~2-6). **The TRUE decline equals the pre-audit 18.8% — the oracle was already coverage-correct;
+  NONE of the "multi-branch declines" were OCCT over-counts.** The entire 18.8% residual is
+  genuine native seeding-recall of distinct OCCT loci. `DISAGREED == 0` held.
+
+### Freeform-pair scale-adaptive seeding extension — recover smooth co-resident loops · ✅ LANDED 2026-07-11 (decline 18.8%→16.7% primary / 19.1%→17.4% combined, DISAGREED==0)
+
+With the audit proving the residual is genuine (not an oracle artifact), the seeding gate was
+extended in `src/native/ssi/seeding.cpp` (OCCT-free, no `cc_*` change, no caller knob,
+`src/native/boolean` untouched). The scale-adaptive gate previously fired ONLY on wavy/dense
+freeform pairs (`minSpan ≥ 2 || osc ≥ 4`); the dominant remaining genuine misses were SMOOTH
+freeform↔freeform pairs (low-span, non-wavy — two gently-bowed sheets / two paraboloids that
+interpenetrate over a wide region and cross in MORE THAN ONE loop) that the coarse grid merged
+into one cluster → one representative seed → the second loop missed. The gate now fires on ANY
+freeform↔freeform pair; the STRENGTH still scales with density/waviness (base grid ×2 / leaf ½;
+dense/wavy tier grid ×3 / leaf ¼), bounded by the same hard caps (grid ≤ 16, leaf ≥ 1/256):
+
+- **Canonical safety — BYTE-IDENTICAL.** The gate keys off `freeformSpanCount ≥ 1` on BOTH
+  operands. An ELEMENTARY / plane / torus operand has span count 0, so any pair with one — every
+  S1 analytic pair, plane∩sphere, plane∩B-spline (the S4-f BEFORE/AFTER seed-count fixtures,
+  which assert `before.tracedBranches == 1` / `curveCount() == 1`), sphere∩Bézier — is unchanged.
+  The pure-freeform host fixtures assert INEQUALITIES (`branchCount() >= …`), so finer seeding
+  keeps them green. **All 9 `test_native_ssi_*` host suites pass (seeding 9, marching 21, s4f 6,
+  s4_classification 22, s4e 7, exact_fuzz 144-trial DISAGREED=0, boolean 4, curved_boolean 13);
+  no assertion changes.**
+- **Cost — flat.** Host marching 28.1 s → 29.0 s (+3%), seeding 3.40 s → 3.54 s (+3%): the
+  elementary/mixed fixtures (gate off) are byte-identical work; the small pure-freeform fixtures'
+  finer seeding is cheap. SSI marching SIM parity (`run-sim-native-ssi-marching.sh`) green.
+- **Recall — a real, consistent gain (bounded).** Committed instrument (unmodified `SeedOptions`;
+  the win is entirely the `src/native` default): decline **18.8% → 16.7%** on base 0x5515D1FF0F0F
+  (27 → 24 / 144) and **19.4% → 18.1%** on base 0x1234ABCD (28 → 26 / 144) — **combined 6 seeds
+  / 288 trials: 19.1% → 17.4% (55 → 50)**. Strictly in the right direction on BOTH bases; every
+  Part-B decline index is a SUBSET of the baseline's (no previously-agreed case regressed). The
+  recovered population is the smooth near-tangent-family / tilted-sheets co-resident second loops.
+  **`DISAGREED == 0` on all 288 trials.** The caller-side finer-seeding CEILING (grid 12, leaf
+  1/96) measured 9.7% — so meaningful genuine headroom remains, but is NOT bounded/safe to take
+  everywhere (its cost is much higher); the landed default takes the bounded, canonical-safe slice.
+
+**Remaining residual (honest / next frontier):** ~16-18% — the hard multi-branch moat. Many
+remaining misses are second loci in pairs that ALREADY qualify for the gate yet still merge two
+distinct loops into one seed at the ×2/×3 grid (the marching-core / seed-cluster-split frontier),
+plus deeper co-resident structure the finer-everywhere ceiling (9.7%) reaches only at costs the
+bounded default deliberately does not pay. The over-count-artifact hypothesis is closed (audited
+to 0); the residual is genuine recall, attackable next only by seed-cluster distinct-branch
+splitting or a targeted-cost critic — NOT by widening the initial grid further.
 
 ## Sequencing & effort
 

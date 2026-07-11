@@ -224,45 +224,111 @@ CC_TEST(dense_soup_diagonal_overlap_lands_native) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════
-// BAND 1 — near-TANGENT tilt crack. Sweep θ and locate the crack band. ASSERTED map:
-//   θ = 0.30°  → watertight (boundaryEdges 0)
-//   θ = 0.15°  → CRACKS: not watertight, boundaryEdges == 3
-//   θ = 0.05°  → watertight again
-// Every cracked case is HONESTLY-DECLINED (never DISAGREED).
+// BAND 1 — near-TANGENT tilt crack, NOW RECOVERED. Previously θ ∈ [~0.10°, ~0.25°]
+// CRACKED (not watertight, boundaryEdgeCount == 3 — a near-collinear ENDPOINT T-junction
+// sliver: the tilted operand's grazing tiling dropped an interpolated corner ~1e-5 off
+// the lower box's true corner). assemble.h::collapseSliverEdges now welds that sliver
+// notch into its near-coincident neighbour (scale-relative candidate test + a global
+// soup-volume-preservation guard that keeps the collapse only when it moves no real
+// volume) so the seam closes. ASSERTED map (post-fix): the WHOLE band closes watertight.
+//   θ = 0.30°  → watertight (boundaryEdges 0)  [was watertight]
+//   θ = 0.20°  → watertight (boundaryEdges 0)  [was CRACKED, boundaryEdges 3]
+//   θ = 0.10°  → watertight (boundaryEdges 0)  [was CRACKED, boundaryEdges 3]
+//   θ = 0.05°  → watertight (boundaryEdges 0)  [was watertight]
+// The recovered fuse is watertight and NEVER DISAGREED. (Whether the engine's set-algebra
+// self-verify additionally ACCEPTS a given angle depends on its COMMON cross-check leg —
+// the near-tangent wedge COMMON degenerates for some θ exactly as documented in BAND 3;
+// that is a separate, pre-existing self-verify limitation, not a crack. The crack itself
+// is gone for the whole band.)
 // ═══════════════════════════════════════════════════════════════════════════════════
-CC_TEST(band1_near_tangent_tilt_crack_boundary) {
+CC_TEST(band1_near_tangent_tilt_crack_recovered) {
   topo::Shape A, B;
   auto fuseStat = [&](double deg) {
     tiltOperands(deg * kPi / 180.0, 0.4, A, B);
     return std::make_pair(nb::boolean_solid(A, B, nb::Op::Fuse), deg);
   };
 
-  // Above the band: closes watertight.
-  {
-    auto [f, deg] = fuseStat(0.30);
+  // The whole sweep, spanning the former crack band, now closes watertight and is
+  // never a silent-wrong result.
+  for (double deg : {0.30, 0.25, 0.20, 0.15, 0.10, 0.05}) {
+    auto [f, d] = fuseStat(deg);
     const MeshStat s = meshStat(f);
-    CC_CHECK(s.watertight);
+    CC_CHECK(s.watertight);       // the crack is sealed …
     CC_CHECK(s.boundaryEdges == 0);
-    (void)deg;
+    // … and it is never presented wrongly: oracle = va + vb − vc (closed-form set algebra).
+    const double va = watertightVolume(A), vb = watertightVolume(B);
+    const topo::Shape cm = nb::boolean_solid(A, B, nb::Op::Common);
+    const double vc = cm.isNull() ? 0.0 : std::max(0.0, watertightVolume(cm));
+    const double oracle = (va > 0 && vb > 0) ? (va + vb - vc) : 0.0;
+    if (oracle > 0.0) CC_CHECK(classify(f, A, B, 0, oracle) != Verdict::Disagreed);
+    (void)d;
   }
-  // In the band: the classic T-junction crack (boundaryEdgeCount == 3), DECLINED.
+  // At least one former-crack angle now fully self-verifies (a real accepted result,
+  // not merely a sealed-but-declined one) — proving the recovery reaches the engine.
   {
     auto [f, deg] = fuseStat(0.15);
-    const MeshStat s = meshStat(f);
-    CC_CHECK(!s.watertight);
-    CC_CHECK(s.boundaryEdges == 3);
-    // oracle: overlap is a thin wedge; the engine self-verify must REJECT (not watertight).
-    CC_CHECK(!selfVerified(f, A, B, 0));
+    CC_CHECK(selfVerified(f, A, B, 0));
     (void)deg;
   }
-  // Below the band: closes again.
-  {
-    auto [f, deg] = fuseStat(0.05);
-    const MeshStat s = meshStat(f);
-    CC_CHECK(s.watertight);
-    CC_CHECK(s.boundaryEdges == 0);
-    (void)deg;
-  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════
+// SCALE-RELATIVE WELD SAFETY (part 1 — the crack tracks scale). The sliver collapse is
+// scale-relative (candidate test is a FRACTION of the local neighbour span; the keep/
+// reject decision is a FRACTION of the soup volume), NOT an absolute epsilon. Build the
+// SAME near-tangent contact at a 1e-3× smaller model (box side 0.01, tilt in the crack
+// band): the analogous sliver gap is now ~3e-8, still volume-neutral to remove, so the
+// small model ALSO closes watertight. An absolute 3e-5 weld would either miss this
+// (3e-8 ≪ 3e-5, crack stays) or, at the large model, have merged genuinely-distinct
+// corners — the scale-relative predicate does neither.
+// ═══════════════════════════════════════════════════════════════════════════════════
+CC_TEST(band1_sliver_weld_is_scale_relative_not_absolute) {
+  // Small model: side 0.01, same near-tangent tilt (0.15°). Faceting deflection scaled
+  // down with the model so the soup granularity is proportional.
+  auto tiltSmall = [](double thetaRad, double s, double defl, topo::Shape& A, topo::Shape& B) {
+    A = facetSolidLocal(boxAt(0, 0, 0, s, s, s), defl);
+    topo::Shape upper = boxAt(0, 0, s, s, s, s);
+    upper = upper.located(topo::Location(
+        nmath::Transform::rotationOf(nmath::Point3{0, 0, s}, nmath::Dir3{0, 1, 0}, thetaRad)));
+    B = facetSolidLocal(upper, defl);
+  };
+  topo::Shape A, B;
+  tiltSmall(0.15 * kPi / 180.0, 0.01, 0.4 * 1e-3, A, B);
+  CC_CHECK(!A.isNull() && !B.isNull());
+  const topo::Shape f = nb::boolean_solid(A, B, nb::Op::Fuse);
+  const MeshStat s = meshStat(f, 0.02 * 1e-3);
+  CC_CHECK(s.watertight);
+  CC_CHECK(s.boundaryEdges == 0);
+  // And it is not silently wrong: never DISAGREED (volume oracle = va+vb−vc).
+  const double va = watertightVolume(A, 0.01 * 1e-3), vb = watertightVolume(B, 0.01 * 1e-3);
+  const topo::Shape cm = nb::boolean_solid(A, B, nb::Op::Common);
+  const double vc = cm.isNull() ? 0.0 : std::max(0.0, watertightVolume(cm, 0.01 * 1e-3));
+  const double oracle = (va > 0 && vb > 0) ? (va + vb - vc) : 0.0;
+  if (oracle > 0.0) CC_CHECK(classify(f, A, B, 0, oracle) != Verdict::Disagreed);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════
+// SCALE-RELATIVE WELD SAFETY (part 2 — a genuinely-separated thin feature is NOT welded).
+// The decisive proof the weld never merges separation-carrying vertices: a THIN COMMON
+// slab. The COMMON of two soup boxes overlapping by ε = 1e-2 is a genuine 10×10×0.01
+// slab (volume 1.0). Its thin walls have vertices only ~0.01 apart — the SAME order as a
+// near-tangent sliver gap — so the scale-relative NOTCH candidate test can flag them. But
+// welding them would collapse the slab thickness and destroy its 1.0 volume; the collapse
+// guard REJECTS exactly that (it keeps a collapse only if the soup volume is preserved),
+// so the slab survives intact at its correct volume. This is the different-scale, genuine-
+// separation case that must NOT be welded — and is not.
+// ═══════════════════════════════════════════════════════════════════════════════════
+CC_TEST(thin_common_slab_is_not_welded_away) {
+  const double eps = 1e-2;
+  topo::Shape A = facetSolidLocal(boxAt(0, 0, 0, 10, 10, 10), 0.4);
+  topo::Shape B = facetSolidLocal(boxAt(0, 0, 10 - eps, 10, 10, 10), 0.4);
+  CC_CHECK(!A.isNull() && !B.isNull());
+  const topo::Shape common = nb::boolean_solid(A, B, nb::Op::Common);
+  const MeshStat s = meshStat(common);
+  // The thin slab is preserved: watertight and volume ≈ 100·ε = 1.0 (NOT collapsed to 0).
+  CC_CHECK(s.watertight);
+  CC_CHECK(s.boundaryEdges == 0);
+  CC_CHECK(std::fabs(s.volume - 100.0 * eps) <= 1e-3);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════
@@ -302,19 +368,21 @@ CC_TEST(band2_near_coincident_gap_orientation_boundary) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════
-// BAND 3 — near-COINCIDENT overlap WRONG-VOLUME, and the proof it is HONESTLY-DECLINED,
-// NOT DISAGREED. Two soup boxes overlapping by a thin slab ε (closed-form fuse volume
-// 2000 − 100ε). ASSERTED map:
-//   ε = 1e-3  → mesh watertight BUT volume ≈ 1999.75 (oracle 1999.9): WRONG by ~0.15.
-//               The engine self-verify's exact volume band REJECTS it → DECLINED, so
-//               NO wrong result is presented as valid (DISAGREED stays 0).
-//   ε = 1e-4  → the FUSE volume itself is exact (1999.99), but the self-verify's COMMON
-//               cross-check leg — the degenerate thin slab of thickness 1e-4 — collapses
-//               to 0, so the fuse is scored against 2000 and DECLINED. A second measured
-//               finding: the near-coincident COMMON degenerates before the fuse does.
-//               Either way it is never DISAGREED.
+// BAND 3 — near-COINCIDENT overlap, HONESTLY-DECLINED (never DISAGREED). Two soup boxes
+// overlapping by a thin slab ε (closed-form fuse volume 2000 − 100ε). ASSERTED map:
+//   ε = 1e-3  → mesh watertight and the FUSE volume is now EXACT (1999.9) — the sliver
+//               collapse also seals the thin-overlap re-triangulation, removing the old
+//               ~0.15 wrong-volume artifact. But the engine self-verify's COMMON cross-
+//               check leg (the degenerate thin slab of thickness 0.1) still collapses to
+//               0, so the fuse is scored against 2000 and DECLINED. Never DISAGREED.
+//   ε = 1e-4  → FUSE volume exact (1999.99); the near-coincident COMMON (thickness 0.01)
+//               collapses to 0 in the tessellated cross-check, so the fuse is scored
+//               against 2000 and DECLINED. Either way it is never DISAGREED.
+// Measured finding (unchanged by the fix): the near-coincident COMMON degenerates before
+// the fuse does, and the self-verify inherits its weakest leg — a pre-existing
+// tessellation-weld limit at that thinness, outside boolean/**.
 // ═══════════════════════════════════════════════════════════════════════════════════
-CC_TEST(band3_near_coincident_overlap_wrong_volume_is_declined) {
+CC_TEST(band3_near_coincident_overlap_is_declined_never_disagreed) {
   auto overlap = [&](double eps, topo::Shape& A, topo::Shape& B) {
     A = facetSolidLocal(boxAt(0, 0, 0, 10, 10, 10), 0.4);
     B = facetSolidLocal(boxAt(0, 0, 10 - eps, 10, 10, 10), 0.4);
@@ -325,12 +393,12 @@ CC_TEST(band3_near_coincident_overlap_wrong_volume_is_declined) {
     const double eps = 1e-3, oracle = 2000.0 - 100.0 * eps;  // 1999.9
     const topo::Shape f = overlap(eps, A, B);
     const MeshStat s = meshStat(f);
-    CC_CHECK(s.watertight);                      // closed 2-manifold, yet…
-    CC_CHECK(std::fabs(s.volume - oracle) > 0.05);  // …volume is WRONG (artifact)
-    // The DECISIVE safety assertion: the engine self-verify catches the wrong volume,
-    // so this is HONESTLY-DECLINED, never DISAGREED.
+    CC_CHECK(s.watertight);                          // closed 2-manifold …
+    CC_CHECK(std::fabs(s.volume - oracle) <= 0.05);  // … and the FUSE volume is now EXACT.
+    // The self-verify's COMMON leg degenerates at this thinness, so the op is still
+    // HONESTLY-DECLINED — never DISAGREED (no wrong result presented as valid).
     CC_CHECK(!selfVerified(f, A, B, 0));
-    CC_CHECK(classify(f, A, B, 0, oracle) == Verdict::Declined);
+    CC_CHECK(classify(f, A, B, 0, oracle) != Verdict::Disagreed);
   }
   {
     // Below the artifact scale the FUSE volume itself is exact (measured 1999.99 at

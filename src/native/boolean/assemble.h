@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <numeric>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -50,6 +51,28 @@ namespace tess = cybercad::native::tessellate;
 // land within fp round-off; a modest tolerance fuses them without collapsing a
 // genuine small feature of an axis-aligned box.
 inline constexpr double kWeldTol = 1e-7;
+
+// SCALE-RELATIVE tolerance for the near-collinear ENDPOINT T-junction NOTCH test (see
+// collapseSliverEdges). A loop vertex is a candidate sliver notch when it lies within
+// this FRACTION of its neighbour span — both in coincidence-with-a-neighbour and in
+// perpendicular deviation from the line through its neighbours. It is a FRACTION of
+// the LOCAL neighbour span, never an absolute epsilon. Calibrated from the measured
+// separation: a near-tangent graze sliver sits at dMin/span ≈ 0.003–0.005 (its stray
+// vertex is an fp-interpolation hair off the true corner), whereas a legitimately
+// fine-faceted CURVED surface (e.g. a canal-fillet tube) places each vertex at
+// dMin/span ≈ 0.025–0.05 — a real, evenly-spaced facet, NOT a degenerate sliver. This
+// bound sits in that ~5× gap so it catches the sliver and never a genuine curved facet.
+// kSliverVolTol is the final safety net behind it.
+inline constexpr double kSliverNotchFrac = 1.2e-2;
+
+// Relative soup-volume tolerance that VALIDATES a sliver collapse. The collapse is
+// kept only if it changes the polygon soup's exact signed volume by less than this
+// fraction. Removing a hairline near-tangent sliver is volume-neutral (well under
+// this bound); collapsing a legitimately thin feature would move real volume and is
+// therefore REJECTED (original soup kept). This is the principled guarantee that no
+// separation-carrying vertices are merged — it needs no scale-specific magic number
+// because it compares volumes, which are already scale-consistent.
+inline constexpr double kSliverVolTol = 1e-4;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // VertexPool — hash coincident points to a single shared topology Vertex node so
@@ -257,10 +280,192 @@ inline std::vector<math::Point3> distinctCorners(const std::vector<Polygon>& pol
   return pts;
 }
 
+// ── Near-collinear ENDPOINT T-junction sliver collapse ──────────────────────────
+// The interior-insertion repair above closes T-junctions where a neighbour's corner
+// lands in the MIDDLE of an edge. It CANNOT close the ENDPOINT case: a grazing
+// near-tangent tiling drops an interpolated crossing vertex a hair off the shared
+// corner of the other operand's coplanar neighbour, so the stray vertex P sits ~1e-5
+// off that neighbour's corner C — a near-collinear sliver at parameter t≈0/t≈1, which
+// onSegmentInterior rejects (correctly — P is not an interior crossing). The result
+// is a hairline sliver triangle straddling the seam (the classic 3-edge crack).
+//
+// Fix: identify P as a near-collinear NOTCH — a loop vertex whose removal barely
+// changes the boundary — and weld it into its near-coincident neighbour so the seam
+// closes. Two SCALE-RELATIVE conditions, both measured against the vertex's own
+// neighbour span (never an absolute epsilon):
+//   (a) degenerate short edge: min(|P−prev|, |P−next|) ≤ kSliverNotchFrac × |prev−next|
+//   (b) area-preserving:       perp(P, line(prev,next)) ≤ kSliverNotchFrac × |prev−next|
+// (a) says P nearly coincides with a neighbour; (b) says P sits essentially ON the
+// segment through its neighbours, so deleting it is (near) area-preserving.
+//
+// A near-tangent sliver satisfies BOTH; a legitimately THIN feature (e.g. a thin
+// COMMON slab) does NOT — its short edge is a genuine perpendicular wall, so (b)
+// fails when measured against the SHORT span, but can spuriously PASS against a LONG
+// span. Conditions (a)+(b) alone therefore cannot fully separate a sliver from a thin
+// slab (measured: their scale-relative ratios overlap). So the collapse is GLOBALLY
+// VALIDATED: it is applied only if it preserves the polygon soup's exact signed
+// volume to a tight relative bound. Removing a hairline sliver leaves the soup volume
+// unchanged (Δ ~ 1e-3 relative); collapsing a thin slab's wall would destroy its
+// volume (Δ ~ 100%), so that collapse is REJECTED and the original soup kept. This is
+// the principled guarantee that no genuinely-distinct, separation-carrying vertices
+// are ever merged. Runs BEFORE the interior repair so the latter sees clean loops.
+
+// Distinct-corner index for a point (linear scan mirroring distinctCorners' grid).
+inline int cornerIndex(const std::vector<math::Point3>& corners, const math::Point3& p,
+                       double tol) {
+  for (int i = 0; i < static_cast<int>(corners.size()); ++i)
+    if (math::distance(corners[i], p) <= tol) return i;
+  return -1;
+}
+
+// Perpendicular distance from p to the infinite line through (a,b).
+inline double perpToLine(const math::Point3& a, const math::Point3& b, const math::Point3& p) {
+  const math::Vec3 ab = b - a;
+  const double len2 = math::normSquared(ab);
+  if (len2 <= 0.0) return math::distance(a, p);
+  const double t = math::dot(p - a, ab) / len2;
+  const math::Point3 proj{a.x + ab.x * t, a.y + ab.y * t, a.z + ab.z * t};
+  return math::distance(proj, p);
+}
+
+// Exact signed volume of a polygon soup (divergence theorem: (1/6) Σ over each
+// polygon's triangle fan of the scalar triple product). Sign-agnostic magnitude is
+// used only to compare the soup before/after the collapse, so a consistent fan
+// orientation per polygon is all that matters.
+inline double soupSignedVolume(const std::vector<Polygon>& polys) {
+  double v6 = 0.0;
+  for (const Polygon& poly : polys) {
+    const std::size_t m = poly.size();
+    if (m < 3) continue;
+    const math::Point3& a = poly.vertices[0];
+    for (std::size_t k = 1; k + 1 < m; ++k) {
+      const math::Vec3 e1 = poly.vertices[k] - a;
+      const math::Vec3 e2 = poly.vertices[k + 1] - a;
+      v6 += math::dot(math::Vec3{a.x, a.y, a.z}, math::cross(e1, e2));
+    }
+  }
+  return v6 / 6.0;
+}
+
+// Union-find on distinct corners with a valence-preferring representative.
+class CornerUnion {
+ public:
+  explicit CornerUnion(int n) : parent_(static_cast<std::size_t>(n)) {
+    std::iota(parent_.begin(), parent_.end(), 0);
+  }
+  int find(int x) {
+    while (parent_[static_cast<std::size_t>(x)] != x) {
+      parent_[static_cast<std::size_t>(x)] =
+          parent_[static_cast<std::size_t>(parent_[static_cast<std::size_t>(x)])];
+      x = parent_[static_cast<std::size_t>(x)];
+    }
+    return x;
+  }
+  // Merge, keeping the higher-valence root (ties → smaller index) as survivor.
+  void unite(int a, int b, const std::vector<int>& valence) {
+    a = find(a);
+    b = find(b);
+    if (a == b) return;
+    const bool aWins = valence[static_cast<std::size_t>(a)] != valence[static_cast<std::size_t>(b)]
+                           ? valence[static_cast<std::size_t>(a)] > valence[static_cast<std::size_t>(b)]
+                           : a < b;
+    const int rep = aWins ? a : b, child = aWins ? b : a;
+    parent_[static_cast<std::size_t>(child)] = rep;
+  }
+  bool any() const {
+    for (int i = 0; i < static_cast<int>(parent_.size()); ++i)
+      if (parent_[static_cast<std::size_t>(i)] != i) return true;
+    return false;
+  }
+
+ private:
+  std::vector<int> parent_;
+};
+
+// Build the notch-collapse union-find: unite every near-collinear notch vertex with
+// its near-coincident neighbour (conditions (a)+(b) above), higher-valence survivor.
+inline CornerUnion buildNotchUnion(const std::vector<Polygon>& polys,
+                                   const std::vector<math::Point3>& corners) {
+  const int n = static_cast<int>(corners.size());
+  std::vector<int> valence(static_cast<std::size_t>(n), 0);
+  for (const Polygon& poly : polys)
+    for (const math::Point3& v : poly.vertices)
+      if (const int i = cornerIndex(corners, v, kWeldTol); i >= 0)
+        ++valence[static_cast<std::size_t>(i)];
+
+  CornerUnion uf(n);
+  for (const Polygon& poly : polys) {
+    const std::size_t m = poly.size();
+    if (m < 3) continue;
+    for (std::size_t k = 0; k < m; ++k) {
+      const math::Point3& p = poly.vertices[k];
+      const math::Point3& prev = poly.vertices[(k + m - 1) % m];
+      const math::Point3& next = poly.vertices[(k + 1) % m];
+      const double span = math::distance(prev, next);
+      if (span <= kWeldTol) continue;
+      const double tolAbs = kSliverNotchFrac * span;
+      const double dPrev = math::distance(p, prev), dNext = math::distance(p, next);
+      const double dMin = std::min(dPrev, dNext);
+      if (dMin <= kWeldTol || dMin > tolAbs) continue;      // (a) degenerate short edge
+      if (perpToLine(prev, next, p) > tolAbs) continue;     // (b) area-preserving notch
+      const int ip = cornerIndex(corners, p, kWeldTol);
+      const int iq = cornerIndex(corners, dPrev < dNext ? prev : next, kWeldTol);
+      if (ip >= 0 && iq >= 0) uf.unite(ip, iq, valence);
+    }
+  }
+  return uf;
+}
+
+// Rewrite every polygon loop through the corner weld map, dropping collapsed
+// (now-coincident) vertices and any wrap-around duplicate.
+inline std::vector<Polygon> applyCornerWeld(const std::vector<Polygon>& polys,
+                                            const std::vector<math::Point3>& corners,
+                                            CornerUnion& uf) {
+  std::vector<Polygon> out;
+  out.reserve(polys.size());
+  for (const Polygon& poly : polys) {
+    std::vector<math::Point3> vs;
+    vs.reserve(poly.size());
+    for (const math::Point3& v : poly.vertices) {
+      const int i = cornerIndex(corners, v, kWeldTol);
+      const math::Point3& rep = i >= 0 ? corners[static_cast<std::size_t>(uf.find(i))] : v;
+      if (vs.empty() || math::distance(vs.back(), rep) > kWeldTol) vs.push_back(rep);
+    }
+    while (vs.size() >= 2 && math::distance(vs.front(), vs.back()) <= kWeldTol) vs.pop_back();
+    out.push_back(Polygon{std::move(vs), poly.plane});
+  }
+  return out;
+}
+
+// Collapse near-collinear endpoint T-junction slivers, GLOBALLY VALIDATED by exact
+// soup-volume preservation: the collapse is kept only if it changes the polygon
+// soup's signed volume by less than kSliverVolTol (relative). This is what makes the
+// weld safe — a hairline sliver removal is volume-neutral (kept); collapsing a thin
+// legitimate feature would move volume (rejected → original soup returned unchanged).
+inline std::vector<Polygon> collapseSliverEdges(const std::vector<Polygon>& polys) {
+  const std::vector<math::Point3> corners = distinctCorners(polys, kWeldTol);
+  if (corners.empty()) return polys;
+
+  CornerUnion uf = buildNotchUnion(polys, corners);
+  if (!uf.any()) return polys;  // no candidate slivers
+
+  std::vector<Polygon> welded = applyCornerWeld(polys, corners, uf);
+
+  // Volume-preservation guard: reject the collapse if it moved real volume.
+  const double v0 = std::fabs(soupSignedVolume(polys));
+  const double v1 = std::fabs(soupSignedVolume(welded));
+  const double denom = std::max(v0, kWeldTol);
+  if (std::fabs(v1 - v0) > kSliverVolTol * denom) return polys;  // would corrupt geometry
+  return welded;
+}
+
 }  // namespace detail
 
-/// Repair T-junctions across a coplanar-tiled polygon soup (see repairPolygon).
-inline std::vector<Polygon> repairTJunctions(const std::vector<Polygon>& polys) {
+/// Repair T-junctions across a coplanar-tiled polygon soup. First collapses
+/// near-collinear ENDPOINT slivers (the near-tangent graze crack — see
+/// collapseSliverEdges), then inserts INTERIOR crossing points (see repairPolygon).
+inline std::vector<Polygon> repairTJunctions(const std::vector<Polygon>& polysIn) {
+  const std::vector<Polygon> polys = detail::collapseSliverEdges(polysIn);
   const std::vector<math::Point3> corners = detail::distinctCorners(polys, kWeldTol);
   std::vector<Polygon> out;
   out.reserve(polys.size());

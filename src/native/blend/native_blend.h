@@ -49,6 +49,7 @@
 #include "native/blend/fillet_edges.h"
 #include "native/blend/fillet_edges_g2.h"
 #include "native/blend/fillet_edges_g2_concave.h"
+#include "native/blend/fillet_edges_g2_variable.h"
 #include "native/blend/fillet_face.h"
 #include "native/blend/full_round.h"
 #include "native/blend/offset_face.h"

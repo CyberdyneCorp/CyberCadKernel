@@ -317,6 +317,220 @@ CC_TEST(g2_fillet_scope_defers) {
   CC_CHECK(!blend::fillet_edges_g2(b, ids, 1, 2.0, 0.005).isNull());
 }
 
+// ── VARIABLE-radius G2 fillet on a convex planar dihedral edge (NURBS L4) ──────────--
+// The variable-radius extension of the constant fillet_edges_g2: the section radius ramps
+// LINEARLY r(τ)=r0(1−τ)+r1·τ along the (straight) edge, each cross-section the constant-r
+// zero-END-curvature quintic for its LOCAL radius, lofted along the edge. These gates prove
+// the moat that a G1 (circular varying-r) blend cannot: (1) the section curvature is
+// IDENTICALLY zero at both rails at EVERY station along the edge (closed-form B''=0 at all
+// stations + a discrete Menger witness far below the G1 1/r jump, which JUMPS for the
+// circular control); (2) watertight with a monotone SHRINK volume matching the closed form
+// (131/960)·L·(r0²+r0r1+r1²)/3, reducing EXACTLY to the constant-r G2 fillet when r0==r1;
+// (3) a too-fast radius ramp (setback folds) DECLINES — never a self-intersecting body;
+// (4) honest declines for curved substrates / degenerate radii, no cross-firing.
+
+namespace {
+// Closed-form REMOVED volume of the variable convex G2 fillet over a straight edge of
+// length L: the 90°-corner quintic section removes area (131/960)·r², integrated over the
+// linear law → (131/960)·L·(r0²+r0·r1+r1²)/3. Strictly increasing in r0 and r1.
+double variableG2Vremoved(double L, double r0, double r1) {
+  return (131.0 / 960.0) * L * (r0 * r0 + r0 * r1 + r1 * r1) / 3.0;
+}
+}  // namespace
+
+CC_TEST(g2_variable_fillet_section_curvature_zero_at_both_rails_all_stations) {
+  // CLOSED-FORM G2-ALONG-THE-EDGE PROOF: unlike the constant slice (one section), the
+  // variable sweep must hold G2 at EVERY station. At each station the section is the
+  // constant-r quintic for its LOCAL radius, so its second difference vanishes at both
+  // rails (B''(0)∝P0−2P1+P2, B''(1)∝P5−2P4+P3 are the zero vector by the collinear
+  // rail-triples) — checked here over ALL stations of a real ramp on a box edge.
+  topo::Shape b = box(10, 10, 10);
+  const nmath::Point3 ea{0, 10, 10}, eb{10, 10, 10};
+  blend::nb::Polygon f1, f2;
+  CC_CHECK(facesOnBoxEdge(b, ea, eb, f1, f2));
+  const auto sw = blend::detail::g2VarSweep(ea, eb, f1, f2, 1.0, 2.5, 0.003);
+  CC_CHECK(sw.has_value());
+  CC_CHECK(sw->stations.size() >= 5);  // a genuinely sampled sweep (not just the two ends)
+  double maxD2 = 0.0, minRadiusSpread = 1e9, maxRadiusSpread = 0.0;
+  for (const auto& st : sw->stations) {
+    const auto& P = st.poles;
+    const nmath::Vec3 d0 = P[0].asVec() - P[1].asVec() * 2.0 + P[2].asVec();
+    const nmath::Vec3 d1 = P[5].asVec() - P[4].asVec() * 2.0 + P[3].asVec();
+    maxD2 = std::max({maxD2, nmath::norm(d0), nmath::norm(d1)});
+    minRadiusSpread = std::min(minRadiusSpread, st.radius);
+    maxRadiusSpread = std::max(maxRadiusSpread, st.radius);
+    CC_CHECK(nmath::distance(P[0], P[1]) > 1e-6);  // still a real (bulging) blend
+  }
+  CC_CHECK(maxD2 < 1e-12);  // B''=0 at both rails at EVERY station → G2 along the whole edge
+  // The radius genuinely varies (this is a variable, not constant, fillet).
+  CC_CHECK(nearRel(minRadiusSpread, 1.0, 1e-9));
+  CC_CHECK(nearRel(maxRadiusSpread, 2.5, 1e-9));
+}
+
+CC_TEST(g2_variable_fillet_measured_seam_curvature_beats_g1_at_stations) {
+  // MEASURED G2 witness at several stations (host, OCCT-free): the varying-r quintic's
+  // near-rail Menger curvature stays far BELOW the G1 circular arc's 1/r(τ) at each
+  // station — a second, independent witness to the exact B''=0 proof, with the circular
+  // section's 1/r(τ) as the non-trivial control that JUMPS.
+  topo::Shape b = box(10, 10, 10);
+  const nmath::Point3 ea{0, 10, 10}, eb{10, 10, 10};
+  blend::nb::Polygon f1, f2;
+  CC_CHECK(facesOnBoxEdge(b, ea, eb, f1, f2));
+  const auto sw = blend::detail::g2VarSweep(ea, eb, f1, f2, 1.0, 3.0, 0.003);
+  CC_CHECK(sw.has_value());
+  for (double frac : {0.0, 0.25, 0.5, 0.75, 1.0}) {
+    const std::size_t k =
+        static_cast<std::size_t>(std::llround(frac * (sw->stations.size() - 1)));
+    const auto& P = sw->stations[k].poles;
+    const double r = sw->stations[k].radius;
+    auto kappaAt = [&](double s) -> double {
+      const double ds = 1e-3;
+      const nmath::Point3 pm = blend::detail::quinticPoint(P, s - ds);
+      const nmath::Point3 p0 = blend::detail::quinticPoint(P, s);
+      const nmath::Point3 pp = blend::detail::quinticPoint(P, s + ds);
+      const nmath::Vec3 a = p0 - pm, c = pp - p0;
+      const double la = nmath::norm(a), lc = nmath::norm(c), lac = nmath::norm(pp - pm);
+      const double area2 = nmath::norm(nmath::cross(a, c));
+      if (la * lc * lac < 1e-18) return 0.0;
+      return area2 / (la * lc * lac);
+    };
+    const double kG2 = kappaAt(0.02);
+    const double kG1 = 1.0 / r;          // circular section's constant seam curvature (control)
+    CC_CHECK(kG2 < 0.25 * kG1);          // ≤ ¼ the G1 jump near the rail at THIS station
+    CC_CHECK(kappaAt(0.5) > 1e-3);       // mid-section IS curved (a real blend) at THIS station
+  }
+}
+
+CC_TEST(g2_variable_fillet_watertight_volume_matches_closed_form) {
+  // Watertight, REMOVES material, volume matches the closed form to the deflection bound,
+  // and sits BETWEEN the two constant-radius (r0, r1) G2 fillet volumes.
+  topo::Shape b = box(10, 10, 10);
+  const int e = findEdgeId(b, {0, 10, 10}, {10, 10, 10});
+  CC_CHECK(e != 0);
+  int ids[] = {e};
+  const double r0 = 1.0, r1 = 2.5, L = 10.0;
+  topo::Shape f = blend::fillet_edges_g2_variable(b, ids, 1, r0, r1, 0.003);
+  bool wt = false;
+  const double v = vol(f, wt);
+  CC_CHECK(!f.isNull());
+  CC_CHECK(wt);                          // lofted varying-r quintic welds watertight
+  CC_CHECK(v < 1000.0 && v > 980.0);     // a real convex blend (between sharp and chamfer)
+  const double expected = 1000.0 - variableG2Vremoved(L, r0, r1);
+  CC_CHECK(nearRel(v, expected, 6e-3));  // deflection-bounded facet approximation
+  // Bracket: bigger radius removes more, so v(r1) < v(variable) < v(r0).
+  bool wa = false, wb = false;
+  const double vR0 = vol(blend::fillet_edges_g2(b, ids, 1, r0, 0.003), wa);
+  const double vR1 = vol(blend::fillet_edges_g2(b, ids, 1, r1, 0.003), wb);
+  CC_CHECK(wa && wb);
+  CC_CHECK(vR1 < v && v < vR0);
+}
+
+CC_TEST(g2_variable_fillet_monotone_in_r0_and_r1) {
+  // The removed volume is STRICTLY increasing in both radii: growing either end removes
+  // more material (a sensible monotone volume vs r0/r1), matching the closed form.
+  topo::Shape b = box(10, 10, 10);
+  const int e = findEdgeId(b, {0, 10, 10}, {10, 10, 10});
+  int ids[] = {e};
+  auto V = [&](double r0, double r1) {
+    bool wt = false;
+    const double v = vol(blend::fillet_edges_g2_variable(b, ids, 1, r0, r1, 0.003), wt);
+    CC_CHECK(wt);
+    return v;
+  };
+  const double v_11 = V(1.0, 1.0), v_12 = V(1.0, 2.0), v_22 = V(2.0, 2.0);
+  CC_CHECK(v_11 > v_12);  // raising r1 removes more (volume drops)
+  CC_CHECK(v_12 > v_22);  // raising r0 removes more (volume drops)
+  // The removed volumes track the closed form's monotonicity.
+  CC_CHECK(variableG2Vremoved(10, 1, 1) < variableG2Vremoved(10, 1, 2));
+  CC_CHECK(variableG2Vremoved(10, 1, 2) < variableG2Vremoved(10, 2, 2));
+}
+
+CC_TEST(g2_variable_fillet_reduces_to_constant_when_r0_eq_r1) {
+  // r0==r1 must reproduce the constant-radius G2 fillet EXACTLY (the loft collapses to the
+  // constant section swept unchanged) — the honest reduction, no separate code path.
+  topo::Shape b = box(10, 10, 10);
+  const int e = findEdgeId(b, {0, 10, 10}, {10, 10, 10});
+  int ids[] = {e};
+  for (double r : {1.0, 1.5, 2.0}) {
+    bool wv = false, wc = false;
+    const double vVar = vol(blend::fillet_edges_g2_variable(b, ids, 1, r, r, 0.005), wv);
+    const double vConst = vol(blend::fillet_edges_g2(b, ids, 1, r, 0.005), wc);
+    CC_CHECK(wv && wc);
+    CC_CHECK(nearRel(vVar, vConst, 1e-9));  // identical facet soup at r0==r1
+  }
+}
+
+CC_TEST(g2_variable_fillet_reversed_law_same_volume) {
+  // The reversed law (r0↔r1) fillets the SAME edge with the ramp flipped end-for-end; the
+  // symmetric removed-volume formula gives the same result and it stays watertight.
+  topo::Shape b = box(10, 10, 10);
+  const int e = findEdgeId(b, {0, 10, 10}, {10, 10, 10});
+  int ids[] = {e};
+  bool wf = false, wr = false;
+  const double vFwd = vol(blend::fillet_edges_g2_variable(b, ids, 1, 0.75, 2.25, 0.003), wf);
+  const double vRev = vol(blend::fillet_edges_g2_variable(b, ids, 1, 2.25, 0.75, 0.003), wr);
+  CC_CHECK(wf && wr);
+  CC_CHECK(nearRel(vFwd, vRev, 5e-3));  // symmetric law → same removed volume both ways
+  CC_CHECK(nearRel(vFwd, 1000.0 - variableG2Vremoved(10, 0.75, 2.25), 6e-3));
+}
+
+CC_TEST(g2_variable_fillet_deterministic_and_converges) {
+  // Determinism (fp64, no RNG) + deflection-bounded (coarse ≈ fine, both watertight).
+  topo::Shape b = box(10, 10, 10);
+  const int e = findEdgeId(b, {0, 10, 10}, {10, 10, 10});
+  int ids[] = {e};
+  bool w1 = false, w2 = false, wc = false;
+  const double va = vol(blend::fillet_edges_g2_variable(b, ids, 1, 1.0, 2.0, 0.005), w1);
+  const double vb = vol(blend::fillet_edges_g2_variable(b, ids, 1, 1.0, 2.0, 0.005), w2);
+  const double vc = vol(blend::fillet_edges_g2_variable(b, ids, 1, 1.0, 2.0, 0.02), wc);
+  CC_CHECK(w1 && w2 && wc);
+  CC_CHECK(nearRel(va, vb, 1e-12));  // deterministic
+  CC_CHECK(nearRel(va, vc, 1e-2));   // deflection-bounded
+}
+
+CC_TEST(g2_variable_fillet_self_intersection_guard_declines_fast_ramp) {
+  // SELF-INTERSECTION GUARD: a radius that ramps too fast for the edge length (the setback
+  // line recedes faster than the edge advances → the trimmed face folds) is DECLINED —
+  // never returned self-intersecting. On the L=10 edge, |r1−r0| ≥ ~L trips the guard.
+  topo::Shape b = box(10, 10, 10);
+  const int e = findEdgeId(b, {0, 10, 10}, {10, 10, 10});
+  int ids[] = {e};
+  CC_CHECK(blend::fillet_edges_g2_variable(b, ids, 1, 1.0, 12.0, 0.005).isNull());  // ramp too steep
+  CC_CHECK(blend::fillet_edges_g2_variable(b, ids, 1, 12.0, 1.0, 0.005).isNull());  // reversed steep
+  // A gentle ramp within the guard DOES land (and is watertight) — the guard is not
+  // over-eager. It also removes material and stays a valid shrink.
+  bool wt = false;
+  const double v = vol(blend::fillet_edges_g2_variable(b, ids, 1, 1.0, 2.5, 0.005), wt);
+  CC_CHECK(wt);
+  CC_CHECK(v < 1000.0 && v > 980.0);
+}
+
+CC_TEST(g2_variable_fillet_scope_defers) {
+  // Honest declines (→ OCCT), the deep-residual boundary + no cross-firing.
+  topo::Shape b = box(10, 10, 10);
+  const int e = findEdgeId(b, {0, 10, 10}, {10, 10, 10});
+  int ids[] = {e};
+  CC_CHECK(blend::fillet_edges_g2_variable(b, ids, 1, 0.0, 2.0).isNull());   // r0 ≤ 0
+  CC_CHECK(blend::fillet_edges_g2_variable(b, ids, 1, 2.0, 0.0).isNull());   // r1 ≤ 0
+  CC_CHECK(blend::fillet_edges_g2_variable(b, nullptr, 0, 1.0, 2.0).isNull());  // no edges
+  // A curved (cylinder) solid is not a planar dihedral → NULL (curved substrate → OCCT):
+  // freeform / curved-variable stays an honest decline (the deep residual).
+  const double prof[] = {2, 0, 5, 0, 5, 10, 2, 10};
+  topo::Shape cyl = cst::build_revolution(prof, 4, cst::RevolveAxis{0, 0, 0, 1}, 6.2831853);
+  int cids[] = {1};
+  CC_CHECK(blend::fillet_edges_g2_variable(cyl, cids, 1, 1.0, 2.0).isNull());
+  // No cross-firing with the CONCAVE builder: the variable builder is convex-only, and a
+  // reflex edge would need the concave path (not built here) — declines cleanly. Build the
+  // reflex L-prism inline (the shared lPrism fixture is declared later in this file).
+  const double lp[] = {0, 0, 6, 0, 6, 3, 3, 3, 3, 6, 0, 6};
+  topo::Shape L = cst::build_prism(lp, 6, 4.0);
+  const int le = findEdgeId(L, {3, 3, 0}, {3, 3, 4});
+  int lids[] = {le};
+  CC_CHECK(blend::fillet_edges_g2_variable(L, lids, 1, 1.0, 1.5).isNull());  // concave → decline
+  // Control: the convex box edge DOES land (no spurious decline).
+  CC_CHECK(!blend::fillet_edges_g2_variable(b, ids, 1, 1.0, 2.5, 0.005).isNull());
+}
+
 // ── G2 (curvature-continuous) fillet on a CONCAVE planar dihedral edge ─────────────--
 // The second scoped slice of the drop-OCCT Class-B `fillet_edges_g2` after the convex
 // planar dihedral. A CONCAVE (reflex) planar dihedral (the inner corner of an L-shaped

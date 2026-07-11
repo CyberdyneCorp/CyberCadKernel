@@ -51,17 +51,23 @@
 //       genuinely LARGE gap (beyond tol) still DECLINES (Unknown) — never force-welded.
 //     * NEAR-COINCIDENT PCURVE SNAP — two loop vertices within tol are snapped to a shared
 //       location so adjacent pcurves share the boundary exactly.
-//     * PINCH-POINT detection — a loop that self-touches at an interior point is DETECTED
-//       and reported (the healed loop is declined honestly, not silently repaired into a
-//       different region).
-//   healLoop() is the primitive; classify() runs it (opt-in via ClassifyOptions::heal).
+//     * PINCH-POINT detection + SPLITTING — a loop that self-touches at an interior point is
+//       DETECTED (healLoop). A CLEAN 2-way pinch (a figure-eight self-touching at exactly one
+//       vertex) is then SPLIT into two independent, region-preserving sub-loops (splitAtPinch:
+//       the union of the two sub-loops classifies every point identically to the original
+//       pinched loop). A 3+-way / crossing pinch that cannot be cleanly split is DECLINED
+//       honestly (never force-split into a different region).
+//   healLoop() is the primitive; classify() runs it (opt-in via ClassifyOptions::heal), and
+//   splitAtPinch() is the opt-in pinch-resolution step (ClassifyOptions::splitPinch).
 //
 // SCOPE / RESIDUALS. This is a data-model + robustness slice, not a heavy algorithm:
 //   * Healing covers the common near-valid cases above (small gaps, near-coincident
-//     vertices, pinch detection). GENERAL non-manifold repair — resolving a detected
-//     pinch by SPLITTING the loop into two valid faces, healing across surface seams,
-//     re-parametrizing a badly-drifting pcurve — remains a documented residual: those
-//     cases are declined honestly (Unknown / pinch reported), not silently repaired.
+//     vertices, pinch detection) PLUS clean 2-way pinch SPLITTING (splitAtPinch: a
+//     figure-eight self-touching at one vertex becomes two region-preserving sub-loops).
+//     GENERAL non-manifold repair — resolving a 3+-way / crossing pinch, healing across
+//     surface seams, re-parametrizing a badly-drifting pcurve — remains a documented
+//     residual: those cases are declined honestly (Unknown / ambiguous reported), not
+//     silently repaired.
 //   * constructPcurve is non-rational (bspline_fit is non-rational); a genuinely
 //     rational edge is fitted as a non-rational approximation and its true fidelity
 //     deviation is reported (never a widened/faked tolerance) — the rational-residual.
@@ -163,12 +169,20 @@ struct ClassifyOptions {
   double onEdgeTol = 1e-9;   ///< relative on-edge band (× loop UV extent)
   bool heal = true;          ///< run the tolerant-topology healing pre-pass (see healLoop)
   double healGapTol = 1e-6;  ///< relative gap-close band (× loop UV extent); see HealOptions
+  bool splitPinch = false;   ///< OPT-IN: split a clean 2-way pinch (figure-eight) into two
+                             ///< sub-loops and classify the union (see splitAtPinch). Default
+                             ///< OFF preserves the honest pinch→Unknown decline; when ON a
+                             ///< cleanly-splittable pinch classifies (region-preserving), while
+                             ///< a 3+-way / crossing pinch still declines Unknown.
 };
 
 /// Classify (u,v) against the trimmed region. Robust even-odd ray-cast in UV with
 /// honest OnBoundary / Unknown handling (see Containment). With opts.heal (default on)
 /// each loop is run through healLoop() first: small gaps / near-coincident vertices are
 /// welded closed; a genuinely large gap or a self-touching pinch still declines Unknown.
+/// With opts.splitPinch (default OFF) a cleanly 2-way pinched outer loop is instead SPLIT
+/// into two sub-loops (splitAtPinch) and the point is In iff inside EITHER sub-loop —
+/// region-preserving; a 3+-way / crossing pinch still declines Unknown.
 Containment classify(const TrimmedNurbsFace& face, const ParamPoint& p,
                      const ClassifyOptions& opts = {});
 
@@ -228,6 +242,56 @@ HealReport healLoop(std::vector<ParamPoint>& poly,
 /// distinguishes small inter-segment gaps (welded) from genuine large gaps (declined) and
 /// self-touching pinches (reported). `flatten` is the per-segment sample count.
 HealReport healTrimLoop(const TrimLoop& loop, const HealOptions& opts = {}, int flatten = 48);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PINCH-SPLITTING — resolve a detected 2-way pinch into two valid sub-loops.
+//
+// healLoop() DETECTS a pinch (a repeated non-adjacent vertex, where a loop self-touches)
+// and declines honestly. splitAtPinch() is the next, opt-in step: when a welded loop
+// self-touches at EXACTLY ONE pinch vertex — i.e. one interior vertex k that coincides
+// (within tol) with exactly one earlier interior vertex i, the two touching only there —
+// the loop is a figure-eight and SPLITS cleanly into two independent sub-loops:
+//
+//     sub-loop A = poly[i .. k]              (the first lobe, closed at the pinch)
+//     sub-loop B = poly[k .. n-1] + poly[0 .. i]   (the second lobe, closed at the pinch)
+//
+// Both sub-loops share only the pinch vertex, so the two lobes are disjoint regions that
+// meet at a point. This is REGION-PRESERVING by construction: for a non-crossing
+// self-touching loop the original even-odd ray-cast reports a point In iff it is inside
+// EITHER lobe (each disjoint lobe contributes an odd crossing count on its own), so the
+// UNION of the two split sub-loops classifies every interior/exterior point IDENTICALLY to
+// the original pinched loop. A pinch that is NOT a clean 2-way split — three-or-more
+// coincident vertices (a 3+-way pinch), or a pinch whose lobes would overlap/self-cross —
+// is AMBIGUOUS and DECLINED honestly (split=false): the split is never forced.
+//
+// This narrows the "general non-manifold repair" residual from "any pinch declines" to
+// "only 3+-way / crossing pinches decline"; the common self-touching figure-eight is now
+// repaired into a valid multi-loop region rather than thrown away.
+// ─────────────────────────────────────────────────────────────────────────────
+struct SplitReport {
+  bool split = false;        ///< true ⇔ a clean 2-way pinch was found AND split into two valid loops
+  bool pinch = false;        ///< true ⇔ a self-touching pinch was detected at all (splittable or not)
+  bool ambiguous = false;    ///< true ⇔ a pinch was found but is NOT cleanly 2-way splittable (declined)
+  int pinchCount = 0;        ///< number of distinct non-adjacent coincident vertex pairs found
+  double tolerance = 0.0;    ///< the scale-relative pinch tolerance actually applied
+  std::vector<ParamPoint> loopA;  ///< first sub-loop polyline (valid to ray-cast iff `split`)
+  std::vector<ParamPoint> loopB;  ///< second sub-loop polyline (valid to ray-cast iff `split`)
+};
+
+/// Split a flattened loop polyline at its pinch vertex into two sub-loops. `poly` is a
+/// WELDED polyline (run healWeldGaps first, as healLoop / preparedLoop do). Returns a
+/// SplitReport: on a clean 2-way pinch, `split=true` with `loopA` / `loopB` set; a 3+-way
+/// or crossing pinch sets `ambiguous=true` and `split=false` (honest decline); a loop with
+/// no pinch sets `pinch=false`, `split=false`. Region-preserving (see above). `opts.gapTol`
+/// scales the pinch-coincidence tolerance exactly as healLoop's weld tolerance.
+SplitReport splitAtPinch(const std::vector<ParamPoint>& poly, const HealOptions& opts = {});
+
+/// Flatten `loop` (join-gap-aware), weld small gaps, then split at a clean 2-way pinch.
+/// Returns the SplitReport with the two healed sub-loop polylines (valid iff `split`). Use
+/// to turn a self-touching TrimLoop into two ray-castable loops. A large gap, a degeneracy,
+/// or a non-2-way pinch declines (`split=false`).
+SplitReport splitTrimLoopAtPinch(const TrimLoop& loop, const HealOptions& opts = {},
+                                 int flatten = 48);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pcurve fidelity guard — the load-bearing robustness property.

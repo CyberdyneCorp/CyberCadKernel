@@ -56,6 +56,55 @@ module SHALL make no `shape.h` / `cc_*` / POD change and SHALL keep `src/native`
   pinch SHALL be DETECTED (`pinch` reported) and declined (`Unknown`), not silently repaired into a
   different region
 
+### Requirement: Pinch-splitting of a self-touching trim loop into two valid loops
+
+The trimmed-NURBS module SHALL provide `splitAtPinch()` (over a welded flattened polyline) and
+`splitTrimLoopAtPinch()` (flatten + weld + split a `TrimLoop`) that resolve a CLEAN 2-way pinch — a
+loop that self-touches at EXACTLY ONE interior vertex (a figure-eight, exactly one non-adjacent
+coincident vertex pair within the scale-relative tolerance) — into TWO independent sub-loops that
+share only the pinch vertex. It SHALL report via `SplitReport` (whether a split succeeded, whether a
+pinch was detected at all, whether the pinch was ambiguous, the number of coincident pairs, the
+scale-relative tolerance, and the two sub-loop polylines).
+
+Splitting SHALL be **REGION-PRESERVING**: because a non-crossing self-touching loop's two lobes are
+disjoint regions meeting only at the pinch vertex, the original even-odd ray-cast classifies a point
+`In` iff it is inside EITHER lobe; therefore the UNION of the two split sub-loops (a point is `In`
+iff inside either sub-loop) SHALL classify every interior/exterior point IDENTICALLY to the original
+pinched loop — a split SHALL NEVER change which points are `In`/`Out`.
+
+A pinch that is NOT a clean 2-way split — three-or-more coincident vertices (a 3+-way pinch), or a
+pinch whose lobes would not each form a valid simple loop (a crossing) — SHALL be DECLINED honestly
+(`ambiguous` reported, `split=false`), never force-split. `classify()` SHALL expose the split as an
+OPT-IN option (`ClassifyOptions::splitPinch`, default OFF): with it OFF a pinch still declines
+`Unknown` (no behaviour change); with it ON a cleanly-splittable pinched outer loop classifies via
+the union of its two sub-loops, while a 3+-way / crossing pinch still declines `Unknown`. The module
+SHALL make no `shape.h` / `cc_*` / POD change, SHALL keep `src/native` OCCT-free, and SHALL keep the
+existing public API stable (the split is additive).
+
+#### Scenario: A figure-eight splits into two loops classifying identically to the two-region reference
+
+- GIVEN a loop that self-touches at exactly one vertex (a figure-eight of two disjoint lobes)
+- WHEN it is split and classified with `splitPinch` on, against a reference formed of the two lobes
+  as two SEPARATE valid loops (a point `In` iff inside either)
+- THEN the loop SHALL split (`split`, `pinchCount = 1`), and EVERY interior/exterior probe SHALL
+  classify IDENTICALLY to the two-loop reference — no probe's `In`/`Out` verdict SHALL flip
+
+#### Scenario: An un-splittable pinch declines honestly
+
+- GIVEN a loop with a 3+-way pinch (three-or-more coincident vertices at one point) or a crossing
+  pinch
+- WHEN it is split and classified with `splitPinch` on
+- THEN the split SHALL be DECLINED (`ambiguous`, `split=false`), and classification SHALL return
+  `Unknown` — the pinch SHALL NOT be force-split into a fabricated region
+
+#### Scenario: A clean loop is unaffected by splitPinch; the default still declines a pinch
+
+- GIVEN a clean (non-pinched) loop and, separately, a figure-eight pinched loop
+- WHEN the clean loop is classified with `splitPinch` ON vs OFF, and the pinched loop is classified
+  with `splitPinch` OFF (the default)
+- THEN the clean loop SHALL classify IDENTICALLY with and without `splitPinch` (the option is inert
+  on a loop with no pinch), and the pinched loop SHALL still return `Unknown` by default
+
 ## MODIFIED Requirements
 
 ### Requirement: Point-in-trimmed-region classification with honest declines

@@ -39,6 +39,36 @@ within `tol` of the boundary are the `OnBoundary` band anyway. A genuine large g
 it never re-routes the boundary. The host gate proves this empirically with a SWEEP of gap sizes
 across `[1e-10, 0.9·tol]`, asserting no probe's `In`/`Out` verdict ever flips vs the exact loop.
 
+## Pinch-splitting — resolving a clean 2-way pinch into two loops
+
+`healLoop()` only DETECTS a pinch and declines. `splitAtPinch()` is the next, opt-in step. On a
+WELDED polyline it collects every non-adjacent coincident vertex pair (within `tol`). A CLEAN 2-way
+pinch is EXACTLY ONE such pair `(i,k)`: the loop is a figure-eight self-touching at that one vertex.
+The two lobes are:
+
+- `loopA = poly[i .. k-1]` (closed `k-1 → i`),
+- `loopB = poly[k .. n-1] + poly[0 .. i-1]` (closed `i-1 → k`),
+
+with both pinch vertices snapped to their shared midpoint so the lobes meet at EXACTLY one point.
+Each lobe must itself be a valid simple loop (≥3 distinct points, no residual self-touch); if not
+(a crossing pinch) the split is `ambiguous`. More than one coincident pair (a 3+-way pinch or two
+separate self-touches) is also `ambiguous`. Ambiguous ⇒ decline honestly, never force-split.
+
+**Region-preservation (why the union == the original).** A non-crossing loop self-touching at a
+single vertex P is a figure-eight whose lobes A, B are disjoint regions meeting only at P. The
+original even-odd ray-cast counts, for a query Q, the parity of crossings; because A and B are traced
+by disjoint edge sets sharing only P, that count is `crossings(A) + crossings(B)`. Q lies inside at
+most one lobe, so the original parity is odd ⇔ `Q ∈ A OR Q ∈ B`. Therefore the original In-set is
+exactly `A-interior ∪ B-interior`: classifying the union of the two split sub-loops (In iff inside
+either lobe; OnBoundary if on either seam) reproduces the original verdict for EVERY point. The host
+gate proves this empirically: a two-loop REFERENCE (the two lobes as separate valid triangle loops,
+classified by union) is compared against the split figure-eight over a probe grid — no verdict flips.
+
+`classify()` exposes the split as `ClassifyOptions::splitPinch` (default OFF, so a pinch still
+declines `Unknown` unless the caller opts in). `classifyOuter()` tries the normal healed loop first;
+only if that fails specifically because of a pinch (and `splitPinch` is on) does it split and
+classify the union. Holes and the rest of the pipeline are unchanged.
+
 ## classify() integration — opt-in, no regression
 
 `ClassifyOptions::heal` (default true) + `healGapTol`. A small `preparedLoop()` helper flattens +

@@ -415,6 +415,112 @@ HealReport healTrimLoop(const TrimLoop& loop, const HealOptions& opts, int flatt
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// splitAtPinch — resolve a CLEAN 2-way pinch into two region-preserving sub-loops.
+//
+// REGION-PRESERVATION PROOF (why the UNION of the two sub-loops classifies identically to
+// the original pinched loop): a non-crossing loop that self-touches at a single vertex P is
+// a figure-eight whose two lobes A and B are disjoint simple regions meeting only at P. The
+// original even-odd ray-cast of the WHOLE loop counts, for a query point Q, the parity of
+// boundary crossings; because A and B are traced by disjoint edge sets that share only P,
+// the crossing count for Q equals (crossings of A) + (crossings of B). Q is inside exactly
+// one lobe (the lobes are disjoint) or neither, so the original parity is odd ⇔ Q ∈ A XOR
+// Q ∈ B ⇔ Q ∈ A OR Q ∈ B (mutual exclusivity). Therefore the ORIGINAL In-set = A-interior
+// ∪ B-interior: classifying the union of the two split sub-loops reproduces the original
+// verdict for EVERY interior/exterior point. Only a clean 2-way, non-crossing pinch has
+// this property — a 3+-way or self-crossing pinch is declined (ambiguous), never forced.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+
+// Collect every distinct non-adjacent coincident vertex pair (i,k), i<k, within tol.
+std::vector<std::pair<std::size_t, std::size_t>> pinchPairs(const std::vector<ParamPoint>& poly,
+                                                            double tol) {
+  std::vector<std::pair<std::size_t, std::size_t>> pairs;
+  const std::size_t n = poly.size();
+  for (std::size_t i = 0; i < n; ++i)
+    for (std::size_t k = i + 2; k < n; ++k) {
+      if (i == 0 && k == n - 1) continue;  // adjacent across the closing edge
+      if (dist2d(poly[i], poly[k]) <= tol) pairs.emplace_back(i, k);
+    }
+  return pairs;
+}
+
+// A sub-loop is valid to ray-cast iff it has ≥3 distinct points and does NOT itself pinch
+// (no residual self-touch within tol) — so a lobe that is itself non-manifold is rejected.
+bool subLoopValid(const std::vector<ParamPoint>& poly, double tol) {
+  if (poly.size() < 3) return false;
+  return !healHasPinch(poly, tol);
+}
+
+}  // namespace
+
+SplitReport splitAtPinch(const std::vector<ParamPoint>& poly, const HealOptions& opts) {
+  SplitReport rep;
+  const std::size_t n = poly.size();
+  if (n < 4) return rep;  // too small to hold two non-degenerate lobes
+
+  const double extent = std::max(polyExtent(poly), 1e-300);
+  const double tol = opts.gapTol * std::max(extent, 1.0);
+  rep.tolerance = tol;
+
+  const auto pairs = pinchPairs(poly, tol);
+  rep.pinchCount = static_cast<int>(pairs.size());
+  if (pairs.empty()) return rep;  // no pinch → split=false, pinch=false (honest: not a pinch)
+  rep.pinch = true;
+
+  // A clean 2-way pinch is EXACTLY ONE coincident pair. More than one pair means a 3+-way
+  // pinch or two separate self-touches — ambiguous, decline honestly.
+  if (pairs.size() != 1) { rep.ambiguous = true; return rep; }
+
+  const std::size_t i = pairs.front().first;
+  const std::size_t k = pairs.front().second;
+
+  // Snap both pinch vertices to their shared midpoint so the two sub-loops meet EXACTLY at
+  // one point (region-preserving: each moves ≤ tol/2, like a weld).
+  const ParamPoint pinchPt{0.5 * (poly[i].u + poly[k].u), 0.5 * (poly[i].v + poly[k].v)};
+
+  // Lobe A = poly[i .. k-1] with the pinch vertex as its shared representative; closes k-1→i.
+  std::vector<ParamPoint> loopA;
+  loopA.reserve(k - i);
+  loopA.push_back(pinchPt);
+  for (std::size_t t = i + 1; t < k; ++t) loopA.push_back(poly[t]);
+
+  // Lobe B = poly[k .. n-1] + poly[0 .. i-1]; closes i-1→k. Shared pinch vertex again.
+  std::vector<ParamPoint> loopB;
+  loopB.reserve(n - (k - i));
+  loopB.push_back(pinchPt);
+  for (std::size_t t = k + 1; t < n; ++t) loopB.push_back(poly[t]);
+  for (std::size_t t = 0; t < i; ++t) loopB.push_back(poly[t]);
+
+  // Each lobe must be a valid simple loop (≥3 distinct, no residual self-touch); otherwise
+  // the pinch is not a clean figure-eight (e.g. a crossing) → ambiguous decline.
+  if (!subLoopValid(loopA, tol) || !subLoopValid(loopB, tol)) {
+    rep.ambiguous = true;
+    return rep;
+  }
+
+  rep.loopA = std::move(loopA);
+  rep.loopB = std::move(loopB);
+  rep.split = true;
+  return rep;
+}
+
+// splitTrimLoopAtPinch — flatten (join-gap-aware) + weld small gaps + split at a 2-way pinch.
+SplitReport splitTrimLoopAtPinch(const TrimLoop& loop, const HealOptions& opts, int flatten) {
+  std::vector<double> joinGaps;
+  std::vector<ParamPoint> poly = flattenLoopForHeal(loop, flatten, joinGaps);
+  SplitReport rep;
+  if (poly.size() < 4) return rep;
+  const double extent = std::max(polyExtent(poly), 1e-300);
+  const double tol = opts.gapTol * std::max(extent, 1.0);
+  // A genuine large gap makes the loop uncloseable — cannot split honestly.
+  HealReport hg;
+  if (healTriageLargeGap(joinGaps, tol, hg)) { rep.tolerance = tol; return rep; }
+  HealReport wr;
+  std::vector<ParamPoint> welded = healWeldGaps(poly, tol, wr);  // close small gaps first
+  return splitAtPinch(welded, opts);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // makeTrimmedFace — build from an existing topology face Shape.
 // ─────────────────────────────────────────────────────────────────────────────
 std::optional<TrimmedNurbsFace> makeTrimmedFace(const Shape& face) {
@@ -479,23 +585,54 @@ std::vector<ParamPoint> preparedLoop(const TrimLoop& loop, const ClassifyOptions
   return poly;
 }
 
+// Ray-cast a prepared polyline and map the raw code to a Containment. `2`→OnBoundary,
+// `3`→Unknown, `1`→In, `0`→Out (used for the outer-loop verdict, including split lobes).
+Containment classifyAgainstLoop(const std::vector<ParamPoint>& poly, const ParamPoint& p,
+                                double onEdgeTol) {
+  const double extent = std::max(polyExtent(poly), 1e-300);
+  const double tol = onEdgeTol * std::max(extent, 1.0);
+  switch (raycast(poly, p, tol)) {
+    case 2: return Containment::OnBoundary;
+    case 3: return Containment::Unknown;
+    case 1: return Containment::In;
+    default: return Containment::Out;
+  }
+}
+
+// Outer-loop verdict with the OPT-IN pinch split. If the outer loop heals cleanly, use it.
+// Otherwise, when splitPinch is on, try to SPLIT a clean 2-way pinch and classify the UNION
+// of the two sub-loops (In iff inside either lobe; OnBoundary if on either seam) — this is
+// region-preserving (see splitAtPinch). A non-splittable pinch / large gap / degeneracy is
+// an honest decline (Unknown).
+Containment classifyOuter(const TrimLoop& loop, const ParamPoint& p, const ClassifyOptions& opts) {
+  bool ok = false;
+  const std::vector<ParamPoint> outer = preparedLoop(loop, opts, ok);
+  if (ok) return classifyAgainstLoop(outer, p, opts.onEdgeTol);
+  if (!opts.heal || !opts.splitPinch) return Containment::Unknown;  // no split path → decline
+
+  const SplitReport sr = splitTrimLoopAtPinch(loop, HealOptions{opts.healGapTol},
+                                              opts.flattenSegments);
+  if (!sr.split) return Containment::Unknown;  // not a clean 2-way pinch → honest decline
+
+  const Containment ca = classifyAgainstLoop(sr.loopA, p, opts.onEdgeTol);
+  const Containment cb = classifyAgainstLoop(sr.loopB, p, opts.onEdgeTol);
+  if (ca == Containment::OnBoundary || cb == Containment::OnBoundary)
+    return Containment::OnBoundary;
+  if (ca == Containment::Unknown || cb == Containment::Unknown) return Containment::Unknown;
+  // Region = union of the two disjoint lobes: In iff inside either lobe.
+  return (ca == Containment::In || cb == Containment::In) ? Containment::In : Containment::Out;
+}
+
 }  // namespace
 
 Containment classify(const TrimmedNurbsFace& face, const ParamPoint& p,
                      const ClassifyOptions& opts) {
   if (!face.hasOuter()) return Containment::Unknown;
 
-  bool ok = false;
-  const std::vector<ParamPoint> outer = preparedLoop(face.outer, opts, ok);
-  if (!ok) return Containment::Unknown;
-
-  const double extent = std::max(polyExtent(outer), 1e-300);
-  const double tol = opts.onEdgeTol * std::max(extent, 1.0);
-
-  const int outerHit = raycast(outer, p, tol);
-  if (outerHit == 2) return Containment::OnBoundary;
-  if (outerHit == 3) return Containment::Unknown;
-  if (outerHit == 0) return Containment::Out;  // outside the outer loop
+  const Containment outerVerdict = classifyOuter(face.outer, p, opts);
+  if (outerVerdict == Containment::OnBoundary) return Containment::OnBoundary;
+  if (outerVerdict == Containment::Unknown) return Containment::Unknown;
+  if (outerVerdict == Containment::Out) return Containment::Out;  // outside the outer region
 
   // Inside the outer loop: a point inside ANY hole is Out; on a hole edge is
   // OnBoundary; a hole ambiguity is Unknown.

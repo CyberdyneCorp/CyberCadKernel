@@ -446,6 +446,148 @@ static void testHealing() {
               "healed gapped loop: center In");
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. PINCH-SPLITTING (always-on).
+//
+// A detected 2-way pinch (a figure-eight self-touching at ONE vertex) is SPLIT into two
+// valid sub-loops whose UNION classifies IDENTICALLY to the intended two-region geometry —
+// the load-bearing containment-preservation property. Airtight oracle: the two-region
+// REFERENCE is two SEPARATE triangle loops classified by union (In iff inside either); the
+// pinched single loop with splitPinch=on must reproduce every probe. An un-splittable pinch
+// (3-way / crossing) still declines honestly (never force-split).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// A triangle loop (three CCW line segments) through the three given UV corners.
+static TrimLoop triLoop(double au, double av, double bu, double bv, double cu, double cv) {
+  TrimLoop loop;
+  loop.push_back(lineSeg(au, av, bu, bv));
+  loop.push_back(lineSeg(bu, bv, cu, cv));
+  loop.push_back(lineSeg(cu, cv, au, av));
+  return loop;
+}
+
+// The figure-eight: two triangle lobes touching ONLY at the pinch vertex (0.5,0.5). The
+// LEFT lobe is (0.5,0.5)→(0.2,0.7)→(0.2,0.3); the RIGHT lobe is (0.5,0.5)→(0.8,0.3)→
+// (0.8,0.7). Traced as ONE loop it self-touches at (0.5,0.5) — a clean 2-way pinch.
+static TrimLoop figureEightLoop() {
+  TrimLoop loop;
+  loop.push_back(lineSeg(0.5, 0.5, 0.2, 0.7));  // into the left lobe
+  loop.push_back(lineSeg(0.2, 0.7, 0.2, 0.3));
+  loop.push_back(lineSeg(0.2, 0.3, 0.5, 0.5));  // back to the pinch
+  loop.push_back(lineSeg(0.5, 0.5, 0.8, 0.3));  // into the right lobe
+  loop.push_back(lineSeg(0.8, 0.3, 0.8, 0.7));
+  loop.push_back(lineSeg(0.8, 0.7, 0.5, 0.5));  // back to the pinch (revisits it)
+  return loop;
+}
+
+// The intended two-region REFERENCE: point is "in the region" iff inside EITHER lobe. Each
+// lobe is a SEPARATE, valid triangle loop (no pinch) — the exact split geometry.
+static Containment referenceUnion(const FaceSurface& surf, double u, double v) {
+  TrimmedNurbsFace left;
+  left.surface = surf;
+  left.outer = triLoop(0.5, 0.5, 0.2, 0.7, 0.2, 0.3);
+  TrimmedNurbsFace right;
+  right.surface = surf;
+  right.outer = triLoop(0.5, 0.5, 0.8, 0.3, 0.8, 0.7);
+  const Containment cl = classify(left, {u, v});
+  const Containment cr = classify(right, {u, v});
+  if (cl == Containment::OnBoundary || cr == Containment::OnBoundary)
+    return Containment::OnBoundary;
+  if (cl == Containment::In || cr == Containment::In) return Containment::In;
+  return Containment::Out;
+}
+
+static void testPinchSplit() {
+  const FaceSurface patch = bicubicPatch();
+
+  // ── (1) The figure-eight SPLITS into two valid loops (splitTrimLoopAtPinch reports it).
+  SplitReport sr = splitTrimLoopAtPinch(figureEightLoop());
+  expectTrue(sr.split, "figure-eight splits (split=true)");
+  expectTrue(sr.pinch, "figure-eight pinch detected (pinch=true)");
+  expectTrue(!sr.ambiguous, "clean 2-way pinch is not ambiguous");
+  expectEq(sr.pinchCount, 1, "clean 2-way pinch has exactly one coincident pair");
+  expectTrue(sr.loopA.size() >= 3 && sr.loopB.size() >= 3, "both sub-loops are non-degenerate");
+
+  // ── (2) CONTAINMENT-PRESERVATION: with splitPinch on, EVERY probe classifies IDENTICALLY
+  //        to the exact two-loop reference (union of the two triangle lobes). No interior/
+  //        exterior probe flips. This is the "a split must never change the region" proof.
+  TrimmedNurbsFace fig;
+  fig.surface = patch;
+  fig.outer = figureEightLoop();
+  ClassifyOptions split;
+  split.splitPinch = true;
+
+  struct P8 { double u, v; const char* name; };
+  const P8 probes[] = {
+      {0.30, 0.50, "left-lobe interior"},   {0.22, 0.50, "left-lobe interior 2"},
+      {0.70, 0.50, "right-lobe interior"},  {0.78, 0.50, "right-lobe interior 2"},
+      {0.10, 0.50, "far left exterior"},    {0.90, 0.50, "far right exterior"},
+      {0.50, 0.90, "above exterior"},       {0.50, 0.10, "below exterior"},
+      {0.35, 0.20, "between-lobes exterior"},{0.65, 0.80, "between-lobes exterior 2"},
+      {0.40, 0.65, "left upper interior"},  {0.60, 0.35, "right lower interior"},
+  };
+  for (const P8& pr : probes) {
+    const Containment ref = referenceUnion(patch, pr.u, pr.v);
+    const Containment got = classify(fig, {pr.u, pr.v}, split);
+    expectClass(got, ref, pr.name);  // split union == two-region reference, no flip
+  }
+
+  // ── (3) DEFAULT (splitPinch OFF) still declines the pinch honestly — no behaviour change.
+  expectClass(classify(fig, {0.30, 0.50}), Containment::Unknown,
+              "pinch declines Unknown by default (splitPinch off)");
+
+  // ── (4) UN-SPLITTABLE pinch declines honestly (NOT force-split). A 3-way pinch: THREE
+  //        chords all pass through the SAME vertex (0.5,0.5) → three coincident pairs, not a
+  //        clean 2-way figure-eight. Must report ambiguous and classify Unknown even with
+  //        splitPinch on.
+  TrimLoop threeWay;
+  threeWay.push_back(lineSeg(0.5, 0.5, 0.2, 0.7));
+  threeWay.push_back(lineSeg(0.2, 0.7, 0.2, 0.3));
+  threeWay.push_back(lineSeg(0.2, 0.3, 0.5, 0.5));  // pinch #1
+  threeWay.push_back(lineSeg(0.5, 0.5, 0.8, 0.3));
+  threeWay.push_back(lineSeg(0.8, 0.3, 0.8, 0.7));
+  threeWay.push_back(lineSeg(0.8, 0.7, 0.5, 0.5));  // pinch #2
+  threeWay.push_back(lineSeg(0.5, 0.5, 0.5, 0.9));
+  threeWay.push_back(lineSeg(0.5, 0.9, 0.35, 0.9));
+  threeWay.push_back(lineSeg(0.35, 0.9, 0.5, 0.5));  // pinch #3 → 3+ coincident vertices
+  SplitReport tw = splitTrimLoopAtPinch(threeWay);
+  expectTrue(tw.pinch, "3-way pinch is detected (pinch=true)");
+  expectTrue(!tw.split, "3-way pinch is NOT split (split=false)");
+  expectTrue(tw.ambiguous, "3-way pinch is ambiguous (declined honestly)");
+  expectTrue(tw.pinchCount > 1, "3-way pinch has more than one coincident pair");
+  TrimmedNurbsFace tf;
+  tf.surface = patch;
+  tf.outer = threeWay;
+  expectClass(classify(tf, {0.30, 0.50}, split), Containment::Unknown,
+              "un-splittable pinch declines Unknown even with splitPinch on");
+
+  // ── (5) A CLEAN (non-pinched) loop is UNAFFECTED by splitPinch: byte-identical
+  //        classification with and without the option. splitTrimLoopAtPinch reports no pinch.
+  TrimmedNurbsFace clean;
+  clean.surface = patch;
+  clean.outer = rectLoop(0.2, 0.8, 0.2, 0.8);
+  SplitReport cs = splitTrimLoopAtPinch(clean.outer);
+  expectTrue(!cs.pinch && !cs.split, "clean loop has no pinch, is not split");
+  const Probe cleanProbes[] = {
+      {0.30, 0.30, Containment::In,  "clean interior (splitPinch inert)"},
+      {0.50, 0.50, Containment::In,  "clean center (splitPinch inert)"},
+      {0.10, 0.50, Containment::Out, "clean exterior (splitPinch inert)"},
+      {0.90, 0.50, Containment::Out, "clean exterior 2 (splitPinch inert)"},
+  };
+  for (const Probe& pr : cleanProbes) {
+    const Containment off = classify(clean, {pr.u, pr.v});             // splitPinch off
+    const Containment on = classify(clean, {pr.u, pr.v}, split);       // splitPinch on
+    expectClass(off, pr.want, pr.name);
+    expectClass(on, off, "clean loop unchanged by splitPinch");  // identical, no effect
+  }
+
+  // ── (6) REGION-TOTAL preservation: the pinch point (0.5,0.5) — the shared seam — is
+  //        OnBoundary (a real boundary of BOTH lobes), and the split reproduces it, so the
+  //        union's total region matches the reference (which is also OnBoundary there).
+  expectClass(classify(fig, {0.5, 0.5}, split), referenceUnion(patch, 0.5, 0.5),
+              "pinch seam matches reference (total region preserved)");
+}
+
 #ifdef CYBERCAD_HAS_NUMSCI
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. Pcurve construction round-trip (numsci).
@@ -579,6 +721,7 @@ int main() {
   testFidelity();
   testDegenerate();
   testHealing();
+  testPinchSplit();
 #ifdef CYBERCAD_HAS_NUMSCI
   testConstruction();
   testConstructionOffSurface();

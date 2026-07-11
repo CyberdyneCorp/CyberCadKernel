@@ -129,7 +129,7 @@ SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.
       native_ssi_seeding_recall.mm native_ssi_seeding_parity.mm \
       native_ssi_marching_parity.mm native_ssi_curved_boolean_parity.mm \
       native_ssi_freeform_fuzz.mm \
-      native_boolean_fuzz.mm native_step_import_fuzz.mm \
+      native_boolean_fuzz.mm native_dense_csg_tangent_sim.mm native_step_import_fuzz.mm \
       native_construct_fuzz.mm native_blend_fuzz.mm \
       native_wrap_emboss_fuzz.mm native_wrap_emboss_freeform_fuzz.mm \
       native_mass_props_fuzz.mm native_transform_fuzz.mm \

@@ -315,6 +315,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_vsweep
         test_native_thread
         test_native_boolean
+        test_native_dense_csg_stress
         test_native_curved_boolean
         test_native_freeform_membership
         test_native_freeform_operand
@@ -646,6 +647,15 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_thread.cpp")
     set(test_native_boolean_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_boolean.cpp")
+    # near-tangent / near-coincident DENSE-CSG stress battery + failure-boundary map —
+    # host GATE, OCCT-FREE closed-form-volume oracle. Drives the native boolean on dense
+    # triangle-soup operands (mirroring thread_apply::facetSolid) across the tangent-angle
+    # / coincidence-gap / overlap-ε sweep, asserts the measured three-band failure map and
+    # the hard invariant DISAGREED==0 (never a silent-wrong result). Header-only over
+    # boolean/construct/tessellate/topology; no numsci link, so it lives in the always-on
+    # native suite next to test_native_boolean.
+    set(test_native_dense_csg_stress_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_dense_csg_stress.cpp")
     set(test_native_curved_boolean_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_curved_boolean.cpp")
     set(test_native_freeform_membership_SRC

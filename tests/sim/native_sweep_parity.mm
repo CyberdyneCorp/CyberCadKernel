@@ -316,6 +316,40 @@ CCShapeId buildTwistedSweepDeferred() {
     return cc_twisted_sweep(prof, 4, path, 2, kPi / 2.0, 0.5);
 }
 
+// R1) GUIDE-ORIENTED SWEEP on a CURVED spine with an IN-PLANE guide (DEFECT 1 regression):
+//     a 4×2 rectangle swept along a quarter-arc spine (start tangent ≈ +Z), with a guide that
+//     runs alongside the spine offset in the section plane so its FIRST point lies in the true
+//     start plane (⟂ the LOCAL start tangent, z ≈ 0). Native defers a curved spine → OCCT. The
+//     OCCT oracle's start-plane guard once used the whole-spine CHORD as the plane normal and
+//     FALSE-rejected this valid guide with "guide misses spine start plane"; the fix uses the
+//     LOCAL start tangent, so the guide is accepted and a positive-volume solid is produced.
+CCShapeId buildGuidedOrientCurvedInPlane() {
+    const double prof[] = {-2, -1, 2, -1, 2, 1, -2, 1};
+    const double R = 10.0;
+    const int n = 17;
+    static std::vector<double> path, guide;
+    if (path.empty()) {
+        for (int i = 0; i < n; ++i) {
+            const double a = (kPi / 2.0) * i / (n - 1);
+            path.push_back(R * std::sin(a));
+            path.push_back(0.0);
+            path.push_back(R * (1.0 - std::cos(a)));
+        }
+        // Guide = spine offset +3 along the in-plane side direction; first point at z ≈ 0.
+        for (int i = 0; i < n; ++i) {
+            const int ip = std::min(i + 1, n - 1), im = std::max(i - 1, 0);
+            const double tx = path[ip * 3] - path[im * 3], tz = path[ip * 3 + 2] - path[im * 3 + 2];
+            const double tl = std::sqrt(tx * tx + tz * tz);
+            // side = normalize(tangent × +Y) = (tz, 0, -tx)/|t| (right-handed, in the XZ plane).
+            const double sx = tz / tl, sz = -tx / tl;
+            guide.push_back(path[i * 3] + 3.0 * sx);
+            guide.push_back(0.0);
+            guide.push_back(path[i * 3 + 2] + 3.0 * sz);
+        }
+    }
+    return cc_guided_orient_sweep(prof, 4, path.data(), n, guide.data(), n);
+}
+
 // D2) GUIDED SWEEP (deferred): a square swept along a straight path guided by a second
 //     polyline. Pipe-shell/guide case — always OCCT fallthrough in the engine glue.
 CCShapeId buildGuidedSweepDeferred() {
@@ -399,6 +433,24 @@ int main() {
                   "pipe-shell guide case — Tier C, OCCT fallthrough");
     runFallbackOp("loft_along_rail", &buildLoftAlongRailDeferred,
                   "pipe-shell rail case — Tier C, OCCT fallthrough");
+
+    // R1) DEFECT 1 regression: the OCCT guided-orient oracle must ACCEPT a curved-spine guide
+    //     whose first point lies in the true (local-tangent) start plane. Before the fix the
+    //     chord-based start-plane guard rejected it ("guide misses spine start plane"); after
+    //     the fix it builds a valid positive-volume solid. Native defers a curved spine, so
+    //     this exercises the OCCT path directly through the facade.
+    {
+        char detail[512];
+        cc_set_engine(0);  // OCCT active (native would defer this curved spine to OCCT anyway)
+        const CCShapeId id = buildGuidedOrientCurvedInPlane();
+        const CCMassProps m = id ? cc_mass_properties(id) : CCMassProps{0, 0, 0, 0, 0, 0};
+        const bool ok = (id != 0) && (m.valid != 0) && (m.volume > 0.0);
+        std::snprintf(detail, sizeof detail,
+                      "[regression] in-plane curved guide accepted, vol=%.6g err='%s'",
+                      m.volume, id ? "" : cc_last_error());
+        record(ok, "guided-orient curved in-plane guide (defect-1)", detail);
+        if (id) cc_shape_release(id);
+    }
 
     cc_set_engine(0);
 

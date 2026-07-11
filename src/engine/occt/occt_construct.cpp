@@ -1417,15 +1417,42 @@ ShapeResult OcctEngine::guided_orient_sweep(const double* profileXY, int profile
         if (!guideP.IsDone()) return make_error("guided_orient_sweep: guide wire failed");
         const TopoDS_Wire guide = guideP.Wire();
 
-        // Start frame implied by the guide: T = spine tangent at start; N0 = the guide
+        // Start frame implied by the guide: T = spine tangent AT THE START; N0 = the guide
         // point in the plane through P0 perpendicular to T, minus P0 (perpendicular-plane
         // correspondence); B0 = T × N0. The profile is placed at P0 in (N0, B0).
+        //
+        // The start-plane normal is the LOCAL tangent at the spine start (P0 → the first
+        // DISTINCT downstream path point), NOT the whole-spine chord P0 → PN. OCCT's
+        // GeomFill_GuideTrihedronPlan evaluates the trihedron per station against the spine
+        // TANGENT there; at the start station that is the local start tangent. For a straight
+        // spine the two coincide, but on a CURVED spine the chord tilts away from the start
+        // tangent, so a guide whose first point genuinely lies in the start plane (⟂ the start
+        // tangent) would be mis-projected against the chord and FALSE-rejected as "misses the
+        // start plane". Use the local start tangent so an in-plane guide is correctly accepted.
         const gp_Pnt p0(pathXYZ[0], pathXYZ[1], pathXYZ[2]);
-        gp_Vec T(p0, gp_Pnt(pathXYZ[(pathCount - 1) * 3], pathXYZ[(pathCount - 1) * 3 + 1],
-                            pathXYZ[(pathCount - 1) * 3 + 2]));
+        gp_Vec T(0.0, 0.0, 0.0);
+        for (int i = 1; i < pathCount; ++i) {
+            const gp_Vec seg(p0, gp_Pnt(pathXYZ[i * 3], pathXYZ[i * 3 + 1], pathXYZ[i * 3 + 2]));
+            if (seg.Magnitude() >= 1.0e-9) { T = seg; break; }
+        }
         if (T.Magnitude() < 1.0e-9) return make_error("guided_orient_sweep: degenerate spine");
         T.Normalize();
         const double target = p0.XYZ().Dot(T.XYZ());
+        // Scale-relative bracket tolerance: the guide's projection span along T sets the scale
+        // (falls back to |target|/unit), so an in-plane guide at engineering coordinates is not
+        // false-rejected by an absolute epsilon. This is a principled scale-normalisation, NOT a
+        // widened pass tolerance — the guard's true-positive behaviour (a guide that genuinely
+        // misses the plane still misses it) is preserved because the tolerance stays ~1e-9 relative.
+        double projLo = 1.0e300, projHi = -1.0e300;
+        for (int i = 0; i < guideCount; ++i) {
+            const double d = gp_Pnt(guideXYZ[i * 3], guideXYZ[i * 3 + 1], guideXYZ[i * 3 + 2])
+                                 .XYZ()
+                                 .Dot(T.XYZ());
+            projLo = std::min(projLo, d);
+            projHi = std::max(projHi, d);
+        }
+        const double planeTol =
+            1.0e-9 * std::max({1.0, projHi - projLo, std::fabs(target)});
         gp_Pnt pprime;
         bool found = false;
         for (int i = 0; i + 1 < guideCount && !found; ++i) {
@@ -1434,7 +1461,7 @@ ShapeResult OcctEngine::guided_orient_sweep(const double* profileXY, int profile
                             guideXYZ[(i + 1) * 3 + 2]);
             const double da = ga.XYZ().Dot(T.XYZ()), db = gb.XYZ().Dot(T.XYZ());
             const double lo = std::min(da, db), hi = std::max(da, db);
-            if (target < lo - 1.0e-9 || target > hi + 1.0e-9) continue;
+            if (target < lo - planeTol || target > hi + planeTol) continue;
             const double denom = db - da;
             const double u = std::fabs(denom) > 1.0e-12 ? (target - da) / denom : 0.0;
             const double uc = std::min(1.0, std::max(0.0, u));

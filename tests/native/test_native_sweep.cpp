@@ -396,6 +396,87 @@ CC_TEST(guided_orient_curved_spine_and_degenerate_defer) {
   CC_CHECK(cst::build_guided_orient_sweep(nullptr, 4, path, 2, guide, 3).isNull());
 }
 
+// ── REGRESSION (DEFECT 1): the guided-orient START-PLANE predicate must use the LOCAL
+// spine tangent, not the whole-spine CHORD ───────────────────────────────────────────
+// The guided_orient_sweep guide guard tests whether the guide meets the plane through the
+// spine start P0 perpendicular to the spine tangent there. The tangent AT THE START is the
+// LOCAL start tangent (P0 → first distinct downstream point), NOT the chord P0 → PN. On a
+// straight spine the two coincide; on a CURVED spine the chord tilts away, so a guide whose
+// first point genuinely lies in the true start plane (⟂ the LOCAL tangent) is FALSE-rejected
+// as "guide misses spine start plane" if the chord is used. det::guidePointInPerpPlane is the
+// OCCT-free mirror of that predicate; this asserts the root cause + fix directly on host and
+// proves the guard's true-positive behaviour is preserved (a genuinely misplaced guide is
+// still rejected under both normals).
+CC_TEST(guided_orient_start_plane_uses_local_tangent_not_chord) {
+  // Curved spine: a quarter arc in X-Z. Start P0 = origin, LOCAL start tangent ≈ +Z; the
+  // whole-spine chord P0 → PN tilts toward +X (≈ 45°). The two normals differ.
+  const double R = 10.0;
+  const int pc = 17;
+  std::vector<double> pathv;
+  for (int i = 0; i < pc; ++i) {
+    const double a = (M_PI / 2.0) * i / (pc - 1);
+    pathv.push_back(R * std::sin(a));   // x
+    pathv.push_back(0.0);               // y
+    pathv.push_back(R * (1.0 - std::cos(a)));  // z
+  }
+  const std::vector<math::Point3> spine = det::cleanPath(pathv.data(), pc);
+  CC_CHECK(spine.size() >= 3);
+  const math::Point3 P0 = spine.front();
+  const auto unit = [](math::Vec3 v) { const double l = math::norm(v); return l > 0 ? v / l : v; };
+  const math::Vec3 Tchord = unit(math::Vec3{spine.back() - P0});    // OCCT's (wrong) T
+  const math::Vec3 Ttan = det::stationTangents(spine).front();      // correct LOCAL start tangent
+  // They genuinely differ on this curved spine (else the test proves nothing).
+  CC_CHECK(math::dot(Tchord, Ttan) < 0.9);
+
+  // A guide that runs ALONGSIDE the spine, offset in the section plane, so its FIRST point
+  // lies in the TRUE start plane (⟂ Ttan, i.e. z ≈ 0) but its projection along the CHORD is
+  // NEGATIVE (below the chord-start plane) — the exact configuration OCCT false-rejected.
+  std::vector<math::Point3> guide;
+  for (int i = 0; i < pc; ++i) {
+    const int ip = std::min(i + 1, pc - 1), im = std::max(i - 1, 0);
+    const math::Vec3 t = unit(math::Vec3{spine[ip] - spine[im]});
+    const math::Vec3 up{0.0, 1.0, 0.0};
+    const math::Vec3 side = unit(math::cross(t, up));
+    guide.push_back(math::Point3{spine[i].asVec() + side * 3.0});
+  }
+  // First guide point IS in the true start plane (⟂ Ttan through P0).
+  CC_CHECK(std::fabs(math::dot(guide.front().asVec() - P0.asVec(), Ttan)) < 1e-6);
+
+  math::Point3 pp;
+  // ROOT CAUSE: with the CHORD normal the valid in-plane guide is FALSE-rejected …
+  const bool acceptedChord = det::guidePointInPerpPlane(guide, Tchord, P0, pp);
+  // … but with the LOCAL start tangent (the fix) it is correctly ACCEPTED.
+  const bool acceptedTangent = det::guidePointInPerpPlane(guide, Ttan, P0, pp);
+  CC_CHECK(!acceptedChord);   // demonstrates the defect the chord normal caused
+  CC_CHECK(acceptedTangent);  // the fix: local start tangent accepts the valid guide
+
+  // TRUE-POSITIVE preserved: a guide whose first point is genuinely OUTSIDE the start plane
+  // (translated far along +Z, well past the start station) is still rejected under BOTH
+  // normals — the fix does not weaken the guard.
+  std::vector<math::Point3> misplaced;
+  for (const auto& g : guide) misplaced.push_back(math::Point3{g.asVec() + math::Vec3{0, 0, 50.0}});
+  math::Point3 pp2;
+  CC_CHECK(!det::guidePointInPerpPlane(misplaced, Ttan, P0, pp2));
+  CC_CHECK(!det::guidePointInPerpPlane(misplaced, Tchord, P0, pp2));
+}
+
+// ── REGRESSION (DEFECT 1): a valid in-plane guide on a STRAIGHT spine builds a positive-
+// volume swept solid (the straight-spine analogue where chord == tangent) ─────────────
+// The motivating case: spine starting at z=0 with the guide's first point at z=0 (in the
+// start plane). This must ACCEPT and yield a valid, watertight, positive-volume swept solid.
+CC_TEST(guided_orient_inplane_guide_builds_positive_volume) {
+  const double prof[] = {-2, -1, 2, -1, 2, 1, -2, 1};  // 4×2 rectangle, area 8
+  const double path[] = {0, 0, 0, 0, 0, 10};           // spine start z=0
+  const double guide[] = {3, 0, 0, 3, 0, 10};          // guide first point z=0 → in start plane
+  const topo::Shape s = cst::build_guided_orient_sweep(prof, 4, path, 2, guide, 2);
+  CC_CHECK(!s.isNull());
+  if (s.isNull()) return;
+  double vol = 0.0;
+  CC_CHECK(watertightAllDeflections(s, vol));
+  CC_CHECK(vol > 0.0);
+  CC_CHECK(std::fabs(vol - 80.0) < 1e-6);  // exact prism 4·2·10
+}
+
 // ── NATIVE: loft_along_rail on a STRAIGHT rail is a perpendicular-framed ruled loft ─
 // cc_loft_along_rail morphs section A (4×4 square) into section B (2×2 square) along a
 // straight rail. For a straight rail the OCCT MakePipeShell reduces EXACTLY to a ruled

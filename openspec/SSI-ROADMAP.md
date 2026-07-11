@@ -653,7 +653,7 @@ Remaining S5 work: general (non-Steinmetz) branched pairs, transversal/apex cone
 pairs, cone∩cone, the two-circle / apex-crossing / transversal cone∩sphere crossings, and more
 curved-curved families.
 
-## NURBS Layer 2 — general-freeform measurement pass (empirical decline map) · ✅ MEASURED 2026-07-10
+## NURBS Layer 2 — general-freeform measurement pass (empirical decline map) · ✅ MEASURED 2026-07-10 · ⛔ RECALL CAMPAIGN DECLINED 2026-07-11 (baseline holds, DISAGREED==0)
 
 Before scoping further S4 slices, the general NURBS↔NURBS boundary was measured empirically
 with two differential fuzzers (verification only; `src/native` untouched, `cc_*` unchanged):
@@ -699,6 +699,59 @@ march-through work. This reprioritizes the S4-d…f tail below.
 (~99.6% coverage) with a small seam gap; declaring `uPeriod` currently trips the near-tangent
 detector on rational parametric-speed variation. A periodic-seam-aware adapter + seam-crossing
 closure is a clean, bounded slice independent of the multi-loop recall work.
+
+### Seeding-recall campaign (3 rounds, 2026-07-11) · ⛔ NOTHING LANDED — honest decline, baseline holds
+
+A bounded workflow attacked the dominant **multi-branch** decline by generalizing the
+`completeness_critic` / `criticTargetedReseed` seeding-recall path to arbitrary freeform
+multi-loop poses. **Measured decline delta: 0.0 pt — baseline stands at ≈29.5%** (roadmap
+canonical; the committed SIM fuzzer-as-shipped measured 28.5% throughout). **`DISAGREED == 0`
+held in every configuration of every round — the hard no-silent-wrong invariant was never
+violated, and every slice that would have broken a contract was reverted, tree restored clean
+at HEAD `31765c5`.**
+
+**Slices attempted and HONESTLY DECLINED (no commit):**
+
+- **R1 — post-hoc critic recall generalization** (`completeness_critic.h` `coverageOf`
+  `dilate=false` exact-cell mode + a new M1d covered-cell second pass re-seeding
+  already-covered coarse cells at finer per-cell resolution). Default-OFF, DISAGREED-safe,
+  verified not to regress S4-f canonical parity (small-loop 0.5→1.0, many-loops 0.25→1.0 all
+  PASS). **Blocker: INERT on the unmodified fuzzer** — identical decline WITH and WITHOUT the
+  edits at cell caps ≤256, rounds ≤8, floor to 1/256. FUZZ_DIAG proved the residual
+  multi-branch declines are NOT co-resident transversal loops reachable by finer targeted
+  re-seed (`critRecoveredLoops=0`, `criticStoppedDry=1` even at floor): they are near-tangent
+  grazes the seeder correctly refuses (the S4-c moat) or OCCT arc-split over-counts of one
+  native loop. The only levers that moved the fuzzer were **caller-side** `SeedOptions` on the
+  measurement instrument (critic on → 21.5%; finer initial grid `initialGridU/V=12`,
+  `minPatchFrac=1/64` → 17.4%, both DISAGREED=0) — editing the committed instrument to
+  manufacture the win is disallowed; flipping `completenessCritic` default-on breaks the S4-f
+  host BEFORE/AFTER contract (`test_native_ssi_s4f_completeness.cpp` asserts
+  `before.tracedBranches==1`) and changes every SSI/boolean consumer — out of a single safe
+  round's scope.
+- **R2 — within-cluster distinct-branch split at the seeder** (`seeding.cpp` refine gained
+  `clusterSplitDistinct/Frac/Cap`: the adjacency clustering merges two distinct small loops
+  whose candidate boxes touch into one cluster and keeps only the tightest seed, dropping the
+  second; the split emits every spatially-distinct refined seed per cluster, each still on BOTH
+  surfaces at the SAME `onSurfTol`, marcher locus-dedup remains the correctness gate) + a
+  coverage-halo width knob (`criticCoverDilation`). Default-OFF. **Blocker: self-verify
+  INCOMPLETE at the commit gate** — the shipping-config end-to-end fuzzer run (≥3 seeds with
+  `clusterSplitDistinct` on) was still executing when output was forced, and the host SSI test
+  suite had not been re-run; the `dilation=0` experiment returned IDENTICAL numbers
+  (halo is not this fuzzer's miss mechanism). Committing before both gate verifications pass
+  would violate the self-verify-then-commit discipline, so the change was declined and reverted.
+
+**Remaining dominant decline reason (honest residual / next frontier):** the multi-branch
+declines are **NOT a seeding-recall recall gap** reachable by finer post-hoc re-seeding — that
+hypothesis was tested to exhaustion and falsified. The genuine residual splits into (1)
+**near-tangent grazes the seeder correctly refuses** — real S4-c/d marching-core moat work, not
+recall; and (2) **OCCT arc-split over-counts** where OCCT reports one native loop as multiple
+components (an oracle-side counting artifact, not a native miss). The only demonstrated,
+DISAGREED-safe lever that lowers the decline is **initial seeding RESOLUTION** (finer initial
+subdivision catches co-resident loops the post-hoc critic cannot). The productizable slice is
+therefore **scale-adaptive initial-grid pre-split inside `seed_intersection`** (default path
+finds more loops with no caller knob), followed by a full SSI host+sim re-baseline — or moving
+`completenessCritic` to default-on and re-baselining every SSI/boolean test. Both are larger
+than one bounded, independently re-verifiable round and are deferred.
 
 ## Sequencing & effort
 

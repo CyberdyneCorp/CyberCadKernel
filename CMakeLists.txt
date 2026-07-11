@@ -470,6 +470,21 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_ssi_curved_boolean)
         set(test_native_ssi_curved_boolean_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_ssi_curved_boolean.cpp")
+        # NURBS roadmap Layer 3 — exact-NURBS B-rep boolean STAGE-READINESS MEASUREMENT
+        # HARNESS (openspec/L3-EXACT-NURBS-BOOLEAN-READINESS.md). MEASUREMENT ONLY: it
+        # drives real NURBS↔NURBS operand pairs through the EXISTING kernel pieces an
+        # exact-NURBS boolean composes — SSI seed/trace (stage 1), constructPcurve
+        # (stage 2), classify (stages 3/4), pcurveFidelity (stage 5) — and reports how
+        # far native gets per stage vs a closed-form (rational-NURBS-as-quadric) oracle,
+        # no OCCT. Stages 1/2 call seed_intersection / trace_from_seeds / constructPcurve
+        # (always-visible declarations whose defs are under CYBERCAD_HAS_NUMSCI), so the
+        # TU needs the macro but NOT the substrate include trees, like the Layer-8 gate;
+        # it registers only in the numsci build so its stage-1/2 legs are exercised. It
+        # modifies no src/native and no cc_* ABI; a broken invariant (a fabricated trace /
+        # non-round-tripping pcurve / accepted drifted seam) exits 1, else 0.
+        list(APPEND CYBERCAD_TESTS test_native_l3_boolean_readiness)
+        set(test_native_l3_boolean_readiness_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_l3_boolean_readiness.cpp")
         # MOAT M2-assembly / B4 first freeform↔analytic half-space CUT — host GATE (a),
         # the OCCT-free composition proof: B1 recognise → M1 trace → B2 split → B4
         # analytic-face-split + section-cap weld → self-verify, matching the closed-form
@@ -936,6 +951,16 @@ if(CYBERCAD_BUILD_TESTS)
     # it needs the macro but NOT the substrate include trees, like the Layer-7 gate).
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_trimmed_nurbs)
         target_compile_definitions(test_native_trimmed_nurbs PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+
+    # The Layer-3 exact-NURBS-boolean readiness harness calls the numsci-gated SSI
+    # seed/trace + constructPcurve declarations (stages 1/2), so under CYBERCAD_HAS_NUMSCI
+    # its TU gets the macro. Like the Layer-8 gate it uses only always-visible ssi/topology
+    # declarations (makeNurbsAdapter / seed_intersection / trace_from_seeds / constructPcurve
+    # / classify / pcurveFidelity) — no NumPP/SciPP header — so it needs the macro but NOT
+    # the substrate include trees.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_l3_boolean_readiness)
+        target_compile_definitions(test_native_l3_boolean_readiness PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     # The Layer-6 skinning gate includes bspline_skin.h (which under CYBERCAD_HAS_NUMSCI

@@ -605,6 +605,23 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_curved_wall_cut)
         set(test_native_curved_wall_cut_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_curved_wall_cut.cpp")
+        # NURBS roadmap LAYER 3, SLICE 1 (L3-S1) — host GATE (a), the OCCT-free
+        # closed-form proof of the FIRST exact-NURBS B-rep boolean: a genuine NURBS
+        # (Kind::BSpline degree-2) face SPLIT BY A PLANE, welded watertight. A NURBS-
+        # walled bowl-cup cut by the horizontal plane z=c has a CLOSED CIRCULAR seam on
+        # the NURBS wall; nurbsFacePlaneSplit composes NURBS-adapter trace[stage 1] →
+        # WLine-(u,v)-read fidelity gate[stage 2, routed around constructPcurve] →
+        # splitFaceSmoothTrim[stage 3] → half-space keep[stage 4] → flat cap synth +
+        # M0 curved↔flat weld[stage 5] → watertight+volume self-verify, into the CUT
+        # (Below) and COMMON (Above) keep sides, each welding watertight at the closed-
+        # form volume (π·ρ²·c/2 and V(full)−that) with partition closure V(below)+
+        # V(above)=V(full). A non-NURBS wall / no-closed-seam plane HONEST-DECLINES to
+        # NULL. Its seam is the real S3 trace, so this host suite builds only under
+        # CYBERCAD_HAS_NUMSCI. Additive header-only verb (nurbs_plane_split.h);
+        # no lib change, no cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_plane_split)
+        set(test_native_nurbs_plane_split_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_plane_split.cpp")
         # MOAT M2 freeform↔freeform CLOSED-SEAM CUT / COMMON — host GATE (a), the
         # OCCT-free proof that the recognise[B1] → trace[M1] → split[B2 smooth-trim] →
         # classify[B3] pipeline composes for TWO curved operands over a shared CLOSED
@@ -997,6 +1014,16 @@ if(CYBERCAD_BUILD_TESTS)
     # the substrate include trees.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_l3_boolean_readiness)
         target_compile_definitions(test_native_l3_boolean_readiness PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+
+    # The L3-S1 exact-NURBS face-split-by-plane gate traces the NURBS wall ∩ plane seam
+    # via the numsci-gated ssi::trace_intersection (through nurbs_plane_split.h), so
+    # under CYBERCAD_HAS_NUMSCI its TU gets the macro. It calls only always-visible ssi /
+    # topology / tessellate declarations (makeBSplineAdapter / trace_intersection +
+    # header-only boolean/tessellate verbs) — no NumPP/SciPP header — so it needs the
+    # macro but NOT the substrate include trees, like the L3 readiness gate above.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_plane_split)
+        target_compile_definitions(test_native_nurbs_plane_split PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     # The Layer-6 skinning gate includes bspline_skin.h (which under CYBERCAD_HAS_NUMSCI

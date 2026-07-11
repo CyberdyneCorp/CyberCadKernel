@@ -175,6 +175,18 @@ watertight sew is MISSING.
 
 ## 3. The FIRST tractable slice (the simplest genuinely-exact-NURBS boolean within reach)
 
+> **✅ LANDED (OpenSpec change `nurbs-boolean-l3-s1`).** This slice is now a shipped verb:
+> `src/native/boolean/nurbs_plane_split.h` (`nurbsFacePlaneSplit`), composing exactly the
+> pieces below. Two-gate proof: **host closed-form** `tests/native/test_native_nurbs_plane_split.cpp`
+> (a genuine `Kind::BSpline` degree-2 bowl-cup reproducing `z=a·(x²+y²)` exactly, cut by z=c:
+> CUT volume `π·ρ²·c/2` + COMMON `V(full)−that`, partition closure `V(below)+V(above)=V(full)`,
+> seam fidelity `S(u,v)==C`=0 + on-both-surfaces ~7e-13 ⇒ DISAGREED=0, watertight χ=2, honest
+> NULL declines) + **sim vs OCCT** `tests/sim/native_nurbs_plane_split_parity.mm` (native vs
+> `BRepAlgoAPI_Cut` on a reconstructed `Geom_BSplineSurface` bowl-cup — volume/watertight/χ
+> parity within the tessellation band). `src/native` stays OCCT-free; no `cc_*` ABI; `assemble.h`
+> / `face_split.h` / `ssi` / `trimmed_nurbs` / `math` unmodified. The general NURBS↔NURBS boolean
+> remains the §4 deep tail.
+
 **Slice L3-S1 — a NURBS face SPLIT BY A PLANE, welded exact.** Concretely: **cut a single
 trimmed NURBS solid by a half-space (planar cutter)**, keeping the exact-NURBS wall on the
 kept side.
@@ -218,6 +230,12 @@ seam loops that stage-1 seeding misses (stage 1 recall) · multi-crossing / re-e
 ---
 
 ## 4. Honest gap list + py estimate to the first working exact-NURBS boolean slice (L3-S1)
+
+> **✅ G1–G6 all LANDED** in `nurbs_plane_split.h` + the two-gate proof (OpenSpec change
+> `nurbs-boolean-l3-s1`). The estimates below are retained as the historical scoping record.
+> The dominant risk called out — **G5** (the NURBS-wall↔flat sew watertightness on a genuine
+> NURBS grid) — resolved cleanly: the M0w curved↔flat pin welds the `Kind::BSpline` sub-face to
+> the flat cap watertight (χ=2), volume-convergent, at the closed-form volume and at OCCT parity.
 
 Ordered by the readiness map. Each is a *measured* gap, not a guess.
 

@@ -14,6 +14,9 @@
 //   * bspline_fit.h— NURBS fitting / approximation (NURBS-SCOPE Layer 7): points →
 //                    B-spline curve/surface interpolation + least-squares approx.
 //                    (numsci-gated; the solve-bearing routines need CYBERCAD_HAS_NUMSCI.)
+//   * bspline_skin.h—NURBS skinning / lofting (NURBS-SCOPE Layer 6): section curves →
+//                    tensor-product surface containing every section (compat + A10.3).
+//                    (numsci-gated; the V-interpolation solve needs CYBERCAD_HAS_NUMSCI.)
 //   * bezier.h     — Bézier curves & surfaces via de Casteljau (+ rational).
 //   * elementary.h — analytic plane / cylinder / cone / sphere.
 //   * torus.h      — analytic torus (surface of revolution of an off-axis circle).
@@ -33,6 +36,7 @@
 #include "bspline.h"
 #include "bspline_ops.h"
 #include "bspline_fit.h"
+#include "bspline_skin.h"
 #include "bezier.h"
 #include "elementary.h"
 #include "torus.h"

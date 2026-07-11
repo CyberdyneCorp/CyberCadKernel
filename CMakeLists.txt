@@ -366,6 +366,17 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_fit)
         set(test_native_nurbs_fit_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_fit.cpp")
+        # NURBS roadmap Layer 6 — skinning / lofting (src/native/math/bspline_skin).
+        # Composes Layer 1 (elevate/refine for section compatibility) + Layer 7 (curve
+        # interpolation across sections via lin_solve), so the module + its host gate
+        # build only under CYBERCAD_HAS_NUMSCI (mirroring test_native_nurbs_fit). Airtight
+        # oracles: section containment (surface iso-curve at v_k == section k pointwise
+        # ~1e-8), compatibility correctness (compat sections equal originals exactly),
+        # KNOWN-surface round-trip, and honest degenerate/rational guards. Non-rational
+        # scope; rational skinning + general Gordon/network/exact-sweep are residuals.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_skin)
+        set(test_native_nurbs_skin_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_skin.cpp")
         # SSI Stage S2 subdivision seeding — the refine (least_squares) is under
         # CYBERCAD_HAS_NUMSCI, so its host suite builds only in that config.
         list(APPEND CYBERCAD_TESTS test_native_ssi_seeding)
@@ -861,6 +872,13 @@ if(CYBERCAD_BUILD_TESTS)
     # headers), so its TU needs the macro but NOT the substrate include trees.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_fit)
         target_compile_definitions(test_native_nurbs_fit PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+
+    # The Layer-6 skinning gate includes bspline_skin.h (which under CYBERCAD_HAS_NUMSCI
+    # only pulls bspline_ops.h — no substrate header), so its TU needs the macro but NOT
+    # the substrate include trees, exactly like the Layer-7 fitting gate above.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_skin)
+        target_compile_definitions(test_native_nurbs_skin PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_ssi_boolean)

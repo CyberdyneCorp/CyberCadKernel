@@ -42,7 +42,7 @@ NURBS is not one feature — it is a stack. Here is the stack vs. what this kern
 | **NURBS B-rep boolean** — arbitrary trimmed-NURBS faces, tolerant, non-manifold | full (`BOPAlgo`) | 🟡 **bounded** — the M2 spine covers the app's poses; general NURBS↔NURBS is the deep tail |
 | **NURBS fillet/chamfer** — variable-radius / G2 on arbitrary surfaces | full (`ChFi3d`) | 🟡 analytic-revolve + canal only |
 | **NURBS offset / thicken** | full (`BRepOffset`) | 🟡 analytic walls only |
-| **Exact NURBS sweep/loft/surfacing** — GeomFill/BRepFill, Gordon/network/plate | full | ❌ native produces *faceted* results, not exact NURBS |
+| **Exact NURBS sweep/loft/surfacing** — GeomFill/BRepFill, Gordon/network/plate | full | 🟡 **partial** — OCCT-free, numsci-gated `src/native/math/bspline_skin.{h,cpp}` (NURBS-SCOPE Layer 6): **non-rational** exact **skinning / lofting** (*The NURBS Book* §10.3 / A10.3) — section compatibility (raise to common degree + merge to union knots via the Layer-1 exact `elevateDegreeCurve`/`refineKnotCurve`, no geometry drift) then a tensor-product surface interpolated across the sections in V (Layer-7 `lin_solve` collocation). Airtight host gate `tests/native/test_native_nurbs_skin.cpp`: the surface **contains every section pointwise** (~1e-15), compatible sections equal their originals (~1e-15), known-surface iso-curve round-trip + idempotent full-surface identity (~1e-15). Rational skinning, general Gordon/network/boundary surfacing, and exact swept surfaces (GeomFill/BRepFill) are the residual — general lofts still fall back to *faceted* results. |
 | **Trimmed-NURBS B-rep data model** — exact pcurves, tolerant topology, NURBS healing | full | 🟡 represented + meshed; not exact-B-rep-manipulated |
 
 **Key architectural fact:** this kernel is an **analytic + tessellation hybrid with bounded
@@ -81,7 +81,7 @@ Rough, dependency-ordered (each builds on the one above):
 | **General exact-NURBS B-rep boolean** (BOPAlgo-class, tolerant, non-manifold) | 5–10 | the hardest — *the core of a B-rep kernel* |
 | General NURBS fillet/chamfer (ChFi3d-class) | 3–6 | needs the boolean + SSI |
 | NURBS offset / thicken (robust) | 2–4 | |
-| Exact NURBS sweep/loft/surfacing (GeomFill/Gordon/plate) | 2–4 | |
+| Exact NURBS sweep/loft/surfacing (GeomFill/Gordon/plate) | 2–4 | 🟡 non-rational exact **skinning/lofting landed** (`src/native/math/bspline_skin`, Layer 6): section compatibility + tensor-product interpolation across sections, surface contains every section pointwise; rational skinning + Gordon/network/boundary surfacing + exact swept surfaces residual |
 | Fitting / approximation (points→NURBS) | 1–2 | 🟡 non-rational curve+surface interp/approx **landed** (`src/native/math/bspline_fit`, Layer 7); rational (weighted) fitting + advanced surfacing residual |
 | Trimmed-NURBS B-rep data model + pcurve robustness + NURBS healing | 2–4 | |
 | **Total (OCCT/Parasolid-class general NURBS modeling)** | **≈ 20–40 py** | ~a decade for a small team |

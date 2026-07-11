@@ -655,36 +655,54 @@ std::vector<int> clusterRegions(const std::vector<CandidateRegion>& regs,
   return label;
 }
 
-// Refine ONE representative seed per branch cluster and append the accepted seeds
-// (and deferred-tangent count) to `out`. For each cluster, try its candidate regions
-// until one refines to an on-both-surfaces TRANSVERSAL point, keeping the tightest;
-// a cluster that only ever ill-conditions (near-tangent at the solution) becomes a
+// Refine the representative seed(s) of each branch cluster and append the accepted seeds
+// (and deferred-tangent count) to `out`. For each cluster, refine its candidate regions;
+// with DISTINCT-BRANCH SPLIT (default on), emit one seed per SPATIALLY-DISTINCT 3D locus
+// the cluster hosts (a merged two-loop cluster → a seed per loop) instead of only the
+// single tightest — recovering co-resident loops the param-box adjacency clustering merged.
+// A cluster that only ever ill-conditions (near-tangent at the solution) becomes a
 // deferred-to-S4 gap — S4-b then TYPES that gap by the local differential geometry
 // (TangentPoint / TangentCurve / NearTangentTransversal / Undecided) instead of the
 // blunt counter (which is kept as a compatibility summary). A cluster where no region
 // converges to a crossing is a refine miss (dropped, never faked). Running the expensive
 // least_squares ≈ once per branch (not once per candidate region) is the key perf choice.
-// Per-cluster accumulators for the refine pass.
+//
+// Per-cluster accumulators for the refine pass. `xversal[cid]` holds every accepted
+// transversal seed of cluster `cid` (bounded); a post-pass single-linkage groups them into
+// 3D-connected LOCUS components and emits the tightest per component. When the split is off,
+// only the single tightest transversal seed per cluster is retained (old behaviour).
 struct ClusterAcc {
-  std::vector<Seed> best;
+  std::vector<std::vector<Seed>> xversal;    // accepted transversal seeds per cluster
   std::vector<char> haveSeed, sawTangent;
-  std::vector<NearTangentSolution> ntBest;  // flattest near-tangent solution per cluster
-  explicit ClusterAcc(std::size_t k) : best(k), haveSeed(k, 0), sawTangent(k, 0), ntBest(k) {}
+  std::vector<NearTangentSolution> ntBest;   // flattest near-tangent solution per cluster
+  explicit ClusterAcc(std::size_t k)
+      : xversal(k), haveSeed(k, 0), sawTangent(k, 0), ntBest(k) {}
 };
 
-// Fold one refined region into its cluster's accumulator: keep the tightest transversal
-// seed, else keep the flattest (most degenerate) near-tangent solution for S4-b typing.
+// Cap on transversal seeds retained per cluster for the single-linkage split. Bounds memory
+// and the O(m²) linkage; ample for any real multi-loop merge (splitMaxPerCluster ≪ this).
+constexpr std::size_t kMaxSeedsPerCluster = 256;
+
+// Fold one refined region into its cluster's accumulator: append the transversal seed (for
+// the distinct-locus split), else keep the flattest (most degenerate) near-tangent solution
+// for S4-b typing. With the split OFF, only the single tightest transversal seed is retained.
 void accumulateRegion(const SurfaceAdapter& A, const SurfaceAdapter& B,
                       const CandidateRegion& reg, const SeedOptions& opts, double onSurfTol,
-                      int cid, ClusterAcc& acc) {
+                      bool doSplit, int cid, ClusterAcc& acc) {
   Seed s;
   bool nearTangent = false;
   NearTangentSolution ntSol;
   if (refineRegion(A, B, reg, opts, onSurfTol, s, nearTangent, ntSol)) {
-    if (!acc.haveSeed[cid] || s.onSurfResidual < acc.best[cid].onSurfResidual) {
-      acc.best[cid] = s;
-      acc.haveSeed[cid] = 1;
+    auto& xs = acc.xversal[cid];
+    acc.haveSeed[cid] = 1;
+    if (!doSplit) {
+      // Split OFF (elementary-operand pair): keep ONLY the running tightest transversal seed
+      // of the cluster — byte-identical to the pre-split behaviour (no cap truncation risk).
+      if (xs.empty()) xs.push_back(s);
+      else if (s.onSurfResidual < xs.front().onSurfResidual) xs.front() = s;
+      return;
     }
+    if (xs.size() < kMaxSeedsPerCluster) xs.push_back(s);
   } else if (nearTangent) {
     if (!acc.sawTangent[cid] || ntSol.crossingSine < acc.ntBest[cid].crossingSine)
       acc.ntBest[cid] = ntSol;
@@ -692,24 +710,86 @@ void accumulateRegion(const SurfaceAdapter& A, const SurfaceAdapter& B,
   }
 }
 
+// Split a cluster's accepted transversal seeds into SPATIALLY-DISTINCT 3D loci by
+// single-linkage on the 3D seed points: two seeds are in the same locus iff a chain of
+// seeds connects them with every hop ≤ `sep`. A single physical loop's refined points tile
+// it densely (consecutive candidate leaves are ~leaf-size apart, far below `sep`), so they
+// chain into ONE component and the cluster still collapses to one seed. Two co-resident loops
+// separated in 3D by more than `sep` form TWO components → a seed per loop. Emits the TIGHTEST
+// seed of each component into `outSeeds`, deterministic in seed-append order, capped at
+// `maxOut`. An over-split (same loop, two components) only re-traces the loop — the S3 marcher's
+// per-branch locus-dedup collapses it, so this is recall-only and never a wrong result.
+void splitDistinctLoci(const std::vector<Seed>& seeds, double sep, std::size_t maxOut,
+                       std::vector<Seed>& outSeeds) {
+  const std::size_t m = seeds.size();
+  if (m == 0) return;
+  DisjointSet ds(static_cast<int>(m));
+  const double sep2 = sep * sep;
+  for (std::size_t i = 0; i < m; ++i)
+    for (std::size_t j = i + 1; j < m; ++j)
+      if (math::normSquared(seeds[i].point - seeds[j].point) <= sep2)
+        ds.unite(static_cast<int>(i), static_cast<int>(j));
+  // Tightest seed per connected component, in first-appearance order of the component root.
+  std::vector<int> compOf(m, -1);
+  std::vector<int> order;          // component-id → index of its current tightest seed
+  int nComp = 0;
+  for (std::size_t i = 0; i < m; ++i) {
+    const int root = ds.find(static_cast<int>(i));
+    if (compOf[static_cast<std::size_t>(root)] < 0) {
+      compOf[static_cast<std::size_t>(root)] = nComp++;
+      order.push_back(static_cast<int>(i));
+    } else {
+      int& rep = order[static_cast<std::size_t>(compOf[static_cast<std::size_t>(root)])];
+      if (seeds[i].onSurfResidual < seeds[static_cast<std::size_t>(rep)].onSurfResidual)
+        rep = static_cast<int>(i);
+    }
+  }
+  for (std::size_t c = 0; c < order.size() && outSeeds.size() < maxOut; ++c)
+    outSeeds.push_back(seeds[static_cast<std::size_t>(order[c])]);
+}
+
 void refineClusters(const SurfaceAdapter& A, const SurfaceAdapter& B,
                     const std::vector<CandidateRegion>& regs,
                     const std::vector<int>& cluster, int numClusters,
                     const SeedOptions& opts, double onSurfTol, double scale,
                     const std::vector<char>& suppressed, SeedSet& out) {
+  // FREEFORM↔FREEFORM GATE. The distinct-branch split fires ONLY when BOTH operands are
+  // freeform (control-net-bearing → freeformSpanCount ≥ 1) — the general NURBS↔NURBS L2
+  // domain where the param-box adjacency clustering merges close co-resident loops. Any pair
+  // with an ELEMENTARY / plane / torus operand (span count 0) is left BYTE-IDENTICAL: each
+  // cluster still collapses to its single tightest seed (the old behaviour, `accumulateRegion`
+  // keeps only the running tightest), so every canonical / S4-f elementary-operand seed-count
+  // contract is untouched. Same gate the scale-adaptive initial seeding uses, for the same reason.
+  const bool bothFreeform = A.freeformSpanCount >= 1 && B.freeformSpanCount >= 1;
+  const bool doSplit = opts.splitDistinctBranches && bothFreeform;
+
   ClusterAcc acc(static_cast<std::size_t>(std::max(0, numClusters)));
   for (std::size_t i = 0; i < regs.size(); ++i) {
     const int cid = cluster[i];
     if (cid < 0) continue;
     if (!suppressed.empty() && suppressed[cid]) continue;  // S4-a coincident cluster
-    accumulateRegion(A, B, regs[i], opts, onSurfTol, cid, acc);
+    accumulateRegion(A, B, regs[i], opts, onSurfTol, doSplit, cid, acc);
   }
+  // Distinct-locus separation: two refined seeds beyond this 3D distance are on distinct loci.
+  // Scale-relative + deterministic; sized so one physical loop never splits (its refined
+  // points are ≪ this apart) yet two co-resident loops (typically an operand-scale apart) do.
+  const double sep = std::max(scale * opts.splitDistinctFrac, onSurfTol * 4.0);
+  const std::size_t maxPer = doSplit
+                                 ? static_cast<std::size_t>(std::max(1, opts.splitMaxPerCluster))
+                                 : 1u;
   int branchId = 0;
   for (int cid = 0; cid < numClusters; ++cid) {
     if (acc.haveSeed[cid]) {
-      ++out.refinedAccepted;
-      acc.best[cid].branchId = branchId++;
-      out.seeds.push_back(acc.best[cid]);
+      std::vector<Seed> emit;
+      // When the gate is off, accumulateRegion retained exactly ONE (tightest) seed per cluster,
+      // so this splits into one component and emits it — byte-identical to the pre-split path.
+      const double effSep = doSplit ? sep : std::numeric_limits<double>::infinity();
+      splitDistinctLoci(acc.xversal[static_cast<std::size_t>(cid)], effSep, maxPer, emit);
+      for (Seed& s : emit) {
+        ++out.refinedAccepted;
+        s.branchId = branchId++;
+        out.seeds.push_back(s);
+      }
     } else if (acc.sawTangent[cid]) {
       // A near-tangent cluster with no transversal seed: TYPE the contact (S4-b) and keep the
       // compatibility counter. NearTangentTransversal is handed on to S4-c (never traced here);

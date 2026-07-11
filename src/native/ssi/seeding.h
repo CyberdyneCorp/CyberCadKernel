@@ -103,6 +103,29 @@ struct SeedOptions {
   // widens a tolerance; it only changes WHERE the finer re-seed looks. Bounded by criticMaxCells. ──
   bool criticTargetedReseed = false; ///< M1c: critic re-seeds only the uncovered A-cells (needs completenessCritic)
   int criticMaxCells = 64;           ///< M1c: hard cap on uncovered cells re-seeded per round (cost bound)
+
+  // ── DISTINCT-BRANCH SPLIT (default ON) — recover merged co-resident loops ────────
+  // The adjacency clustering (clusterRegions) unites candidate regions whose PARAM boxes
+  // touch on both surfaces into one cluster. Two DISTINCT co-resident transversal loops
+  // that a dense freeform pair hosts close together can have touching candidate boxes and
+  // get merged into ONE cluster — the refine then kept only the single tightest seed and
+  // DROPPED the second loop (the dominant measured NURBS-L2 multi-branch decline).
+  //
+  // With this on, the refine emits EVERY refined seed of a cluster that lands on a
+  // SPATIALLY-DISTINCT 3D locus (3D seed points separated by more than
+  // `splitDistinctFrac · modelScale`), each still driven onto BOTH surfaces at the SAME
+  // `onSurfTol` and transversal (‖n₁×n₂‖ ≥ tangentSinTol) — never a widened tolerance, never
+  // a fabricated seed. A cluster hosting a single physical loop still collapses to one seed
+  // (all its refined points sit within the separation), so single-loop / canonical cases are
+  // unchanged. Bounded by `splitMaxPerCluster` so refine noise cannot over-produce.
+  //
+  // CORRECTNESS: an over-split seed (two seeds that are actually the same loop, > separation
+  // apart) is HARMLESS — it re-traces the same loop and the S3 marcher's per-branch
+  // locus-dedup (`retraces`/`sameLocus`) collapses it. So the predicate is recall-only: it
+  // can add a genuine second-loop seed or a harmless duplicate, never a wrong result.
+  bool splitDistinctBranches = true;  ///< emit every spatially-distinct refined locus per cluster
+  double splitDistinctFrac = 1.0 / 16.0;  ///< distinct-locus 3D separation as a fraction of modelScale
+  int splitMaxPerCluster = 8;         ///< hard cap on distinct seeds emitted from one cluster (cost bound)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

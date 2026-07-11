@@ -653,7 +653,7 @@ Remaining S5 work: general (non-Steinmetz) branched pairs, transversal/apex cone
 pairs, cone∩cone, the two-circle / apex-crossing / transversal cone∩sphere crossings, and more
 curved-curved families.
 
-## NURBS Layer 2 — general-freeform measurement pass (empirical decline map) · ✅ MEASURED 2026-07-10 · ⛔ POST-HOC RECALL CAMPAIGN DECLINED 2026-07-11 · ✅ SCALE-ADAPTIVE INITIAL SEEDING LANDED 2026-07-11 (decline 28.5%→18.8%, DISAGREED==0) · ✅ LOCUS-COVERAGE ORACLE AUDIT + FREEFORM-PAIR SEEDING EXTENSION LANDED 2026-07-11 (true decline 18.8%; audit → 0 over-counts, residual 100% genuine; extension → 18.8%→16.7%/17.4% combined, DISAGREED==0)
+## NURBS Layer 2 — general-freeform measurement pass (empirical decline map) · ✅ MEASURED 2026-07-10 · ⛔ POST-HOC RECALL CAMPAIGN DECLINED 2026-07-11 · ✅ SCALE-ADAPTIVE INITIAL SEEDING LANDED 2026-07-11 (decline 28.5%→18.8%, DISAGREED==0) · ✅ LOCUS-COVERAGE ORACLE AUDIT + FREEFORM-PAIR SEEDING EXTENSION LANDED 2026-07-11 (true decline 18.8%; audit → 0 over-counts, residual 100% genuine; extension → 18.8%→16.7%/17.4% combined, DISAGREED==0) · ✅ SEED-CLUSTER DISTINCT-BRANCH SPLIT LANDED 2026-07-11 (decline 16.7%→13.9%, multi-branch declines 19→14, DISAGREED==0)
 
 Before scoping further S4 slices, the general NURBS↔NURBS boundary was measured empirically
 with two differential fuzzers (verification only; `src/native` untouched, `cc_*` unchanged):
@@ -871,6 +871,66 @@ plus deeper co-resident structure the finer-everywhere ceiling (9.7%) reaches on
 bounded default deliberately does not pay. The over-count-artifact hypothesis is closed (audited
 to 0); the residual is genuine recall, attackable next only by seed-cluster distinct-branch
 splitting or a targeted-cost critic — NOT by widening the initial grid further.
+
+### Seed-cluster distinct-branch split — recover merged co-resident loops · ✅ LANDED 2026-07-11 (decline 16.7%→13.9%, multi-branch declines 19→14, DISAGREED==0)
+
+The named next frontier ("seed-cluster distinct-branch splitting"). The param-box adjacency
+clustering (`clusterRegions`) unites candidate regions whose param boxes touch on BOTH surfaces
+into one cluster. Two DISTINCT co-resident transversal loops that a dense freeform pair hosts
+close together can have touching candidate boxes and be MERGED into one cluster — the refine then
+kept only the single tightest seed and DROPPED the second loop. This was the dominant residual
+after the scale-adaptive seeding: audited GENUINE (0 over-counts), 79% of declines multi-branch,
+each `traced=1 occtLines=2 genuineMiss=1` with the missed locus ~1.3 model-units off the traced
+one. A prior workflow round (R2) attempted this exact idea but declined at an INCOMPLETE
+self-verify gate (the shipping-config fuzzer run + host suite were not both re-run before the
+commit was forced); this is the properly-verified re-attempt.
+
+The refine pass (`refineClusters` in `src/native/ssi/seeding.cpp`, OCCT-free, no `cc_*` change,
+`src/native/boolean` + `src/native/blend` untouched) now emits one seed per SPATIALLY-DISTINCT 3D
+locus a cluster hosts, instead of only the tightest:
+
+- **The distinct-branch split predicate — SINGLE-LINKAGE on the refined 3D points.** A cluster's
+  accepted transversal seeds are grouped into connected components by single-linkage: two seeds
+  join iff their 3D `point`s are within `sep = splitDistinctFrac · modelScale` (default `1/16`).
+  A SINGLE physical loop's refined points tile it densely (consecutive candidate leaves are
+  ~leaf-size apart, ≪ `sep`), so they chain into ONE component → the cluster still collapses to
+  one seed (single-loop / canonical cases unchanged). Two loops separated in 3D by more than `sep`
+  form TWO components → a seed per loop. The tightest seed of each component is emitted, capped at
+  `splitMaxPerCluster` (default 8). Every emitted seed already passed the FULL refine gate — on
+  BOTH surfaces at the SAME `onSurfTol`, transversal (‖n₁×n₂‖ ≥ `tangentSinTol`) — never a widened
+  tolerance, never a fabricated seed. Scale-relative, deterministic, bounded.
+- **Why it CANNOT over-produce a wrong result.** An over-split seed (two seeds that are actually
+  the same loop, > `sep` apart) is HARMLESS: it re-traces the same loop and the S3 marcher's
+  per-branch locus-dedup (`retraces` / `sameLocus` in `marching.cpp`) collapses the near-identical
+  polyline. So the predicate is RECALL-ONLY — it can add a genuine second-loop seed or a harmless
+  duplicate, never a curve off both surfaces. The marcher's locus-dedup remains the correctness gate.
+- **FREEFORM↔FREEFORM GATE → canonical BYTE-IDENTICAL.** The split fires only when BOTH operands
+  are freeform (`freeformSpanCount ≥ 1`) — the same gate the scale-adaptive seeding uses. Any pair
+  with an ELEMENTARY / plane / torus operand (span count 0) keeps the running-tightest single seed
+  per cluster (the pre-split path), so every S4-f BEFORE/AFTER seed-count fixture
+  (`before.tracedBranches == 1`, `curveCount() == 1`, Steinmetz `branchPoints == 2`) and every
+  exact-count seeding fixture (`branchCount() == 1` / `== 2`) is UNCHANGED. **All 9
+  `test_native_ssi_*` host suites pass; no assertion changes; s4f runtime unchanged (8.2 s) —
+  confirming zero added work on the byte-identical path.** SSI marching SIM parity
+  (`run-sim-native-ssi-marching.sh`) green (19 passed, 0 failed).
+- **Recall — a real, consistent gain (bounded).** Committed instrument (unmodified `SeedOptions`;
+  the win is entirely the `src/native` default): decline **16.7% → 13.9%** on base 0x5515D1FF0F0F
+  (24 → 20 / 144), with multi-branch declines **19 → 14** and genuine-miss lines **30 → 24**.
+  Every one of the 3 seeds improved (declines 6→4, 7→6, 11→10); no previously-agreed case
+  regressed. `DISAGREED == 0` on all 144 trials of the primary base and on an independent base
+  (0xA11CE5EED, 3 seeds, 21.5% decline — a harder pose distribution, still 100% genuine, 0
+  disagreed). **6 seeds total, DISAGREED == 0 throughout.**
+- **Cost — flat.** Bounded single-linkage over per-cluster seeds (capped at 256 retained /
+  8 emitted). Host `curved_boolean` 76 s → 80 s (+5%); the elementary/mixed path is byte-identical
+  work. No blow-up on single-loop / canonical cases.
+
+**Remaining residual (honest / next frontier):** ~14% — still the hard multi-branch moat, now
+thinner. The remaining multi-branch declines are loops merged into a cluster whose refined points
+CHAIN within `sep` (genuinely 3D-adjacent co-resident loops the single-linkage cannot separate
+without risking a single-loop split), the near-tangent grazes the seeder correctly refuses (the
+S4-c/d marching-core moat, not recall), and deeper co-resident structure the finer-everywhere
+ceiling (9.7%) reaches only at costs the bounded default deliberately does not pay. The next
+attackable lever is the S4-c/d near-tangent marching-core, not further seeding recall.
 
 ## Sequencing & effort
 

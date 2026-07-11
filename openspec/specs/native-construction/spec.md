@@ -1332,3 +1332,9 @@ parity-mismatched solid SHALL ever be emitted.
 - WHEN `cc_guided_orient_sweep` is added as a new additive facade entry with its OCCT oracle (`guided_orient_sweep`) and its `IEngine` default that returns `engine_unsupported`
 - THEN every other shipped construction op SHALL remain byte-identical (same signatures, POD layouts, results, and watertightness), the new code SHALL be reachable ONLY through the new entry, `include/cybercadkernel/cc_kernel.h` SHALL have NO deletions, and `src/native/**` SHALL keep zero OCCT includes
 
+#### Scenario: A guide whose first point lies in the true start plane is accepted (host + OCCT oracle)
+
+- GIVEN a spine and a guide whose first point genuinely lies in the spine START plane — the plane through `path[0]` **perpendicular to the LOCAL start tangent** (`path[0] → the first distinct downstream path point`), NOT the whole-spine chord `path[0] → path[N−1]`
+- WHEN the start-frame guide guard tests whether the guide meets that start plane (`OcctEngine::guided_orient_sweep` and the OCCT-free mirror `detail::guidePointInPerpPlane`)
+- THEN the guard SHALL derive the plane normal from the LOCAL start tangent so the in-plane guide is ACCEPTED (on a straight spine the chord and local tangent coincide; on a CURVED spine the chord tilts away, so using the chord would FALSE-reject a valid in-plane guide with "guide misses spine start plane"), the bracket epsilon SHALL be normalised by the guide's projection span (a scale-relative, not a widened, tolerance), AND a guide whose first point genuinely MISSES the start plane SHALL still be rejected (the guard's true-positive behaviour is preserved)
+

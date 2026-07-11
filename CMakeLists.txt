@@ -303,6 +303,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_math
         test_native_nurbs_ops
         test_native_nurbs_ops_fuzz
+        test_native_trimmed_nurbs
         test_native_topology
         test_native_tessellate
         test_native_display_mesh
@@ -655,6 +656,17 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_ops_fuzz.cpp")
     set(test_native_topology_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_topology.cpp")
+    # NURBS roadmap Layer 8 — trimmed-NURBS B-rep data model + pcurve robustness
+    # (src/native/topology/trimmed_nurbs). Host GATE: the OCCT-free airtight-oracle
+    # proof (rect-sub-region + circular-hole containment In/Out/OnBoundary; a hole
+    # point → Out; iso-curve pcurve fidelity S(p(t))==C(t) ~1e-9 and a wrong pcurve
+    # DETECTED; honest degenerate/open/self-touching declines). Always-on legs use only
+    # math + topology; the pcurve-CONSTRUCTION round-trip leg (projection + fit) calls
+    # numerics::closest_point_on_surface + bspline_fit, so it is compiled only when
+    # CYBERCAD_HAS_NUMSCI is defined (the macro is added to the TU below; it needs no
+    # NumPP/SciPP substrate include tree — it calls only always-visible topology decls).
+    set(test_native_trimmed_nurbs_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_trimmed_nurbs.cpp")
     set(test_native_tessellate_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_tessellate.cpp")
     # Render-quality DISPLAY mesh (src/native/render) — host GATE (a), the OCCT-free
@@ -898,6 +910,15 @@ if(CYBERCAD_BUILD_TESTS)
     # headers), so its TU needs the macro but NOT the substrate include trees.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_fit)
         target_compile_definitions(test_native_nurbs_fit PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+
+    # The Layer-8 trimmed-NURBS gate is ALWAYS built (its containment + fidelity +
+    # degenerate legs are substrate-free). Its pcurve-CONSTRUCTION leg calls the
+    # numsci-gated constructPcurve, so under CYBERCAD_HAS_NUMSCI the TU gets the macro
+    # (it calls only always-visible topology declarations — no NumPP/SciPP header — so
+    # it needs the macro but NOT the substrate include trees, like the Layer-7 gate).
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_trimmed_nurbs)
+        target_compile_definitions(test_native_trimmed_nurbs PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     # The Layer-6 skinning gate includes bspline_skin.h (which under CYBERCAD_HAS_NUMSCI

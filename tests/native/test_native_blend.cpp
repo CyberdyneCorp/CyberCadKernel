@@ -1393,6 +1393,227 @@ CC_TEST(sphere_fillet_scope_defers) {
   CC_CHECK(blend::sphere_fillet_edge(b, idsb, 1, 1.0, 0.01).isNull());
 }
 
+// ── G2 (curvature-MATCHING) fillet on a CURVED substrate: SPHERE ↔ cap rim ─────────--
+// The Layer-4-NURBS curved-substrate slice. Unlike the PLANAR G2 fillet (κ=0 at both
+// rails, collinear triples), the SPHERE substrate has NON-ZERO normal curvature 1/R at the
+// tangency line, so G2 requires the blend section's meridian curvature to MATCH 1/R there
+// (the cap end still matches the plane's 0). The quintic pole placement q=(5/4)κ·h² hits a
+// prescribed end curvature (q=0 → the planar collinear-triple special case). These gates
+// prove: (1) closed-form κ(0)=1/R (MATCHED, not zero) and κ(1)=0 with the G1 torus tube's
+// 1/r JUMP as a non-trivial control — this is the curvature CONTINUITY (matched) point;
+// (2) watertight + a volume converging under refinement to the exact quintic-removed
+// closed form; (3) honest declines (cylinder/cone/box → NULL → OCCT; no cross-firing).
+
+namespace {
+// Exact G2-removed volume for the sphere↔cap rim, by Pappus on the cross-section polygon
+// bounded by the sphere arc (sphere seam → rim), the cap segment (rim → cap seam), and the
+// curvature-MATCHING QUINTIC (cap seam → sphere seam) — the mirror of sphereRemoved but with
+// the quintic replacing the torus arc. 2π·|A|·centroid_r over the meridian polygon.
+double sphereRemovedG2(double R, double zc, double r) {
+  blend::detail::SphereCapGeom g;
+  g.axis.origin = nmath::Point3{0, 0, 0};
+  g.axis.x = nmath::Dir3{nmath::Vec3{1, 0, 0}};
+  g.axis.y = nmath::Dir3{nmath::Vec3{0, 1, 0}};
+  g.axis.z = nmath::Dir3{nmath::Vec3{0, 0, 1}};
+  g.R = R; g.capH = zc; g.capNormal = nmath::Vec3{0, 0, 1};
+  const auto sec = blend::detail::g2CurvedSphereSection(g, r);
+  if (!sec) return 0.0;
+  const double scRad = sec->poles[0].rho, scAx = sec->poles[0].z;   // wall seam (on sphere)
+  const double Rmaj = sec->poles[5].rho;                            // cap seam radius
+  const double latSeam = std::atan2(scAx, scRad);
+  const double latRim = std::asin(zc / R);
+  std::vector<double> X, Y;
+  const int Na = 3000;
+  for (int i = 0; i < Na; ++i) {  // sphere arc: seam latitude → rim latitude
+    const double lat = latSeam + (latRim - latSeam) * i / (Na - 1);
+    X.push_back(R * std::cos(lat)); Y.push_back(R * std::sin(lat));
+  }
+  X.push_back(Rmaj); Y.push_back(zc);  // cap: rim → cap seam (at z=zc)
+  for (int i = 0; i < Na; ++i) {  // quintic: cap seam (s=1) back to sphere seam (s=0)
+    const double s = 1.0 - static_cast<double>(i) / (Na - 1);
+    const blend::detail::Mrd m = blend::detail::quinticMeridian(sec->poles, s);
+    X.push_back(m.rho); Y.push_back(m.z);
+  }
+  double A = 0, cx = 0;
+  const int n = static_cast<int>(X.size());
+  for (int i = 0; i < n; ++i) {
+    const int j = (i + 1) % n;
+    const double cr = X[i] * Y[j] - X[j] * Y[i];
+    A += cr; cx += (X[i] + X[j]) * cr;
+  }
+  A *= 0.5; cx /= (6.0 * A);
+  return 2.0 * M_PI * std::fabs(A) * cx;
+}
+}  // namespace
+
+CC_TEST(g2_curved_sphere_section_curvature_matches_1_over_R_closed_form) {
+  // CLOSED-FORM CURVATURE-MATCH PROOF (no OCCT, no mesh): the quintic meridian section's
+  // curvature at the SPHERE-WALL rail equals the sphere's normal curvature 1/R (NOT zero —
+  // the whole point of the curved case), and at the CAP rail equals the plane's zero. This
+  // is a genuine curvature CONTINUITY (matched κ) across a curved-substrate boundary.
+  const double R = 5.0, zc = 2.0, r = 1.0;
+  blend::detail::SphereCapGeom g;
+  g.axis.origin = nmath::Point3{0, 0, 0};
+  g.axis.x = nmath::Dir3{nmath::Vec3{1, 0, 0}};
+  g.axis.y = nmath::Dir3{nmath::Vec3{0, 1, 0}};
+  g.axis.z = nmath::Dir3{nmath::Vec3{0, 0, 1}};
+  g.R = R; g.capH = zc; g.capNormal = nmath::Vec3{0, 0, 1};
+  const auto sec = blend::detail::g2CurvedSphereSection(g, r);
+  CC_CHECK(sec.has_value());
+  const double kWall = blend::detail::meridianCurvature(sec->poles, 0.0);
+  const double kCap = blend::detail::meridianCurvature(sec->poles, 1.0);
+  CC_CHECK(nearRel(kWall, 1.0 / R, 1e-9));  // MATCHES the sphere normal curvature 1/R (≠ 0)
+  CC_CHECK(std::fabs(kCap) < 1e-9);         // MATCHES the flat cap's zero curvature
+  // The matched wall curvature is genuinely NON-ZERO (this is not the planar κ=0 case).
+  CC_CHECK(1.0 / R > 0.1);
+  // The wall seam lies EXACTLY on the sphere and the cap seam EXACTLY on the cap plane (G0),
+  // and the near-rail tangent lies in the neighbour surface (G1).
+  const double distW = std::sqrt(sec->poles[0].rho * sec->poles[0].rho +
+                                 sec->poles[0].z * sec->poles[0].z);
+  CC_CHECK(nearRel(distW, R, 1e-9));                 // P0 on the sphere
+  CC_CHECK(nearRel(sec->poles[5].z, zc, 1e-9));      // P5 on the cap plane
+  const blend::detail::Mrd t0 = sec->poles[1] - sec->poles[0];
+  CC_CHECK(std::fabs(t0.rho * sec->poles[0].rho + t0.z * sec->poles[0].z) < 1e-9);  // G1 tangent
+  const blend::detail::Mrd t1 = sec->poles[5] - sec->poles[4];
+  CC_CHECK(std::fabs(t1.z) < 1e-9);                  // G1 tangent to the cap (horizontal)
+}
+
+CC_TEST(g2_curved_sphere_measured_section_curvature_matches_and_beats_g1) {
+  // DISCRETE MEASURED witness (host, OCCT-free), independent of the analytic hodograph:
+  // sample the quintic meridian near the WALL rail via the Menger curvature of three
+  // consecutive section points (κ = 1/circumradius), and confirm the measured near-rail
+  // curvature CONVERGES to the sphere's 1/R — matched, NOT the torus tube's 1/r. The G1
+  // control is the circular torus section (curvature 1/r everywhere) whose wall-seam value
+  // is a JUMP; the G2 measured value sits far closer to 1/R.
+  const double R = 5.0, zc = 2.0, r = 1.0;
+  blend::detail::SphereCapGeom g;
+  g.axis.origin = nmath::Point3{0, 0, 0};
+  g.axis.x = nmath::Dir3{nmath::Vec3{1, 0, 0}};
+  g.axis.y = nmath::Dir3{nmath::Vec3{0, 1, 0}};
+  g.axis.z = nmath::Dir3{nmath::Vec3{0, 0, 1}};
+  g.R = R; g.capH = zc; g.capNormal = nmath::Vec3{0, 0, 1};
+  const auto sec = blend::detail::g2CurvedSphereSection(g, r);
+  CC_CHECK(sec.has_value());
+  // Menger curvature of the meridian at parameter s from a small symmetric triple (in the
+  // (ρ,z) plane) — a purely geometric 1/circumradius, not the analytic B'/B'' formula.
+  auto kappaAt = [&](double s) -> double {
+    const double ds = 1e-3;
+    const blend::detail::Mrd pm = blend::detail::quinticMeridian(sec->poles, s - ds);
+    const blend::detail::Mrd p0 = blend::detail::quinticMeridian(sec->poles, s);
+    const blend::detail::Mrd pp = blend::detail::quinticMeridian(sec->poles, s + ds);
+    const double ax = p0.rho - pm.rho, ay = p0.z - pm.z;
+    const double cx = pp.rho - p0.rho, cy = pp.z - p0.z;
+    const double bx = pp.rho - pm.rho, by = pp.z - pm.z;
+    const double la = std::hypot(ax, ay), lc = std::hypot(cx, cy), lb = std::hypot(bx, by);
+    if (la * lc * lb < 1e-18) return 0.0;
+    // Menger curvature = 4·(triangle area)/(|a||b||c|) = 2·|a×c|/(|a||b||c|) = 1/circumradius.
+    return 2.0 * std::fabs(ax * cy - ay * cx) / (la * lc * lb);
+  };
+  const double kSphere = 1.0 / R;    // the substrate's normal curvature at the wall seam
+  const double kTubeG1 = 1.0 / r;    // the G1 torus tube's constant section curvature
+  const double kNearWall = kappaAt(0.002);  // measured, close to the wall rail
+  // Measured near-rail curvature is close to 1/R (matched) and far from the G1 tube's 1/r.
+  CC_CHECK(std::fabs(kNearWall - kSphere) < 0.02);              // MATCHES the sphere 1/R
+  CC_CHECK(std::fabs(kNearWall - kSphere) < 0.1 * std::fabs(kTubeG1 - kSphere));  // beats G1
+  CC_CHECK(kappaAt(0.5) > 1e-3);     // mid-section IS curved (a real blend, not collapsed)
+}
+
+CC_TEST(g2_curved_sphere_control_g1_tube_curvature_jumps) {
+  // CONTROL (proves the match is non-trivial): the G1 torus tube section has CONSTANT
+  // curvature 1/r at the wall seam — which for r<R is a JUMP away from the sphere's 1/R.
+  // The G2 quintic removes exactly that jump (κ→1/R), so |κ_G2 − 1/R| ≪ |1/r − 1/R|.
+  const double R = 5.0, r = 1.0;
+  const double kSphere = 1.0 / R;     // what the substrate demands at the wall seam
+  const double kTubeG1 = 1.0 / r;     // the G1 torus tube's constant section curvature
+  CC_CHECK(std::fabs(kTubeG1 - kSphere) > 0.5);  // the G1 curvature JUMP at the wall seam
+  // The G2 section matches to rounding (proven above) → its jump is ~0.
+  blend::detail::SphereCapGeom g;
+  g.axis.origin = nmath::Point3{0, 0, 0};
+  g.axis.x = nmath::Dir3{nmath::Vec3{1, 0, 0}};
+  g.axis.y = nmath::Dir3{nmath::Vec3{0, 1, 0}};
+  g.axis.z = nmath::Dir3{nmath::Vec3{0, 0, 1}};
+  g.R = R; g.capH = 2.0; g.capNormal = nmath::Vec3{0, 0, 1};
+  const auto sec = blend::detail::g2CurvedSphereSection(g, r);
+  CC_CHECK(sec.has_value());
+  const double jumpG2 = std::fabs(blend::detail::meridianCurvature(sec->poles, 0.0) - kSphere);
+  CC_CHECK(jumpG2 < 1e-6);                          // G2: curvature CONTINUOUS at the wall
+  CC_CHECK(jumpG2 < 0.01 * std::fabs(kTubeG1 - kSphere));  // ≪ the G1 jump (matched vs jump)
+}
+
+CC_TEST(g2_curved_sphere_watertight_volume_reduced) {
+  // The G2 blend on a truncated ball (R=5, cap zc=2.5, r=1) is watertight, REMOVES material
+  // (convex fillet), and its volume converges under refinement to the exact quintic-removed
+  // closed form. The revolved curvature-matching section welds to the sphere wall + trimmed
+  // cap the SAME way the G1 torus band does (shared N angular samples).
+  const double R = 5.0, zc = 2.5, r = 1.0;
+  topo::Shape s = truncatedBall(R, zc);
+  CC_CHECK(!s.isNull());
+  const nmath::Vec3 axisY{0, 1, 0};
+  const double vSharp = truncatedBallVolume(R, zc);
+  const int rim = findRimAtAxial(s, axisY, zc, std::sqrt(R * R - zc * zc));
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  topo::Shape f = blend::curved_fillet_edge_g2(s, ids, 1, r, 0.004);
+  bool wt = false;
+  const double v = vol(f, wt);
+  CC_CHECK(!f.isNull());
+  CC_CHECK(wt);                          // revolved G2 section welds watertight
+  CC_CHECK(v < vSharp);                  // convex fillet REMOVES material
+  const double expected = vSharp - sphereRemovedG2(R, zc, r);
+  CC_CHECK(nearRel(v, expected, 5e-3));  // matches the exact quintic-removed volume
+}
+
+CC_TEST(g2_curved_sphere_converges_and_deterministic) {
+  // Faceting under-fills the convex blend; refining the deflection grows the volume toward
+  // the exact quintic-removed closed form from below. And the build is deterministic.
+  const double R = 6.0, zc = 3.0, r = 1.2;
+  topo::Shape s = truncatedBall(R, zc);
+  const nmath::Vec3 axisY{0, 1, 0};
+  const int rim = findRimAtAxial(s, axisY, zc, std::sqrt(R * R - zc * zc));
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  const double exact = truncatedBallVolume(R, zc) - sphereRemovedG2(R, zc, r);
+  bool wtC = false, wtF = false, wtF2 = false;
+  const double vCoarse = vol(blend::curved_fillet_edge_g2(s, ids, 1, r, 0.05), wtC);
+  const double vFine = vol(blend::curved_fillet_edge_g2(s, ids, 1, r, 0.004), wtF);
+  const double vFine2 = vol(blend::curved_fillet_edge_g2(s, ids, 1, r, 0.004), wtF2);
+  CC_CHECK(wtC && wtF && wtF2);
+  CC_CHECK(vCoarse <= exact + 1e-6);      // under-fills
+  CC_CHECK(vFine >= vCoarse - 1e-9);      // refinement grows toward exact
+  CC_CHECK(nearRel(vFine, exact, 5e-3));
+  CC_CHECK(nearRel(vFine, vFine2, 1e-12));  // deterministic (fp64, no RNG)
+}
+
+CC_TEST(g2_curved_sphere_scope_defers) {
+  // Honest declines (→ OCCT), and NO cross-firing with the planar / cylinder builders.
+  const nmath::Vec3 axisY{0, 1, 0};
+  const double R = 5.0, zc = 3.0;
+  topo::Shape s = truncatedBall(R, zc);
+  const int rim = findRimAtAxial(s, axisY, zc, std::sqrt(R * R - zc * zc));
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  CC_CHECK(blend::curved_fillet_edge_g2(s, ids, 1, 0.0, 0.01).isNull());   // r=0
+  int ids2[] = {rim, 1};
+  CC_CHECK(blend::curved_fillet_edge_g2(s, ids2, 2, 0.5, 0.01).isNull());  // multi-edge
+  CC_CHECK(blend::curved_fillet_edge_g2(s, ids, 1, 2.8, 0.01).isNull());   // ring/seam guard
+  // A CYLINDER↔cap rim (meridian normal curvature ZERO at both seams) is NOT this slice's
+  // curvature-MATCHING case → NULL (planar-style κ=0 / OCCT owns it).
+  const double cylProf[] = {0, 0, 5, 0, 5, 10, 0, 10};
+  topo::Shape cyl = cst::build_revolution(cylProf, 4, cst::RevolveAxis{0, 0, 0, 1}, 2.0 * M_PI);
+  const int crim = findRimAtAxial(cyl, axisY, 10, 5);
+  if (crim != 0) {
+    int cids[] = {crim};
+    CC_CHECK(blend::curved_fillet_edge_g2(cyl, cids, 1, 1.0, 0.01).isNull());
+  }
+  // A planar box has no Sphere face → NULL (the planar G2 builder owns box edges).
+  topo::Shape b = box(10, 10, 10);
+  const int le = findEdgeId(b, {0, 10, 10}, {10, 10, 10});
+  int idsb[] = {le};
+  CC_CHECK(blend::curved_fillet_edge_g2(b, idsb, 1, 1.0, 0.01).isNull());
+  // Control: the sphere rim DOES land (no spurious decline).
+  CC_CHECK(!blend::curved_fillet_edge_g2(s, ids, 1, 1.0, 0.004).isNull());
+}
+
 // ── offset_face ────────────────────────────────────────────────────────────────--
 
 CC_TEST(offset_top_face_grows_slab) {

@@ -332,38 +332,93 @@ CC_TEST(thin_common_slab_is_not_welded_away) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════
-// BAND 2 — near-COINCIDENT gap orientation defect. Two soup boxes stacked with air gap
-// g. ASSERTED map:
-//   g = 5e-3  → consistently oriented (sameDir 0), watertight
-//   g = 1e-4  → sameDirectionEdgeCount == 8, NOT watertight → DECLINED
-//   g = 1e-8  → welded (g < kWeldTol), watertight again
-// The stacked union volume is 2000 in all cases (closed-form oracle).
+// BAND 2 — near-COINCIDENT gap orientation defect, RECOVERED. Two soup boxes stacked
+// with air gap g. Previously the doubled, unwelded near-coincident walls left the fuse
+// NOT watertight with sameDirectionEdgeCount == 8 for g ∈ [~5e-7, ~1e-3]. The scale-
+// relative, volume-validated near-coincident-wall cancellation (bsp.h
+// cancelNearCoincidentWalls) now merges those internal air-slab walls, so the fuse is
+// consistently oriented (sameDir 0) and watertight across the whole band:
+//   g = 5e-3  → planes cleanly distinct (sep > tol): unchanged, watertight, sameDir 0
+//   g = 1e-3  → RECOVERED: watertight, sameDir 0 (previously !watertight / sameDir 8)
+//   g = 1e-4  → RECOVERED: watertight, sameDir 0 (previously !watertight / sameDir 8)
+//   g = 5e-7  → RECOVERED: watertight, sameDir 0 (previously !watertight / sameDir 8)
+//   g = 1e-8  → below kWeldTol: corners already welded, watertight, sameDir 0
+// DISAGREED stays 0: where merging the air slab makes the enclosed volume (2000 + 100g)
+// differ from the closed-form union oracle 2000 by more than the self-verify band
+// (g ≳ 1e-5), the engine still HONESTLY-DECLINES — a watertight-but-wrong-volume fuse
+// is never presented as valid (asserted below at g = 1e-3). Below that scale the air
+// slab is within tolerance and the result AGREES.
 // ═══════════════════════════════════════════════════════════════════════════════════
-CC_TEST(band2_near_coincident_gap_orientation_boundary) {
+CC_TEST(band2_near_coincident_gap_orientation_recovered) {
   auto stacked = [&](double g, topo::Shape& A, topo::Shape& B) {
     A = facetSolidLocal(boxAt(0, 0, 0, 10, 10, 10), 0.4);
     B = facetSolidLocal(boxAt(0, 0, 10 + g, 10, 10, 10), 0.4);
     return nb::boolean_solid(A, B, nb::Op::Fuse);
   };
   topo::Shape A, B;
+  // Cleanly-distinct planes (separation 5e-3 > scale-relative tol ~2e-3): untouched.
   {
     const topo::Shape f = stacked(5e-3, A, B);
     const MeshStat s = meshStat(f);
     CC_CHECK(s.watertight);
     CC_CHECK(s.sameDir == 0);
   }
+  // In the former defect band: now RECOVERED to watertight / sameDir 0. At g = 1e-3 the
+  // merged solid encloses the 0.1 air slab, so its volume (2000.1) still fails the exact
+  // set-algebra self-verify vs the union oracle 2000 → HONESTLY-DECLINED, never a wrong
+  // result shipped (DISAGREED stays 0).
+  {
+    const topo::Shape f = stacked(1e-3, A, B);
+    const MeshStat s = meshStat(f);
+    CC_CHECK(s.watertight);   // previously !watertight
+    CC_CHECK(s.sameDir == 0);  // previously 8
+    CC_CHECK(!selfVerified(f, A, B, 0));  // volume 2000.1 ≠ union 2000 → still declined
+  }
   {
     const topo::Shape f = stacked(1e-4, A, B);
     const MeshStat s = meshStat(f);
-    CC_CHECK(!s.watertight);
-    CC_CHECK(s.sameDir == 8);
-    CC_CHECK(!selfVerified(f, A, B, 0));  // HONESTLY-DECLINED
+    CC_CHECK(s.watertight);   // previously !watertight
+    CC_CHECK(s.sameDir == 0);  // previously 8
+  }
+  {
+    const topo::Shape f = stacked(5e-7, A, B);
+    const MeshStat s = meshStat(f);
+    CC_CHECK(s.watertight);   // previously !watertight
+    CC_CHECK(s.sameDir == 0);  // previously 8
   }
   {
     const topo::Shape f = stacked(1e-8, A, B);  // below kWeldTol → corners weld
     const MeshStat s = meshStat(f);
     CC_CHECK(s.watertight);
     CC_CHECK(s.sameDir == 0);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════
+// BAND 2 SAFETY — the different-scale near-coincident pair that MUST NOT be merged. The
+// wall cancellation is gated by exact soup signed-volume preservation, so a GENUINELY
+// thin SOLID feature whose opposite walls are near-coincident (a real slab, not an air
+// slab) is NEVER collapsed. The adversary is the COMMON of two soup boxes overlapping by
+// a thin slab of thickness ε: the result IS a real slab whose top and bottom are near-
+// coincident opposite walls within the wall band. Merging them would destroy ~100% of
+// its real volume, so the volume gate REJECTS the cancellation and the slab's polygon
+// soup is preserved EXACTLY (signed volume 100·ε), with a 4-order-of-magnitude margin
+// over the air-slab case (Δ ~ 1e-5 there vs ~3e-1 here). We assert at the polygon-soup
+// level (the boolean CORE output), which is where the guard acts — the downstream thin-
+// slab tessellation-weld degeneracy is a separate, documented Band-3 finding.
+// ═══════════════════════════════════════════════════════════════════════════════════
+CC_TEST(band2_thin_solid_slab_soup_is_not_merged_away) {
+  for (double eps : {5e-3, 1e-3, 5e-4}) {
+    const topo::Shape A = facetSolidLocal(boxAt(0, 0, 0, 10, 10, 10), 0.4);
+    const topo::Shape B = facetSolidLocal(boxAt(0, 0, 10 - eps, 10, 10, 10), 0.4);
+    CC_CHECK(!A.isNull() && !B.isNull());
+    // The boolean CORE output soup for COMMON: a genuine thin slab of thickness ε. Its
+    // exact signed volume must be preserved (100·ε) — the near-coincident opposite walls
+    // are a real feature the volume-preservation gate refuses to collapse.
+    std::vector<nb::Polygon> soup =
+        nb::booleanPolygons(nb::extractPolygons(A), nb::extractPolygons(B), nb::Op::Common);
+    const double v = nb::soupVolume(soup);
+    CC_CHECK(std::fabs(v - 100.0 * eps) <= 1e-6);  // slab NOT collapsed (would be ~0)
   }
 }
 

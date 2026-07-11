@@ -94,7 +94,10 @@ inline std::vector<Polygon> booleanPolygons(std::vector<Polygon> aPolys,
       b.clipTo(a);
       b.invert();
       a.build(b.allPolygons());
-      return a.allPolygons();
+      // Scale-relative, volume-validated cancellation of near-coincident opposite-wall
+      // pairs the ABSOLUTE on-plane band (kPlaneEps) left doubled (dense-CSG Band 2).
+      // A no-op unless a genuine internal air-slab boundary is present; see bsp.h.
+      return cancelNearCoincidentWalls(a.allPolygons());
     }
     case Op::Cut: {
       a.invert();
@@ -105,7 +108,7 @@ inline std::vector<Polygon> booleanPolygons(std::vector<Polygon> aPolys,
       b.invert();
       a.build(b.allPolygons());
       a.invert();
-      return a.allPolygons();
+      return cancelNearCoincidentWalls(a.allPolygons());
     }
     case Op::Common: {
       // A ∩ B = ¬(¬A ∪ ¬B).
@@ -116,7 +119,7 @@ inline std::vector<Polygon> booleanPolygons(std::vector<Polygon> aPolys,
       b.clipTo(a);
       a.build(b.allPolygons());
       a.invert();
-      return a.allPolygons();
+      return cancelNearCoincidentWalls(a.allPolygons());
     }
   }
   return {};

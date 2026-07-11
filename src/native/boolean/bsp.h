@@ -122,6 +122,188 @@ inline void splitPolygon(const Plane& plane, const Polygon& poly,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Near-coincident coplanar-wall cancellation (SCALE-RELATIVE, VOLUME-VALIDATED).
+//
+// ── THE DEFECT ────────────────────────────────────────────────────────────────
+// splitPolygon's on-plane classification (kPlaneEps, an ABSOLUTE fp band) tells two
+// coincident faces apart only when they land within that band. Two dense-soup boxes
+// stacked with an AIR GAP g route their near-coincident shared walls into DIFFERENT
+// coplanar buckets whenever g > kPlaneEps but g is still far below the model scale:
+// the union's invert-clip-invert coincident-overlap removal never fires, so BOTH
+// internal walls survive as a doubled, opposite-normal wall pair straddling a razor-
+// thin air slab. The assembled mesh is then not a single watertight 2-manifold —
+// sameDirectionEdgeCount doubles (the near-tangent dense-CSG "Band 2" defect).
+//
+// Widening kPlaneEps to swallow g would be an ABSOLUTE tolerance widen — proven to
+// silently corrupt genuinely-distinct thin features elsewhere. Instead this pass
+// leaves the exact BSP classification untouched and, on the FINAL soup, cancels only
+// pairs that are provably an internal air-slab boundary, under two independent gates:
+//
+//   (1) SCALE-RELATIVE geometric predicate — a pair qualifies only when the two
+//       polygons have opposite unit normals, lie on planes separated by less than a
+//       fraction of the MODEL EXTENT (never an absolute epsilon), their fronts
+//       (outward sides) face INTO the gap (so the sliver between them is OUTSIDE both
+//       ⇒ an air slab, not solid material), and their in-plane projections overlap.
+//   (2) EXACT signed-volume preservation — the whole cancellation is applied only if
+//       it changes the polygon soup's exact divergence-theorem signed volume by less
+//       than a tight relative bound. Removing an internal air-slab wall pair is
+//       volume-neutral (Δ ~ g/extent ≪ 1); collapsing a GENUINELY thin solid feature
+//       (a real slab whose walls are near-coincident) would move ~100% of its volume
+//       and is REJECTED — the original soup is kept untouched.
+//
+// Gate (2) is the principled guarantee (mirrors assemble.h's Band-1 sliver guard):
+// no separation-carrying wall is ever merged, because volumes are already scale-
+// consistent and a real feature's cancellation moves real volume. Measured margin:
+// an air-slab pair moves Δ ≲ 2e-5 relative; a real thin slab moves ~3e-1 — a ~4
+// order-of-magnitude gap the volume gate cleanly separates.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Fraction of the model extent within which two opposite coplanar walls are treated
+// as the same near-coincident boundary. Deliberately SCALE-RELATIVE (× extent), so a
+// millimetre model and a metre model behave identically; it is only a CANDIDATE gate
+// — the volume-preservation check below is the real safety net. Chosen to sit far
+// above the fp band (kPlaneEps) yet far below any legitimate thin-feature scale.
+inline constexpr double kCoincidentWallFrac = 1e-4;
+
+// Relative signed-volume tolerance for accepting a wall cancellation. An air-slab
+// removal is volume-neutral to well under this; a real thin feature moves orders of
+// magnitude more and is rejected. Matches the Band-1 sliver guard's principle.
+inline constexpr double kWallCancelVolTol = 1e-3;
+
+// Exact signed volume of a polygon soup (divergence theorem: (1/6) Σ over each
+// polygon's triangle fan of the scalar triple product). Only the before/after
+// magnitude matters, so a consistent per-polygon fan orientation is sufficient.
+inline double soupVolume(const std::vector<Polygon>& polys) {
+  double v6 = 0.0;
+  for (const Polygon& poly : polys) {
+    const std::size_t m = poly.size();
+    if (m < 3) continue;
+    const math::Point3& a = poly.vertices[0];
+    for (std::size_t k = 1; k + 1 < m; ++k) {
+      const math::Vec3 e1 = poly.vertices[k] - a;
+      const math::Vec3 e2 = poly.vertices[k + 1] - a;
+      v6 += math::dot(a.asVec(), math::cross(e1, e2));
+    }
+  }
+  return std::fabs(v6) / 6.0;
+}
+
+// Bounding-box diagonal of a polygon soup — the model scale that makes the wall gate
+// scale-relative.
+inline double soupExtent(const std::vector<Polygon>& polys) {
+  double lo[3] = {1e300, 1e300, 1e300}, hi[3] = {-1e300, -1e300, -1e300};
+  bool any = false;
+  for (const Polygon& p : polys)
+    for (const math::Point3& v : p.vertices) {
+      any = true;
+      const double c[3] = {v.x, v.y, v.z};
+      for (int i = 0; i < 3; ++i) {
+        lo[i] = std::min(lo[i], c[i]);
+        hi[i] = std::max(hi[i], c[i]);
+      }
+    }
+  if (!any) return 0.0;
+  double d2 = 0.0;
+  for (int i = 0; i < 3; ++i) d2 += (hi[i] - lo[i]) * (hi[i] - lo[i]);
+  return std::sqrt(d2);
+}
+
+// Two orthonormal in-plane axes for a unit normal (for projecting a coplanar loop to
+// 2D). Picks whichever cardinal axis is least parallel to the normal as the seed.
+inline void planeAxes(const math::Vec3& n, math::Vec3& u, math::Vec3& v) {
+  const math::Vec3 seed = (std::fabs(n.x) <= std::fabs(n.y) && std::fabs(n.x) <= std::fabs(n.z))
+                              ? math::Vec3{1, 0, 0}
+                              : (std::fabs(n.y) <= std::fabs(n.z) ? math::Vec3{0, 1, 0}
+                                                                  : math::Vec3{0, 0, 1});
+  math::Vec3 uu = seed - n * math::dot(seed, n);
+  const double ul = math::norm(uu);
+  u = ul > 0.0 ? uu * (1.0 / ul) : math::Vec3{1, 0, 0};
+  v = math::cross(n, u);
+}
+
+// Do two near-coplanar polygons overlap in their shared in-plane projection? A cheap
+// axis-aligned-in-plane bbox test in `a`'s frame — enough to reject two coplanar walls
+// that are near-coincident in PLANE but disjoint in EXTENT (so unrelated faces that
+// merely share a plane are never paired). `slack` widens the boxes by the wall
+// tolerance so a shared edge still counts as overlap.
+inline bool projectionsOverlap(const Polygon& a, const Polygon& b, double slack) {
+  math::Vec3 u, v;
+  planeAxes(a.plane.normal, u, v);
+  auto boxOf = [&](const Polygon& p, double& u0, double& u1, double& v0, double& v1) {
+    u0 = v0 = 1e300;
+    u1 = v1 = -1e300;
+    for (const math::Point3& pt : p.vertices) {
+      const double pu = math::dot(pt.asVec(), u), pv = math::dot(pt.asVec(), v);
+      u0 = std::min(u0, pu);
+      u1 = std::max(u1, pu);
+      v0 = std::min(v0, pv);
+      v1 = std::max(v1, pv);
+    }
+  };
+  double au0, au1, av0, av1, bu0, bu1, bv0, bv1;
+  boxOf(a, au0, au1, av0, av1);
+  boxOf(b, bu0, bu1, bv0, bv1);
+  return au1 + slack >= bu0 && bu1 + slack >= au0 && av1 + slack >= bv0 && bv1 + slack >= av0;
+}
+
+// A candidate air-slab wall pair: opposite unit normals, planes near-coincident within
+// `tol`, each front (outward) side facing INTO the gap between them (so the sliver is
+// OUTSIDE both ⇒ air, not solid), and overlapping in-plane. `tol` is the scale-relative
+// wall band, reused as the in-plane overlap slack.
+inline bool isAirSlabWallPair(const Polygon& a, const Polygon& b, double tol) {
+  const math::Vec3& na = a.plane.normal;
+  const math::Vec3& nb = b.plane.normal;
+  if (math::dot(na, nb) > -0.999999) return false;  // must be (near) exactly opposite
+  // With nb ≈ -na, both planes written along na: a is {na·x = a.w}, b is {na·x = -b.w}.
+  const double sepSigned = -b.plane.w - a.plane.w;  // b's offset in +na minus a's offset
+  if (std::fabs(sepSigned) > tol) return false;     // not near-coincident (scale-rel)
+  // Front of a is +na; front of b is -na. For the gap between to be OUTSIDE both, a's
+  // front must point toward b (b sits on a's +na side): sepSigned ≥ 0 (within slack).
+  if (sepSigned < -tol) return false;
+  return projectionsOverlap(a, b, tol);
+}
+
+// Cancel near-coincident opposite-wall pairs on the final soup, VALIDATED by exact
+// signed-volume preservation. Pairs each unmatched polygon with the first qualifying
+// partner (greedy — a wall has exactly one opposite twin here), drops both, then keeps
+// the reduced soup only if the soup volume is preserved to kWallCancelVolTol; otherwise
+// returns the input UNCHANGED (a real thin feature is never collapsed).
+inline std::vector<Polygon> cancelNearCoincidentWalls(std::vector<Polygon> polys) {
+  const std::size_t n = polys.size();
+  if (n < 2) return polys;
+  const double extent = soupExtent(polys);
+  if (!(extent > 0.0)) return polys;
+  const double tol = kCoincidentWallFrac * extent;
+
+  std::vector<bool> dead(n, false);
+  bool anyCancelled = false;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (dead[i]) continue;
+    for (std::size_t j = i + 1; j < n; ++j) {
+      if (dead[j]) continue;
+      if (isAirSlabWallPair(polys[i], polys[j], tol)) {
+        dead[i] = dead[j] = true;
+        anyCancelled = true;
+        break;
+      }
+    }
+  }
+  if (!anyCancelled) return polys;
+
+  std::vector<Polygon> reduced;
+  reduced.reserve(n);
+  for (std::size_t i = 0; i < n; ++i)
+    if (!dead[i]) reduced.push_back(polys[i]);
+
+  // Volume-preservation gate: keep the cancellation only if it moved no real volume.
+  const double v0 = soupVolume(polys);
+  const double v1 = soupVolume(reduced);
+  const double denom = std::max(v0, 1e-12);
+  if (std::fabs(v1 - v0) > kWallCancelVolTol * denom) return polys;  // would corrupt geometry
+  return reduced;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Node — a BSP node. `plane` (once set) partitions space; `polygons` are the
 // polygons coplanar with the node's plane; front/back are the sub-solids.
 // ─────────────────────────────────────────────────────────────────────────────

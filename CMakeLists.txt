@@ -377,6 +377,19 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_skin)
         set(test_native_nurbs_skin_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_skin.cpp")
+        # NURBS roadmap Layer 6 — swept surfaces (src/native/math/bspline_sweep). A section
+        # curve swept along a trajectory: translational sweep is the EXACT closed-form
+        # tensor product (section × degree-1 path); the general sweep places the section at
+        # K stations via a rotation-minimizing moving frame and SKINS them (composes
+        # bspline_skin, hence lin_solve — under CYBERCAD_HAS_NUMSCI, mirroring the skin
+        # gate). Airtight oracles: translational exactness (S(.,v) == section+v*sweep
+        # pointwise ~1e-12), station containment (surface contains each transformed section
+        # ~1e-8), known ruled/cylinder-like patches vs closed-form, anti-twist frame sanity,
+        # and honest degenerate/rational guards. Non-rational scope; rotational/exact-
+        # BRepFill/variable-section sweeps are residuals.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_sweep)
+        set(test_native_nurbs_sweep_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_sweep.cpp")
         # SSI Stage S2 subdivision seeding — the refine (least_squares) is under
         # CYBERCAD_HAS_NUMSCI, so its host suite builds only in that config.
         list(APPEND CYBERCAD_TESTS test_native_ssi_seeding)
@@ -879,6 +892,13 @@ if(CYBERCAD_BUILD_TESTS)
     # the substrate include trees, exactly like the Layer-7 fitting gate above.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_skin)
         target_compile_definitions(test_native_nurbs_skin PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+
+    # The Layer-6 swept-surface gate includes bspline_sweep.h (which under CYBERCAD_HAS_NUMSCI
+    # pulls bspline_skin.h → bspline_ops.h — no substrate header), so its TU needs the macro
+    # but NOT the substrate include trees, exactly like the Layer-6 skinning gate above.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_sweep)
+        target_compile_definitions(test_native_nurbs_sweep PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_ssi_boolean)

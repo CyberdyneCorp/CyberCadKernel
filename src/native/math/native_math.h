@@ -17,6 +17,10 @@
 //   * bspline_skin.h—NURBS skinning / lofting (NURBS-SCOPE Layer 6): section curves →
 //                    tensor-product surface containing every section (compat + A10.3).
 //                    (numsci-gated; the V-interpolation solve needs CYBERCAD_HAS_NUMSCI.)
+//   * bspline_sweep.h—NURBS swept surfaces (NURBS-SCOPE Layer 6): a section swept along a
+//                    trajectory — translational (exact tensor product) + general
+//                    (transform-then-skin along a rotation-minimizing frame, §10.4).
+//                    (numsci-gated; the general sweep composes skinSurface.)
 //   * bezier.h     — Bézier curves & surfaces via de Casteljau (+ rational).
 //   * elementary.h — analytic plane / cylinder / cone / sphere.
 //   * torus.h      — analytic torus (surface of revolution of an off-axis circle).
@@ -37,6 +41,7 @@
 #include "bspline_ops.h"
 #include "bspline_fit.h"
 #include "bspline_skin.h"
+#include "bspline_sweep.h"
 #include "bezier.h"
 #include "elementary.h"
 #include "torus.h"

@@ -404,6 +404,23 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_offset)
         set(test_native_nurbs_offset_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_offset.cpp")
+        # NURBS roadmap Layer 5 — SOLID THICKEN / SHELL (src/native/math/bspline_thicken).
+        # Composes the Layer-5 offset (bspline_offset → lin_solve fit + its 2nd-fundamental-
+        # form fold guard) into a CLOSED, watertight triangle shell (tessellate::Mesh): the
+        # original panel S + the offset panel S+d·N + four ruled side walls, sewn with shared
+        # exact boundary vertices so it is watertight by construction, then verified (χ=2, no
+        # boundary edges, coherent orientation). The distance oracle uses
+        # closest_point_on_surface — so the module + its host gate build only under
+        # CYBERCAD_HAS_NUMSCI (mirroring test_native_nurbs_offset). Airtight oracles: the
+        # solid is WATERTIGHT (χ=2/zero boundary edges) for flat/curved/rational patches,
+        # enclosed volume == area·|d| exactly for a flat box (and ≈ for a thin slab / matches
+        # the annular-wedge closed form for a cylinder shell), the offset cap sits at distance
+        # |d| from S (matching offsetSurface), and an honest fold guard (thicken past the
+        # curvature radius is DECLINED, never returned folded/self-intersecting). Non-rational
+        # offset panel; robust self-intersecting-shell + multi-face shell + rational residual.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_thicken)
+        set(test_native_nurbs_thicken_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_thicken.cpp")
         # SSI Stage S2 subdivision seeding — the refine (least_squares) is under
         # CYBERCAD_HAS_NUMSCI, so its host suite builds only in that config.
         list(APPEND CYBERCAD_TESTS test_native_ssi_seeding)
@@ -939,6 +956,12 @@ if(CYBERCAD_BUILD_TESTS)
     # substrate include trees, exactly like the Layer-6/7 gates above.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_offset)
         target_compile_definitions(test_native_nurbs_offset PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+    # The Layer-5 thicken gate includes bspline_thicken.h (→ bspline_ops.h + tessellate/
+    # mesh.h) + bspline_offset.h + numerics.h — all vec.h/std only, no NumPP/SciPP headers —
+    # so its TU needs the macro but NOT the substrate include trees, like the offset gate.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_thicken)
+        target_compile_definitions(test_native_nurbs_thicken PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_ssi_boolean)

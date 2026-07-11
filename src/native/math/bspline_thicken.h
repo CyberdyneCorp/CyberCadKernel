@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// bspline_thicken.h — NURBS roadmap Layer 5: SOLID THICKEN / SHELL (a NURBS
+// surface → a CLOSED, watertight thickened solid).
+//
+// Given an OPEN tensor-product NURBS surface S(u,v) and a signed thickness d,
+// construct the CLOSED SOLID that S bounds when offset by d:
+//
+//     solid ∂ = S  ∪  O  ∪  (four ruled SIDE WALLS)
+//     where  O = offsetSurface(S, d)  is the Layer-5 offset surface (S + d·N),
+//     and each side wall is the RULED strip connecting a boundary edge of S to
+//     the corresponding boundary edge of O.
+//
+// The two "cap" panels (S and O) plus the four ruled walls sew into a single
+// closed 2-manifold shell with NO boundary edges — a watertight solid. This is
+// the construction underneath SHELL / THICKEN / HOLLOW (Shapr3D's shell
+// workflow): the offset SURFACE (bspline_offset.h) is one panel; this module
+// assembles the offset panel, the original panel, and the ruled walls into the
+// closed solid.
+//
+// OUTPUT REPRESENTATION — a tessellated CLOSED SHELL (`tessellate::Mesh`, the
+// kernel's existing triangle-solid carrier from src/native/tessellate/mesh.h:
+// fp64 Point3 vertices + indexed Triangles, with `isWatertight` / `enclosedVolume`
+// / `boundaryEdgeCount` / `isConsistentlyOriented` verification primitives). The
+// exact offset O is NOT a NURBS (its normal carries a square root), so the honest
+// closed-solid output for a fitted-offset shell is a tessellation whose closure
+// is PROVEN, not asserted by fiat: the panels share EXACT boundary vertices, so
+// the shell is watertight BY CONSTRUCTION (every seam edge is used by exactly two
+// triangles), and the module verifies χ = 2 / zero boundary edges / consistent
+// outward orientation before returning `ok`. A shell that fails closure is
+// DECLINED — never returned as a valid solid.
+//
+// This module sits ABOVE and COMPOSES landed layers, modifying none of them:
+//   * bspline_offset.h — the Layer-5 offset surface O = S + d·N (and, crucially,
+//     its 2nd-fundamental-form SELF-INTERSECTION (fold) guard: a thicken past a
+//     principal radius of curvature DECLINES because its offset panel does).
+//   * bspline.h        — surfacePoint / nurbsSurfacePoint / surfaceNormal for the
+//     panel tessellation (rational-aware evaluation of S).
+//   * bspline_ops.h    — the Layer-1 BsplineSurfaceData carrier for S and O.
+//   * tessellate/mesh.h— the closed-shell carrier + watertight/volume checks.
+//
+// HONEST DEGENERACY GUARDS (never emit a non-closed or self-intersecting solid):
+//   * SELF-INTERSECTION — a thicken whose |d| meets/exceeds a principal radius of
+//     curvature folds the offset panel onto itself. This is DETECTED by the
+//     offset layer (`OffsetStatus::SelfIntersection`) and the thicken DECLINES
+//     with `ThickenStatus::SelfIntersection` — it is NOT returned folded.
+//   * DEGENERATE / NON-ORIENTABLE — a patch whose normal is near-null anywhere
+//     (no defined offset direction), or a degenerate/malformed input, DECLINES.
+//   * NOT-CLOSED — if the assembled shell is (unexpectedly) not watertight, the
+//     module DECLINES rather than returning an open or leaky solid.
+//
+// SCOPE — a SINGLE non-rational NURBS patch thickened into a closed six-panel
+// (2 caps + 4 walls) box-topology shell. The input S may be rational (its weights
+// are honoured through nurbsSurfacePoint / surfaceNormal), but the offset panel is
+// fitted non-rationally (bspline_offset). ROBUST self-intersecting-shell recovery
+// (trim the fold rather than decline), MULTI-FACE shells (thickening a whole
+// multi-patch B-rep with mitred/rounded corners), and a rational offset RESIDUAL
+// are documented residuals for later slices — this module never fakes them. See
+// docs/NURBS-SCOPE.md Layer-5 row.
+//
+// GUARD — the offset-bearing routine is compiled only when CYBERCAD_HAS_NUMSCI is
+// defined (it composes offsetSurface, whose fit is the sole linear-algebra
+// dependency), exactly like bspline_offset.cpp / bspline_fit.cpp. With the guard
+// OFF the implementation TU is inert and the function is absent; the declaration
+// remains visible for documentation.
+//
+// OCCT-FREE. clang++ -std=c++20. fp64, deterministic.
+//
+#ifndef CYBERCAD_NATIVE_MATH_BSPLINE_THICKEN_H
+#define CYBERCAD_NATIVE_MATH_BSPLINE_THICKEN_H
+
+#include "bspline_ops.h"               // BsplineSurfaceData (Layer-1 data type)
+#include "native/tessellate/mesh.h"    // tessellate::Mesh (closed-shell carrier + checks)
+
+namespace cybercad::native::math {
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Thicken result.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Why a thicken request was declined (`ok == false`).
+enum class ThickenStatus {
+  Ok = 0,                 ///< a valid CLOSED watertight solid was produced.
+  DegenerateInput,        ///< malformed / empty / degree < 1 input surface.
+  DegenerateNormal,       ///< the surface has a near-zero normal somewhere (no offset dir).
+  SelfIntersection,       ///< |d| meets/exceeds a principal radius of curvature (offset folds).
+  OffsetFailed,           ///< the underlying offset surface could not be fitted (see offset layer).
+  NotClosed,              ///< the assembled shell is not watertight (declined, never returned open).
+  ZeroThickness,          ///< |d| below the linear tolerance — no solid to build.
+};
+
+/// Result of a solid-thicken construction. On `ok` the `solid` is a CLOSED,
+/// watertight, consistently-oriented triangle shell (χ = 2, no boundary edges).
+struct ThickenResult {
+  bool ok = false;                          ///< true ⇔ a closed watertight solid within tol.
+  ThickenStatus status = ThickenStatus::DegenerateInput;
+  tessellate::Mesh solid;                   ///< the closed thickened shell (empty on decline).
+
+  // ── Closure invariants (all verified before `ok` is set) ──
+  bool watertight = false;                  ///< isWatertight(solid): every edge used exactly twice.
+  bool consistentlyOriented = false;        ///< isConsistentlyOriented(solid): coherent outward wind.
+  std::size_t boundaryEdges = 0;            ///< boundaryEdgeCount(solid); 0 ⇔ closed.
+  int eulerCharacteristic = 0;              ///< V − E + F; 2 for a closed genus-0 shell.
+
+  // ── Geometry metrics ──
+  double enclosedVolume = 0.0;              ///< signed enclosed volume (divergence theorem).
+  double surfaceAreaMid = 0.0;             ///< area of the original panel S (the mid-surface area).
+  double offsetError = 0.0;                 ///< the offset panel's achieved deviation from S + d·N.
+  double minCurvatureRadius = 0.0;          ///< smallest principal radius of curvature on the
+                                            ///< offsetting side (the self-intersection bound; 0 flat).
+  int gridU = 0, gridV = 0;                 ///< tessellation resolution per direction on each panel.
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Solid thicken / shell.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// THICKEN the open NURBS surface `surface` by signed distance `d` into a CLOSED,
+/// watertight solid (NURBS-SCOPE Layer 5). The solid is bounded by the original
+/// surface S, its offset surface O = S + d·N (from `offsetSurface`), and four
+/// ruled side walls connecting their boundary loops. Positive `d` thickens along
+/// +N (the surface normal ∂S/∂u × ∂S/∂v, normalized), negative along −N.
+///
+/// Algorithm:
+///   1. Guard the input (well-formed, degree ≥ 1, |d| above tolerance).
+///   2. Construct the OFFSET panel O = `offsetSurface(S, d, tol)`. This carries the
+///      HONEST guards: a degenerate normal → decline (DegenerateNormal); a |d| past
+///      a principal radius of curvature → the offset FOLDS → decline
+///      (SelfIntersection). A thicken NEVER returns a folded solid.
+///   3. Tessellate S and O on a SHARED (nu × nv) parameter grid into two cap panels;
+///      build four ruled side-wall strips joining S's four boundary edges to O's,
+///      REUSING the exact shared boundary vertices so every seam edge is used by
+///      exactly two triangles (watertight by construction). Orient every panel so
+///      the shell's outward normal is consistent (the volume sign is positive).
+///   4. VERIFY closure: isWatertight (χ = 2, zero boundary edges) and
+///      isConsistentlyOriented. If either fails → decline (NotClosed) — an open or
+///      leaky shell is never returned as a valid solid.
+///
+/// The closed-form GUARANTEES the host gate checks: the solid is WATERTIGHT; its
+/// enclosed volume ≈ (mid-surface area)·|d| for thin |d| and matches the exact
+/// closed form for a planar/analytic patch (a flat rectangle thickened by d is a
+/// box, volume = area·|d| exactly); the offset panel matches `offsetSurface` at
+/// distance |d|; and a thicken past the curvature radius DECLINES (fold guard).
+///
+/// `tol` is passed through to the offset fit (the target max deviation of the
+/// offset panel from the true locus S + d·N). `gridU`/`gridV` set the tessellation
+/// resolution of each cap panel (≥ 2 per direction; the wall strips inherit the
+/// boundary resolution). Declines (ok=false, empty solid) rather than ever
+/// returning a non-closed or self-intersecting solid.
+ThickenResult thickenSurface(const BsplineSurfaceData& surface, double d,
+                             double tol = 1e-4, int gridU = 24, int gridV = 24);
+
+}  // namespace cybercad::native::math
+
+#endif  // CYBERCAD_NATIVE_MATH_BSPLINE_THICKEN_H

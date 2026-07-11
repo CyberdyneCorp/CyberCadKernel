@@ -25,6 +25,13 @@
 //                    an adaptive grid + fitted to a NURBS surface (Layer-7), with a
 //                    curvature-radius self-intersection guard. (numsci-gated; the fit +
 //                    projection metric need CYBERCAD_HAS_NUMSCI.)
+//
+// NURBS solid thicken / shell (NURBS-SCOPE Layer 5, `bspline_thicken.h`) — an open
+// surface + its offset panel + ruled side walls sewn into a CLOSED watertight triangle
+// shell — is a HIGHER-level module: it depends on `native/tessellate/mesh.h` (the
+// closed-shell carrier), which itself includes THIS aggregate, so `bspline_thicken.h` is
+// deliberately NOT re-exported here to avoid a circular include. Consumers include it
+// directly, exactly as consumers of the tessellator do.
 //   * bezier.h     — Bézier curves & surfaces via de Casteljau (+ rational).
 //   * elementary.h — analytic plane / cylinder / cone / sphere.
 //   * torus.h      — analytic torus (surface of revolution of an off-axis circle).

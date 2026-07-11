@@ -21,6 +21,10 @@
 //                    trajectory — translational (exact tensor product) + general
 //                    (transform-then-skin along a rotation-minimizing frame, §10.4).
 //                    (numsci-gated; the general sweep composes skinSurface.)
+//   * bspline_offset.h—NURBS surface offset (NURBS-SCOPE Layer 5): S + d·N sampled on
+//                    an adaptive grid + fitted to a NURBS surface (Layer-7), with a
+//                    curvature-radius self-intersection guard. (numsci-gated; the fit +
+//                    projection metric need CYBERCAD_HAS_NUMSCI.)
 //   * bezier.h     — Bézier curves & surfaces via de Casteljau (+ rational).
 //   * elementary.h — analytic plane / cylinder / cone / sphere.
 //   * torus.h      — analytic torus (surface of revolution of an off-axis circle).
@@ -42,6 +46,7 @@
 #include "bspline_fit.h"
 #include "bspline_skin.h"
 #include "bspline_sweep.h"
+#include "bspline_offset.h"
 #include "bezier.h"
 #include "elementary.h"
 #include "torus.h"

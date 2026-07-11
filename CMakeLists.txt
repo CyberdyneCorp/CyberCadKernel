@@ -390,6 +390,19 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_sweep)
         set(test_native_nurbs_sweep_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_sweep.cpp")
+        # NURBS roadmap Layer 5 — surface OFFSET (src/native/math/bspline_offset).
+        # Samples the true offset locus S + d·N and fits a non-rational NURBS surface
+        # through it with the Layer-7 fitter (interpolateSurface → lin_solve), refining
+        # the grid until the fit's deviation from the locus is within tol; the distance
+        # oracle uses closest_point_on_surface — so the module + its host gate build only
+        # under CYBERCAD_HAS_NUMSCI (mirroring test_native_nurbs_fit). Airtight oracles:
+        # every offset point at distance |d| from S (dense projection), analytic cylinder
+        # (radius r±d) + exact plane, monotone error convergence, and an honest
+        # self-intersection guard (offset past the curvature radius is DECLINED, never
+        # returned folded). Non-rational offset; solid thicken/shell + fold trimming residual.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_offset)
+        set(test_native_nurbs_offset_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_offset.cpp")
         # SSI Stage S2 subdivision seeding — the refine (least_squares) is under
         # CYBERCAD_HAS_NUMSCI, so its host suite builds only in that config.
         list(APPEND CYBERCAD_TESTS test_native_ssi_seeding)
@@ -899,6 +912,12 @@ if(CYBERCAD_BUILD_TESTS)
     # but NOT the substrate include trees, exactly like the Layer-6 skinning gate above.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_sweep)
         target_compile_definitions(test_native_nurbs_sweep PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+    # The Layer-5 offset gate includes bspline_offset.h + numerics.h (numerics.h is
+    # vec.h + std only, no NumPP/SciPP headers), so its TU needs the macro but NOT the
+    # substrate include trees, exactly like the Layer-6/7 gates above.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_offset)
+        target_compile_definitions(test_native_nurbs_offset PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_ssi_boolean)

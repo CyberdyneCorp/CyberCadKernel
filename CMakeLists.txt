@@ -391,6 +391,20 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_sweep)
         set(test_native_nurbs_sweep_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_sweep.cpp")
+        # NURBS roadmap Layer 6 — GORDON / NETWORK surface (src/native/math/bspline_gordon).
+        # A surface through a NETWORK of K u-curves and L v-curves that intersect at a K×L
+        # grid, built as the boolean sum G = S_u ⊕ S_v ⊖ T (skin of u-curves + skin of
+        # v-curves − tensor interpolant of the grid, §10.5). Composes bspline_skin +
+        # surface interpolation, hence lin_solve — under CYBERCAD_HAS_NUMSCI, mirroring the
+        # skin/sweep gates. Airtight oracles: network containment (surface contains every u-
+        # and v-curve pointwise ~1e-8), grid intersection on-surface (~1e-8), known-surface
+        # round-trip (extract a u/v iso-curve network from a KNOWN tensor surface → Gordon →
+        # recover the original pointwise ~1e-8), and honest inconsistent/degenerate/rational
+        # declines. Non-rational scope; rational + irregular/N-sided networks + exact
+        # BRepFill residual.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_gordon)
+        set(test_native_nurbs_gordon_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_gordon.cpp")
         # NURBS roadmap Layer 5 — surface OFFSET (src/native/math/bspline_offset).
         # Samples the true offset locus S + d·N and fits a non-rational NURBS surface
         # through it with the Layer-7 fitter (interpolateSurface → lin_solve), refining
@@ -975,6 +989,12 @@ if(CYBERCAD_BUILD_TESTS)
     # but NOT the substrate include trees, exactly like the Layer-6 skinning gate above.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_sweep)
         target_compile_definitions(test_native_nurbs_sweep PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+    # The Layer-6 Gordon/network gate includes bspline_gordon.h (which under
+    # CYBERCAD_HAS_NUMSCI pulls bspline_skin.h → bspline_ops.h + numerics.h), so its TU
+    # needs the macro to compile the SEEDED gordonSurface path (matches the library build).
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_gordon)
+        target_compile_definitions(test_native_nurbs_gordon PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
     # The Layer-5 offset gate includes bspline_offset.h + numerics.h (numerics.h is
     # vec.h + std only, no NumPP/SciPP headers), so its TU needs the macro but NOT the

@@ -653,7 +653,7 @@ Remaining S5 work: general (non-Steinmetz) branched pairs, transversal/apex cone
 pairs, cone∩cone, the two-circle / apex-crossing / transversal cone∩sphere crossings, and more
 curved-curved families.
 
-## NURBS Layer 2 — general-freeform measurement pass (empirical decline map) · ✅ MEASURED 2026-07-10 · ⛔ RECALL CAMPAIGN DECLINED 2026-07-11 (baseline holds, DISAGREED==0)
+## NURBS Layer 2 — general-freeform measurement pass (empirical decline map) · ✅ MEASURED 2026-07-10 · ⛔ POST-HOC RECALL CAMPAIGN DECLINED 2026-07-11 · ✅ SCALE-ADAPTIVE INITIAL SEEDING LANDED 2026-07-11 (decline 28.5%→18.8%, DISAGREED==0)
 
 Before scoping further S4 slices, the general NURBS↔NURBS boundary was measured empirically
 with two differential fuzzers (verification only; `src/native` untouched, `cc_*` unchanged):
@@ -741,17 +741,69 @@ at HEAD `31765c5`.**
   would violate the self-verify-then-commit discipline, so the change was declined and reverted.
 
 **Remaining dominant decline reason (honest residual / next frontier):** the multi-branch
-declines are **NOT a seeding-recall recall gap** reachable by finer post-hoc re-seeding — that
+declines are **NOT a POST-HOC seeding-recall gap** reachable by finer post-hoc re-seeding — that
 hypothesis was tested to exhaustion and falsified. The genuine residual splits into (1)
 **near-tangent grazes the seeder correctly refuses** — real S4-c/d marching-core moat work, not
 recall; and (2) **OCCT arc-split over-counts** where OCCT reports one native loop as multiple
 components (an oracle-side counting artifact, not a native miss). The only demonstrated,
 DISAGREED-safe lever that lowers the decline is **initial seeding RESOLUTION** (finer initial
-subdivision catches co-resident loops the post-hoc critic cannot). The productizable slice is
-therefore **scale-adaptive initial-grid pre-split inside `seed_intersection`** (default path
-finds more loops with no caller knob), followed by a full SSI host+sim re-baseline — or moving
-`completenessCritic` to default-on and re-baselining every SSI/boolean test. Both are larger
-than one bounded, independently re-verifiable round and are deferred.
+subdivision catches co-resident loops the post-hoc critic cannot, because the loops were already
+inside one covered cluster). The productizable slice is therefore **scale-adaptive initial
+seeding resolution inside `seed_intersection`** (default path finds more loops with no caller
+knob) — now LANDED below.
+
+### Scale-adaptive initial seeding resolution · ✅ LANDED 2026-07-11 (decline 28.5%→18.8%, DISAGREED==0)
+
+The productizable slice deferred above is now shipped as a **DEFAULT** in `seed_intersection`
+(`src/native/ssi/{seeding.cpp,patch_bounds.h}` only; OCCT-free, no `cc_*` change, no caller knob,
+`src/native/boolean` untouched). The initial subdivision resolution (the initial-grid pre-split +
+the leaf `minPatchFrac`) now ADAPTS to each operand pair's geometry so SIMPLE / canonical poses
+are BYTE-IDENTICAL and only dense freeform multi-loop poses get finer initial seeding:
+
+- **Adaptivity gate — FREEFORM↔FREEFORM density.** Two new scale-free, magnitude-independent,
+  OCCT-free signals are set on the `SurfaceAdapter` at freeform-adapter-factory time:
+  `freeformSpanCount` = spansU × spansV (polynomial-patch tiling = intrinsic density) and
+  `freeformComplexity` = the control-net **multi-modal-line count** (a noise-band hysteresis
+  counts the significant slope reversals per net row/column/coordinate; a plain
+  bump/dish/tilted/monotone net scores 0, a genuine egg-carton scores high; wobble/jitter is
+  filtered by a per-line flatness + retreat band). Both are 0 for ELEMENTARY / plane / torus
+  surfaces (no control net), so any pair with an elementary operand — every S1 analytic pair,
+  plane∩sphere, plane∩B-spline (the S4-f completeness fixtures), sphere∩Bézier — is left BYTE-
+  IDENTICAL. Adaptivity fires ONLY on FREEFORM↔FREEFORM pairs whose leaner operand has ≥ 2 spans
+  or a wavy net; a flat single-patch freeform pair is unchanged.
+- **Strength — bounded.** A qualifying pair gets initial grid ×2 / leaf ½ (the proven sweet
+  spot), stepping to grid ×3 / leaf ¼ for a dense-and-wavy pair, with hard caps (grid ≤ 16, leaf
+  ≥ 1/256). Deterministic; `maxDepth` + the leaf floor still bound termination.
+- **Why finer INITIAL seeding (not the post-hoc critic)** recovers these loops: a coarse initial
+  grid bridges two close co-resident loops into ONE topological cluster, so the post-hoc critic
+  (which re-seeds only UNcovered cells) never sees them as missing (`critRecoveredLoops=0`,
+  confirmed in the declined campaign above). A finer INITIAL grid keeps them in SEPARATE clusters
+  from the start — the mechanism the post-hoc path structurally cannot reach.
+
+**At the bar (all gates, 3 seeds N=48 each):**
+- **Freeform fuzzer** (`scripts/run-sim-native-ssi-freeform-fuzz.sh`, the UNMODIFIED committed
+  instrument — its caller-side `SeedOptions` were NOT touched; the win comes entirely from the
+  `src/native` default): decline **28.5% → 18.8%** (41 → 27 / 144), squarely in the target
+  17–21% band and near the uniform-finer ceiling (18.1% measured for a caller-side
+  `initialGrid=12, minPatchFrac=1/64`), but achieved ADAPTIVELY — only freeform↔freeform pairs
+  finer, everything else unchanged. Multi-branch declines 35 → 19 (the recovered population is
+  the multi-branch + near-tangent-family egg-carton poses). **`DISAGREED == 0`** on every seed.
+- **SSI host suite** re-baselined CLEAN with **no assertion changes**: all 9 `test_native_ssi_*`
+  pass (seeding, marching, s4_classification, s4e_singularities, **s4f_completeness** — its
+  `before.tracedBranches==1` / fixture-D BEFORE/AFTER seed-count contracts stay byte-identical
+  because those fixtures are plane∩freeform → the gate does not fire — exact_fuzz, boolean,
+  curved_boolean). Timings unchanged (marching ~105 s, curved_boolean ~316 s), confirming the
+  adaptive finer seeding does NOT blow up cost on the canonical cases.
+- **SSI SIM parity** (`run-sim-native-ssi-marching.sh`): every pair PASS, residuals bit-matching
+  the S3 record (bspline∩bspline onCurve 1.86e-07, sphere∩sphere lenΔ 1.58e-05, S4-c/S4-d slices
+  green). (`run-sim-native-ssi-seeding-parity.sh` has a PRE-EXISTING `gp_Dir::Magnitude` OCCT-SDK
+  compile error in the committed harness — verified present on clean HEAD, unrelated to this
+  change, which touches no `tests/sim` harness.)
+
+Honest framing carried forward: the residual 18.8% is now dominated by the near-tangent grazes
+the seeder correctly refuses (S4-c/d moat) and the OCCT arc-split over-counts (oracle artifact) —
+NOT recoverable by resolution alone. This slice raises the RECALL FLOOR on the co-resident/small
+transversal loops; it is not a completeness proof.
 
 ## Sequencing & effort
 

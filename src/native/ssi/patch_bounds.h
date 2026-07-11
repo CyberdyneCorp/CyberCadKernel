@@ -141,6 +141,34 @@ struct SurfaceAdapter {
   /// (Bézier/B-spline) surfaces are non-periodic (0/0) unless the caller sets them.
   double uPeriod = 0.0;
   double vPeriod = 0.0;
+
+  /// FREEFORM COMPLEXITY signal for scale-adaptive initial seeding (see
+  /// seed_intersection). It is the count of control-net OSCILLATIONS — sign changes of
+  /// the discrete second difference of the pole grid along both parameter directions,
+  /// summed and taken as the worst axis. A single bump / dish / tilted sheet has ≈ 0;
+  /// an egg-carton / many-span oscillating net (which can host several co-resident
+  /// intersection loops inside one coarse param cell) scores high. It is scale-FREE
+  /// (a second-difference SIGN count, independent of pole magnitude) and deterministic.
+  ///
+  /// 0 for ELEMENTARY / plane / torus surfaces (no control net → they never trigger the
+  /// finer seeding; their canonical analytic behaviour is unchanged). Set by the
+  /// freeform adapter factories from the surface's control net. A signal, NOT a bound —
+  /// it only tunes the DEFAULT initial subdivision resolution; it never affects the
+  /// conservative AABB or the correctness gate.
+  int freeformComplexity = 0;
+
+  /// FREEFORM SPAN COUNT = spansU × spansV, where spans = (nPoles − degree) per direction
+  /// — the number of polynomial patches the freeform surface tiles into. It is the
+  /// operand's intrinsic DENSITY: a single Bézier-like patch is 1; a many-span B-spline /
+  /// NURBS is high. Two DENSE freeform operands can host several intersection loops close
+  /// together in parameter space that a coarse initial subdivision would merge — the
+  /// dominant general-NURBS recall miss (roadmap L2). Used with `freeformComplexity` to
+  /// decide the DEFAULT initial seeding resolution.
+  ///
+  /// 0 for ELEMENTARY / plane / torus (no control net) — so a pair with an elementary
+  /// operand (e.g. plane ∩ B-spline) never triggers the freeform-density adaptivity; only
+  /// FREEFORM↔FREEFORM pairs do. A signal only; never affects a bound or the gate.
+  int freeformSpanCount = 0;
 };
 
 // ── freeform (control-net convex hull) bound ───────────────────────────────────
@@ -198,6 +226,91 @@ inline Aabb controlNetBound(const ControlNet& net, const ParamBox& domain,
     for (int j = jv0; j <= jv1; ++j)
       bb.expand(net.pole(i, j));
   return bb;
+}
+
+// ── control-net oscillation (scale-adaptive-seeding complexity signal) ──────────
+
+namespace detail {
+
+/// One pole coordinate (0=x, 1=y, 2=z).
+inline double poleCoord(const Point3& p, int c) noexcept {
+  return c == 0 ? p.x : (c == 1 ? p.y : p.z);
+}
+
+/// Count the SIGNIFICANT slope reversals (turning points) of a length-`n` coordinate
+/// sequence `s`, with a NOISE-BAND hysteresis: a turn is registered only after the
+/// profile retreats by ≥ `kNoiseFrac` of the line's own peak-to-peak range from a run
+/// extremum, and the whole line is IGNORED (returns 0) when its range is below
+/// `kFlatFrac` of the coordinate's global span (a near-constant / wobble-only line). So a
+/// small pole jitter / XY wobble does not register as a wave; only genuine oscillation
+/// comparable to the shape amplitude counts. `globalSpan` is the coord's net-wide extent.
+inline int lineReversals(const std::vector<double>& s, double globalSpan) noexcept {
+  constexpr double kFlatFrac = 0.15;   // line range must reach this fraction of the coord's global span
+  constexpr double kNoiseFrac = 0.20;  // a turn needs this much retreat (of the line range) from a run extremum
+  const int n = static_cast<int>(s.size());
+  if (n < 3) return 0;
+  double lo = s[0], hi = s[0];
+  for (int k = 1; k < n; ++k) { lo = std::min(lo, s[k]); hi = std::max(hi, s[k]); }
+  const double range = hi - lo;
+  if (range <= 0.0 || range < kFlatFrac * globalSpan) return 0;
+  const double sigStep = kNoiseFrac * range;
+  // `dir` = current confirmed run direction (+1 up, −1 down, 0 unset); `ext` = run extremum.
+  // A move ≥ sigStep AGAINST the run confirms a turn; the first significant move only sets dir.
+  int rev = 0, dir = 0;
+  double ext = s[0];
+  for (int k = 1; k < n; ++k) {
+    const double v = s[k];
+    if (dir >= 0 && v > ext) { ext = v; if (dir == 0 && v - lo >= sigStep) dir = 1; continue; }
+    if (dir <= 0 && v < ext) { ext = v; if (dir == 0 && hi - v >= sigStep) dir = -1; continue; }
+    if (dir > 0 && ext - v >= sigStep) { ++rev; dir = -1; ext = v; }        // up-run turned down
+    else if (dir < 0 && v - ext >= sigStep) { ++rev; dir = 1; ext = v; }    // down-run turned up
+  }
+  return rev;
+}
+
+}  // namespace detail
+
+/// Count the MULTI-MODAL LINES of a freeform net: a scale-free measure of how many
+/// distinct "waves" the control net carries, which bounds how many co-resident
+/// intersection loops it can host inside one coarse subdivision cell.
+///
+/// For each net LINE (a row = fixed i over j, and a column = fixed j over i) and each pole
+/// coordinate, count the significant slope reversals (detail::lineReversals). A single
+/// dome / monotone ramp / one-hump profile turns AT MOST ONCE — that is a SINGLE loop and
+/// must NOT trigger finer seeding; a line counts as MULTI-MODAL only when it turns ≥ 2
+/// times (a genuine egg-carton / multi-wave profile, which CAN carry several loops). The
+/// score is the number of such multi-modal lines over both directions and all three coords.
+///
+/// Deterministic, integer, magnitude-independent, OCCT-free, substrate-free. Used only to
+/// tune the DEFAULT initial subdivision resolution; never affects a bound.
+inline int controlNetOscillation(const ControlNet& net) {
+  if (net.nRows < 3 && net.nCols < 3) return 0;
+  // Per-coordinate GLOBAL span (max − min over all poles) — the denominator lineReversals
+  // uses to skip near-constant/wobble-only lines.
+  double gLo[3] = {net.pole(0, 0).x, net.pole(0, 0).y, net.pole(0, 0).z};
+  double gHi[3] = {gLo[0], gLo[1], gLo[2]};
+  for (int i = 0; i < net.nRows; ++i)
+    for (int j = 0; j < net.nCols; ++j)
+      for (int c = 0; c < 3; ++c) {
+        const double v = detail::poleCoord(net.pole(i, j), c);
+        gLo[c] = std::min(gLo[c], v); gHi[c] = std::max(gHi[c], v);
+      }
+  int multiModal = 0;
+  std::vector<double> line;
+  for (int c = 0; c < 3; ++c) {
+    const double span = gHi[c] - gLo[c];
+    for (int i = 0; i < net.nRows; ++i) {   // rows (over j)
+      line.clear();
+      for (int j = 0; j < net.nCols; ++j) line.push_back(detail::poleCoord(net.pole(i, j), c));
+      if (detail::lineReversals(line, span) >= 2) ++multiModal;
+    }
+    for (int j = 0; j < net.nCols; ++j) {   // columns (over i)
+      line.clear();
+      for (int i = 0; i < net.nRows; ++i) line.push_back(detail::poleCoord(net.pole(i, j), c));
+      if (detail::lineReversals(line, span) >= 2) ++multiModal;
+    }
+  }
+  return multiModal;
 }
 
 // ── elementary / torus (sampled + Lipschitz margin) bound ──────────────────────

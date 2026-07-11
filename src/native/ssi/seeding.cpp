@@ -44,7 +44,9 @@ ParamBox knotDomain(int degU, int degV, int nRows, int nCols,
 }
 
 // Build a SurfaceAdapter around a freeform point/normal evaluator + control net.
-SurfaceAdapter freeformAdapter(ControlNet net, ParamBox domain,
+// `degU`/`degV` are the surface's polynomial degrees, used only to compute the span
+// count (density) signal for scale-adaptive seeding.
+SurfaceAdapter freeformAdapter(ControlNet net, ParamBox domain, int degU, int degV,
                                std::function<Point3(double, double)> point,
                                std::function<Dir3(double, double)> normal) {
   SurfaceAdapter a;
@@ -65,6 +67,14 @@ SurfaceAdapter freeformAdapter(ControlNet net, ParamBox domain,
   };
   const Aabb full = a.bound(domain);
   a.modelScale = full.valid() ? full.diagonal() : 1.0;
+  // Scale-adaptive-seeding signals: how WAVY this operand's control net is (0 for a
+  // simple bump/dish; high for an oscillating egg-carton net) and how DENSE it is (span
+  // count = polynomial-patch tiling). Both set on the adapter so seed_intersection can
+  // pick a finer DEFAULT initial resolution only for genuinely freeform, wavy/dense pairs.
+  a.freeformComplexity = controlNetOscillation(net);
+  const int spansU = std::max(1, net.nRows - degU);
+  const int spansV = std::max(1, net.nCols - degV);
+  a.freeformSpanCount = spansU * spansV;
   return a;
 }
 
@@ -82,7 +92,10 @@ SurfaceAdapter makeBezierAdapter(std::vector<Point3> poles, int nRows, int nCols
   auto normal = [polesCopy, nRows, nCols](double u, double v) {
     return math::bezierSurfaceD1(polesCopy, nRows, nCols, u, v).normal;
   };
-  return freeformAdapter(std::move(net), domain, std::move(point), std::move(normal));
+  // A Bézier surface is a SINGLE polynomial patch: degree = nPoles − 1 per direction, so
+  // its span count is 1 (freeformAdapter computes spans = max(1, nPoles − degree)).
+  return freeformAdapter(std::move(net), domain, nRows - 1, nCols - 1,
+                         std::move(point), std::move(normal));
 }
 
 SurfaceAdapter makeBSplineAdapter(int degreeU, int degreeV,
@@ -98,7 +111,8 @@ SurfaceAdapter makeBSplineAdapter(int degreeU, int degreeV,
     math::SurfaceGrid grid{poles, nRows, nCols};
     return math::surfaceNormal(degreeU, degreeV, grid, {}, knotsU, knotsV, u, v);
   };
-  return freeformAdapter(std::move(net), domain, std::move(point), std::move(normal));
+  return freeformAdapter(std::move(net), domain, degreeU, degreeV,
+                         std::move(point), std::move(normal));
 }
 
 SurfaceAdapter makeNurbsAdapter(int degreeU, int degreeV,
@@ -118,7 +132,8 @@ SurfaceAdapter makeNurbsAdapter(int degreeU, int degreeV,
     // Rational normal (surfaceNormal applies the quotient rule internally for wᵢ>0).
     return math::surfaceNormal(degreeU, degreeV, grid, weights, knotsU, knotsV, u, v);
   };
-  return freeformAdapter(std::move(net), domain, std::move(point), std::move(normal));
+  return freeformAdapter(std::move(net), domain, degreeU, degreeV,
+                         std::move(point), std::move(normal));
 }
 
 #ifdef CYBERCAD_HAS_NUMSCI
@@ -733,14 +748,58 @@ SeedSet seed_intersection(const SurfaceAdapter& A, const SurfaceAdapter& B,
   // `minFrac` of its domain. This — not maxDepth — sets the effective subdivision
   // RESOLUTION (the recall/cost knob): a smaller minFrac resolves finer loops and
   // separates closer branches, at more cost. maxDepth is only the hard recursion cap
-  // that guarantees termination. Default 1/64 of each domain per direction.
-  const double minFrac = opts.minPatchFrac > 0 ? opts.minPatchFrac : (1.0 / 32.0);
+  // that guarantees termination. Default 1/32 of each domain per direction.
+  double minFrac = opts.minPatchFrac > 0 ? opts.minPatchFrac : (1.0 / 32.0);
 
   // Initial pre-split of A's domain into a coarse grid before recursion. This seeds
   // the recursion with several disjoint starting patch pairs so distinct loops that a
   // single root box would merge get independent subdivision (loop-catching recall).
-  const int gu = std::max(1, opts.initialGridU);
-  const int gv = std::max(1, opts.initialGridV);
+  int gu = std::max(1, opts.initialGridU);
+  int gv = std::max(1, opts.initialGridV);
+
+  // ── SCALE-ADAPTIVE INITIAL SEEDING (default, no caller knob) ────────────────────
+  //
+  // A coarse fixed initial resolution MERGES co-resident / small transversal loops that a
+  // pair of dense freeform operands host close together in parameter space — the dominant
+  // SSI recall miss on general NURBS↔NURBS pairs (roadmap L2). The fix is a FINER initial
+  // subdivision so the loops get independent clusters instead of being bridged into one;
+  // this is why finer INITIAL seeding recovers loops a post-hoc completeness re-seed cannot
+  // (the loops were already inside one covered cluster). But seeding finer EVERYWHERE would
+  // waste work on the common simple poses and risk over-resolving a canonical case, so the
+  // resolution ADAPTS to the pair's geometry:
+  //
+  //   * FREEFORM↔FREEFORM GATE. Adaptivity fires ONLY when BOTH operands are freeform
+  //     (control-net-bearing → freeformSpanCount ≥ 1). An ELEMENTARY / plane / torus operand
+  //     has span count 0, so any pair with one — plane∩sphere, plane∩B-spline (the S4-f
+  //     completeness fixtures), sphere∩Bézier, all S1 analytic pairs — is left BYTE-IDENTICAL.
+  //     This keeps the whole canonical SSI suite (elementary + mixed) and the S4-f BEFORE/
+  //     AFTER seed-count contracts untouched; only the general-freeform L2 domain adapts.
+  //   * DENSITY + WAVINESS STRENGTH. Among freeform↔freeform pairs, the refinement scales
+  //     with the operands' density (span count = polynomial-patch tiling) and waviness
+  //     (control-net oscillation) — the two ways a pair can hide close multiple loops. A
+  //     single flat/low-span freeform pair (min span < 2 and no waviness) gets no change; a
+  //     genuinely dense/wavy pair gets a finer grid + leaf, capped at the empirically
+  //     calibrated sweet spot (initial grid ×2–3, leaf ½–¼) that lifts multi-loop recall
+  //     without blowing up cost. Deterministic; maxDepth + the leaf floor bound termination.
+  {
+    const bool bothFreeform = A.freeformSpanCount >= 1 && B.freeformSpanCount >= 1;
+    const int minSpan = std::min(A.freeformSpanCount, B.freeformSpanCount);
+    const int osc = std::max(A.freeformComplexity, B.freeformComplexity);
+    // A pair warrants finer seeding when both operands are freeform AND either is genuinely
+    // dense (≥ 2 spans on the leaner operand — a multi-patch net, not a single Bézier patch)
+    // or wavy (a multi-modal control net). Flat single-patch freeform pairs are unchanged.
+    if (bothFreeform && (minSpan >= 2 || osc >= 4)) {
+      // Strength: base ×2 (leaf ½, grid ×2 — the proven sweet spot), stepping to ×4 leaf /
+      // ×3 grid for a DENSE-and-wavy pair (leaner operand ≥ 4 spans, or a clearly wavy net)
+      // that can pack several loops per cell. Both bounded by hard caps.
+      const bool dense = minSpan >= 4 || osc >= 6;
+      const int refine  = dense ? 4 : 2;              // leaf divisor
+      const int gridMul = dense ? 3 : 2;              // initial pre-split multiplier
+      gu = std::min(gu * gridMul, 16);                // hard cost cap on the pre-split
+      gv = std::min(gv * gridMul, 16);
+      minFrac = std::max(minFrac / refine, 1.0 / 256.0);  // hard finest-leaf floor
+    }
+  }
   std::vector<CandidateRegion> candidates;
   for (int i = 0; i < gu; ++i) {
     for (int j = 0; j < gv; ++j) {

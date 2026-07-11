@@ -95,3 +95,35 @@ time/validity — it SHALL NOT be faked as passing.
   within a bounded time, AND the case SHALL be recorded as deferred with the
   measured time — NOT reported as a pass
 
+### Requirement: A boolean on a threaded body declines with an accurate ordering-constraint error
+`cc_thread_apply` SHALL mark its result as a threaded body (provenance), because that
+body carries near-tangent helical faces in its threaded region that a subsequent
+`cc_boolean` fuse/cut cannot robustly consume in the engine today. When a later
+`cc_boolean` on such an operand FAILS, `boolean_op` SHALL decline with a CLEAR,
+ACTIONABLE error stating that a threaded body is not boolean-compatible and that
+threads must be applied as the FINAL feature — NOT a vague "no valid result". A
+`cc_boolean` that SUCCEEDS on a threaded-body operand SHALL be unaffected (no false
+decline), and a wrong/empty result SHALL NEVER be produced silently. The recommended
+workflow SHALL be to fuse/cut the plain bodies first, then thread the assembled solid
+last.
+
+#### Scenario: Downstream boolean on a threaded body reports the ordering constraint
+- GIVEN a shaft threaded by `cc_thread_apply` (a display-valid threaded body), on
+  a booted iOS simulator
+- WHEN a subsequent `cc_boolean(threadedBody, other, op)` fuse/cut cannot produce a
+  valid result
+- THEN `cc_boolean` SHALL return `0` AND `cc_last_error` SHALL be the accurate
+  ordering-constraint message (apply threads as the final feature), never the vague
+  "fuse produced no valid result"
+
+#### Scenario: The native thread-apply verb never silently returns a boolean-hostile body (host)
+- GIVEN a simple shaft cylinder and a multi-turn helical thread, built natively on
+  the host with NO OCCT linked
+- WHEN the native `threadApply` verb is invoked for FUSE and for CUT
+- THEN it SHALL never return a non-null body paired with a non-`Ok` self-verify
+  verdict (and never an `Ok` verdict with a null body), and on the current
+  near-tangent helical input it SHALL decline with a SPECIFIC self-verify reason
+  (`NotWatertight` / `NotOriented` / `VolumeInconsistent`) — never a silent-wrong or
+  silent-empty result — so the engine routes to the honest OCCT ordering-constraint
+  path rather than emitting a leaky threaded body
+

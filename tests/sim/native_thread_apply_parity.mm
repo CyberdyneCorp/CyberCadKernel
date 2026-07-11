@@ -160,16 +160,18 @@ int main() {
     const nt::Shape thread = nc::build_helical_thread(major, pitch, turns, depth, 60.0, 1.0, 16);
     const double d = 0.05;
 
-    // The native thread solid is watertight but NOT consistently oriented — the measured
-    // root cause it cannot serve as a BSP operand. Assert it directly.
+    // M7b: the native thread solid is now watertight AND consistently oriented (the sd=6
+    // cap-winding defect is fixed in construct/thread.h — each end cap winds OUT of the
+    // body). It is a VALID BSP operand; the multi-turn decline below is now purely the
+    // dense-soup near-tangency crack (cause 1), not the operand orientation (cause 2).
     {
       tess::MeshParams p; p.deflection = d;
       const tess::Mesh tm = tess::SolidMesher{p}.mesh(thread);
       char buf[128];
       std::snprintf(buf, sizeof buf, "wt=%d sameDir=%zu", tess::isWatertight(tm),
                     tess::sameDirectionEdgeCount(tm));
-      report("native", "thread operand wt-not-oriented",
-             tess::isWatertight(tm) && tess::sameDirectionEdgeCount(tm) != 0, buf);
+      report("native", "thread operand watertight+oriented",
+             tess::isWatertight(tm) && tess::sameDirectionEdgeCount(tm) == 0, buf);
     }
 
     // FUSE (external): shaft at root radius (major-depth=4).

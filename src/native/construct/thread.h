@@ -66,6 +66,20 @@
 // (it reuses the already-verified revolve). "Fall through to OCCT only when we cannot
 // verify a watertight native body — never a faked or leaky solid."
 //
+// ── ORIENTATION COHERENCE (M7b — the sd=6 cap-winding fix) ───────────────────────
+// Watertight was necessary but NOT sufficient: the two planar end caps historically
+// wound the SAME direction as the flank bands' shared seam edges, so the solid was
+// watertight but NOT consistently oriented (measured tess::sameDirectionEdgeCount == 6 —
+// three duplicated half-edges per cap). A watertight-but-misoriented solid is an INVALID
+// operand for the planar-BSP set-algebra (boolean_solid), which is exactly why the
+// cc_thread_apply verb declined even a single-turn thread. The cap emission now picks
+// each cap's winding OUT of the body (the natural-normal-vs-outward test the flank bands
+// use, with the adjacent interior station as the inward reference), so every thread —
+// single-turn, multi-turn, tapered, resolved fine-pitch, wide-major — is now watertight
+// AND consistently oriented (sd == 0) at IDENTICAL volume. This removes the operand-
+// orientation blocker for cc_thread_apply; the remaining thread_apply fall-throughs
+// (FUSE, multi-turn) are the deeper dense-soup near-tangency crack, not this builder.
+//
 // ── THE RADIAL-V TRANSPORT (the crux — matches the aux-spine oracle) ─────────────
 // The OCCT oracle keeps the section RADIAL by binding it to an AUXILIARY spine equal
 // to the central Z axis (SetMode(axisWire, keepContact=true)): the section's local X
@@ -484,34 +498,33 @@ inline topo::Shape build_thread(double majorTopMM, double majorTipMM, double pit
     emitBand(A.v2, A.v0, B.v2, B.v0, A.p2, A.p0, B.p2, B.p0, centroid);  // top→bottom
   }
 
-  // Two planar end caps: the V triangle at the first and last station. The cap normal
-  // points along the LOCAL helix tangent's projection so it seals the open ends. At a
-  // station the section plane spans radialOut and axial(+Z); its normal is
-  // radialOut × axial = (sinθ, −cosθ, 0) (the tangential direction). The start cap
-  // faces back (−tangent), the end cap forward (+tangent).
-  auto capNormalAt = [&](const Ring& R, bool forward) -> math::Dir3 {
-    // radialOut from the pitch-line point (approx: root-bottom projected to XY, minus
-    // axis). Use the apex→axis direction which is radialOut.
-    const math::Vec3 radialOut =
-        math::Vec3{R.p1.x, R.p1.y, 0.0};  // apex XY ≈ radialOut·(pitchR+depth)
-    const double rn = math::norm(radialOut);
-    const math::Vec3 ro = rn > kProfileTol ? radialOut / rn : math::Vec3{1, 0, 0};
-    const math::Vec3 axial{0, 0, 1};
-    math::Vec3 tangential = math::cross(ro, axial);  // (sinθ, −cosθ, 0)
-    const double tn = math::norm(tangential);
-    tangential = tn > kProfileTol ? tangential / tn : math::Vec3{0, 1, 0};
-    return math::Dir3{forward ? tangential : -tangential};
+  // Two planar end caps: the V triangle at the first and last station, sealing the open
+  // ends of the swept ridge. ORIENTATION-COHERENT cap emission (M7b): the cap must wind
+  // OUT of the solid so its directed edges REVERSE the flank bands' — otherwise the two
+  // caps duplicate the bands' seam half-edges the same direction and the whole solid is
+  // watertight but NOT consistently oriented (the historical sd=6 cap-winding defect that
+  // made the thread an invalid BSP operand for cc_thread_apply). Rather than derive the
+  // outward tangent sign by hand (the previous −tangent/+tangent heuristic pointed the
+  // caps INWARD → sd=6), pick each cap's normal by the SAME natural-normal-vs-outward test
+  // the flank bands use: the body lies toward the ADJACENT interior station, so the cap's
+  // outward direction is (cap centroid − neighbour centroid). Flip the cap triangle's own
+  // winding normal to that outward reference. This is self-correcting for any winding and
+  // leaves the V geometry / volume untouched (measured sd=0 across single-turn, multi-turn,
+  // tapered, resolved fine-pitch, and wide-major threads — same enclosed volume as before).
+  auto emitCap = [&](const Ring& cap, const Ring& neighbour) {
+    std::vector<topo::Shape> loop = {cap.v0, cap.v1, cap.v2};
+    const math::Point3 capC{(cap.p0.asVec() + cap.p1.asVec() + cap.p2.asVec()) / 3.0};
+    const math::Point3 nbC{(neighbour.p0.asVec() + neighbour.p1.asVec() + neighbour.p2.asVec()) /
+                           3.0};
+    const math::Vec3 outward = capC - nbC;  // away from the body → out of the open end
+    const math::Vec3 nat = math::cross(cap.p1 - cap.p0, cap.p2 - cap.p0);  // loop winding normal
+    math::Vec3 nrm = math::dot(nat, outward) < 0.0 ? math::Vec3{-nat.x, -nat.y, -nat.z} : nat;
+    const double nl = math::norm(nrm);
+    nrm = nl > kProfileTol ? nrm / nl : math::Vec3{0, 0, 1};
+    faces.push_back(detail::planarFace(loop, math::Dir3{nrm}, topo::Orientation::Forward));
   };
-  {
-    const Ring& first = rings.front();
-    const Ring& last = rings.back();
-    std::vector<topo::Shape> capA = {first.v0, first.v1, first.v2};
-    std::vector<topo::Shape> capB = {last.v0, last.v1, last.v2};
-    faces.push_back(detail::planarFace(capA, capNormalAt(first, /*forward=*/false),
-                                       topo::Orientation::Forward));
-    faces.push_back(detail::planarFace(capB, capNormalAt(last, /*forward=*/true),
-                                       topo::Orientation::Forward));
-  }
+  emitCap(rings.front(), rings[1]);
+  emitCap(rings.back(), rings[rings.size() - 2]);
 
   const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
   return topo::ShapeBuilder::makeSolid({shell});

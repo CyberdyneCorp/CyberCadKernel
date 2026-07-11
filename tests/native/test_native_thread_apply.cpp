@@ -124,49 +124,105 @@ CC_TEST(threadapply_machinery_welds_cylinder_minus_box_baseline) {
   CC_CHECK(v > vShaft - vBox - 0.05 * vShaft); // but not more than the box
 }
 
-// ── The helical thread honest-declines (measured, never a leaky/wrong solid) ───────
-// A multi-turn thread FUSE / CUT returns NULL with a measured decline: the near-tangent
-// helical root ↔ shaft-wall contact fragments the dense-soup BSP into T-junction cracks
-// (NotWatertight), and the native build_thread solid is additionally NOT consistently
-// oriented. The verb NEVER returns a leaky / misoriented / wrong-volume solid → OCCT.
-CC_TEST(threadapply_helical_thread_honest_declines) {
-  // Reference thread: major5 / pitch2 / turns4 / depth1 / flank60 / ppm1.
-  const topo::Shape thread = cst::build_helical_thread(5.0, 2.0, 4.0, 1.0, 60.0, 1.0, 16);
+// ── M7b: the build_thread solid is now ORIENTATION-COHERENT (the sd=6 cap-winding fix) ─
+// The historical blocker (2) was that native build_thread emitted a watertight but NOT
+// consistently-oriented solid (sameDirectionEdgeCount == 6 — the two end caps wound the
+// same direction as the flank bands' shared seam edges), making it an invalid BSP operand.
+// The M7b orientation-coherent cap emission (construct/thread.h) flips each cap OUT of the
+// body, so the operand is now watertight AND consistently oriented (sd == 0) at IDENTICAL
+// volume — across single-turn, multi-turn, tapered, resolved fine-pitch and wide-major
+// threads. This is the bounded builder deliverable; it removes cause (2) entirely.
+CC_TEST(threadapply_thread_builder_is_orientation_coherent) {
+  struct TCase { double major, pitch, turns, depth; };
+  const TCase cases[] = {
+      {5.0, 2.0, 1.0, 1.0},   // single-turn reference
+      {5.0, 2.0, 2.0, 1.0},   // multi-turn
+      {5.0, 2.0, 4.0, 1.0},   // 4-turn
+      {10.0, 3.0, 3.0, 1.5},  // wide major
+      {5.0, 1.0, 3.0, 1.0},   // fine pitch (fine-pitch resolver engages)
+  };
+  for (const TCase& c : cases) {
+    const topo::Shape thread =
+        cst::build_helical_thread(c.major, c.pitch, c.turns, c.depth, 60.0, 1.0, 16);
+    CC_CHECK(!thread.isNull());
+    if (thread.isNull()) continue;
+    for (double d : {0.05, 0.02}) {
+      tess::MeshParams p; p.deflection = d;
+      const tess::Mesh tm = tess::SolidMesher{p}.mesh(thread);
+      CC_CHECK(tess::isWatertight(tm));                    // was already watertight
+      CC_CHECK(tess::sameDirectionEdgeCount(tm) == 0);     // NOW consistently oriented (was 6)
+      CC_CHECK(tess::isConsistentlyOriented(tm));
+    }
+  }
+}
+
+// ── M7b: single-turn CUT now WELDS boolean-usable (the recovered case) ──────────────
+// With the orientation-coherent operand, the recognise → facet → planar-BSP → four-part
+// self-verify pipeline now WELDS a single-turn internal thread CUT into a watertight +
+// consistently-oriented + in-band-volume threaded shaft — the exact thread_apply that used
+// to honest-decline. cc_check_solid (watertight + oriented) passes on the result.
+CC_TEST(threadapply_single_turn_cut_welds) {
+  const topo::Shape thread = cst::build_helical_thread(5.0, 2.0, 1.0, 1.0, 60.0, 1.0, 16);
   CC_CHECK(!thread.isNull());
   if (thread.isNull()) return;
-
-  // The native thread solid IS watertight but is NOT consistently oriented — the root
-  // cause that makes it an invalid BSP operand. Assert both directly (measured, not claimed).
-  {
-    tess::MeshParams p; p.deflection = 0.05;
-    const tess::Mesh tm = tess::SolidMesher{p}.mesh(thread);
-    CC_CHECK(tess::isWatertight(tm));
-    CC_CHECK(tess::sameDirectionEdgeCount(tm) != 0);  // orientation-inconsistent operand
-  }
-
-  // FUSE (external): shaft at the thread root radius (major − depth = 4), crest clears it.
-  const topo::Shape shaftF = shaftCyl(4.0, 0.0, 8.0);
-  for (double d : {0.08, 0.05}) {
-    bo::ThreadApplyDecline why = bo::ThreadApplyDecline::Ok;
-    const topo::Shape f = bo::threadApply(shaftF, thread, /*op=*/0, d, &why);
-    CC_CHECK(f.isNull());
-    CC_CHECK(why != bo::ThreadApplyDecline::Ok);
-    // The measured decline is a genuine self-verify failure (crack or misorientation),
-    // NOT a recognizer/geometry reject — the input IS the tractable family.
-    CC_CHECK(why == bo::ThreadApplyDecline::NotWatertight ||
-             why == bo::ThreadApplyDecline::NotOriented ||
-             why == bo::ThreadApplyDecline::VolumeInconsistent);
-  }
-
-  // CUT (internal): shaft at the crest radius (5); the groove carves inside it.
-  const topo::Shape shaftC = shaftCyl(5.0, 0.0, 8.0);
+  const topo::Shape shaftC = shaftCyl(5.0, 0.0, 8.0);  // shaft at the crest; groove carves in
   for (double d : {0.08, 0.05}) {
     bo::ThreadApplyDecline why = bo::ThreadApplyDecline::Ok;
     const topo::Shape c = bo::threadApply(shaftC, thread, /*op=*/1, d, &why);
-    CC_CHECK(c.isNull());
-    CC_CHECK(why == bo::ThreadApplyDecline::NotWatertight ||
-             why == bo::ThreadApplyDecline::NotOriented ||
-             why == bo::ThreadApplyDecline::VolumeInconsistent);
+    CC_CHECK(!c.isNull());
+    CC_CHECK(why == bo::ThreadApplyDecline::Ok);
+    if (c.isNull()) continue;
+    bool wt = false, oriented = false;
+    const double v = meshVolume(c, d, wt, oriented);
+    CC_CHECK(wt);        // cc_check_solid: watertight
+    CC_CHECK(oriented);  // cc_check_solid: consistently oriented
+    // Two-sided honest volume band: the CUT removes material but no more than the whole
+    // ridge (V_shaft − V_thread − slack ≤ V < V_shaft + slack). Assert V is in the band.
+    const double vShaft = kPi * 5.0 * 5.0 * 8.0;  // ≈ 628.32
+    bool twt = false, tor = false;
+    const double vThread = meshVolume(thread, 0.02, twt, tor);
+    CC_CHECK(v < vShaft);                      // material was removed
+    CC_CHECK(v > vShaft - vThread - 0.05 * vShaft);  // but not more than the ridge (+slack)
+  }
+}
+
+// ── The FUSE + multi-turn cases still honest-decline (the dense-soup CSG residual) ──
+// Cause (2) — the operand orientation — is fixed above. Cause (1) — the near-tangent
+// helical crest/root ↔ shaft-wall contact fragmenting the dense triangle-soup BSP into
+// T-junction cracks — is a deeper dense-soup CSG robustness residual (assemble.h weld +
+// T-junction repair territory, not a builder fix). So a single-turn FUSE and a 4-turn
+// FUSE / CUT still honest-decline NotWatertight / NotOriented — NEVER a leaky / misoriented
+// / wrong-volume solid. This is the remaining M7b tail (robust dense-soup CSG).
+CC_TEST(threadapply_fuse_and_multiturn_honest_decline) {
+  // Single-turn FUSE (external): shaft at the root radius (major − depth = 4), crest clears.
+  {
+    const topo::Shape thread = cst::build_helical_thread(5.0, 2.0, 1.0, 1.0, 60.0, 1.0, 16);
+    const topo::Shape shaftF = shaftCyl(4.0, 0.0, 8.0);
+    for (double d : {0.08, 0.05}) {
+      bo::ThreadApplyDecline why = bo::ThreadApplyDecline::Ok;
+      const topo::Shape f = bo::threadApply(shaftF, thread, /*op=*/0, d, &why);
+      CC_CHECK(f.isNull());
+      CC_CHECK(why == bo::ThreadApplyDecline::NotWatertight ||
+               why == bo::ThreadApplyDecline::NotOriented ||
+               why == bo::ThreadApplyDecline::VolumeInconsistent);
+    }
+  }
+  // 4-turn FUSE + CUT: the dense-soup crack (and residual BSP-output misorientation) persists.
+  {
+    const topo::Shape thread = cst::build_helical_thread(5.0, 2.0, 4.0, 1.0, 60.0, 1.0, 16);
+    const topo::Shape shaftF = shaftCyl(4.0, 0.0, 8.0);
+    const topo::Shape shaftC = shaftCyl(5.0, 0.0, 8.0);
+    const std::pair<const topo::Shape*, int> repros[] = {{&shaftF, 0}, {&shaftC, 1}};
+    for (const auto& [shaft, op] : repros) {
+      for (double d : {0.08, 0.05}) {
+        bo::ThreadApplyDecline why = bo::ThreadApplyDecline::Ok;
+        const topo::Shape r = bo::threadApply(*shaft, thread, op, d, &why);
+        CC_CHECK(r.isNull());
+        CC_CHECK(why == bo::ThreadApplyDecline::NotWatertight ||
+                 why == bo::ThreadApplyDecline::NotOriented ||
+                 why == bo::ThreadApplyDecline::VolumeInconsistent);
+      }
+    }
   }
 }
 

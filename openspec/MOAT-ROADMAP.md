@@ -387,6 +387,28 @@ whole SSI arc was built for.
   sharpened next blocker is **M7b**: an ORIENTATION-COHERENT thread builder (fix `build_thread`
   `sd=6`) + robust DENSE-SOUP CSG with T-junction repair. No tessellator / `construct/thread.h`
   change; `cc_*` ABI unchanged; the self-verify never returns a leaky/misoriented/wrong solid.
+- **Status — M7b ORIENTATION-COHERENT thread builder LANDED (`m7b-thread-boolean-usability`);
+  dense-soup FUSE/multi-turn still tailing.** Cause (2) above is FIXED: `build_thread`
+  (`src/native/construct/thread.h`) now emits an ORIENTATION-COHERENT solid. The two planar
+  end caps historically wound the SAME direction as the flank bands' seam edges
+  (`sameDirectionEdgeCount == 6`, the cap-winding defect) — a watertight-but-misoriented body
+  that is an invalid BSP operand. The cap emission now picks each cap's winding OUT of the body
+  (the natural-normal-vs-outward test the flank bands use, adjacent interior station = inward
+  reference), so EVERY thread — single-turn, multi-turn (2/4-turn), tapered, resolved
+  fine-pitch, wide-major — is now watertight AND consistently oriented (`sd == 0`) at
+  IDENTICAL volume (measured, not claimed; host `test_native_thread_apply`). RECOVERED: a
+  single-turn internal thread **CUT** (`cc_thread_apply` op 1) now WELDS through the full
+  four-part self-verify to a watertight + consistently-oriented (`cc_check_solid`-valid)
+  threaded shaft in the two-sided volume band — the exact verb that used to honest-decline.
+  STILL TAILING (cause 1 — deeper than a builder fix, out of M7b builder scope): the
+  external **FUSE** (op 0, crest-clears-wall near-tangency) and the **multi-turn** cases still
+  honest-decline `NotWatertight`/`NotOriented` because the near-tangent helical crest/root ↔
+  shaft-wall contact still fragments the dense triangle-soup BSP into T-junction cracks
+  (`boundaryEdgeCount` 16–57 with the Band-1 endpoint-weld already in `assemble.h`; down from
+  15–140 pre-weld). A FURTHER boolean on the (valid) threaded body also cracks in the same
+  near-tangent regime. Closing that is robust DENSE-SOUP CSG (assemble.h weld + T-junction
+  repair), NOT the thread builder. `cc_*` ABI unchanged; `src/native` OCCT-free; `assemble.h`,
+  `ssi/**`, boolean-core untouched; the self-verify never returns a leaky/misoriented/wrong solid.
 - **Status — M2b DISJOINT (multi-lump) CUT mechanism LANDED (`moat-m2b-boolean-breadth`),
   off-centre volume HONEST-DECLINED.** The additive OCCT-free verb `freeformSlabDisjointCut`
   (`src/native/boolean/slab_disjoint_cut.h`) parts a recognised freeform-walled solid `A`

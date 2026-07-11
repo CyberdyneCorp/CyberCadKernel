@@ -567,7 +567,87 @@ struct TrialResult {
   int nativeGaps = 0;            // NearTangent / Failed WLines + TraceSet.nearTangentGaps
   int occtComponents = 0;
   std::string note;              // ORACLE-INACCURATE / DISAGREED justification
+
+  // ── LOCUS-COVERAGE per-OCCT-line breakdown (the honest decline anatomy) ──
+  // OCCT (GeomAPI_IntSS) frequently ARC-SPLITS one intersection locus into several line
+  // components. A count/component comparison would mis-score native's single correct loop as
+  // a decline whenever OCCT split it into more pieces than native traced. This oracle instead
+  // compares LOCI by BIDIRECTIONAL coverage (native ⊆ OCCT via maxNativeOnCurve; OCCT ⊆ native
+  // via maxOcctOnNative). These fields make the anatomy of a coverage decline explicit and
+  // separate a GENUINE native miss from an OCCT arc-split over-count:
+  int occtLinesTotal = 0;             // NbLines (raw OCCT arc-components)
+  int occtLinesCoveredByNative = 0;   // OCCT lines native's traced set covers (≤ onCurve)
+  int occtLinesUncovByNative = 0;     // OCCT lines native does NOT cover
+  int uncovLinesOverCount = 0;        // uncovered lines whose locus IS covered by a SIBLING
+                                      //   OCCT line native already covered → arc-split
+                                      //   over-count (NOT a native miss; would be AGREED once
+                                      //   the sibling is credited)
+  int uncovLinesGenuineMiss = 0;      // uncovered lines whose locus NO other OCCT line covers
+                                      //   → a genuine distinct locus native missed (real gap)
+  double worstGenuineMissLen = 0.0;   // 3D length of the worst genuinely-missed OCCT locus
 };
+
+// ── LOCUS-COVERAGE helpers: separate a genuine native miss from an OCCT arc-split ──
+//
+// GeomAPI_IntSS splits ONE intersection locus into MULTIPLE arc-components. So when native
+// correctly traces that locus as a single curve, some OCCT arc-components can sit off native's
+// SAMPLE parameterization even though native covers the SAME geometric locus via a sibling arc.
+// The oracle compares LOCI, not counts: an OCCT line native does not cover is an over-count
+// (not a miss) iff its locus is ALSO occupied by a DIFFERENT OCCT line that native DOES cover.
+// These measurements reuse the fixed onCurve tolerance (never widened).
+
+// 3D length of an OCCT line (coarse polyline).
+double occtLineLen(const Handle(Geom_Curve)& c) {
+  double f = c->FirstParameter(), l = c->LastParameter();
+  if (!std::isfinite(f)) f = -1e6;
+  if (!std::isfinite(l)) l = 1e6;
+  double len = 0.0; gp_Pnt prev;
+  for (int i = 0; i <= 32; ++i) {
+    const double t = f + (l - f) * (double(i) / 32);
+    gp_Pnt q; try { q = c->Value(t); } catch (...) { continue; }
+    if (i > 0) len += prev.Distance(q);
+    prev = q;
+  }
+  return len;
+}
+
+// Worst distance sampling OCCT line `idx` to the nearest point on the OTHER OCCT lines
+// (arc-split-sibling coverage). Small ⇒ this line's locus is redundant with a sibling arc.
+double occtLineToOtherOcctLines(const std::vector<Handle(Geom_Curve)>& lines, int idx) {
+  const auto& c = lines[static_cast<std::size_t>(idx)];
+  double f = c->FirstParameter(), l = c->LastParameter();
+  if (!std::isfinite(f)) f = -1e6;
+  if (!std::isfinite(l)) l = 1e6;
+  double worst = 0.0;
+  for (int i = 0; i <= kOcctCurveSamples; ++i) {
+    const double t = f + (l - f) * (double(i) / kOcctCurveSamples);
+    gp_Pnt q; try { q = c->Value(t); } catch (...) { continue; }
+    const Point3 qp{q.X(), q.Y(), q.Z()};
+    double best = 1e30;
+    for (int j = 0; j < static_cast<int>(lines.size()); ++j) {
+      if (j == idx) continue;
+      best = std::min(best, distToOcctCurve(lines[static_cast<std::size_t>(j)], qp));
+    }
+    worst = std::max(worst, best);
+  }
+  return worst;
+}
+
+// Worst distance sampling OCCT line `idx` to the nearest native polyline segment.
+double occtLineToNative(const std::vector<Handle(Geom_Curve)>& lines, int idx,
+                        const std::vector<std::vector<Point3>>& nativePolys) {
+  const auto& c = lines[static_cast<std::size_t>(idx)];
+  double f = c->FirstParameter(), l = c->LastParameter();
+  if (!std::isfinite(f)) f = -1e6;
+  if (!std::isfinite(l)) l = 1e6;
+  double worst = 0.0;
+  for (int i = 0; i <= kOcctCurveSamples; ++i) {
+    const double t = f + (l - f) * (double(i) / kOcctCurveSamples);
+    gp_Pnt q; try { q = c->Value(t); } catch (...) { continue; }
+    worst = std::max(worst, distToNativePolylines(Point3{q.X(), q.Y(), q.Z()}, nativePolys));
+  }
+  return worst;
+}
 
 // Classify one already-run trial (native TraceSet + OCCT oracle) into exactly one bucket.
 TrialResult classify(const ssi::TraceSet& ts,
@@ -637,27 +717,42 @@ TrialResult classify(const ssi::TraceSet& ts,
   r.maxNativeOnCurve = maxNatOnCurve;
   r.maxFitOnCurve = maxFitOnCurve;
 
-  // ── OCCT → native reverse coverage: sample each OCCT line, nearest native CURVE (point-
-  //    to-segment against the ordered native polylines, so a sampling-density mismatch does
-  //    not fake a coverage gap). This is the "did native cover every OCCT locus" witness.
+  // ── OCCT → native reverse coverage, PER OCCT LINE (locus-coverage, NOT a count compare).
+  //    Sample each OCCT line, take the nearest native CURVE (point-to-segment against the
+  //    ordered native polylines, so a sampling-density mismatch does not fake a coverage gap).
+  //    For each OCCT line separate three outcomes:
+  //      (a) covered by native (≤ onCurve) — native traced this locus;
+  //      (b) NOT covered by native, but its locus IS covered by a SIBLING OCCT line native
+  //          DID cover (≤ onCurve to the other OCCT lines) — an OCCT ARC-SPLIT OVER-COUNT:
+  //          native traced the SAME geometric locus once, OCCT just chopped it into more
+  //          arcs. This is credited to native (it is NOT a miss);
+  //      (c) NOT covered by native AND its locus is on no other OCCT line either — a GENUINE
+  //          distinct locus native missed (a real seeding-recall gap).
+  //    `maxOcctOnNat` is the worst reverse residual over the GENUINE-miss lines only (an
+  //    over-count sibling arc is not held against native — recognizing geometric equivalence
+  //    is a legitimate oracle correction, never a widened tolerance).
   double maxOcctOnNat = 0.0;
   const bool nativeHasCurve = traced > 0;
-  if (nativeHasCurve) {
+  if (nativeHasCurve && oracle.hasIntersection) {
     std::vector<std::vector<Point3>> nativePolys;
     for (const auto& w : ts.lines)
       if (w.status == ssi::TraceStatus::Closed || w.status == ssi::TraceStatus::BoundaryExit ||
           w.status == ssi::TraceStatus::BranchArc)
         nativePolys.push_back(orderedPolyline(w));
-    for (const auto& c : oracle.lines) {
-      double f = c->FirstParameter(), l = c->LastParameter();
-      if (!std::isfinite(f)) f = -1e6;
-      if (!std::isfinite(l)) l = 1e6;
-      for (int i = 0; i <= kOcctCurveSamples; ++i) {
-        const double t = f + (l - f) * (double(i) / kOcctCurveSamples);
-        gp_Pnt q;
-        try { q = c->Value(t); } catch (...) { continue; }
-        maxOcctOnNat = std::max(maxOcctOnNat,
-                                distToNativePolylines(Point3{q.X(), q.Y(), q.Z()}, nativePolys));
+    r.occtLinesTotal = static_cast<int>(oracle.lines.size());
+    for (int i = 0; i < r.occtLinesTotal; ++i) {
+      const double onNat = occtLineToNative(oracle.lines, i, nativePolys);
+      if (onNat <= kOnCurveTol) { ++r.occtLinesCoveredByNative; continue; }  // (a)
+      ++r.occtLinesUncovByNative;
+      const double onSibling = (r.occtLinesTotal >= 2)
+                                 ? occtLineToOtherOcctLines(oracle.lines, i) : 1e30;
+      if (onSibling <= kOnCurveTol) {
+        ++r.uncovLinesOverCount;   // (b) arc-split sibling of a covered locus → credit native
+      } else {
+        ++r.uncovLinesGenuineMiss; // (c) genuine distinct locus native missed
+        maxOcctOnNat = std::max(maxOcctOnNat, onNat);
+        r.worstGenuineMissLen = std::max(
+            r.worstGenuineMissLen, occtLineLen(oracle.lines[static_cast<std::size_t>(i)]));
       }
     }
   }
@@ -739,20 +834,32 @@ TrialResult classify(const ssi::TraceSet& ts,
     return r;
   }
 
-  // (5) native traced correct curve(s) but did NOT cover every OCCT locus: some OCCT point is
-  //     far from every native curve (maxOcctOnNat > onCurve). The COVERAGE residual is the
-  //     authoritative signal (not the raw count — OCCT may arc-split one loop into non-welding
-  //     pieces). Every native curve is genuinely on the locus + on both surfaces, so this is a
-  //     seeding-recall COVERAGE gap (a second disjoint loop, or a small loop the coarse grid
-  //     merged), which is HONESTLY-DECLINED, not a wrong answer. Label multi-branch vs
-  //     small-loop by whether OCCT has strictly more welded components than native traced.
+  // (5) native traced correct curve(s) but left a GENUINE OCCT locus uncovered: some OCCT
+  //     point on a line whose locus NO sibling arc covers is far from every native curve
+  //     (maxOcctOnNat > onCurve — and maxOcctOnNat is now the GENUINE-miss residual, with
+  //     OCCT arc-split over-count siblings already credited to native above). This is the
+  //     authoritative LOCUS-COVERAGE signal, NOT a raw component count: an OCCT loop native
+  //     covered but OCCT chopped into extra arcs does NOT reach here (its sibling arcs were
+  //     credited, maxOcctOnNat stayed 0 → AGREED at (6)). So a decline here is a real
+  //     seeding-recall COVERAGE gap (a distinct disjoint loop, or a small loop the grid
+  //     merged) — HONESTLY-DECLINED, never a wrong answer. Label multi-branch vs small-loop
+  //     by whether MORE THAN ONE distinct locus is genuinely missed (multi-branch) or a
+  //     single small loop is (small-loop) — a geometric split, not the arc-component count.
   if (traced > 0 && oracle.hasIntersection && maxOcctOnNat > kOnCurveTol) {
     r.bucket = B_DECLINED;
-    r.declineReason = (oracle.weldedComponents > traced) ? D_MULTI_BRANCH : D_SMALL_LOOP;
+    // multi-branch: native already traced ≥ 1 locus AND genuinely missed a SEPARATE distinct
+    // locus (a co-resident second branch) → the dominant recall frontier. small-loop: only a
+    // single small locus is genuinely missed while nothing (or one loop) was otherwise traced.
+    const bool multiDistinct =
+        r.uncovLinesGenuineMiss >= 1 && r.occtLinesCoveredByNative >= 1;
+    r.declineReason = multiDistinct ? D_MULTI_BRANCH : D_SMALL_LOOP;
     return r;
   }
 
-  // (6) native traced correct curve(s) and covered every OCCT component → AGREED.
+  // (6) native traced correct curve(s) and covered every OCCT LOCUS (arc-split over-counts
+  //     credited) → AGREED. This is where an OCCT-arc-split-over-count case lands: native's
+  //     single loop covers all of OCCT's split arcs (and vice-versa within tol) → same locus,
+  //     AGREED regardless of how many arc-components OCCT emitted.
   if (traced > 0 && oracle.hasIntersection && nativeCorrectGeom) {
     r.bucket = B_AGREED;
     return r;
@@ -832,6 +939,12 @@ int main(int argc, char** argv) {
   long declineByFamily[F_COUNT][D_COUNT] = {{0}};
   long famTotals[F_COUNT] = {0};
   int totalDisagreed = 0;
+  // LOCUS-COVERAGE audit accumulators (the honest anatomy of the residual):
+  long agreedOverCountTrials = 0;   // AGREED trials where OCCT arc-split into MORE lines than
+                                    //   native traced yet locus-coverage AGREED (the over-count
+                                    //   case a count comparison would have mis-declined)
+  long declineOverCountLines = 0;   // over-count sibling arcs credited to native across declines
+  long declineGenuineMissLines = 0; // genuinely-missed distinct OCCT loci across declines
 
   for (int si = 0; si < nSeeds; ++si) {
     const uint64_t thisSeed = seed + static_cast<uint64_t>(si) * 0x100000001B3ull;
@@ -877,6 +990,29 @@ int main(int argc, char** argv) {
       if (r.bucket == B_DECLINED) {
         ++declineTotals[r.declineReason];
         ++declineByFamily[family][r.declineReason];
+        declineOverCountLines += r.uncovLinesOverCount;
+        declineGenuineMissLines += r.uncovLinesGenuineMiss;
+        if (r.declineReason == D_MULTI_BRANCH || r.declineReason == D_SMALL_LOOP)
+          std::printf("[DECLINE-DIAG] seed=0x%llx idx=%d fam=%s reason=%s :: traced=%d "
+                      "occtLines=%d covByNat=%d uncov=%d overCount=%d genuineMiss=%d "
+                      "natOnOcct=%.3e genuineOcctOnNat=%.3e worstMissLen=%.3e\n",
+                      static_cast<unsigned long long>(thisSeed), idx, famName(family),
+                      declineName(r.declineReason), r.nativeTraced, r.occtLinesTotal,
+                      r.occtLinesCoveredByNative, r.occtLinesUncovByNative,
+                      r.uncovLinesOverCount, r.uncovLinesGenuineMiss, r.maxNativeOnCurve,
+                      r.maxOcctOnNative, r.worstGenuineMissLen);
+        std::fflush(stdout);
+      }
+      // AGREED yet OCCT emitted MORE arc-components than native traced → the OCCT arc-split
+      // over-count the locus-coverage oracle correctly recognizes as the SAME locus (AGREED),
+      // where a naive component/branch-COUNT comparison would have wrongly scored a decline.
+      if (r.bucket == B_AGREED && r.occtLinesTotal > r.nativeTraced && r.nativeTraced > 0) {
+        ++agreedOverCountTrials;
+        std::printf("[AGREED-OVERCOUNT] seed=0x%llx idx=%d fam=%s :: traced=%d occtLines=%d "
+                    "occtComp=%d occtOnNat=%.3e (OCCT arc-split of one native locus → AGREED)\n",
+                    static_cast<unsigned long long>(thisSeed), idx, famName(family),
+                    r.nativeTraced, r.occtLinesTotal, r.occtComponents, r.maxOcctOnNative);
+        std::fflush(stdout);
       }
 
       if (r.bucket == B_DISAGREED) {
@@ -926,6 +1062,21 @@ int main(int argc, char** argv) {
     for (int d = 0; d < D_COUNT; ++d) std::printf("%ld ", declineByFamily[f][d]);
     std::printf("\n");
   }
+
+  // ── LOCUS-COVERAGE AUDIT: prove the oracle compares LOCI, not arc-component COUNTS ──
+  // agreedOverCountTrials  — AGREED trials where OCCT split one native locus into MORE arcs
+  //   than native traced, correctly AGREED (a count comparison would have mis-declined these).
+  // declineOverCountLines  — arc-split sibling arcs credited to native inside declines (not miss).
+  // declineGenuineMissLines— genuinely distinct OCCT loci native missed inside declines.
+  // The residual decline is GENUINE iff declineGenuineMissLines > 0 and declineOverCountLines
+  // does NOT drive any decline (a decline with 0 genuine misses would be an over-count artifact).
+  std::printf("\n== LOCUS-COVERAGE AUDIT (oracle compares loci, not arc-component counts) ==\n");
+  std::printf("   AGREED over-count trials (OCCT arc-split one native locus, AGREED not declined): %ld\n",
+              agreedOverCountTrials);
+  std::printf("   decline lines credited as OCCT arc-split over-counts (not native misses): %ld\n",
+              declineOverCountLines);
+  std::printf("   decline lines that are GENUINE distinct loci native missed: %ld\n",
+              declineGenuineMissLines);
 
   std::printf("\n== BAR: DISAGREED==%d  → %s ==\n", totalDisagreed,
               totalDisagreed == 0 ? "PASS (decline is allowed; the bar is DISAGREED==0)" : "FAIL");

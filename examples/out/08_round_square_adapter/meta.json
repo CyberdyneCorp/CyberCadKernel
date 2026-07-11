@@ -1,0 +1,38 @@
+{
+  "area_mm2": 40383.696,
+  "artifacts": {
+    "glb": "out/08_round_square_adapter/08_round_square_adapter.glb",
+    "png": "out/08_round_square_adapter/08_round_square_adapter.png",
+    "step": "out/08_round_square_adapter/08_round_square_adapter.step",
+    "stl": "out/08_round_square_adapter/08_round_square_adapter.stl"
+  },
+  "bbox_max": [
+    45.0,
+    45.0,
+    90.0
+  ],
+  "bbox_min": [
+    -45.0,
+    -45.0,
+    -0.0
+  ],
+  "bbox_size": [
+    90.0,
+    90.0,
+    90.0
+  ],
+  "center_of_mass": [
+    -0.0,
+    -0.0,
+    48.538
+  ],
+  "description": "HVAC transition lofting an 80 mm round inlet into a 90 mm square outlet over a 90 mm rise, then shelled to a 3 mm wall (both ends open) for real ducting.",
+  "features": [
+    "loft (circle -> square)",
+    "shell (open both ends)"
+  ],
+  "name": "08_round_square_adapter",
+  "render_backend": "matplotlib",
+  "title": "Round-to-square duct adapter",
+  "volume_mm3": 587866.432
+}

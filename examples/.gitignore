@@ -11,3 +11,8 @@ __pycache__/
 # piece produces an oversized mesh export you don't want in git, ignore it here,
 # e.g.:
 #   out/<name>/<name>.stl
+#
+# The swept-tube STEP is an ~8 MB many-faced B-rep — well above the rest of the
+# gallery — so keep it out of git; its STL / glTF / PNG (all committed) are the
+# lightweight representative artifacts for that piece.
+out/09_coolant_tube/09_coolant_tube.step

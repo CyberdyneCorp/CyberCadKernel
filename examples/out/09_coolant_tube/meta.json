@@ -1,0 +1,38 @@
+{
+  "area_mm2": 23898.844,
+  "artifacts": {
+    "glb": "out/09_coolant_tube/09_coolant_tube.glb",
+    "png": "out/09_coolant_tube/09_coolant_tube.png",
+    "step": "out/09_coolant_tube/09_coolant_tube.step",
+    "stl": "out/09_coolant_tube/09_coolant_tube.stl"
+  },
+  "bbox_max": [
+    66.0,
+    11.0,
+    180.0
+  ],
+  "bbox_min": [
+    -11.0,
+    -11.0,
+    0.0
+  ],
+  "bbox_size": [
+    77.0,
+    22.0,
+    180.0
+  ],
+  "center_of_mass": [
+    27.5,
+    -0.0,
+    90.0
+  ],
+  "description": "A 22 mm coolant line swept along an S-bend: a round section carried by a guide-steered sweep, with an inner bore swept and cut away to leave a constant 2.5 mm wall.",
+  "features": [
+    "sweep along S-bend path",
+    "boolean cut (swept bore)"
+  ],
+  "name": "09_coolant_tube",
+  "render_backend": "matplotlib",
+  "title": "Swept coolant tube (S-bend)",
+  "volume_mm3": 27488.816
+}

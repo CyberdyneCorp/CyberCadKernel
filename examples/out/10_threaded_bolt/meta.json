@@ -1,0 +1,40 @@
+{
+  "area_mm2": 8632.407,
+  "artifacts": {
+    "glb": "out/10_threaded_bolt/10_threaded_bolt.glb",
+    "png": "out/10_threaded_bolt/10_threaded_bolt.png",
+    "step": "out/10_threaded_bolt/10_threaded_bolt.step",
+    "stl": "out/10_threaded_bolt/10_threaded_bolt.stl"
+  },
+  "bbox_max": [
+    19.494,
+    19.491,
+    51.214
+  ],
+  "bbox_min": [
+    -19.494,
+    -19.495,
+    -2.493
+  ],
+  "bbox_size": [
+    38.988,
+    38.986,
+    53.708
+  ],
+  "center_of_mass": [
+    0.004,
+    0.0,
+    23.549
+  ],
+  "description": "A regular-hexagon head fused onto a cylindrical shank, then a real helical thread welded onto the blank by the robust per-turn thread-boolean (thread_apply FUSE) \u2014 one valid B-rep solid.",
+  "features": [
+    "extrude (hex head)",
+    "boolean fuse",
+    "helical thread",
+    "thread_apply fuse"
+  ],
+  "name": "10_threaded_bolt",
+  "render_backend": "matplotlib",
+  "title": "Threaded hex bolt",
+  "volume_mm3": 55997.962
+}

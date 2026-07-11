@@ -1,0 +1,38 @@
+{
+  "area_mm2": 7827.596,
+  "artifacts": {
+    "glb": "out/11a_sheet_bracket_folded/11a_sheet_bracket_folded.glb",
+    "png": "out/11a_sheet_bracket_folded/11a_sheet_bracket_folded.png",
+    "step": "out/11a_sheet_bracket_folded/11a_sheet_bracket_folded.step",
+    "stl": "out/11a_sheet_bracket_folded/11a_sheet_bracket_folded.stl"
+  },
+  "bbox_max": [
+    65.0,
+    40.0,
+    30.0
+  ],
+  "bbox_min": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "bbox_size": [
+    65.0,
+    40.0,
+    30.0
+  ],
+  "center_of_mass": [
+    41.554,
+    20.0,
+    5.616
+  ],
+  "description": "A 2 mm sheet-metal bracket: a flat base flange with one 90\u00b0 edge flange bent up off a straight rim (3 mm inside bend radius). Native sheet-metal ops.",
+  "features": [
+    "sheet base flange",
+    "sheet edge flange (90\u00b0 bend)"
+  ],
+  "name": "11a_sheet_bracket_folded",
+  "render_backend": "matplotlib",
+  "title": "Sheet-metal L-bracket (folded)",
+  "volume_mm3": 7302.017
+}

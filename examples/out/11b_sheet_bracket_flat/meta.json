@@ -1,0 +1,39 @@
+{
+  "area_mm2": 7801.398,
+  "artifacts": {
+    "glb": "out/11b_sheet_bracket_flat/11b_sheet_bracket_flat.glb",
+    "png": "out/11b_sheet_bracket_flat/11b_sheet_bracket_flat.png",
+    "step": "out/11b_sheet_bracket_flat/11b_sheet_bracket_flat.step",
+    "stl": "out/11b_sheet_bracket_flat/11b_sheet_bracket_flat.stl"
+  },
+  "bbox_max": [
+    90.969,
+    40.0,
+    2.0
+  ],
+  "bbox_min": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "bbox_size": [
+    90.969,
+    40.0,
+    2.0
+  ],
+  "center_of_mass": [
+    45.485,
+    20.0,
+    1.0
+  ],
+  "description": "The developed flat blank of the folded bracket, produced by unfolding the bend (k-factor 0.4). Plan area = (base run + bend allowance + wall) \u00d7 width, conserved through fold \u2194 unfold \u2014 so the flat blank is strictly larger in plan than the base flange.",
+  "features": [
+    "sheet base flange",
+    "sheet edge flange",
+    "sheet unfold (flat pattern)"
+  ],
+  "name": "11b_sheet_bracket_flat",
+  "render_backend": "matplotlib",
+  "title": "Sheet-metal L-bracket (flat pattern)",
+  "volume_mm3": 7277.522
+}

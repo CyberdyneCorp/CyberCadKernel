@@ -1,0 +1,38 @@
+{
+  "area_mm2": 17200.0,
+  "artifacts": {
+    "glb": "out/13_section_hlr_drawing/13_section_hlr_drawing.glb",
+    "png": "out/13_section_hlr_drawing/13_section_hlr_drawing.png",
+    "step": "out/13_section_hlr_drawing/13_section_hlr_drawing.step",
+    "stl": "out/13_section_hlr_drawing/13_section_hlr_drawing.stl"
+  },
+  "bbox_max": [
+    80.0,
+    60.0,
+    40.0
+  ],
+  "bbox_min": [
+    0.0,
+    -0.0,
+    0.0
+  ],
+  "bbox_size": [
+    80.0,
+    60.0,
+    40.0
+  ],
+  "center_of_mass": [
+    26.923,
+    24.231,
+    20.0
+  ],
+  "description": "A machined step-block (L-profile prism with a rectangular notch) rendered as a real orthographic drawing: a planar section (area/perimeter in the caption) plus front/top/right HLR views and an isometric \u2014 visible edges solid, hidden edges dashed. See the drawing PNG artifact.",
+  "features": [
+    "planar section",
+    "HLR projection (multi-view drawing)"
+  ],
+  "name": "13_section_hlr_drawing",
+  "render_backend": "matplotlib",
+  "title": "Section + HLR engineering drawing",
+  "volume_mm3": 104000.0
+}

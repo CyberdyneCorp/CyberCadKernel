@@ -25,6 +25,13 @@ from _gallery import PieceResult, emit
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 # The pieces, in gallery order. Each entry names the module file (sans .py).
+#
+# Pieces 01–07 are simple ``build(kernel)`` modules run through the standard
+# emit path. Pieces 08+ exercise the feature-rich ops the completed binding
+# unlocks (loft / sweep / thread / sheet-metal / draft / section+HLR); two of
+# them (11 sheet-metal, 13 section+HLR) emit MORE than one gallery entry and so
+# expose an ``emit_entries(kernel) -> list[PieceResult]`` hook instead of the
+# plain ``build`` convention.
 PIECE_MODULES = [
     "01_pipe_flange",
     "02_l_bracket",
@@ -33,51 +40,12 @@ PIECE_MODULES = [
     "05_enclosure",
     "06_spur_gear_simplified",
     "07_manifold_block",
-]
-
-# Pieces deliberately left out of this gallery, each with the reason. Two kinds:
-#
-#  * "reserved" — the feature IS bound and working today (loft / sweep / thread),
-#    but these pieces are owned by the concurrent binding-completion track, so
-#    they are left for that track to add rather than duplicated here.
-#  * "unbound"  — the feature is genuinely not exposed through the Python facade
-#    yet (no method in api.py, no cc_* symbol): sheet-metal, draft, section/HLR.
-COMING_LATER = [
-    (
-        "Round-to-square transition (loft adapter)",
-        "reserved",
-        "`Kernel.loft` / `Kernel.loft_wires` (bound and working) — owned by the "
-        "binding-completion track.",
-    ),
-    (
-        "Swept coolant tube",
-        "reserved",
-        "`Kernel.sweep` / `Kernel.twisted_sweep` (bound and working) — owned by "
-        "the binding-completion track.",
-    ),
-    (
-        "Threaded hex bolt",
-        "reserved",
-        "`Kernel.helical_thread` + `Shape.thread_apply` (bound and working) — "
-        "owned by the binding-completion track.",
-    ),
-    (
-        "Sheet-metal bracket (bends + flanges)",
-        "unbound",
-        "sheet-metal ops (flange / bend / unfold) — no method in `api.py` yet.",
-    ),
-    (
-        "Draft-moulded housing",
-        "unbound",
-        "a draft-face op (pull-direction draft angle on side walls) — not exposed "
-        "in `api.py` yet.",
-    ),
-    (
-        "2-D section / HLR drawing view",
-        "unbound",
-        "`cc_hlr_project` + a section op — no hidden-line / planar-section method "
-        "in `api.py` yet.",
-    ),
+    "08_round_square_adapter",
+    "09_coolant_tube",
+    "10_threaded_bolt",
+    "11_sheet_metal_bracket",
+    "12_draft_housing",
+    "13_section_hlr_drawing",
 ]
 
 
@@ -97,16 +65,26 @@ def _build_all() -> list[PieceResult]:
     results: list[PieceResult] = []
     for name in PIECE_MODULES:
         module = _load_module(name)
-        shape = module.build(kernel)
-        result = emit(
-            shape,
-            module.NAME,
-            _module_title(module),
-            _module_desc(module),
-            _module_features(module),
-        )
-        results.append(result)
-        _print_caption(result)
+        # A module may emit several gallery entries (e.g. sheet-metal folded +
+        # flat, or the section/HLR drawing solid). Those expose `emit_entries`;
+        # everything else follows the plain build(kernel) -> one entry path.
+        if hasattr(module, "emit_entries"):
+            entries = module.emit_entries(kernel)
+            kernel.set_engine(False)  # restore OCCT after any native-engine piece
+        else:
+            shape = module.build(kernel)
+            entries = [
+                emit(
+                    shape,
+                    module.NAME,
+                    _module_title(module),
+                    _module_desc(module),
+                    _module_features(module),
+                )
+            ]
+        for result in entries:
+            results.append(result)
+            _print_caption(result)
     return results
 
 
@@ -187,13 +165,20 @@ def _render_readme(results: list[PieceResult]) -> str:
         )
         lines.append(f"- **Bounding box:** {_fmt_vec(r.bbox_size)} mm")
         arts = []
-        for kind in ("step", "stl", "glb", "png"):
+        for kind in ("step", "stl", "glb", "png", "drawing"):
             if kind in r.artifacts:
                 arts.append(f"[{kind.upper()}]({r.artifacts[kind]})")
         if arts:
             lines.append(f"- **Artifacts:** {' · '.join(arts)}")
         lines.append(f"- **Script:** [`{r.name}.py`]({r.name}.py)")
         lines.append("")
+        # Some pieces ship a 2-D engineering drawing (section + HLR) — show it.
+        if "drawing" in r.artifacts:
+            lines.append(
+                f'<img src="{r.artifacts["drawing"]}" width="640" '
+                f'alt="{r.title} — orthographic drawing">'
+            )
+            lines.append("")
 
     lines.append("## Rendering")
     lines.append("")
@@ -206,31 +191,29 @@ def _render_readme(results: list[PieceResult]) -> str:
         f"**{backend_str}**."
     )
     lines.append("")
-    lines.append("## Coming when the binding completes")
+    lines.append("## Feature-rich pieces & the engine split")
     lines.append("")
     lines.append(
-        "These parts are intentionally *not* built here (and not faked). Two "
-        "reasons appear below:"
+        "Pieces 08–13 exercise the ops the completed binding unlocks — loft, "
+        "sweep, helical threads, sheet-metal, draft and 2-D section/HLR drawings. "
+        "Most run on the default **OCCT** engine. A few ops are provided only by "
+        "the **native** engine (sheet-metal base/edge flange + unfold, and planar "
+        "section curves); those pieces build *and* consume every body entirely "
+        "under the native engine — no body is ever handed across engines — so the "
+        "known cross-engine hazard is never touched. The section/HLR showpiece "
+        "runs HLR under OCCT (true B-rep feature edges, a clean drawing) and "
+        "rebuilds the identical planar solid under native only to compute the "
+        "section."
     )
-    lines.append("")
-    reserved = [c for c in COMING_LATER if c[1] == "reserved"]
-    unbound = [c for c in COMING_LATER if c[1] == "unbound"]
-    lines.append(
-        "**Reserved for the binding-completion track** — the feature is already "
-        "bound and working in the current dylib, but the piece belongs to that "
-        "concurrent track and is left for it to add rather than duplicated here:"
-    )
-    lines.append("")
-    for title, _kind, need in reserved:
-        lines.append(f"- **{title}** — {need}")
     lines.append("")
     lines.append(
-        "**Not yet exposed through the Python facade** — no method in `api.py` "
-        "yet, so genuinely unbuildable through the binding today:"
+        "Two engine behaviours worth noting for anyone reusing these ops: "
+        "`helical_thread` sizes the thread by `majorRadius × pointsPerMM` (the "
+        "size args are proportions, not literal mm) and its crest radius is best "
+        "*measured* back from the result; and `thread_apply` output is display-"
+        "valid but boolean-hostile, so fuse the head onto the shank **before** "
+        "threading."
     )
-    lines.append("")
-    for title, _kind, need in unbound:
-        lines.append(f"- **{title}** — {need}")
     lines.append("")
 
     return "\n".join(lines) + "\n"

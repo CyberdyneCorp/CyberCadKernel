@@ -1775,9 +1775,33 @@ ShapeResult NativeEngine::full_round_fillet_faces(EngineShape body, int l, int m
         "body (dihedral / curved wall / non-planar middle / closed-seam annulus / no "
         "shared seams → OCCT-only; gates on M2 valley-solve + closed-seam weld)");
 }
+// ── NATIVE M3 G2 (CURVATURE-CONTINUOUS) blend fillet — the Class-B drop-OCCT slice ──
+// The stock native fillet_edges rolls a ball into a convex planar dihedral and tiles a
+// CIRCULAR-ARC section (constant curvature 1/r → G1: tangent-continuous, but the
+// curvature JUMPS to 0 on the flat neighbours). A G2 blend replaces that section with a
+// zero-END-CURVATURE quintic (blend/fillet_edges_g2.h): poles {P0,P1,P2} collinear along
+// the face-1 tangent and {P5,P4,P3} along the face-2 tangent make B''=0 at both rails, so
+// the section curvature is IDENTICALLY 0 there — curvature-continuous across the seam.
+// Everything else (setback clip, facet tiling, watertight weld) is the G1 machinery; ONLY
+// the section curve changes. NATIVE when the picked edges are CONVEX straight seams between
+// two PLANAR faces (the tractable G2 family, mirroring the OCCT occt_g2_fillet.cpp
+// reference which is likewise a quintic-section boolean, since OCCT's BRepFilletAPI is
+// G1/circular-only). Accepted ONLY under the SHRINK self-verify (0 < Vr < Vo — a convex
+// blend removes material). A CONCAVE edge / CURVED neighbour / non-planar solid / freeform
+// substrate (the DEEP G2 residual — the real moat) → NULL → OCCT. A merely-G1 blend is
+// NEVER emitted here: the section is the zero-end-curvature quintic or nothing.
 ShapeResult NativeEngine::fillet_edges_g2(EngineShape body, const int* e, int ec, double r) {
-    CC_NATIVE_BODY_UNSUPPORTED("fillet_edges_g2", body);
-    return fallback().fillet_edges_g2(body, e, ec, r);
+    if (!isNative(body)) return fallback().fillet_edges_g2(body, e, ec, r);
+    const auto* h = static_cast<const NativeShape*>(body.get());
+    if (!h->isMesh) {
+        ntopo::Shape result = nblend::fillet_edges_g2(h->shape, e, ec, r);
+        if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
+            return track(wrapNative(std::move(result)));
+    }
+    return make_error(
+        "native fillet_edges_g2: no verified watertight G2 blend for this native body "
+        "(concave edge / curved neighbour / non-planar / freeform substrate → OCCT-only; "
+        "the deep general curvature-continuous surface remains the moat)");
 }
 
 // ── NATIVE planar-polyhedron boolean (fuse / cut / common) with self-verify ───────

@@ -46,6 +46,7 @@
 #include "native/blend/curved_shell.h"
 #include "native/blend/fillet_corner.h"
 #include "native/blend/fillet_edges.h"
+#include "native/blend/fillet_edges_g2.h"
 #include "native/blend/fillet_face.h"
 #include "native/blend/full_round.h"
 #include "native/blend/offset_face.h"

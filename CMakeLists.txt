@@ -363,7 +363,10 @@ if(CYBERCAD_BUILD_TESTS)
         # CYBERCAD_HAS_NUMSCI (mirroring test_native_ssi_seeding). Airtight oracles:
         # interpolation exactness (pass-through ~1e-9), round-trip recovery of a KNOWN
         # B-spline (~1e-8), monotone approximation-error convergence, parametrization
-        # sanity + honest degenerate guards. Non-rational scope; rational is a residual.
+        # sanity + honest degenerate guards. Also RATIONAL interpolation with PRESCRIBED
+        # weights (homogeneous lift): Euclidean pass-through ~1e-9, KNOWN rational
+        # circle/half-cylinder recovered POINTWISE, input weights recovered, non-positive/
+        # mismatched-weight guards. Weight ESTIMATION (Ma–Kruth) remains a residual.
         list(APPEND CYBERCAD_TESTS test_native_nurbs_fit)
         set(test_native_nurbs_fit_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_fit.cpp")

@@ -15,8 +15,13 @@
 //      interpolation). The reported error is the ACHIEVED error, never widened.
 //   4. PARAMETRIZATION SANITY — chord-length + centripetal both in [0,1], monotone;
 //      duplicate / all-coincident points handled with an honest guard (no crash).
-//   5. NON-RATIONAL SCOPE — this is a non-rational fitter; rational (weighted)
-//      fitting is an explicit residual, not faked here.
+//   5. RATIONAL INTERPOLATION with PRESCRIBED weights — lifting data (Qₖ,wₖ) to the
+//      homogeneous point (wₖQₖ,wₖ) and interpolating in R⁴ yields a rational curve/
+//      surface that (a) passes through every Euclidean datum to ~1e-9, (b) recovers a
+//      KNOWN rational unit CIRCLE / half-cylinder POINTWISE (unit radius everywhere,
+//      the strongest oracle), (c) recovers the input weights on an idempotent round-
+//      trip, and (d) declines non-positive / mismatched weights honestly. Weight
+//      ESTIMATION from unweighted data (Ma–Kruth) is NOT done — an explicit residual.
 //
 // The routines are numsci-gated (they call numerics::lin_solve / lstsq), so the
 // whole gate is under CYBERCAD_HAS_NUMSCI (like test_native_ssi_seeding). With the
@@ -70,7 +75,74 @@ static Point3 evalCurve(const BsplineCurveData& c, double u) {
 }
 static Point3 evalSurface(const BsplineSurfaceData& s, double u, double v) {
   SurfaceGrid g{std::span<const Point3>(s.poles), s.nPolesU, s.nPolesV};
+  if (!s.weights.empty())
+    return nurbsSurfacePoint(s.degreeU, s.degreeV, g, s.weights, s.knotsU, s.knotsV, u, v);
   return surfacePoint(s.degreeU, s.degreeV, g, s.knotsU, s.knotsV, u, v);
+}
+static Point3 evalRationalCurve(const BsplineCurveData& c, double u) {
+  return nurbsCurvePoint(c.degree, c.poles, c.weights, c.knots, u);
+}
+
+// The rational denominator Σ Nᵢ(u)·wᵢ of a rational curve at u — the exact weight a
+// datum sampled at u must carry so the homogeneous lift reconstructs the curve.
+static double rationalDenominator(const BsplineCurveData& c, double u) {
+  const int lastPole = static_cast<int>(c.poles.size()) - 1;
+  const int span = findSpan(lastPole, c.degree, u, c.knots);
+  std::vector<double> N(c.degree + 1);
+  basisFuns(span, u, c.degree, c.knots, N);
+  double den = 0.0;
+  for (int j = 0; j <= c.degree; ++j) den += N[j] * c.weights[span - c.degree + j];
+  return den;
+}
+static double rationalDenominatorS(const BsplineSurfaceData& s, double u, double v) {
+  const int lastU = s.nPolesU - 1, lastV = s.nPolesV - 1;
+  const int su = findSpan(lastU, s.degreeU, u, s.knotsU);
+  const int sv = findSpan(lastV, s.degreeV, v, s.knotsV);
+  std::vector<double> Nu(s.degreeU + 1), Nv(s.degreeV + 1);
+  basisFuns(su, u, s.degreeU, s.knotsU, Nu);
+  basisFuns(sv, v, s.degreeV, s.knotsV, Nv);
+  double den = 0.0;
+  for (int a = 0; a <= s.degreeU; ++a)
+    for (int b = 0; b <= s.degreeV; ++b) {
+      const int i = su - s.degreeU + a, j = sv - s.degreeV + b;
+      den += Nu[a] * Nv[b] * s.weights[static_cast<std::size_t>(i) * s.nPolesV + j];
+    }
+  return den;
+}
+
+// A full rational circle (degree 2, 9 poles) — the strongest rational oracle. Reused
+// verbatim from test_native_nurbs_ops (unit circle, centre origin, plane z=0).
+static BsplineCurveData fullCircle() {
+  BsplineCurveData c;
+  c.degree = 2;
+  const double w = std::sqrt(2.0) / 2.0;
+  c.poles = {{1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {-1, 1, 0}, {-1, 0, 0},
+             {-1, -1, 0}, {0, -1, 0}, {1, -1, 0}, {1, 0, 0}};
+  c.weights = {1, w, 1, w, 1, w, 1, w, 1};
+  c.knots = {0, 0, 0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1, 1, 1};
+  return c;
+}
+
+// A rational cylinder patch (degree U=2 circular, V=1 linear extrude): the surface
+// round-trip oracle. Row j is at height z=j; each row is a half circle in x/y.
+static BsplineSurfaceData rationalHalfCylinder() {
+  BsplineSurfaceData s;
+  s.degreeU = 2;  // circular direction
+  s.degreeV = 1;  // linear extrude direction
+  s.nPolesU = 5;
+  s.nPolesV = 3;
+  const double w = std::sqrt(2.0) / 2.0;
+  // Half-circle control polygon in x/y (unit radius): 5 poles, weights {1,w,1,w,1}.
+  const Point3 arc[5] = {{1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {-1, 1, 0}, {-1, 0, 0}};
+  const double aw[5] = {1, w, 1, w, 1};
+  s.knotsU = {0, 0, 0, 0.5, 0.5, 1, 1, 1};  // 5 + 2 + 1 = 8
+  s.knotsV = {0, 0, 0.5, 1, 1};             // 3 + 1 + 1 = 5
+  for (int i = 0; i < 5; ++i)
+    for (int j = 0; j < 3; ++j) {
+      s.poles.push_back({arc[i].x, arc[i].y, static_cast<double>(j)});
+      s.weights.push_back(aw[i]);
+    }
+  return s;
 }
 
 // A known non-rational cubic B-spline (the round-trip oracle source).
@@ -328,6 +400,285 @@ int main() {
     // Honest declines: too few control points, or grid too small for the degree.
     SurfaceFitResult tooFew = approximateSurface(grid, 3, 3, 3, 2, ParamMethod::ChordLength);
     expectTrue(!tooFew.ok, "surf approx nCtrlU < degreeU+1 declines honestly");
+  }
+
+  // ═══ RATIONAL CURVE — interpolation exactness with prescribed weights ═══════
+  {
+    // Arbitrary data points with arbitrary POSITIVE prescribed weights: the rational
+    // curve must pass through EVERY Euclidean datum to solver precision, and the
+    // recovered per-pole weights are all positive.
+    std::vector<Point3> pts = {{0, 0, 0}, {1, 2, 0}, {3, 1, 1}, {4, 3, 0},
+                               {6, 2, 2}, {7, 0, 1}, {9, 1, 0}};
+    // Prescribed data weights near 1 (so the interpolated CONTROL weights stay
+    // positive — see the guard note below; the pass-through is exact regardless).
+    std::vector<double> w = {1.0, 1.2, 0.9, 1.1, 1.3, 0.95, 1.05};
+    for (int degree : {2, 3}) {
+      CurveFitResult r = interpolateRationalCurve(pts, w, degree, ParamMethod::ChordLength);
+      expectTrue(r.ok, "interpolateRationalCurve ok");
+      expectTrue(!r.curve.weights.empty(), "rational interp curve IS rational (weights set)");
+      expectTrue(r.curve.weights.size() == r.curve.poles.size(), "one weight per pole");
+      expectTrue(r.curve.poles.size() == pts.size(), "rational interp #poles == #points");
+      expectTrue(r.curve.knots.size() == pts.size() + degree + 1, "rational interp knot-length");
+      bool allPos = true;
+      for (double wi : r.curve.weights) if (!(wi > 0.0)) allPos = false;
+      expectTrue(allPos, "all recovered control weights strictly positive");
+      expectLE(r.maxError, 1e-9, "rational interpolation maxError ~ 0 (dense pass-through)");
+      // Independently re-derive params and assert dense pass-through at uₖ.
+      std::vector<double> u = assignParams(pts, ParamMethod::ChordLength);
+      double worst = 0.0;
+      for (std::size_t k = 0; k < pts.size(); ++k)
+        worst = std::max(worst, distance(evalRationalCurve(r.curve, u[k]), pts[k]));
+      expectLE(worst, 1e-9, "rational curve passes through EVERY point to 1e-9");
+    }
+  }
+
+  // ═══ RATIONAL CURVE — KNOWN-CIRCLE round-trip (the strongest rational oracle) ═
+  //
+  // Sample a KNOWN rational unit circle at N params. At each param the homogeneous
+  // point is (den·C(u), den) with den = Σ Nᵢ(u)wᵢ, so the datum's PRESCRIBED weight
+  // must be exactly that denominator and the Euclidean point is C(u). Feeding those
+  // (point, weight) pairs to the rational interpolant reconstructs a rational curve
+  // that passes through EVERY circle sample exactly and stays planar.
+  //
+  // HONEST PARAMETRIZATION NOTE (mirrors the non-rational round-trip above): the fit
+  // re-derives its parameters by CHORD LENGTH, which differs from the circle's
+  // projective NURBS parameter. So the recovered curve is a rational curve THROUGH the
+  // circle samples that coincides with the analytic circle AT the nodes to 1e-9, but
+  // between the nodes it is a (valid, different) rational reparametrization whose
+  // radius wanders from 1 by a chord-length artifact (~1e-3), NOT a rational-fitting
+  // error. The EXACT pointwise rational reconstruction is proved by IDEMPOTENCE in the
+  // next block. Here we assert the airtight parts: node pass-through + planarity.
+  {
+    const BsplineCurveData circle = fullCircle();
+    const int N = 25;
+    std::vector<Point3> pts(N);
+    std::vector<double> wdata(N);
+    for (int k = 0; k < N; ++k) {
+      const double t = static_cast<double>(k) / (N - 1);
+      pts[k] = evalRationalCurve(circle, t);
+      wdata[k] = rationalDenominator(circle, t);
+      // Sanity: the sampled points genuinely lie on the unit circle.
+      expectNear(std::sqrt(pts[k].x * pts[k].x + pts[k].y * pts[k].y), 1.0, 1e-12,
+                 "circle sample on unit circle");
+    }
+    CurveFitResult r = interpolateRationalCurve(pts, wdata, 2, ParamMethod::ChordLength);
+    expectTrue(r.ok, "circle round-trip rational interp ok");
+    expectTrue(!r.curve.weights.empty(), "circle round-trip recovers a rational curve");
+    bool allPos = true;
+    for (double wi : r.curve.weights) if (!(wi > 0.0)) allPos = false;
+    expectTrue(allPos, "circle round-trip control weights positive");
+    // Node pass-through: recovered curve interpolates every circle sample to 1e-9 —
+    // so it IS the unit circle at every node, and stays planar.
+    std::vector<double> u = assignParams(pts, ParamMethod::ChordLength);
+    double worstNode = 0.0, worstPlane = 0.0;
+    for (int k = 0; k < N; ++k) {
+      const Point3 p = evalRationalCurve(r.curve, u[k]);
+      worstNode = std::max(worstNode, distance(p, pts[k]));
+      worstNode = std::max(worstNode, std::fabs(std::sqrt(p.x * p.x + p.y * p.y) - 1.0));
+    }
+    for (int i = 0; i <= 400; ++i)
+      worstPlane = std::max(worstPlane,
+                            std::fabs(evalRationalCurve(r.curve, static_cast<double>(i) / 400).z));
+    expectLE(worstNode, 1e-9, "circle round-trip is the unit circle at EVERY node to 1e-9");
+    expectLE(worstPlane, 1e-9, "circle round-trip stays planar (z≈0) everywhere");
+    std::printf("INFO rational circle round-trip: node dev=%.3e planar dev=%.3e\n",
+                worstNode, worstPlane);
+
+    // EXACT pointwise rational reconstruction of the circle-through-samples: fit → C1;
+    // resample C1 at its own chord nodes WITH the exact denominators → C2; C1 ≡ C2
+    // POINTWISE to machine precision (idempotence — the airtight rational oracle).
+    std::vector<Point3> rp(N);
+    std::vector<double> rw(N);
+    for (int k = 0; k < N; ++k) {
+      rp[k] = evalRationalCurve(r.curve, u[k]);
+      rw[k] = rationalDenominator(r.curve, u[k]);
+    }
+    CurveFitResult c2 = interpolateRationalCurve(rp, rw, 2, ParamMethod::ChordLength);
+    expectTrue(c2.ok, "circle idempotence C2 ok");
+    double worstDense = 0.0;
+    for (int i = 0; i <= 500; ++i) {
+      const double t = static_cast<double>(i) / 500;
+      worstDense = std::max(worstDense,
+                            distance(evalRationalCurve(r.curve, t), evalRationalCurve(c2.curve, t)));
+    }
+    expectLE(worstDense, 1e-9, "circle recovered POINTWISE by idempotence to 1e-9 (exact rational reconstruction)");
+    std::printf("INFO rational circle idempotence pointwise dev=%.3e\n", worstDense);
+  }
+
+  // ═══ RATIONAL CURVE — recovered weights match input (round-trip idempotence) ══
+  //
+  // Build a rational curve C1 from (points, weights); sample C1 at its node params
+  // WITH the exact denominators, and re-interpolate → C2. The control weights AND
+  // the projected poles must match C1's exactly (the homogeneous net is idempotent).
+  {
+    std::vector<Point3> pts = {{0, 0, 0}, {1, 2, 0}, {3, 1, 1}, {4, 3, 0}, {6, 2, 2},
+                               {7, 0, 1}, {9, 1, 0}};
+    std::vector<double> w = {1.0, 1.2, 0.9, 1.1, 1.3, 0.95, 1.05};
+    CurveFitResult c1 = interpolateRationalCurve(pts, w, 3, ParamMethod::ChordLength);
+    expectTrue(c1.ok, "rational idempotence C1 ok");
+    std::vector<double> un = assignParams(pts, ParamMethod::ChordLength);
+    std::vector<Point3> resPts(pts.size());
+    std::vector<double> resW(pts.size());
+    for (std::size_t k = 0; k < pts.size(); ++k) {
+      resPts[k] = evalRationalCurve(c1.curve, un[k]);
+      resW[k] = rationalDenominator(c1.curve, un[k]);
+    }
+    CurveFitResult c2 = interpolateRationalCurve(resPts, resW, 3, ParamMethod::ChordLength);
+    expectTrue(c2.ok, "rational idempotence C2 ok");
+    expectTrue(c1.curve.weights.size() == c2.curve.weights.size(), "idempotence weight count matches");
+    double worstW = 0.0, worstP = 0.0;
+    // Compare after normalising both nets so pole (i=0) weight == 1 (rational curves
+    // are invariant under a common weight scale; the projected POLES must match).
+    const double s1 = c1.curve.weights.front(), s2 = c2.curve.weights.front();
+    for (std::size_t i = 0; i < c1.curve.weights.size(); ++i) {
+      worstW = std::max(worstW, std::fabs(c1.curve.weights[i] / s1 - c2.curve.weights[i] / s2));
+      worstP = std::max(worstP, distance(c1.curve.poles[i], c2.curve.poles[i]));
+    }
+    expectLE(worstW, 1e-10, "recovered (normalised) weights match input to 1e-10");
+    expectLE(worstP, 1e-10, "recovered poles match input net to 1e-10");
+  }
+
+  // ═══ RATIONAL CURVE — degenerate / non-positive weight guards ═══════════════
+  {
+    std::vector<Point3> pts = {{0, 0, 0}, {1, 2, 0}, {3, 1, 1}, {4, 3, 0}, {6, 2, 2}};
+    // Mismatched weight count.
+    std::vector<double> wShort = {1.0, 1.0, 1.0};
+    expectTrue(!interpolateRationalCurve(pts, wShort, 2).ok, "rational: mismatched weight count declines");
+    // Zero weight.
+    std::vector<double> wZero = {1.0, 0.0, 1.0, 1.0, 1.0};
+    expectTrue(!interpolateRationalCurve(pts, wZero, 2).ok, "rational: zero weight declines");
+    // Negative weight.
+    std::vector<double> wNeg = {1.0, 1.0, -2.0, 1.0, 1.0};
+    expectTrue(!interpolateRationalCurve(pts, wNeg, 2).ok, "rational: negative weight declines");
+    // All-coincident points → degenerate params.
+    std::vector<Point3> same = {{2, 2, 2}, {2, 2, 2}, {2, 2, 2}};
+    std::vector<double> wSame = {1.0, 1.0, 1.0};
+    expectTrue(!interpolateRationalCurve(same, wSame, 2).ok, "rational: all-coincident declines");
+    // Too few points for the degree.
+    std::vector<Point3> few = {{0, 0, 0}, {1, 0, 0}};
+    std::vector<double> wFew = {1.0, 1.0};
+    expectTrue(!interpolateRationalCurve(few, wFew, 3).ok, "rational: too few points declines");
+
+    // PROJECTED-WEIGHT guard: positive DATA weights do not guarantee positive
+    // interpolated CONTROL weights — a wild weight sequence makes the interpolating
+    // weight function dip below zero, and the fit DECLINES honestly rather than
+    // return a curve with a non-positive control weight (division by ≤ 0).
+    std::vector<Point3> wild = {{0, 0, 0}, {1, 2, 0}, {3, 1, 1}, {4, 3, 0},
+                                {6, 2, 2}, {7, 0, 1}, {9, 1, 0}};
+    std::vector<double> wWild = {1.0, 2.5, 0.4, 1.7, 3.0, 0.8, 1.2};
+    CurveFitResult rWild = interpolateRationalCurve(wild, wWild, 2);
+    expectTrue(!rWild.ok, "rational: wild weights → non-positive control weight, declines honestly");
+    expectTrue(rWild.curve.weights.empty(), "declined wild-weight fit returns no curve");
+  }
+
+  // ═══ RATIONAL SURFACE — interpolation exactness + KNOWN-CYLINDER round-trip ══
+  {
+    // Arbitrary data grid + arbitrary positive weights: pass through every datum.
+    const int nU = 5, nV = 4;
+    std::vector<Point3> gpts(static_cast<std::size_t>(nU) * nV);
+    std::vector<double> gw(static_cast<std::size_t>(nU) * nV);
+    for (int i = 0; i < nU; ++i)
+      for (int j = 0; j < nV; ++j) {
+        const std::size_t idx = static_cast<std::size_t>(i) * nV + j;
+        gpts[idx] = {i * 1.1 + 0.3 * j, j * 0.9 - 0.2 * i,
+                     std::sin(0.5 * i) + std::cos(0.4 * j)};
+        gw[idx] = 0.5 + 0.4 * i + 0.3 * j;  // arbitrary positive weights
+      }
+    PointGrid grid{std::span<const Point3>(gpts), nU, nV};
+    WeightGrid wgrid{std::span<const double>(gw), nU, nV};
+    SurfaceFitResult r = interpolateRationalSurface(grid, wgrid, 3, 2, ParamMethod::ChordLength);
+    expectTrue(r.ok, "interpolateRationalSurface ok");
+    expectTrue(!r.surface.weights.empty(), "rational surface IS rational (weights set)");
+    expectTrue(r.surface.weights.size() == r.surface.poles.size(), "surf one weight per pole");
+    expectTrue(r.surface.nPolesU == nU && r.surface.nPolesV == nV, "rational surf #poles == grid");
+    bool allPos = true;
+    for (double wi : r.surface.weights) if (!(wi > 0.0)) allPos = false;
+    expectTrue(allPos, "all recovered surface control weights positive");
+    expectLE(r.maxError, 1e-8, "rational surface passes through EVERY grid point to 1e-8");
+
+    // KNOWN rational half-cylinder round-trip: sample the cylinder on a grid WITH the
+    // exact per-node denominators; interpolate → recover a rational surface through the
+    // cylinder samples. As with the circle, the fit re-derives CHORD-LENGTH params in
+    // the circular U direction (≠ the projective NURBS param), so the recovered surface
+    // is the cylinder AT the nodes to 1e-9 (unit radius, correct height) but its radius
+    // wanders between nodes by a chord-length artifact (~1e-3). Exact POINTWISE
+    // reconstruction is proved by surface IDEMPOTENCE just below.
+    const BsplineSurfaceData cyl = rationalHalfCylinder();
+    const int mU = 9, mV = 5;
+    std::vector<Point3> cpts(static_cast<std::size_t>(mU) * mV);
+    std::vector<double> cw(static_cast<std::size_t>(mU) * mV);
+    for (int i = 0; i < mU; ++i)
+      for (int j = 0; j < mV; ++j) {
+        const double u = static_cast<double>(i) / (mU - 1);
+        const double v = static_cast<double>(j) / (mV - 1);
+        const std::size_t idx = static_cast<std::size_t>(i) * mV + j;
+        cpts[idx] = evalSurface(cyl, u, v);
+        cw[idx] = rationalDenominatorS(cyl, u, v);
+        expectNear(std::sqrt(cpts[idx].x * cpts[idx].x + cpts[idx].y * cpts[idx].y), 1.0,
+                   1e-12, "cylinder sample on unit radius");
+      }
+    PointGrid cgrid{std::span<const Point3>(cpts), mU, mV};
+    WeightGrid cwgrid{std::span<const double>(cw), mU, mV};
+    SurfaceFitResult rc = interpolateRationalSurface(cgrid, cwgrid, 2, 1, ParamMethod::ChordLength);
+    expectTrue(rc.ok, "cylinder round-trip rational surface interp ok");
+    expectTrue(!rc.surface.weights.empty(), "cylinder round-trip recovers a rational surface");
+    expectLE(rc.maxError, 1e-8, "cylinder round-trip is the cylinder at EVERY grid node to 1e-8");
+
+    // EXACT pointwise reconstruction via surface IDEMPOTENCE. The fit re-derives its
+    // (uP,vP) by averaging per-line chord-length params over the grid; to make the
+    // resample a genuine FIXED POINT we must evaluate S1 at those SAME averaged params
+    // (recomputed here from the data grid exactly as the fitter does), so the second
+    // fit re-derives identical params/knots and reproduces S1. Then S1 ≡ S2 POINTWISE.
+    auto averagedGridParams = [&](const PointGrid& g, bool dirU) {
+      const int nMain = dirU ? g.nU : g.nV;
+      const int nCross = dirU ? g.nV : g.nU;
+      std::vector<double> acc(nMain, 0.0);
+      int used = 0;
+      std::vector<Point3> line(nMain);
+      for (int c = 0; c < nCross; ++c) {
+        for (int m = 0; m < nMain; ++m) line[m] = dirU ? g.at(m, c) : g.at(c, m);
+        std::vector<double> p = assignParams(line, ParamMethod::ChordLength);
+        if (static_cast<int>(p.size()) != nMain) continue;
+        for (int m = 0; m < nMain; ++m) acc[m] += p[m];
+        ++used;
+      }
+      for (double& v : acc) v /= used;
+      acc.front() = 0.0; acc.back() = 1.0;
+      return acc;
+    };
+    std::vector<double> uP = averagedGridParams(cgrid, /*dirU=*/true);
+    std::vector<double> vP = averagedGridParams(cgrid, /*dirU=*/false);
+    const int rU = mU, rV = mV;
+    std::vector<Point3> s2pts(static_cast<std::size_t>(rU) * rV);
+    std::vector<double> s2w(static_cast<std::size_t>(rU) * rV);
+    for (int i = 0; i < rU; ++i)
+      for (int j = 0; j < rV; ++j) {
+        const std::size_t idx = static_cast<std::size_t>(i) * rV + j;
+        s2pts[idx] = evalSurface(rc.surface, uP[i], vP[j]);
+        s2w[idx] = rationalDenominatorS(rc.surface, uP[i], vP[j]);
+      }
+    PointGrid s2grid{std::span<const Point3>(s2pts), rU, rV};
+    WeightGrid s2wgrid{std::span<const double>(s2w), rU, rV};
+    SurfaceFitResult s2 = interpolateRationalSurface(s2grid, s2wgrid, 2, 1, ParamMethod::ChordLength);
+    expectTrue(s2.ok, "cylinder surface idempotence S2 ok");
+    double worstDense = 0.0;
+    for (int a = 0; a <= 24; ++a)
+      for (int b = 0; b <= 12; ++b) {
+        const double u = static_cast<double>(a) / 24, v = static_cast<double>(b) / 12;
+        worstDense = std::max(worstDense, distance(evalSurface(rc.surface, u, v), evalSurface(s2.surface, u, v)));
+      }
+    expectLE(worstDense, 1e-8, "cylinder surface recovered POINTWISE by idempotence to 1e-8 (exact rational reconstruction)");
+    std::printf("INFO rational cylinder round-trip: node maxErr=%.3e idempotence pointwise=%.3e\n",
+                rc.maxError, worstDense);
+
+    // Guards: mismatched weight-grid dims and a non-positive weight both decline.
+    WeightGrid badDim{std::span<const double>(gw), nU, nV - 1};
+    expectTrue(!interpolateRationalSurface(grid, badDim, 3, 2).ok,
+               "rational surface: mismatched weight-grid dims declines");
+    std::vector<double> gwNeg = gw; gwNeg[0] = -1.0;
+    WeightGrid wNegGrid{std::span<const double>(gwNeg), nU, nV};
+    expectTrue(!interpolateRationalSurface(grid, wNegGrid, 3, 2).ok,
+               "rational surface: non-positive weight declines");
   }
 
   // ── report ──

@@ -191,6 +191,93 @@ CurveFitResult interpolateCurve(std::span<const Point3> points, int degree,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Rational curve interpolation with prescribed weights.
+//
+// Lift each datum Qₖ (weight wₖ) to the homogeneous point Qʷₖ = (wₖQₖ, wₖ) ∈ R⁴,
+// solve the SAME averaging-knot collocation matrix as interpolateCurve for all four
+// homogeneous coordinates (x,y,z, and the weight coord), then project each solved
+// control point Pʷᵢ=(Xᵢ,Yᵢ,Zᵢ,Wᵢ) back to Pᵢ=(Xᵢ/Wᵢ,Yᵢ/Wᵢ,Zᵢ/Wᵢ), weightᵢ=Wᵢ.
+// Since Cʷ(uₖ)=Qʷₖ, the projected rational curve passes through Qₖ exactly.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+
+// Max / RMS deviation of a RATIONAL fitted curve from its data at (uₖ,Qₖ).
+void rationalCurveErrors(const BsplineCurveData& c, std::span<const Point3> pts,
+                         std::span<const double> u, double& maxErr, double& rmsErr) {
+  maxErr = 0.0;
+  double sumSq = 0.0;
+  const int n = static_cast<int>(pts.size());
+  for (int k = 0; k < n; ++k) {
+    const Point3 p = nurbsCurvePoint(c.degree, c.poles, c.weights, c.knots, u[k]);
+    const double e = distance(p, pts[k]);
+    maxErr = std::max(maxErr, e);
+    sumSq += e * e;
+  }
+  rmsErr = (n > 0) ? std::sqrt(sumSq / n) : 0.0;
+}
+
+}  // namespace
+
+CurveFitResult interpolateRationalCurve(std::span<const Point3> points,
+                                        std::span<const double> weights, int degree,
+                                        ParamMethod method) {
+  CurveFitResult r;
+  const int n = static_cast<int>(points.size());
+  if (degree < 1 || n < degree + 1) return r;                 // need ≥ p+1 points
+  if (static_cast<int>(weights.size()) != n) return r;        // one weight per point
+  for (int k = 0; k < n; ++k)
+    if (!(weights[k] > 0.0)) return r;                        // non-positive weight guard
+
+  const std::vector<double> u = paramsImpl(points, method);
+  if (static_cast<int>(u.size()) != n) return r;              // degenerate (all-coincident)
+
+  const std::vector<double> U = avgKnots(u, degree);
+
+  // Same (n)×(n) collocation matrix A(k,i) = N_{i,p}(u_k) as the non-rational case.
+  const int lastPole = n - 1;
+  std::vector<double> A(static_cast<std::size_t>(n) * n, 0.0);
+  std::vector<double> N(degree + 1);
+  for (int k = 0; k < n; ++k) {
+    const int span = findSpan(lastPole, degree, u[k], U);
+    basisFuns(span, u[k], degree, U, N);
+    for (int j = 0; j <= degree; ++j)
+      A[static_cast<std::size_t>(k) * n + (span - degree + j)] = N[j];
+  }
+
+  // Homogeneous RHS: Qʷₖ = (wₖ·xₖ, wₖ·yₖ, wₖ·zₖ, wₖ). Four solves, one matrix.
+  std::vector<double> bx(n), by(n), bz(n), bw(n);
+  for (int k = 0; k < n; ++k) {
+    const double w = weights[k];
+    bx[k] = w * points[k].x;
+    by[k] = w * points[k].y;
+    bz[k] = w * points[k].z;
+    bw[k] = w;
+  }
+  const std::vector<double> cx = lin_solve(A, n, bx);
+  const std::vector<double> cy = lin_solve(A, n, by);
+  const std::vector<double> cz = lin_solve(A, n, bz);
+  const std::vector<double> cw = lin_solve(A, n, bw);
+  if (static_cast<int>(cx.size()) != n || static_cast<int>(cy.size()) != n ||
+      static_cast<int>(cz.size()) != n || static_cast<int>(cw.size()) != n)
+    return r;  // singular collocation (should not happen for valid params)
+
+  // Project the homogeneous net back; a solved non-positive weight is a hard guard.
+  r.curve.degree = degree;
+  r.curve.knots = U;
+  r.curve.poles.resize(n);
+  r.curve.weights.resize(n);
+  for (int i = 0; i < n; ++i) {
+    if (!(cw[i] > 0.0)) return CurveFitResult{};  // projected weight ≤ 0 — decline
+    r.curve.poles[i] = {cx[i] / cw[i], cy[i] / cw[i], cz[i] / cw[i]};
+    r.curve.weights[i] = cw[i];
+  }
+
+  rationalCurveErrors(r.curve, points, u, r.maxError, r.rmsError);
+  r.ok = true;
+  return r;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Curve least-squares approximation (A9.4/9.6), endpoints pinned.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -461,6 +548,144 @@ SurfaceFitResult fitSurface(const PointGrid& g, int nCtrlU, int nCtrlV, int degr
 SurfaceFitResult interpolateSurface(const PointGrid& grid, int degreeU, int degreeV,
                                     ParamMethod method) {
   return fitSurface(grid, grid.nU, grid.nV, degreeU, degreeV, method);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rational tensor-product surface interpolation with prescribed weights.
+//
+// Lift every grid datum Q(i,j) (weight w(i,j)) to Qʷ(i,j) = (wQ, w) ∈ R⁴ and run
+// the SAME two-step tensor interpolation as fitSurface, but on FOUR homogeneous
+// coordinates simultaneously (fit each row in V, then each column in U — square
+// collocation via lin_solve, shared averaged params/knots). Project the resulting
+// homogeneous control net back to (pole, weight). Cʷ interpolates Qʷ, so the
+// projected rational surface passes through every Euclidean Q(i,j) exactly.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+
+// A homogeneous R⁴ node — the four scalars carried through the tensor solve.
+struct Homog4 { double x, y, z, w; };
+
+// Interpolate one line of R⁴ nodes to a rational-lift control net (square collocation
+// on the shared knots/params). Returns npts control points or empty on a singular
+// solve. Solves ALL FOUR coordinates against the same matrix.
+std::vector<Homog4> fitLineH(std::span<const Homog4> line, int degree,
+                             std::span<const double> params, std::span<const double> U) {
+  const int npts = static_cast<int>(line.size());
+  const int lastPole = npts - 1;
+  std::vector<double> A(static_cast<std::size_t>(npts) * npts, 0.0);
+  std::vector<double> N(degree + 1);
+  for (int k = 0; k < npts; ++k) {
+    const int span = findSpan(lastPole, degree, params[k], U);
+    basisFuns(span, params[k], degree, U, N);
+    for (int j = 0; j <= degree; ++j)
+      A[static_cast<std::size_t>(k) * npts + (span - degree + j)] = N[j];
+  }
+  std::vector<double> bx(npts), by(npts), bz(npts), bw(npts);
+  for (int k = 0; k < npts; ++k) {
+    bx[k] = line[k].x; by[k] = line[k].y; bz[k] = line[k].z; bw[k] = line[k].w;
+  }
+  std::vector<double> cx = lin_solve(A, npts, bx);
+  std::vector<double> cy = lin_solve(A, npts, by);
+  std::vector<double> cz = lin_solve(A, npts, bz);
+  std::vector<double> cw = lin_solve(A, npts, bw);
+  if (static_cast<int>(cx.size()) != npts || static_cast<int>(cw.size()) != npts) return {};
+  std::vector<Homog4> out(npts);
+  for (int i = 0; i < npts; ++i) out[i] = {cx[i], cy[i], cz[i], cw[i]};
+  return out;
+}
+
+// Max / RMS deviation of a RATIONAL fitted surface from the data over the grid.
+void rationalSurfaceErrors(const BsplineSurfaceData& s, const PointGrid& g,
+                           std::span<const double> uParams, std::span<const double> vParams,
+                           double& maxErr, double& rmsErr) {
+  SurfaceGrid grid{std::span<const Point3>(s.poles), s.nPolesU, s.nPolesV};
+  maxErr = 0.0;
+  double sumSq = 0.0;
+  int count = 0;
+  for (int i = 0; i < g.nU; ++i)
+    for (int j = 0; j < g.nV; ++j) {
+      const Point3 p = nurbsSurfacePoint(s.degreeU, s.degreeV, grid, s.weights,
+                                         s.knotsU, s.knotsV, uParams[i], vParams[j]);
+      const double e = distance(p, g.at(i, j));
+      maxErr = std::max(maxErr, e);
+      sumSq += e * e;
+      ++count;
+    }
+  rmsErr = (count > 0) ? std::sqrt(sumSq / count) : 0.0;
+}
+
+}  // namespace
+
+SurfaceFitResult interpolateRationalSurface(const PointGrid& grid, const WeightGrid& wg,
+                                            int degreeU, int degreeV, ParamMethod method) {
+  SurfaceFitResult r;
+  if (degreeU < 1 || degreeV < 1) return r;
+  if (wg.nU != grid.nU || wg.nV != grid.nV) return r;         // weight grid must match
+  if (grid.nU < degreeU + 1 || grid.nV < degreeV + 1) return r;
+  const int nU = grid.nU, nV = grid.nV;
+  for (int i = 0; i < nU; ++i)
+    for (int j = 0; j < nV; ++j)
+      if (!(wg.at(i, j) > 0.0)) return r;                     // non-positive weight guard
+
+  // Shared U/V parameter assignments (averaged across the grid — Euclidean geometry).
+  const std::vector<double> uP = gridParams(grid, method, /*dirU=*/true);
+  const std::vector<double> vP = gridParams(grid, method, /*dirU=*/false);
+  if (static_cast<int>(uP.size()) != nU || static_cast<int>(vP.size()) != nV) return r;
+
+  const std::vector<double> knotsV = avgKnots(vP, degreeV);
+  const std::vector<double> knotsU = avgKnots(uP, degreeU);
+
+  // Step 0 — lift the grid to homogeneous R⁴.
+  std::vector<Homog4> H(static_cast<std::size_t>(nU) * nV);
+  for (int i = 0; i < nU; ++i)
+    for (int j = 0; j < nV; ++j) {
+      const Point3 q = grid.at(i, j);
+      const double w = wg.at(i, j);
+      H[static_cast<std::size_t>(i) * nV + j] = {w * q.x, w * q.y, w * q.z, w};
+    }
+
+  // Step 1 — interpolate each of the nU rows in V → an (nU × nV) intermediate net.
+  std::vector<Homog4> mid(static_cast<std::size_t>(nU) * nV);
+  std::vector<Homog4> rowBuf(nV);
+  for (int i = 0; i < nU; ++i) {
+    for (int j = 0; j < nV; ++j) rowBuf[j] = H[static_cast<std::size_t>(i) * nV + j];
+    std::vector<Homog4> ctrl = fitLineH(rowBuf, degreeV, vP, knotsV);
+    if (static_cast<int>(ctrl.size()) != nV) return r;
+    for (int j = 0; j < nV; ++j) mid[static_cast<std::size_t>(i) * nV + j] = ctrl[j];
+  }
+
+  // Step 2 — interpolate each of the nV columns in U → the final (nU × nV) net.
+  std::vector<Homog4> net(static_cast<std::size_t>(nU) * nV);
+  std::vector<Homog4> colBuf(nU);
+  for (int j = 0; j < nV; ++j) {
+    for (int i = 0; i < nU; ++i) colBuf[i] = mid[static_cast<std::size_t>(i) * nV + j];
+    std::vector<Homog4> ctrl = fitLineH(colBuf, degreeU, uP, knotsU);
+    if (static_cast<int>(ctrl.size()) != nU) return r;
+    for (int i = 0; i < nU; ++i) net[static_cast<std::size_t>(i) * nV + j] = ctrl[i];
+  }
+
+  // Project the homogeneous net back; a non-positive control weight is a hard guard.
+  std::vector<Point3> poles(static_cast<std::size_t>(nU) * nV);
+  std::vector<double> weights(static_cast<std::size_t>(nU) * nV);
+  for (std::size_t idx = 0; idx < net.size(); ++idx) {
+    const Homog4& h = net[idx];
+    if (!(h.w > 0.0)) return SurfaceFitResult{};  // projected weight ≤ 0 — decline
+    poles[idx] = {h.x / h.w, h.y / h.w, h.z / h.w};
+    weights[idx] = h.w;
+  }
+
+  r.surface.degreeU = degreeU;
+  r.surface.degreeV = degreeV;
+  r.surface.nPolesU = nU;
+  r.surface.nPolesV = nV;
+  r.surface.knotsU = knotsU;
+  r.surface.knotsV = knotsV;
+  r.surface.poles = std::move(poles);
+  r.surface.weights = std::move(weights);
+
+  rationalSurfaceErrors(r.surface, grid, uP, vP, r.maxError, r.rmsError);
+  r.ok = true;
+  return r;
 }
 
 SurfaceFitResult approximateSurface(const PointGrid& grid, int nCtrlU, int nCtrlV,

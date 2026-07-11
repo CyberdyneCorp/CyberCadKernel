@@ -23,9 +23,17 @@
 //   interpolateSurface / approximateSurface — tensor-product (A9.4-class): fit each
 //                                          row then each column via the curve routines
 //
-// SCOPE — NON-RATIONAL fitting only (all weights = 1). Rational / weighted fitting
-// (fitting the weights, e.g. Ma–Kruth) is a documented residual for a later slice;
-// this module never fakes it. See docs/NURBS-SCOPE.md Layer-7 row.
+// SCOPE — NON-RATIONAL fitting, plus RATIONAL interpolation with PRESCRIBED weights
+// (the tractable exact case). Given data points Qₖ AND a weight wₖ per point, the
+// rational routines lift each datum to the homogeneous point Qʷₖ = (wₖ·xₖ, wₖ·yₖ,
+// wₖ·zₖ, wₖ) ∈ R⁴, run the SAME non-rational collocation solve on the 4-D net (the
+// 4th coordinate solves for the control weights Wᵢ, the first three for wᵢ·Pᵢ), and
+// project back Pᵢ = (Xᵢ/Wᵢ, …), weightᵢ = Wᵢ. Because Cʷ(uₖ) = Qʷₖ, the projected
+// rational curve passes through the EUCLIDEAN datum Qₖ = (wₖQₖ)/wₖ exactly. This is
+// the same rational-lift convention as bspline_ops.h (Layer 1). Full weight
+// ESTIMATION from unweighted points (Ma–Kruth) — recovering the wₖ themselves — is
+// the HARDER residual and is NOT attempted here; this module never fakes it. See
+// docs/NURBS-SCOPE.md Layer-7 row.
 //
 // GUARD — the solve-bearing routines are compiled only when CYBERCAD_HAS_NUMSCI is
 // defined (the numsci facade is the sole linear-algebra dependency), exactly like
@@ -108,6 +116,25 @@ struct CurveFitResult {
 CurveFitResult interpolateCurve(std::span<const Point3> points, int degree,
                                 ParamMethod method = ParamMethod::ChordLength);
 
+/// RATIONAL global curve INTERPOLATION with PRESCRIBED weights. Given the same
+/// data points as interpolateCurve PLUS a positive weight wₖ per point, build a
+/// degree-`degree` RATIONAL NURBS (poles + weights) that passes through every Qₖ at
+/// parameter uₖ to solver precision. Each datum is lifted to the homogeneous point
+/// Qʷₖ = (wₖ·xₖ, wₖ·yₖ, wₖ·zₖ, wₖ); the SAME averaging-knot collocation matrix as
+/// interpolateCurve is solved for all FOUR homogeneous coordinates (the 4th yields
+/// the control weights Wᵢ), then the control net is projected back Pᵢ = (Xᵢ/Wᵢ,
+/// Yᵢ/Wᵢ, Zᵢ/Wᵢ) with weightᵢ = Wᵢ. Because Cʷ(uₖ) = Qʷₖ, the projected rational
+/// curve interpolates the EUCLIDEAN Qₖ exactly. The returned curve.weights has one
+/// weight per pole (non-empty ⇒ rational). Requires weights.size()==points.size(),
+/// points.size() ≥ degree+1, every input weight strictly POSITIVE, and every
+/// SOLVED control weight Wᵢ strictly positive (a projected non-positive weight is a
+/// documented guard — never divide by ≤ 0); otherwise ok=false. NOTE — the weights
+/// are PRESCRIBED inputs; this does NOT estimate weights from unweighted data
+/// (Ma–Kruth) — that harder inverse problem is an explicit residual.
+CurveFitResult interpolateRationalCurve(std::span<const Point3> points,
+                                        std::span<const double> weights, int degree,
+                                        ParamMethod method = ParamMethod::ChordLength);
+
 /// A9.4/9.6 — least-squares curve APPROXIMATION: fit a degree-`degree` B-spline
 /// with exactly `nCtrl` control points (nCtrl < points.size()) minimizing the
 /// summed squared distance to the data, with the FIRST and LAST control points
@@ -148,6 +175,30 @@ struct PointGrid {
 /// nV ≥ degreeV+1; degenerate inputs return ok=false.
 SurfaceFitResult interpolateSurface(const PointGrid& grid, int degreeU, int degreeV,
                                     ParamMethod method = ParamMethod::ChordLength);
+
+/// A grid of prescribed weights parallel to a PointGrid: weight(i,j) = w[i*nV + j],
+/// same row-major U-outer layout as the data points and the surface pole net.
+struct WeightGrid {
+  std::span<const double> w;
+  int nU = 0;
+  int nV = 0;
+  double at(int i, int j) const { return w[static_cast<std::size_t>(i) * nV + j]; }
+};
+
+/// RATIONAL tensor-product surface INTERPOLATION with PRESCRIBED weights — the
+/// surface analogue of interpolateRationalCurve. Each grid datum Q(i,j) is lifted
+/// to the homogeneous point Qʷ(i,j) = (w·x, w·y, w·z, w) using its prescribed weight
+/// w(i,j), the tensor-product interpolation runs on the 4-D homogeneous net (the
+/// weight coordinate is interpolated exactly like x/y/z), and the resulting control
+/// net is projected back to (pole, weight). The rational surface passes through
+/// every EUCLIDEAN Q(i,j) at (uᵢ,vⱼ) to solver precision, and surface.weights holds
+/// one weight per pole (non-empty ⇒ rational). Requires wg dimensions == grid
+/// dimensions, nU ≥ degreeU+1, nV ≥ degreeV+1, every input weight strictly POSITIVE,
+/// and every solved control weight strictly positive (documented guard); otherwise
+/// ok=false. Weights are PRESCRIBED — this does NOT estimate weights (residual).
+SurfaceFitResult interpolateRationalSurface(const PointGrid& grid, const WeightGrid& wg,
+                                            int degreeU, int degreeV,
+                                            ParamMethod method = ParamMethod::ChordLength);
 
 /// Tensor-product surface APPROXIMATION (A9.4-class): least-squares fit a
 /// nCtrlU × nCtrlV control net (each dimension fewer than the data) of degree

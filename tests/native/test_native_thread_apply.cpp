@@ -37,6 +37,8 @@
 
 #include <cmath>
 #include <cstdio>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace topo = cybercad::native::topology;
@@ -165,6 +167,41 @@ CC_TEST(threadapply_helical_thread_honest_declines) {
     CC_CHECK(why == bo::ThreadApplyDecline::NotWatertight ||
              why == bo::ThreadApplyDecline::NotOriented ||
              why == bo::ThreadApplyDecline::VolumeInconsistent);
+  }
+}
+
+// ── REGRESSION (DEFECT 2): a threaded shaft is never SILENTLY produced as a
+// boolean-hostile native body — the verb honest-declines with a specific reason ───────
+// DEFECT 2: after cc_thread_apply the threaded solid is display-valid but a later fuse/cut
+// on it fails ("no valid result"). The honest contract is that a threaded body which cannot
+// be produced boolean-usable is NEVER returned silently as an Ok native solid — the native
+// verb either yields a self-verified (watertight + oriented + correct-volume) body, or it
+// declines with a specific, non-vague ThreadApplyDecline (→ the engine's honest OCCT path,
+// where a downstream boolean on the threaded body reports the accurate ordering-constraint
+// error). This asserts the exact repro (thread a simple shaft, both FUSE and CUT) declines
+// with a SPECIFIC self-verify reason and never returns a non-null body with why != Ok.
+CC_TEST(threadapply_never_silently_returns_boolean_hostile_body) {
+  const topo::Shape thread = cst::build_helical_thread(5.0, 2.0, 4.0, 1.0, 60.0, 1.0, 16);
+  CC_CHECK(!thread.isNull());
+  if (thread.isNull()) return;
+
+  const topo::Shape shaftF = shaftCyl(4.0, 0.0, 8.0);  // FUSE: shaft at the thread root
+  const topo::Shape shaftC = shaftCyl(5.0, 0.0, 8.0);  // CUT: shaft at the crest
+  const std::pair<const topo::Shape*, int> repros[] = {{&shaftF, 0}, {&shaftC, 1}};
+  for (const auto& [shaft, op] : repros) {
+    bo::ThreadApplyDecline why = bo::ThreadApplyDecline::Ok;
+    const topo::Shape r = bo::threadApply(*shaft, thread, op, 0.05, &why);
+    // Never a non-null body paired with a non-Ok verdict, and never an Ok verdict with a
+    // null body — the result and the verdict are always consistent (no silent-wrong / -empty).
+    CC_CHECK(r.isNull() == (why != bo::ThreadApplyDecline::Ok));
+    // The exact repro declines, and the reason is a SPECIFIC self-verify failure (not a vague
+    // catch-all) — this is what routes to the engine's honest ordering-constraint decline.
+    CC_CHECK(r.isNull());
+    CC_CHECK(why == bo::ThreadApplyDecline::NotWatertight ||
+             why == bo::ThreadApplyDecline::NotOriented ||
+             why == bo::ThreadApplyDecline::VolumeInconsistent);
+    // The decline name is a real, non-empty diagnostic string (surfaced to the host).
+    CC_CHECK(std::string(bo::threadApplyDeclineName(why)).size() > 0);
   }
 }
 

@@ -439,11 +439,18 @@ ShapeResult OcctEngine::thread_apply(EngineShape shaft, EngineShape thread, int 
     // path, with the cancellation-safe boundary (design.md §Migration step 4). The
     // handles are captured by value (shared_ptr) so the shapes stay alive; unwrap
     // again on the worker.
-    return occt::runScheduled([shaft, thread, op, turns](OperationContext& ctx) -> ShapeResult {
-        return occt::occtGuard([&]() -> ShapeResult {
-            return runPerTurnApply(*occt::unwrap(shaft), *occt::unwrap(thread), op, turns, ctx);
+    // Tag the accumulated result as a THREADED BODY so a later fuse/cut on it declines with an
+    // accurate ordering-constraint error (apply threads as the final feature) instead of a vague
+    // "no valid result" — the threaded region's near-tangent helical faces are not robustly
+    // booleanable in the engine today (measured; the example's workaround fuses head→shank
+    // BEFORE threading for this reason). See boolean_op / anyThreadedBodyOperand.
+    ShapeResult applied =
+        occt::runScheduled([shaft, thread, op, turns](OperationContext& ctx) -> ShapeResult {
+            return occt::occtGuard([&]() -> ShapeResult {
+                return runPerTurnApply(*occt::unwrap(shaft), *occt::unwrap(thread), op, turns, ctx);
+            });
         });
-    });
+    return occt::tagAsThreadedBody(std::move(applied));
 }
 
 }  // namespace cyber

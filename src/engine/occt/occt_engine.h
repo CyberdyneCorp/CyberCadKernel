@@ -80,6 +80,12 @@ struct ThreadTag {
     bool present = false;
     double turns = 0.0;
     double pitchMM = 0.0;
+    // True for a body that is the RESULT of thread_apply (a shaft with the helical thread
+    // already applied), as distinct from a raw thread ridge (`present`). A threaded body
+    // carries near-tangent helical faces that a subsequent OCCT fuse/cut cannot robustly
+    // consume, so a later boolean on it is declined with an accurate ordering-constraint
+    // error (apply threads as the FINAL feature) rather than a vague "no valid result".
+    bool threadedBody = false;
 };
 
 // Type-erased shape store. The adapter wraps a TopoDS_Shape into the registry's
@@ -99,6 +105,11 @@ EngineShape wrapThread(const TopoDS_Shape& shape, const ThreadTag& tag);
 // Re-wrap a just-built thread ShapeResult carrying its turns/pitch. Passes a
 // failed/empty result through unchanged. Used by cc_helical_thread / cc_tapered_thread.
 ShapeResult tagAsThread(ShapeResult result, double turns, double pitchMM);
+
+// Re-wrap a just-built THREADED-BODY result (the output of thread_apply) so a later
+// boolean can recognise it and decline honestly with an accurate ordering-constraint
+// error. Passes a failed/empty result through unchanged. Used by OcctEngine::thread_apply.
+ShapeResult tagAsThreadedBody(ShapeResult result);
 
 // Thread provenance behind an EngineShape, or nullptr if the handle is empty.
 const ThreadTag* threadTagOf(const EngineShape& handle);
@@ -159,6 +170,13 @@ std::vector<TopoDS_Face> facesByIds(const TopoDS_Shape& shape, const int* ids, i
 // `outGated` untouched) when the op should proceed. `common` (op 2) is never gated.
 bool checkFineThreadGate(const EngineShape& a, const EngineShape& b, int op,
                          ShapeResult& outGated);
+
+// True when either boolean operand is a THREADED BODY (a thread_apply result). Such a body
+// carries near-tangent helical faces that a subsequent fuse/cut cannot robustly consume, so
+// boolean_op uses this to turn a boolean FAILURE into an accurate ordering-constraint decline
+// ("threaded body is not boolean-compatible; apply threads as the final feature") instead of
+// the vague "no valid result". A boolean that SUCCEEDS is unaffected (no false decline).
+bool anyThreadedBodyOperand(const EngineShape& a, const EngineShape& b);
 
 // ── shape-healing oracle (Phase 4 #4 native-healing fallback) ─────────────────
 // The OCCT side of the engine-internal native-heal hook (see

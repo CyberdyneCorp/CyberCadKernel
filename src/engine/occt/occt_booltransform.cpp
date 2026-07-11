@@ -126,8 +126,17 @@ namespace {
 // observed at the boundary. The SAME IsValid + fuse-volume gate the serial path
 // used still accepts the result, so a parallel result must pass exactly the same
 // validity check as serial (spec §"Parallel boolean execution").
+// A boolean whose operand is a THREADED BODY (a thread_apply result) that FAILS is declined
+// with this accurate, actionable message — the near-tangent helical faces baked into the
+// threaded region are not robustly booleanable in the engine today, so the correct workflow
+// is to apply threads LAST. `threadedOperand` gates the reword; a boolean that SUCCEEDS is
+// returned normally regardless (no false decline).
+constexpr const char* kThreadedBooleanHostile =
+    "boolean_op: threaded body is not boolean-compatible in this engine; apply threads as the "
+    "FINAL feature (fuse/cut the plain bodies first, then thread the assembled solid)";
+
 ShapeResult runBoolean(const TopoDS_Shape& sa, const TopoDS_Shape& sb, int op, double baseFuzz,
-                       bool parallel, OperationContext& ctx) {
+                       bool parallel, bool threadedOperand, OperationContext& ctx) {
     ctx.report(0.05, "boolean: intersect");
     // FUSE must never LOSE material. On near-tangent / grazing overlaps (e.g. a
     // prong poking through a tube wall) OCCT can report IsDone yet return only one
@@ -150,7 +159,8 @@ ShapeResult runBoolean(const TopoDS_Shape& sa, const TopoDS_Shape& sb, int op, d
                 return occt::wrap(r);
             }
         }
-        return make_error("boolean_op: fuse produced no valid result");
+        return make_error(threadedOperand ? kThreadedBooleanHostile
+                                          : "boolean_op: fuse produced no valid result");
     }
 
     TopoDS_Shape result;
@@ -160,7 +170,8 @@ ShapeResult runBoolean(const TopoDS_Shape& sa, const TopoDS_Shape& sb, int op, d
         c.SetFuzzyValue(baseFuzz);
         c.Build();
         if (!c.IsDone()) {
-            return make_error("boolean_op: cut failed");
+            return make_error(threadedOperand ? kThreadedBooleanHostile
+                                              : "boolean_op: cut failed");
         }
         result = c.Shape();
     } else {
@@ -169,12 +180,14 @@ ShapeResult runBoolean(const TopoDS_Shape& sa, const TopoDS_Shape& sb, int op, d
         k.SetFuzzyValue(baseFuzz);
         k.Build();
         if (!k.IsDone()) {
-            return make_error("boolean_op: common failed");
+            return make_error(threadedOperand ? kThreadedBooleanHostile
+                                              : "boolean_op: common failed");
         }
         result = k.Shape();
     }
     ctx.report(1.0, "boolean: done");
-    return occt::addIfValid(result, "boolean_op: invalid result");
+    return occt::addIfValid(result, threadedOperand ? kThreadedBooleanHostile
+                                                    : "boolean_op: invalid result");
 }
 
 }  // namespace
@@ -199,6 +212,11 @@ ShapeResult OcctEngine::boolean_op(EngineShape a, EngineShape b, int op) {
     }
     const double baseFuzz = takeBooleanFuzz(*pa, *pb);
 
+    // A threaded-body operand (a thread_apply result) that fails the boolean is declined with an
+    // accurate ordering-constraint error instead of a vague "no valid result" (see runBoolean).
+    // Resolved on the caller thread while the provenance handles are alive.
+    const bool threadedOperand = occt::anyThreadedBodyOperand(a, b);
+
     // 3. Resolve parallelism (global toggle + per-op default) and bound OCCT's
     //    OSD_ThreadPool to the host worker cap before the parallel op runs.
     const bool parallel = occt::ParallelPolicy::instance().parallelFor();
@@ -210,11 +228,13 @@ ShapeResult OcctEngine::boolean_op(EngineShape a, EngineShape b, int op) {
     //    inline path, with the cancellation-safe boundary: the non-interruptible
     //    OCCT Build runs to completion on a worker, but a cancelled op discards its
     //    result and reclaims resources (spec §"Cancellable accelerated operations").
-    return occt::runScheduled([a, b, op, baseFuzz, parallel](OperationContext& ctx) -> ShapeResult {
-        return occt::occtGuard([&]() -> ShapeResult {
-            return runBoolean(*occt::unwrap(a), *occt::unwrap(b), op, baseFuzz, parallel, ctx);
+    return occt::runScheduled(
+        [a, b, op, baseFuzz, parallel, threadedOperand](OperationContext& ctx) -> ShapeResult {
+            return occt::occtGuard([&]() -> ShapeResult {
+                return runBoolean(*occt::unwrap(a), *occt::unwrap(b), op, baseFuzz, parallel,
+                                  threadedOperand, ctx);
+            });
         });
-    });
 }
 
 // ── transform ───────────────────────────────────────────────────────────────

@@ -100,6 +100,31 @@ ShapeResult tagAsThread(ShapeResult result, double turns, double pitchMM) {
     return wrapThread(*shape, tag);
 }
 
+ShapeResult tagAsThreadedBody(ShapeResult result) {
+    if (!result) {
+        return result;  // thread_apply already failed → pass the Error through untouched
+    }
+    const TopoDS_Shape* shape = unwrap(result.value());
+    if (shape == nullptr) {
+        return result;
+    }
+    ThreadTag tag;
+    tag.threadedBody = true;  // provenance only; `present` stays false (not a raw thread ridge)
+    return wrapThread(*shape, tag);
+}
+
+// True when either boolean operand is a threaded body (the result of thread_apply). Such a
+// body has near-tangent helical faces baked in that a subsequent OCCT fuse/cut cannot
+// robustly consume, so the caller uses this to emit an accurate ordering-constraint decline.
+bool anyThreadedBodyOperand(const EngineShape& a, const EngineShape& b) {
+    for (const ThreadTag* tag : {threadTagOf(a), threadTagOf(b)}) {
+        if (tag != nullptr && tag->threadedBody) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // ── Fine-thread boolean gate glue ─────────────────────────────────────────────
 
 bool checkFineThreadGate(const EngineShape& a, const EngineShape& b, int op,

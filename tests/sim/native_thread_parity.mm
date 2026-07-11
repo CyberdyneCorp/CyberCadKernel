@@ -426,6 +426,55 @@ int main() {
                 "fine-pitch helical sweep, turns self-intersect → self-verify defers — Tier D",
                 /*deflection=*/0.02);
 
+    // ── DEFECT 2 regression: a boolean on a THREADED BODY declines with an ACCURATE
+    //    ordering-constraint error, not a vague "no valid result" ────────────────────────
+    // Repro: build a shaft cylinder, apply a helical thread (cc_thread_apply → a display-valid
+    // threaded body), then attempt a downstream cc_boolean fuse of a small boss onto it. The
+    // threaded region's near-tangent helical faces are not robustly booleanable in the engine
+    // today, so the fuse fails. BEFORE the fix cc_last_error was the vague "fuse produced no
+    // valid result"; AFTER the fix it is the accurate, actionable ordering-constraint message
+    // (apply threads as the final feature). This is the honest-decline outcome (§DEFECT 2).
+    {
+        cc_set_engine(0);  // OCCT engine owns thread_apply + the boolean
+        // Shaft cylinder: revolve a rectangle silhouette (r=4, z∈[0,8]) about Z.
+        const double shaftProf[] = {0, 0, 4, 0, 4, 8, 0, 8};
+        const CCShapeId shaft = cc_solid_revolve(shaftProf, 4, 2.0 * M_PI);
+        // Thread ridge whose crest (5) clears the shaft surface (4).
+        const CCShapeId thread =
+            cc_helical_thread(/*major=*/5.0, /*pitch=*/2.0, /*turns=*/3.0, /*depth=*/1.0,
+                              /*flank=*/60.0, /*ppm=*/1.0, /*samplesPerTurn=*/16);
+        const CCShapeId threaded = (shaft && thread) ? cc_thread_apply(shaft, thread, /*op=*/0) : 0;
+        // A small boss to fuse onto the threaded body (a downstream feature).
+        const double bossProf[] = {0, 0, 6, 0, 6, 2, 0, 2};
+        const CCShapeId boss = cc_solid_revolve(bossProf, 4, 2.0 * M_PI);
+
+        bool ok = false;
+        char detail[512];
+        if (threaded && boss) {
+            const CCShapeId fused = cc_boolean(threaded, boss, /*op=*/0);  // fuse
+            const std::string err = cc_last_error() ? cc_last_error() : "";
+            // The downstream fuse must NOT silently produce a wrong/empty result: either it
+            // genuinely succeeds (a real booleanable body — accepted) OR it declines with the
+            // ACCURATE ordering-constraint message (never the vague "no valid result").
+            const bool clearDecline =
+                (fused == 0) && err.find("apply threads as the") != std::string::npos;
+            const bool honestSuccess = (fused != 0);
+            ok = honestSuccess || clearDecline;
+            std::snprintf(detail, sizeof detail, "fused=%llu err='%s'",
+                          static_cast<unsigned long long>(fused), err.c_str());
+            if (fused) cc_shape_release(fused);
+        } else {
+            std::snprintf(detail, sizeof detail, "setup failed: threaded=%llu boss=%llu",
+                          static_cast<unsigned long long>(threaded),
+                          static_cast<unsigned long long>(boss));
+        }
+        record(ok, "threaded-body boolean honest-decline (defect-2)", detail);
+        if (threaded) cc_shape_release(threaded);
+        if (thread) cc_shape_release(thread);
+        if (shaft) cc_shape_release(shaft);
+        if (boss) cc_shape_release(boss);
+    }
+
     cc_set_engine(0);
 
     std::printf("== %d passed, %d failed ==\n", g_passed, g_failed);

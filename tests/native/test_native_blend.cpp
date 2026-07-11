@@ -1614,6 +1614,279 @@ CC_TEST(g2_curved_sphere_scope_defers) {
   CC_CHECK(!blend::curved_fillet_edge_g2(s, ids, 1, 1.0, 0.004).isNull());
 }
 
+// ── G2 (curvature-MATCHING) fillet on a CYLINDER (and CONE) ↔ cap rim ──────────────--
+// The next curved-substrate slice after sphere↔cap. A cylinder / cone wall is STRAIGHT-
+// RULED, so its normal curvature IN THE SECTION (meridian) PLANE at the wall seam is 0
+// (the ruling is a straight line — "0 along the axis" in the task's phrasing), while its
+// HOOP curvature 1/Rc (cone: cosσ/ρ) is matched AUTOMATICALLY by the revolution once G1
+// fixes the seam normal radial. So the genuine G2 match is κ_meridian=0 at BOTH seams (a
+// κ=0 quintic, collinear triples) — the SAME section-plane curvature the flat cap wants,
+// but on a genuinely CURVED substrate whose hoop curvature the blend also matches. The G1
+// torus tube's meridian curvature 1/r at both seams is the JUMP the quintic removes.
+// These gates prove: (1) closed-form κ_meridian(wall)=κ_meridian(cap)=0 AND the automatic
+// hoop match 1/Rc (wall) / 0 (cap), with the G1 torus tube's 1/r meridian JUMP as the
+// non-trivial control; (2) watertight + a volume converging under refinement to the exact
+// quintic-removed closed form; (3) honest declines + no cross-firing with sphere/planar.
+
+namespace {
+// Exact G2-removed volume for a cyl↔cap rim, by Pappus on the meridian cross-section
+// polygon bounded by the cylinder wall (wall seam → rim), the cap segment (rim → cap seam),
+// and the κ=0 QUINTIC (cap seam → wall seam). 2π·|A|·centroid_r over the polygon.
+double cylRemovedG2(double Rc, double h, double r) {
+  blend::detail::RimGeom g;
+  g.axis.origin = nmath::Point3{0, 0, 0};
+  g.axis.x = nmath::Dir3{nmath::Vec3{1, 0, 0}};
+  g.axis.y = nmath::Dir3{nmath::Vec3{0, 1, 0}};
+  g.axis.z = nmath::Dir3{nmath::Vec3{0, 0, 1}};
+  g.radius = Rc; g.capH = h; g.farH = 0.0; g.capNormal = nmath::Vec3{0, 0, 1};
+  const auto sec = blend::detail::g2CurvedCylSection(g, r);
+  if (!sec) return 0.0;
+  const double seamAx = sec->poles[0].z;   // wall seam axial (= h−r)
+  const double Rmaj = sec->poles[5].rho;   // cap seam radius (= Rc−r)
+  std::vector<double> X, Y;
+  X.push_back(Rc); Y.push_back(seamAx);    // wall seam (on the cylinder)
+  X.push_back(Rc); Y.push_back(h);         // rim (sharp corner)
+  X.push_back(Rmaj); Y.push_back(h);       // cap seam (on the cap)
+  const int Na = 3000;
+  for (int i = 0; i < Na; ++i) {           // quintic: cap seam (s=1) back to wall seam (s=0)
+    const double s = 1.0 - static_cast<double>(i) / (Na - 1);
+    const blend::detail::Mrd m = blend::detail::quinticMeridian(sec->poles, s);
+    X.push_back(m.rho); Y.push_back(m.z);
+  }
+  double A = 0, cx = 0;
+  const int n = static_cast<int>(X.size());
+  for (int i = 0; i < n; ++i) {
+    const int j = (i + 1) % n;
+    const double cr = X[i] * Y[j] - X[j] * Y[i];
+    A += cr; cx += (X[i] + X[j]) * cr;
+  }
+  A *= 0.5; cx /= (6.0 * A);
+  return 2.0 * M_PI * std::fabs(A) * cx;
+}
+}  // namespace
+
+CC_TEST(g2_curved_cyl_section_curvature_matches_zero_and_hoop_closed_form) {
+  // CLOSED-FORM CURVATURE-MATCH PROOF (no OCCT, no mesh): the κ=0 quintic meridian section's
+  // curvature is EXACTLY zero at BOTH the cylinder-wall rail and the cap rail — matching the
+  // straight-ruled cylinder's meridian normal curvature (0) and the flat cap's (0). The HOOP
+  // curvature the blend carries at the wall seam is 1/Rc (matched automatically by the
+  // revolution) and 0 at the cap seam — G2 in BOTH principal directions across both seams.
+  const double Rc = 5.0, h = 10.0, r = 1.5;
+  blend::detail::RimGeom g;
+  g.axis.origin = nmath::Point3{0, 0, 0};
+  g.axis.x = nmath::Dir3{nmath::Vec3{1, 0, 0}};
+  g.axis.y = nmath::Dir3{nmath::Vec3{0, 1, 0}};
+  g.axis.z = nmath::Dir3{nmath::Vec3{0, 0, 1}};
+  g.radius = Rc; g.capH = h; g.farH = 0.0; g.capNormal = nmath::Vec3{0, 0, 1};
+  const auto sec = blend::detail::g2CurvedCylSection(g, r);
+  CC_CHECK(sec.has_value());
+  // Meridian curvature at both rails is exactly 0 (matched to the straight ruling + flat cap).
+  const double kWall = blend::detail::meridianCurvature(sec->poles, 0.0);
+  const double kCap = blend::detail::meridianCurvature(sec->poles, 1.0);
+  CC_CHECK(std::fabs(kWall) < 1e-9);  // MATCHES the cylinder's meridian normal curvature (0)
+  CC_CHECK(std::fabs(kCap) < 1e-9);   // MATCHES the flat cap's zero curvature
+  // Second differences vanish at both ends (B''=0 ⇒ κ=0), the algebraic collinear-triple.
+  const nmath::Vec3 d2s{sec->poles[0].rho - 2 * sec->poles[1].rho + sec->poles[2].rho,
+                        sec->poles[0].z - 2 * sec->poles[1].z + sec->poles[2].z, 0.0};
+  const nmath::Vec3 d2e{sec->poles[5].rho - 2 * sec->poles[4].rho + sec->poles[3].rho,
+                        sec->poles[5].z - 2 * sec->poles[4].z + sec->poles[3].z, 0.0};
+  CC_CHECK(nmath::norm(d2s) < 1e-12);
+  CC_CHECK(nmath::norm(d2e) < 1e-12);
+  // The blend's HOOP curvature is a genuine (nonzero) second-order match on the curved wall.
+  CC_CHECK(nearRel(sec->kHoopWall, 1.0 / Rc, 1e-12));  // = 1/Rc (the cylinder's hoop curvature)
+  CC_CHECK(1.0 / Rc > 0.1);                            // genuinely curved substrate (not planar)
+  // Seams lie EXACTLY on the neighbours (G0) with in-surface tangents (G1).
+  CC_CHECK(nearRel(sec->poles[0].rho, Rc, 1e-12));     // P0 on the cylinder wall
+  CC_CHECK(nearRel(sec->poles[0].z, h - r, 1e-12));    // r below the cap
+  CC_CHECK(nearRel(sec->poles[5].z, h, 1e-12));        // P5 on the cap plane
+  CC_CHECK(nearRel(sec->poles[5].rho, Rc - r, 1e-12)); // trimmed to Rc−r
+  const blend::detail::Mrd t0 = sec->poles[1] - sec->poles[0];
+  CC_CHECK(std::fabs(t0.rho) < 1e-12);                 // wall tangent axial (along the cylinder)
+  const blend::detail::Mrd t1 = sec->poles[5] - sec->poles[4];
+  CC_CHECK(std::fabs(t1.z) < 1e-12);                   // cap tangent horizontal (in the cap)
+}
+
+CC_TEST(g2_curved_cyl_measured_section_curvature_matches_and_beats_g1) {
+  // DISCRETE MEASURED witness (host, OCCT-free), independent of the analytic hodograph: the
+  // quintic meridian's near-wall Menger curvature CONVERGES to the cylinder's section-plane
+  // (meridian) curvature 0 — NOT the torus tube's 1/r. The G1 control is the circular torus
+  // section (curvature 1/r everywhere) whose wall-seam value is a JUMP; the G2 measured value
+  // sits far closer to 0.
+  const double Rc = 5.0, h = 10.0, r = 1.5;
+  blend::detail::RimGeom g;
+  g.axis.origin = nmath::Point3{0, 0, 0};
+  g.axis.x = nmath::Dir3{nmath::Vec3{1, 0, 0}};
+  g.axis.y = nmath::Dir3{nmath::Vec3{0, 1, 0}};
+  g.axis.z = nmath::Dir3{nmath::Vec3{0, 0, 1}};
+  g.radius = Rc; g.capH = h; g.farH = 0.0; g.capNormal = nmath::Vec3{0, 0, 1};
+  const auto sec = blend::detail::g2CurvedCylSection(g, r);
+  CC_CHECK(sec.has_value());
+  auto kappaAt = [&](double s) -> double {
+    const double ds = 1e-3;
+    const blend::detail::Mrd pm = blend::detail::quinticMeridian(sec->poles, s - ds);
+    const blend::detail::Mrd p0 = blend::detail::quinticMeridian(sec->poles, s);
+    const blend::detail::Mrd pp = blend::detail::quinticMeridian(sec->poles, s + ds);
+    const double ax = p0.rho - pm.rho, ay = p0.z - pm.z;
+    const double cx = pp.rho - p0.rho, cy = pp.z - p0.z;
+    const double bx = pp.rho - pm.rho, by = pp.z - pm.z;
+    const double la = std::hypot(ax, ay), lc = std::hypot(cx, cy), lb = std::hypot(bx, by);
+    if (la * lc * lb < 1e-18) return 0.0;
+    return 2.0 * std::fabs(ax * cy - ay * cx) / (la * lc * lb);  // Menger = 1/circumradius
+  };
+  const double kTubeG1 = 1.0 / r;              // the G1 torus tube's constant section curvature
+  const double kNearWall = kappaAt(0.002);     // measured, close to the wall rail
+  CC_CHECK(kNearWall < 0.02);                  // MATCHES the cylinder's meridian curvature (→0)
+  CC_CHECK(kNearWall < 0.05 * kTubeG1);        // ≪ the G1 tube's 1/r JUMP at the wall
+  CC_CHECK(kappaAt(0.5) > 1e-3);               // mid-section IS curved (a real blend)
+}
+
+CC_TEST(g2_curved_cyl_control_g1_tube_curvature_jumps) {
+  // CONTROL (proves the match is non-trivial): the G1 torus tube section has CONSTANT
+  // curvature 1/r at the wall seam — a JUMP away from the cylinder's meridian curvature 0.
+  // The G2 quintic removes exactly that jump (κ→0), so |κ_G2 − 0| ≪ |1/r − 0|.
+  const double Rc = 5.0, r = 1.5;
+  const double kTubeG1 = 1.0 / r;
+  CC_CHECK(kTubeG1 > 0.5);  // the G1 curvature JUMP at the wall (vs the substrate's 0)
+  blend::detail::RimGeom g;
+  g.axis.origin = nmath::Point3{0, 0, 0};
+  g.axis.x = nmath::Dir3{nmath::Vec3{1, 0, 0}};
+  g.axis.y = nmath::Dir3{nmath::Vec3{0, 1, 0}};
+  g.axis.z = nmath::Dir3{nmath::Vec3{0, 0, 1}};
+  g.radius = Rc; g.capH = 10.0; g.farH = 0.0; g.capNormal = nmath::Vec3{0, 0, 1};
+  const auto sec = blend::detail::g2CurvedCylSection(g, r);
+  CC_CHECK(sec.has_value());
+  const double jumpG2 = std::fabs(blend::detail::meridianCurvature(sec->poles, 0.0));
+  CC_CHECK(jumpG2 < 1e-9);                        // G2: curvature CONTINUOUS at the wall
+  CC_CHECK(jumpG2 < 0.01 * kTubeG1);              // ≪ the G1 jump (matched vs jump)
+}
+
+CC_TEST(g2_curved_cyl_watertight_volume_reduced_and_converges) {
+  // The G2 blend on a capped cylinder (Rc=5, h=10, r=1.5) is watertight, REMOVES material
+  // (convex fillet), and its volume converges under refinement to the exact quintic-removed
+  // closed form. The revolved κ=0 section welds to the wall + trimmed cap the SAME way the
+  // G1 torus band does (shared N angular samples).
+  const double Rc = 5.0, h = 10.0, r = 1.5;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  bool wt0 = false;
+  const double v0 = vol(cyl, wt0);
+  CC_CHECK(wt0);
+  const int rim = findRimAtZ(cyl, h);
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  topo::Shape f = blend::curved_fillet_edge_g2_cyl(cyl, ids, 1, r, 0.004);
+  bool wt = false;
+  const double v = vol(f, wt);
+  CC_CHECK(!f.isNull());
+  CC_CHECK(wt);                          // revolved G2 section welds watertight
+  CC_CHECK(v < v0);                      // convex fillet REMOVES material
+  const double exact = v0 - cylRemovedG2(Rc, h, r);
+  CC_CHECK(nearRel(v, exact, 5e-3));     // matches the exact quintic-removed volume
+  // Refinement (coarse → fine) grows the under-filled convex blend toward exact; deterministic.
+  bool wtC = false, wtF = false, wtF2 = false;
+  const double vCoarse = vol(blend::curved_fillet_edge_g2_cyl(cyl, ids, 1, r, 0.05), wtC);
+  const double vFine = vol(blend::curved_fillet_edge_g2_cyl(cyl, ids, 1, r, 0.004), wtF);
+  const double vFine2 = vol(blend::curved_fillet_edge_g2_cyl(cyl, ids, 1, r, 0.004), wtF2);
+  CC_CHECK(wtC && wtF && wtF2);
+  CC_CHECK(vCoarse <= exact + 1e-6);     // under-fills
+  CC_CHECK(vFine >= vCoarse - 1e-9);     // refinement grows toward exact
+  CC_CHECK(nearRel(vFine, vFine2, 1e-12));  // deterministic (fp64, no RNG)
+  // The G2 quintic keeps MORE material than the equal-radius G1 torus fillet (fuller shoulder).
+  bool wtG1 = false;
+  const double vG1 = vol(blend::curved_fillet_edge(cyl, ids, 1, r, 0.004), wtG1);
+  CC_CHECK(wtG1);
+  CC_CHECK(v > vG1);
+}
+
+CC_TEST(g2_curved_cone_section_matches_and_watertight) {
+  // CONE arm: the same κ=0 quintic on a straight-ruled CONE wall — meridian curvature 0 at
+  // both seams (matched), only the wall tangent tilts by σ (leaves along the cone ruling).
+  // Closed-form κ=0 proof + watertight volume-reduced solid.
+  const double Rb = 6, Rt = 4, H = 10, r = 1.0;
+  topo::Shape s = cappedFrustum(Rb, Rt, H);
+  const nmath::Vec3 axisY{0, 1, 0};
+  const int rim = findRimAtAxial(s, axisY, H, Rt);
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  const auto g = blend::detail::coneCapGeom(s, rim);
+  CC_CHECK(g.has_value());
+  const auto sec = blend::detail::g2CurvedConeSection(*g, r);
+  CC_CHECK(sec.has_value());
+  // Meridian curvature 0 at both rails (straight-ruled cone wall + flat cap).
+  CC_CHECK(std::fabs(blend::detail::meridianCurvature(sec->poles, 0.0)) < 1e-9);
+  CC_CHECK(std::fabs(blend::detail::meridianCurvature(sec->poles, 1.0)) < 1e-9);
+  // The wall tangent is TILTED (has a nonzero radial AND axial component — the cone ruling),
+  // unlike the cylinder's purely-axial wall tangent.
+  const blend::detail::Mrd t0 = sec->poles[1] - sec->poles[0];
+  CC_CHECK(std::fabs(t0.rho) > 1e-6);    // tilted (radial component from σ≠0)
+  CC_CHECK(std::fabs(t0.z) > 1e-6);
+  // Hoop curvature match cosσ/ρ is genuinely nonzero (curved substrate).
+  CC_CHECK(sec->kHoopWall > 0.1);
+  // The G2 fillet on the frustum is watertight and REMOVES material.
+  topo::Shape f = blend::curved_fillet_edge_g2_cone(s, ids, 1, r, 0.004);
+  bool wt = false;
+  const double v = vol(f, wt);
+  const double vSharp = frustumSharpVolume(Rb, Rt, H);
+  CC_CHECK(!f.isNull());
+  CC_CHECK(wt);
+  CC_CHECK(v < vSharp);                  // convex fillet REMOVES material
+  // Keeps more material than the equal-radius G1 cone fillet (fuller shoulder).
+  bool wtG1 = false;
+  const double vG1 = vol(blend::cone_fillet_edge(s, ids, 1, r, 0.004), wtG1);
+  CC_CHECK(wtG1);
+  CC_CHECK(v > vG1);
+  // Widening frustum too (σ tilts the other way).
+  topo::Shape s2 = cappedFrustum(4, 6, 10);
+  const int rim2 = findRimAtAxial(s2, axisY, 10, 6);
+  CC_CHECK(rim2 != 0);
+  int ids2[] = {rim2};
+  topo::Shape f2 = blend::curved_fillet_edge_g2_cone(s2, ids2, 1, 1.0, 0.004);
+  bool wt2 = false;
+  const double v2 = vol(f2, wt2);
+  CC_CHECK(!f2.isNull());
+  CC_CHECK(wt2);
+  CC_CHECK(v2 < frustumSharpVolume(4, 6, 10));
+}
+
+CC_TEST(g2_curved_cyl_cone_scope_defers) {
+  // Honest declines (→ OCCT) + NO cross-firing with the sphere / planar / other builders.
+  const double Rc = 5.0, h = 10.0;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  const int rim = findRimAtZ(cyl, h);
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  CC_CHECK(blend::curved_fillet_edge_g2_cyl(cyl, ids, 1, 0.0, 0.01).isNull());   // r=0
+  int ids2[] = {rim, 1};
+  CC_CHECK(blend::curved_fillet_edge_g2_cyl(cyl, ids2, 2, 1.0, 0.01).isNull());  // multi-edge
+  CC_CHECK(blend::curved_fillet_edge_g2_cyl(cyl, ids, 1, 3.0, 0.01).isNull());   // Rc<2r ring guard
+  // The cyl arm DECLINES a cone rim, and the cone arm DECLINES a cylinder rim (no cross-fire).
+  topo::Shape frus = cappedFrustum(6, 4, 10);
+  const nmath::Vec3 axisY{0, 1, 0};
+  const int crim = findRimAtAxial(frus, axisY, 10, 4);
+  CC_CHECK(crim != 0);
+  int cids[] = {crim};
+  CC_CHECK(blend::curved_fillet_edge_g2_cyl(frus, cids, 1, 1.0, 0.01).isNull());  // cone → cyl declines
+  CC_CHECK(blend::curved_fillet_edge_g2_cone(cyl, ids, 1, 1.0, 0.01).isNull());   // cyl → cone declines
+  // The SPHERE G2 arm DECLINES the cylinder rim (the sphere builder needs a Sphere face).
+  CC_CHECK(blend::curved_fillet_edge_g2(cyl, ids, 1, 1.0, 0.01).isNull());
+  // A truncated ball → both cyl AND cone G2 arms decline (no Cylinder/Cone↔cap rim).
+  topo::Shape ball = truncatedBall(5.0, 2.0);
+  const int brim = findRimAtAxial(ball, axisY, 2.0, std::sqrt(25.0 - 4.0));
+  if (brim != 0) {
+    int bids[] = {brim};
+    CC_CHECK(blend::curved_fillet_edge_g2_cyl(ball, bids, 1, 1.0, 0.01).isNull());
+    CC_CHECK(blend::curved_fillet_edge_g2_cone(ball, bids, 1, 1.0, 0.01).isNull());
+  }
+  // A straight (Line) box edge is not a circular crease → NULL for both arms.
+  topo::Shape b = box(10, 10, 10);
+  const int le = findEdgeId(b, {0, 10, 10}, {10, 10, 10});
+  int idsb[] = {le};
+  CC_CHECK(blend::curved_fillet_edge_g2_cyl(b, idsb, 1, 1.0, 0.01).isNull());
+  CC_CHECK(blend::curved_fillet_edge_g2_cone(b, idsb, 1, 1.0, 0.01).isNull());
+  // Control: the cylinder rim DOES land on the cyl arm, the cone rim on the cone arm.
+  CC_CHECK(!blend::curved_fillet_edge_g2_cyl(cyl, ids, 1, 1.5, 0.004).isNull());
+  CC_CHECK(!blend::curved_fillet_edge_g2_cone(frus, cids, 1, 1.0, 0.004).isNull());
+}
+
 // ── offset_face ────────────────────────────────────────────────────────────────--
 
 CC_TEST(offset_top_face_grows_slab) {

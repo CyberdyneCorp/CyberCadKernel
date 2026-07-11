@@ -317,6 +317,184 @@ CC_TEST(g2_fillet_scope_defers) {
   CC_CHECK(!blend::fillet_edges_g2(b, ids, 1, 2.0, 0.005).isNull());
 }
 
+// ── G2 (curvature-continuous) fillet on a CONCAVE planar dihedral edge ─────────────--
+// The second scoped slice of the drop-OCCT Class-B `fillet_edges_g2` after the convex
+// planar dihedral. A CONCAVE (reflex) planar dihedral (the inner corner of an L-shaped
+// prism) is the mirror of the convex case: the ball seats in the VOID (C=E+r/(1+c)(n1+n2),
+// Ti=C−r·ni), the fillet ADDS material rounding the reflex corner, and the soup is edited
+// surgically (trim the two adjacent walls to their tangent lines, splice the quintic rim
+// into the end caps carrying the reflex vertex, bridge with the roof strips). The SAME
+// zero-END-CURVATURE quintic (collinear rail-triples → B''=0 → κ=0 at both rails → G2) is
+// reused; only the ball-centre sign, the strip-normal sign, and the ADD-material volume
+// flip. These gates prove: (1) closed-form B''=0 at both rails PLUS a measured near-rail
+// curvature far below the G1 1/r jump, with the G1 concave arc's 1/r as a non-trivial
+// control; (2) watertight with the correct GROW volume matching the closed-form quintic
+// sliver 4·(131/960)·r²; (3) honest declines outside the concave-planar-dihedral envelope.
+
+namespace {
+// An L-shaped prism: outer profile CCW with a single REFLEX (concave) inner vertical edge
+// at (Lc,Lc), extruded +Z by `depth`. Footprint area = Lo²−(Lo−Lc)²... here a clean
+// 6×6 square with a 3×3 notch removed → the reflex corner is at (3,3).
+topo::Shape lPrism(double depth) {
+  const double p[] = {0, 0, 6, 0, 6, 3, 3, 3, 3, 6, 0, 6};
+  return cst::build_prism(p, 6, depth);
+}
+// The two faces on the concave edge (3,3,·), as blend polygons, so a test can build the
+// concave G2 section directly and assert its closed-form curvature.
+bool facesOnConcaveEdge(const topo::Shape& s, blend::nb::Polygon& f1, blend::nb::Polygon& f2) {
+  blend::PlanarModel model(s);
+  if (!model.isValid()) return false;
+  std::size_t fi[2];
+  if (blend::facesOnEdgeInSoup(model.polygons(), {3, 3, 0}, {3, 3, 4}, fi) != 2) return false;
+  f1 = model.polygons()[fi[0]];
+  f2 = model.polygons()[fi[1]];
+  return true;
+}
+}  // namespace
+
+CC_TEST(g2_concave_fillet_section_curvature_is_zero_at_both_rails_closed_form) {
+  // CLOSED-FORM G2 PROOF (no OCCT, no mesh): the CONCAVE quintic section's second
+  // difference is exactly zero at both endpoints (B''(0) ∝ P0−2P1+P2, B''(1) ∝ P5−2P4+P3),
+  // so its curvature κ=|B'×B''|/|B'|³ is 0 at each rail — the identical collinear-triple
+  // identity as the convex slice, on the reflex L-prism edge.
+  topo::Shape L = lPrism(4.0);
+  blend::nb::Polygon f1, f2;
+  CC_CHECK(facesOnConcaveEdge(L, f1, f2));
+  const auto sec = blend::detail::g2SectionConcave({3, 3, 0}, {3, 3, 4}, f1, f2, 2.0);
+  CC_CHECK(sec.has_value());
+  const auto& P = sec->poles;
+  const nmath::Vec3 d2_start = (P[0].asVec() - P[1].asVec() * 2.0 + P[2].asVec());
+  const nmath::Vec3 d2_end = (P[5].asVec() - P[4].asVec() * 2.0 + P[3].asVec());
+  CC_CHECK(nmath::norm(d2_start) < 1e-12);  // B''(0) = 0 → κ(0) = 0 (G2)
+  CC_CHECK(nmath::norm(d2_end) < 1e-12);    // B''(1) = 0 → κ(1) = 0 (G2)
+  CC_CHECK(nmath::distance(P[0], P[1]) > 1e-6);  // still bulges (real blend)
+  CC_CHECK(nmath::distance(P[4], P[5]) > 1e-6);
+}
+
+CC_TEST(g2_concave_fillet_measured_seam_curvature_beats_g1) {
+  // MEASURED G2 witness (host, OCCT-free): the concave quintic's near-rail Menger
+  // curvature is far SMALLER than the G1 concave circular arc's constant 1/r on the SAME
+  // edge/radius — a second, independent witness to the exact B''=0 proof.
+  topo::Shape L = lPrism(4.0);
+  blend::nb::Polygon f1, f2;
+  CC_CHECK(facesOnConcaveEdge(L, f1, f2));
+  const double r = 2.0;
+  const auto sec = blend::detail::g2SectionConcave({3, 3, 0}, {3, 3, 4}, f1, f2, r);
+  CC_CHECK(sec.has_value());
+  auto kappaAt = [&](double s) -> double {
+    const double ds = 1e-3;
+    const nmath::Point3 pm = blend::detail::quinticPoint(sec->poles, s - ds);
+    const nmath::Point3 p0 = blend::detail::quinticPoint(sec->poles, s);
+    const nmath::Point3 pp = blend::detail::quinticPoint(sec->poles, s + ds);
+    const nmath::Vec3 a = p0 - pm, c = pp - p0;
+    const double la = nmath::norm(a), lc = nmath::norm(c), lac = nmath::norm(pp - pm);
+    const double area2 = nmath::norm(nmath::cross(a, c));
+    if (la * lc * lac < 1e-18) return 0.0;
+    return area2 / (la * lc * lac);
+  };
+  const double kG2_nearRail = kappaAt(0.02);
+  const double kG1 = 1.0 / r;  // the G1 concave arc's constant seam curvature
+  CC_CHECK(kG2_nearRail < 0.25 * kG1);  // ≤ ¼ the G1 jump near the rail
+  CC_CHECK(kG2_nearRail < 0.05);        // small in absolute terms (→ 0 at the rail)
+  CC_CHECK(kappaAt(0.5) > 1e-3);        // mid-section IS curved (a real blend)
+}
+
+CC_TEST(g2_concave_fillet_control_circular_arc_curvature_is_one_over_r) {
+  // CONTROL (proves the G2 check is non-trivial): the G1 CONCAVE circular arc has CONSTANT
+  // curvature 1/r ≠ 0 at the rail — every point of the concave section is at distance r
+  // from the void-side axis C — the very curvature JUMP the G2 concave blend removes.
+  topo::Shape L = lPrism(4.0);
+  blend::nb::Polygon f1, f2;
+  CC_CHECK(facesOnConcaveEdge(L, f1, f2));
+  const double r = 2.0;
+  const auto arc = blend::detail::concaveFilletArc({3, 3, 0}, {3, 3, 4}, f1, f2, r);
+  CC_CHECK(arc.has_value());
+  CC_CHECK(nearRel(nmath::distance(arc->t1, arc->axis), r, 1e-12));
+  CC_CHECK(nearRel(nmath::distance(arc->t2, arc->axis), r, 1e-12));
+  CC_CHECK(std::fabs(1.0 / r) > 0.4);  // arc curvature 1/r ≈ 0.5, FAR from zero
+}
+
+CC_TEST(g2_concave_fillet_l_prism_watertight_and_volume_grown) {
+  // The concave G2 blend on the reflex L-prism edge (r=1) is watertight and ADDS material
+  // into the reflex corner (volume GROWS). The added sliver is the quintic-filled region
+  // between the sharp corner and the section; its exact area over the edge length is
+  // 4·(131/960)·r² = 0.545833 (the closed-form symmetric-90°-corner quintic sliver, see
+  // the header), which the deflection-bounded facet body converges to from ABOVE (facet
+  // chords over-enclose the concave curve). Watertight + volume-grown is the ADD-material
+  // twin of the convex slice's SHRINK self-verify.
+  topo::Shape L = lPrism(4.0);
+  const int e = findEdgeId(L, {3, 3, 0}, {3, 3, 4});
+  CC_CHECK(e != 0);
+  int ids[] = {e};
+  const double r = 1.0;
+  bool wt0 = false;
+  const double v0 = vol(L, wt0);
+  CC_CHECK(wt0);
+  topo::Shape g2 = blend::fillet_edges_g2_concave(L, ids, 1, r, 0.005);
+  bool wt = false;
+  const double v = vol(g2, wt);
+  CC_CHECK(!g2.isNull());
+  CC_CHECK(wt);          // curvature-continuous concave section welds watertight
+  CC_CHECK(v > v0);      // a CONCAVE fillet ADDS material (volume GROWS)
+  const double expectedGrow = 4.0 * (131.0 / 960.0) * r * r;  // closed-form quintic sliver
+  // Deflection-bounded: 0.005 sits ~4% above the smooth closed form; bound generously and
+  // separately assert the sign + that it is well below the circular fill (fuller shoulder).
+  CC_CHECK((v - v0) > expectedGrow);                 // facet over-encloses the concave curve
+  CC_CHECK((v - v0) < expectedGrow * 1.10);          // within the deflection band
+  const double circularFill = 4.0 * (1.0 - M_PI / 4.0) * r * r;  // G1 concave arc adds MORE
+  CC_CHECK((v - v0) < circularFill);  // the quintic hugs the faces → adds LESS than the arc
+}
+
+CC_TEST(g2_concave_fillet_volume_converges_to_closed_form) {
+  // Refining the deflection drives the added volume DOWN toward the exact closed-form
+  // quintic sliver 4·(131/960)·r² (facet chords over-enclose the concave curve, so the
+  // approach is monotone from above) — a rigorous closed-form volume witness.
+  topo::Shape L = lPrism(4.0);
+  const int e = findEdgeId(L, {3, 3, 0}, {3, 3, 4});
+  int ids[] = {e};
+  const double r = 1.0;
+  bool wt0 = false;
+  const double v0 = vol(L, wt0);
+  const double cf = 4.0 * (131.0 / 960.0) * r * r;
+  bool wa = false, wb = false;
+  const double coarse = vol(blend::fillet_edges_g2_concave(L, ids, 1, r, 0.02), wa) - v0;
+  const double fine = vol(blend::fillet_edges_g2_concave(L, ids, 1, r, 0.001), wb) - v0;
+  CC_CHECK(wa && wb);
+  CC_CHECK(coarse > fine);          // refining shrinks the over-enclosure
+  CC_CHECK(fine > cf);              // still above the smooth closed form
+  CC_CHECK(nearRel(fine, cf, 1e-2));  // fine facets within 1% of the closed form
+  // Determinism: identical input → identical volume (fp64, no RNG).
+  bool w1 = false, w2 = false;
+  const double d1 = vol(blend::fillet_edges_g2_concave(L, ids, 1, r, 0.005), w1);
+  const double d2 = vol(blend::fillet_edges_g2_concave(L, ids, 1, r, 0.005), w2);
+  CC_CHECK(w1 && w2);
+  CC_CHECK(nearRel(d1, d2, 1e-12));
+}
+
+CC_TEST(g2_concave_fillet_scope_defers) {
+  // Honest declines (→ OCCT), the deep-residual boundary + no cross-firing with convex G2.
+  topo::Shape L = lPrism(4.0);
+  const int e = findEdgeId(L, {3, 3, 0}, {3, 3, 4});
+  int ids[] = {e};
+  CC_CHECK(blend::fillet_edges_g2_concave(L, ids, 1, 0.0).isNull());      // r ≤ 0
+  CC_CHECK(blend::fillet_edges_g2_concave(L, nullptr, 0, 1.0).isNull());  // no edges
+  // A CONVEX box edge is not a reflex dihedral → NULL (the convex G2 builder owns it).
+  topo::Shape b = box(10, 10, 10);
+  const int ce = findEdgeId(b, {0, 10, 10}, {10, 10, 10});
+  int cids[] = {ce};
+  CC_CHECK(blend::fillet_edges_g2_concave(b, cids, 1, 2.0, 0.005).isNull());  // convex → decline
+  // A curved (cylinder) solid is not a planar dihedral → NULL (curved substrate → OCCT).
+  const double prof[] = {2, 0, 5, 0, 5, 10, 2, 10};
+  topo::Shape cyl = cst::build_revolution(prof, 4, cst::RevolveAxis{0, 0, 0, 1}, 6.2831853);
+  int cyids[] = {1};
+  CC_CHECK(blend::fillet_edges_g2_concave(cyl, cyids, 1, 1.0).isNull());
+  // No cross-firing: the CONVEX G2 builder DECLINES this concave edge, and the CONCAVE
+  // builder DECLINES the convex box edge (asserted above) — exactly one fires per edge.
+  CC_CHECK(blend::fillet_edges_g2(L, ids, 1, 1.0, 0.005).isNull());
+  // Control: the concave L-prism edge DOES land (no spurious decline).
+  CC_CHECK(!blend::fillet_edges_g2_concave(L, ids, 1, 1.0, 0.005).isNull());
+}
+
 // ── curved fillet (first CURVED slice: torus canal blend on a cylinder↔cap rim) ──--
 
 namespace {

@@ -37,7 +37,7 @@ NURBS is not one feature — it is a stack. Here is the stack vs. what this kern
 |---|---|---|
 | **Geometry** — rational B-spline curves/surfaces, arbitrary degree, knots/mults; De Boor eval + derivatives | full | ✅ **partial** — NURBS eval + projection (`src/native/numerics`), Bézier/BSpline trimmed faces (`shape.h`), STEP admission of B-spline surfaces/curves + trims |
 | **Geometry algorithms** — knot insert/remove, degree elevate/reduce, split, reparametrize | full | ✅ **exact-NURBS kernel** — OCCT-free, substrate-free `src/native/math/bspline_ops.{h,cpp}`: knot insert/refine/remove, degree elevate/reduce, split, Bézier decompose, reparam for curves + tensor surfaces, rational-aware (homogeneous lift). Exact-preserving (knot-removal / degree-reduction report a bounded error and decline honestly). Host-analytic gate `tests/native/test_native_nurbs_ops.cpp`. Layers 2–8 below remain demand-gated. |
-| **Fitting / approximation** — points→B-spline curve/surface, interpolation | full | ❌ absent (= the scan-to-CAD / point-cloud direction) |
+| **Fitting / approximation** — points→B-spline curve/surface, interpolation | full | 🟡 **partial** — OCCT-free, numsci-gated `src/native/math/bspline_fit.{h,cpp}` (NURBS-SCOPE Layer 7): chord-length / centripetal parametrization, averaging + approx knots, **non-rational** global curve INTERPOLATION (A9.1, `lin_solve` collocation), least-squares curve APPROXIMATION (A9.4/9.6, endpoints pinned, `lstsq`), and tensor-product surface interp/approx. Airtight host gate `tests/native/test_native_nurbs_fit.cpp` (interpolation exact ~1e-15, idempotent round-trip ~1e-14, monotone approximation convergence). Rational (weighted) fitting + advanced surfacing (skin/loft/Gordon) are the residual. |
 | **NURBS intersection (SSI)** — arbitrary NURBS↔NURBS incl. tangent/singular | full (`IntPatch`) | 🟡 **bounded** — analytic + bounded-freeform SSI; general skew-NURBS↔NURBS honestly declines |
 | **NURBS B-rep boolean** — arbitrary trimmed-NURBS faces, tolerant, non-manifold | full (`BOPAlgo`) | 🟡 **bounded** — the M2 spine covers the app's poses; general NURBS↔NURBS is the deep tail |
 | **NURBS fillet/chamfer** — variable-radius / G2 on arbitrary surfaces | full (`ChFi3d`) | 🟡 analytic-revolve + canal only |
@@ -82,7 +82,7 @@ Rough, dependency-ordered (each builds on the one above):
 | General NURBS fillet/chamfer (ChFi3d-class) | 3–6 | needs the boolean + SSI |
 | NURBS offset / thicken (robust) | 2–4 | |
 | Exact NURBS sweep/loft/surfacing (GeomFill/Gordon/plate) | 2–4 | |
-| Fitting / approximation (points→NURBS) | 1–2 | |
+| Fitting / approximation (points→NURBS) | 1–2 | 🟡 non-rational curve+surface interp/approx **landed** (`src/native/math/bspline_fit`, Layer 7); rational (weighted) fitting + advanced surfacing residual |
 | Trimmed-NURBS B-rep data model + pcurve robustness + NURBS healing | 2–4 | |
 | **Total (OCCT/Parasolid-class general NURBS modeling)** | **≈ 20–40 py** | ~a decade for a small team |
 

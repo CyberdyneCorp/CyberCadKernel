@@ -356,6 +356,16 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_numerics)
         set(test_native_numerics_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_numerics.cpp")
+        # NURBS roadmap Layer 7 — fitting / approximation (src/native/math/
+        # bspline_fit). The fit routines solve linear systems through the numsci
+        # facade (lin_solve / lstsq), so the module + its host gate build only under
+        # CYBERCAD_HAS_NUMSCI (mirroring test_native_ssi_seeding). Airtight oracles:
+        # interpolation exactness (pass-through ~1e-9), round-trip recovery of a KNOWN
+        # B-spline (~1e-8), monotone approximation-error convergence, parametrization
+        # sanity + honest degenerate guards. Non-rational scope; rational is a residual.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_fit)
+        set(test_native_nurbs_fit_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_fit.cpp")
         # SSI Stage S2 subdivision seeding — the refine (least_squares) is under
         # CYBERCAD_HAS_NUMSCI, so its host suite builds only in that config.
         list(APPEND CYBERCAD_TESTS test_native_ssi_seeding)
@@ -844,6 +854,13 @@ if(CYBERCAD_BUILD_TESTS)
     # so unlike the boolean test it needs the macro but NOT the substrate include trees.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_ssi_s4_classification)
         target_compile_definitions(test_native_ssi_s4_classification PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+
+    # The Layer-7 fitting gate includes bspline_fit.h, which under CYBERCAD_HAS_NUMSCI
+    # pulls in the numerics facade header (numerics.h — vec.h + std only, no NumPP/SciPP
+    # headers), so its TU needs the macro but NOT the substrate include trees.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_fit)
+        target_compile_definitions(test_native_nurbs_fit PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_ssi_boolean)

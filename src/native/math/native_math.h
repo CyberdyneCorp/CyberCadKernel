@@ -11,6 +11,9 @@
 //   * bspline_ops.h— exact-NURBS geometry kernel (NURBS-SCOPE Layer 1): knot
 //                    insert/refine/remove, degree elevate/reduce, split, Bézier
 //                    decompose, reparam — curves & tensor surfaces, rational-aware.
+//   * bspline_fit.h— NURBS fitting / approximation (NURBS-SCOPE Layer 7): points →
+//                    B-spline curve/surface interpolation + least-squares approx.
+//                    (numsci-gated; the solve-bearing routines need CYBERCAD_HAS_NUMSCI.)
 //   * bezier.h     — Bézier curves & surfaces via de Casteljau (+ rational).
 //   * elementary.h — analytic plane / cylinder / cone / sphere.
 //   * torus.h      — analytic torus (surface of revolution of an off-axis circle).
@@ -29,6 +32,7 @@
 #include "transform.h"
 #include "bspline.h"
 #include "bspline_ops.h"
+#include "bspline_fit.h"
 #include "bezier.h"
 #include "elementary.h"
 #include "torus.h"

@@ -2761,6 +2761,234 @@ topo::Shape buildCylSphere2Cut(const CurvedSolid& A, const CurvedSolid& B,
   return topo::ShapeBuilder::makeSolid({shell});
 }
 
+// ── S5-k — TRANSVERSAL (NON-COAXIAL) CYLINDER∩SPHERE COMMON / CUT / FUSE ─────────────
+// The FIRST transversal (non-coaxial) curved-boolean slice. Where S5-i handles the COAXIAL
+// finite-cylinder∩sphere pose (sphere centre ON the cylinder axis → two ANALYTIC circle
+// seams, planar rings), S5-k handles the OFFSET pose: the cylinder axis is PARALLEL to but
+// DISPLACED from the sphere centre (perpendicular offset), so the two seams are NON-PLANAR
+// closed space curves (generalised Viviani curves) — no analytic circle exists. The seam is
+// consumed DIRECTLY from the S3 TraceSet (the general SSI machinery the roadmap names), not
+// re-derived from a closed form.
+//
+// SCOPE (the clean, robustly-handleable transversal pose): a THIN cylinder (radius Rc <
+// sphere radius Rs) whose axis is offset from the sphere centre but still passes fully
+// THROUGH the sphere — both cylinder ends poke out beyond the sphere, so the cylinder wall
+// crosses the sphere at exactly TWO disjoint closed loops (a lower loop + an upper loop
+// along the cylinder axis), both fully transversal (nearTangentGaps==0, branchPoints==0,
+// both Closed). The COMMON is then the same TOPOLOGY as the coaxial S5-i COMMON — a cylinder
+// mid-band capped by two spherical caps — but every ring is the traced NON-PLANAR seam:
+//   COMMON = sphere lower cap (inside the cylinder) + cylinder band (seamLo→seamHi, inside
+//     the sphere) + sphere upper cap (inside the cylinder). r ≤ min profile, generalised to
+//     the offset pose. Its boundary rings are the two traced seams (shared VertexPool weld).
+//     This is the LANDED transversal slice — every fragment is seam-driven and verified.
+//
+// CUT / FUSE both additionally need the sphere OUTER SHELL (the sphere ZONE between the two
+// NON-PLANAR seams, the long way round outside the bore); welding that zone as a shared-pool
+// planar-facet shell is the UNRESOLVED transversal residual (no revolved-band / far-pole
+// meridian tiles a two-non-planar-seam zone watertight), so CUT/FUSE HONEST-DECLINE → OCCT.
+//
+// REDUCTION: as the offset → 0 the pose becomes coaxial and S5-i's `cylSphere2Setup` claims
+// it FIRST in the dispatch (it runs before S5-k), reproducing the landed coaxial result
+// BYTE-for-byte; S5-k therefore gates on a STRICTLY-POSITIVE offset (else → decline, letting
+// S5-i own it). Anything else — a cylinder that does not pierce both poles (a single-loop /
+// tangent / grazing pose → NearTangent → OCCT), a non-parallel (skew) axis, a fat cylinder
+// (Rc ≥ Rs) — declines → OCCT. The engine owns the watertight + volume gate + OCCT fallback.
+// Nothing here is faked: any pose that cannot weld robustly returns NULL.
+struct TransCylSphereSetup {
+  bool ok = false;
+  const CurvedSolid* cyl = nullptr;
+  const CurvedSolid* sph = nullptr;
+  math::Point3 O;            ///< cylinder origin
+  math::Vec3 zc;             ///< cylinder axis (unit)
+  math::Point3 C;            ///< sphere centre
+  double Rc = 0.0, Rs = 0.0;
+  double offset = 0.0;       ///< perpendicular distance of the sphere centre from the cyl axis
+  int N = 0;                 ///< common azimuth sample count (seam-chord bounded)
+  Seam seamLo{}, seamHi{};   ///< the two traced seams, resampled + ordered lo/hi along zc
+  // A point on the cylinder axis far beyond the lower / upper seam (selects each cap's apex).
+  math::Point3 axisFarM() const {
+    return math::Point3{O.x - zc.x * 1e4, O.y - zc.y * 1e4, O.z - zc.z * 1e4};
+  }
+  math::Point3 axisFarP() const {
+    return math::Point3{O.x + zc.x * 1e4, O.y + zc.y * 1e4, O.z + zc.z * 1e4};
+  }
+};
+
+// Resample a traced closed seam onto a COMMON cylinder-azimuth grid of N nodes: for each
+// target azimuth u = 2πk/N, pick the seam node whose cylinder u-param (uvB, folded to
+// [0,2π)) is nearest u. This aligns BOTH seams index-wise (same azimuth per index) so the
+// cylinder band welds ring-to-ring cleanly, and keeps the seam's EXACT 3D points (so a cap
+// built on the shared pool welds along the true traced curve). `cylIsB` picks which (u,v)
+// track is the cylinder's.
+Seam resampleByAzimuth(const Seam& seam, bool cylIsB, int N) {
+  Seam out;
+  out.closed = true;
+  out.pts.resize(N);
+  out.uvA.resize(N);
+  out.uvB.resize(N);
+  const int m = static_cast<int>(seam.pts.size());
+  for (int k = 0; k < N; ++k) {
+    const double target = kSsiTwoPi * k / N;
+    double best = 1e300;
+    int bi = 0;
+    for (int i = 0; i < m; ++i) {
+      double u = cylIsB ? seam.uvB[i].first : seam.uvA[i].first;
+      u = std::fmod(u, kSsiTwoPi);
+      if (u < 0.0) u += kSsiTwoPi;
+      double du = std::fabs(u - target);
+      du = std::min(du, kSsiTwoPi - du);
+      if (du < best) { best = du; bi = i; }
+    }
+    out.pts[k] = seam.pts[bi];
+    out.uvA[k] = seam.uvA[bi];
+    out.uvB[k] = seam.uvB[bi];
+  }
+  return out;
+}
+
+// Mean axial projection (onto the cylinder axis from the cylinder origin) of a seam's nodes.
+double seamAxialMean(const TransCylSphereSetup& s, const Seam& seam) {
+  double acc = 0.0;
+  for (const auto& p : seam.pts)
+    acc += math::dot(math::Vec3{p.x - s.O.x, p.y - s.O.y, p.z - s.O.z}, s.zc);
+  return acc / static_cast<double>(std::max<size_t>(1, seam.pts.size()));
+}
+
+// Recognise the transversal (offset) cylinder∩sphere pierce-both-poles pose from the two
+// traced seams. Declines (→ ok=false) for the coaxial pose (offset ≤ tol, owned by S5-i), a
+// skew/non-parallel axis, a fat cylinder, ≠2 closed seams, or a pose whose caps/band fail
+// the inside-the-other survival sample. Mirrors the other setup prologues (coneCylSetup /
+// cylSphere2Setup): systems-band (a linear pose-recognition + resample + survival gate);
+// isolated + documented per the complexity policy.
+TransCylSphereSetup transCylSphereSetup(const CurvedSolid& A, const CurvedSolid& B,
+                                        const std::vector<Seam>& seams) {
+  TransCylSphereSetup st;
+  if (seams.size() != 2) return st;                       // pierce-both-poles → exactly two loops
+  for (const Seam& s : seams)
+    if (!s.closed || s.pts.size() < 8) return st;
+
+  const CurvedSolid* cylPtr = nullptr;
+  const CurvedSolid* sphPtr = nullptr;
+  for (const CurvedSolid* s : {&A, &B}) {
+    if (s->kind == CurvedKind::Cylinder) cylPtr = s;
+    else if (s->kind == CurvedKind::Sphere) sphPtr = s;
+  }
+  if (!cylPtr || !sphPtr) return st;
+  const CurvedSolid& cyl = *cylPtr;
+  const CurvedSolid& sph = *sphPtr;
+  const bool cylIsB = (&B == cylPtr);
+
+  const math::Vec3 zc = cyl.frame.z.vec();
+  const math::Point3 O = cyl.frame.origin;
+  const math::Point3 C = sph.frame.origin;
+  const math::Vec3 d{C.x - O.x, C.y - O.y, C.z - O.z};
+  const double sc = math::dot(d, zc);
+  const double offset = math::norm(d - zc * sc);          // perpendicular sphere-centre offset
+  if (offset <= 1e-4) return st;                           // coaxial → S5-i owns it → decline
+  const double Rc = cyl.radius, Rs = sph.radius;
+  if (!(Rc > 1e-9) || !(Rs > 1e-9)) return st;
+  if (!(Rs > Rc + 1e-6)) return st;                        // fat cylinder → not this pierce pose
+  // The whole cylinder cross-section must fit inside the sphere at the sphere's equator so
+  // the cylinder pierces both poles: the farthest cyl-wall point from C in the equatorial
+  // plane is offset+Rc; require offset+Rc < Rs (strictly) so both seam loops are proper.
+  if (!(offset + Rc < Rs - 1e-6)) return st;
+
+  const double chord = std::sqrt(std::max(8.0 * kCapSagitta * Rc, 1e-12));
+  const int N = std::clamp(static_cast<int>(std::ceil(kSsiTwoPi * Rc / chord)), 24, 180);
+
+  Seam s0 = resampleByAzimuth(seams[0], cylIsB, N);
+  Seam s1 = resampleByAzimuth(seams[1], cylIsB, N);
+
+  st.cyl = cylPtr; st.sph = sphPtr; st.O = O; st.zc = zc; st.C = C;
+  st.Rc = Rc; st.Rs = Rs; st.offset = offset; st.N = N;
+  const double m0 = seamAxialMean(st, s0), m1 = seamAxialMean(st, s1);
+  if (std::fabs(m0 - m1) < 1e-4) return st;                // both loops at one station → not two poles
+  st.seamLo = (m0 <= m1) ? s0 : s1;
+  st.seamHi = (m0 <= m1) ? s1 : s0;
+
+  // SURVIVAL samples (the honest inside-the-other gate, never faked):
+  //  * the cylinder band midpoint (a wall point half-way between the two seams) must be
+  //    INSIDE the sphere (the band is a COMMON boundary);
+  //  * each cap apex direction (the sphere point nearest the axis-far point) must be INSIDE
+  //    the cylinder (the caps close the COMMON).
+  const double axLo = seamAxialMean(st, st.seamLo), axHi = seamAxialMean(st, st.seamHi);
+  const math::Point3 bandMid = cyl.point(0.0, 0.5 * (axLo + axHi));
+  if (classifyPoint(sph, bandMid, kSsiTol) != 1) return st;
+  auto capApex = [&](const math::Point3& far) {
+    const math::Vec3 t{far.x - C.x, far.y - C.y, far.z - C.z};
+    const double L = std::max(math::norm(t), 1e-12);
+    return math::Point3{C.x + t.x / L * Rs, C.y + t.y / L * Rs, C.z + t.z / L * Rs};
+  };
+  if (classifyPoint(cyl, capApex(st.axisFarM()), kSsiTol) != 1) return st;
+  if (classifyPoint(cyl, capApex(st.axisFarP()), kSsiTol) != 1) return st;
+
+  st.ok = true;
+  return st;
+}
+
+// Ring count for a transversal sphere cap: the cap's polar half-angle (apex→farthest seam
+// node, measured from the sphere centre) × sqrt(Rs/(2·kCapSagitta)), bounded [4,48] — the
+// S5-i cap-refinement discipline, generalised to a non-planar seam.
+int transCapRings(const TransCylSphereSetup& s, const Seam& seam, const math::Point3& apex) {
+  const math::Vec3 aDir{apex.x - s.C.x, apex.y - s.C.y, apex.z - s.C.z};
+  double theta = 0.0;
+  for (const auto& p : seam.pts) {
+    const math::Vec3 sDir{p.x - s.C.x, p.y - s.C.y, p.z - s.C.z};
+    const double den = std::max(math::norm(aDir) * math::norm(sDir), 1e-12);
+    theta = std::max(theta, std::acos(std::clamp(math::dot(aDir, sDir) / den, -1.0, 1.0)));
+  }
+  return std::clamp(
+      static_cast<int>(std::ceil(std::max(theta, 1e-6) * std::sqrt(s.Rs / (2.0 * kCapSagitta)))), 4,
+      48);
+}
+
+// buildTransCylSphereCommon(A,B) = COMMON of the TRANSVERSAL (offset) cylinder∩sphere: the
+// sphere lower cap (apex toward −zc, inside the cylinder) + the cylinder band between the two
+// traced seams (inside the sphere) + the sphere upper cap (apex toward +zc). All three share
+// the two traced seam rings through one VertexPool → watertight. The first transversal slice.
+topo::Shape buildTransCylSphereCommon(const CurvedSolid& A, const CurvedSolid& B,
+                                      const std::vector<Seam>& seams) {
+  const TransCylSphereSetup s = transCylSphereSetup(A, B, seams);
+  if (!s.ok) return {};
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const math::Point3 apexM = s.axisFarM(), apexP = s.axisFarP();
+  appendSphereCap(*s.sph, apexM, s.seamLo, transCapRings(s, s.seamLo, apexM), pool, faces,
+                  /*outer=*/false, /*reversed=*/false);
+  appendRevolvedBand(s.seamLo.pts, s.seamHi.pts, s.O, s.zc, pool, faces);  // cylinder band
+  appendSphereCap(*s.sph, apexP, s.seamHi, transCapRings(s, s.seamHi, apexP), pool, faces,
+                  /*outer=*/false, /*reversed=*/false);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildTransCylSphereCut / buildTransCylSphereFuse — the transversal CUT / FUSE of the offset
+// cylinder∩sphere. Both need the sphere OUTER SHELL: the sphere surface OUTSIDE the cylinder,
+// i.e. the sphere ZONE between the two NON-PLANAR traced seams taken the LONG way round (away
+// from the bore). Unlike the coaxial S5-i zone (a REVOLVED band between two planar circles —
+// `appendSphereZone`), this zone is bounded by two non-planar space curves that do NOT lie on
+// a common latitude, so no revolved-band / single-far-pole meridian parametrisation tiles it
+// watertight (a far-pole fan pinches to a degenerate row; a direct short-arc slerp cuts
+// through the bore). Assembling that zone as a shared-pool planar-facet shell that welds
+// byte-clean to both seams is the UNRESOLVED transversal residual (see the roadmap S5-k
+// residual map). So CUT/FUSE HONEST-DECLINE (→ NULL → OCCT); COMMON (which needs only the two
+// INNER caps + the cylinder band — all seam-driven and verified) is the landed slice. Nothing
+// is faked: rather than emit a leaky sphere-zone shell, we defer to OCCT.
+topo::Shape buildTransCylSphereCut(const CurvedSolid& A, const CurvedSolid& B,
+                                   const std::vector<Seam>& seams) {
+  const TransCylSphereSetup s = transCylSphereSetup(A, B, seams);
+  if (!s.ok) return {};
+  return {};  // sphere-outer-zone weld is the transversal residual → OCCT (never faked)
+}
+
+topo::Shape buildTransCylSphereFuse(const CurvedSolid& A, const CurvedSolid& B,
+                                    const std::vector<Seam>& seams) {
+  const TransCylSphereSetup s = transCylSphereSetup(A, B, seams);
+  if (!s.ok) return {};
+  return {};  // sphere-outer-zone weld is the transversal residual → OCCT (never faked)
+}
+
 // ── The COMMON of a THROUGH-DRILL transversal pair (design.md §1-4): one operand (the
 // PIERCED wall, whose two seams are full-circle rim loops) is drilled clean through by
 // the other (the PIERCING wall, whose two seams are local patches). The common region
@@ -3407,6 +3635,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-i: TWO-CIRCLE coaxial cylinder∩sphere COMMON (sphere lower cap + cyl band + sphere upper cap).
       const topo::Shape cylSph2 = buildCylSphere2Common(*csA, *csB, seams);
       if (!cylSph2.isNull()) return cylSph2;
+      // S5-k: TRANSVERSAL (offset/non-coaxial) cylinder∩sphere COMMON (traced non-planar seams).
+      const topo::Shape transCS = buildTransCylSphereCommon(*csA, *csB, seams);
+      if (!transCS.isNull()) return transCS;
       // S5-j: HOURGLASS (apex-to-apex) coaxial cone∩cone COMMON (bicone; apex-terminated min profile).
       const topo::Shape hgCommon = buildHourglassConeConeCommon(*csA, *csB, seams);
       if (!hgCommon.isNull()) return hgCommon;
@@ -3432,6 +3663,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-i: TWO-CIRCLE coaxial cylinder∩sphere FUSE (cyl walls + sphere zone bulge + discs).
       const topo::Shape cylSph2 = buildCylSphere2Fuse(*csA, *csB, seams);
       if (!cylSph2.isNull()) return cylSph2;
+      // S5-k: TRANSVERSAL (offset) cylinder∩sphere FUSE (sphere outer shell + two cyl end stubs).
+      const topo::Shape transCS = buildTransCylSphereFuse(*csA, *csB, seams);
+      if (!transCS.isNull()) return transCS;
       // S5-g: coaxial cone(frustum)∩cone(frustum) FUSE (max-radius profile of revolution).
       return buildConeConeFuse(*csA, *csB, seams);
     }
@@ -3454,6 +3688,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-i: TWO-CIRCLE coaxial cylinder∩sphere CUT (two disconnected cyl-end dimpled pieces).
       const topo::Shape cylSph2 = buildCylSphere2Cut(*csA, *csB, seams);
       if (!cylSph2.isNull()) return cylSph2;
+      // S5-k: TRANSVERSAL (offset) cylinder∩sphere CUT (sphere − cyl: sphere shell + reversed bore).
+      const topo::Shape transCS = buildTransCylSphereCut(*csA, *csB, seams);
+      if (!transCS.isNull()) return transCS;
       // S5-j: HOURGLASS (apex-to-apex) coaxial cone∩cone CUT (conical shell to a full A-end disc).
       const topo::Shape hgCut = buildHourglassConeConeCut(*csA, *csB, seams);
       if (!hgCut.isNull()) return hgCut;

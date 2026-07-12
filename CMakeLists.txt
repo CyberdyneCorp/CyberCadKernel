@@ -469,6 +469,22 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_nsided)
         set(test_native_nurbs_nsided_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_nsided.cpp")
+        # NURBS roadmap Layer 6 — G1 (tangent-plane continuous) N-SIDED boundary-filled surface
+        # (src/native/math/bspline_nsided_g1). The G1 upgrade of the C0 N-sided fill: fills a
+        # CLOSED N-gon (N ≥ 3) with N GREGORY bicubic "pie-slice" sub-patches meeting at the
+        # centroid. Each slice covers one full boundary edge at v=0 (u carries the edge basis →
+        # boundary interpolation is machine-exact) and shrinks to the centroid at v=1 (a cubic
+        # Hermite in v). The v=0 cross-tangent is the prescribed / natural in-surface field (G1
+        # to the boundary), and adjacent slices SHARE each corner spoke column + corner cross-
+        # tangent so they meet C1/G1 across the seam by pole equality; the degenerate hub apex
+        # (the classic Gregory twist) is kept finite by the radial interior/twist row. Airtight
+        # oracles: boundary interpolation ≤1e-12, G1 across every spoke + boundary (unit-normal
+        # mismatch ≤1e-6 rad), planar boundary → planar fill ≤1e-10, analytic cylinder-ring
+        # sanity, degenerate-corner no-blowup, and honest non-closed / rational / N<3 / malformed
+        # / G1-incompatible-tangent declines (never a widened tolerance). Additive to the C0 API.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_nsided_g1)
+        set(test_native_nurbs_nsided_g1_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_nsided_g1.cpp")
         # NURBS roadmap Layer 5 — surface OFFSET (src/native/math/bspline_offset).
         # Samples the true offset locus S + d·N and fits a non-rational NURBS surface
         # through it with the Layer-7 fitter (interpolateSurface → lin_solve), refining
@@ -1177,6 +1193,13 @@ if(CYBERCAD_BUILD_TESTS)
     # numsci-gated for family uniformity).
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_nsided)
         target_compile_definitions(test_native_nurbs_nsided PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+    # The Layer-6 G1 N-sided boundary-fill gate includes bspline_nsided_g1.h (which under
+    # CYBERCAD_HAS_NUMSCI pulls bspline_nsided.h + bspline_ops.h — no substrate header, no
+    # numerics solve), so its TU needs the macro but NOT the substrate include trees, exactly
+    # like the Layer-6 C0 N-sided gate above (the module is numsci-gated for family uniformity).
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_nsided_g1)
+        target_compile_definitions(test_native_nurbs_nsided_g1 PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
     # The Layer-5 offset gate includes bspline_offset.h + numerics.h (numerics.h is
     # vec.h + std only, no NumPP/SciPP headers), so its TU needs the macro but NOT the

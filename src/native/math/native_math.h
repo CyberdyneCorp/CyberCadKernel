@@ -32,7 +32,13 @@
 //   * bspline_nsided.h—NURBS N-SIDED boundary-filled surface (NURBS-SCOPE Layer 6): fill a
 //                    CLOSED N-gon (N ≠ 4) by MIDPOINT subdivision into N Coons sub-patches
 //                    meeting at the centroid; the union interpolates all N boundary curves.
-//                    (numsci-gated; composes splitCurve + bspline_coons.)
+//                    (numsci-gated; composes splitCurve + bspline_coons.) C0 at the spokes.
+//   * bspline_nsided_g1.h—G1 (tangent-plane continuous) N-SIDED fill (NURBS-SCOPE Layer 6):
+//                    the Gregory/Chiyokura-Kimura upgrade of the C0 N-sided fill — N bicubic
+//                    "pie slices" meeting the boundary + each other G1 (unit normal continuous
+//                    across every spoke, machine-exact for smooth/planar boundaries) via shared
+//                    spoke columns + a shared cross-spoke rib; declines a creased 3-D corner
+//                    honestly. (numsci-gated; additive to the C0 API.)
 //   * bspline_offset.h—NURBS surface offset (NURBS-SCOPE Layer 5): S + d·N sampled on
 //                    an adaptive grid + fitted to a NURBS surface (Layer-7), with a
 //                    curvature-radius self-intersection guard. (numsci-gated; the fit +
@@ -68,6 +74,7 @@
 #include "bspline_gordon.h"
 #include "bspline_coons.h"
 #include "bspline_nsided.h"
+#include "bspline_nsided_g1.h"
 #include "bspline_offset.h"
 #include "bezier.h"
 #include "elementary.h"

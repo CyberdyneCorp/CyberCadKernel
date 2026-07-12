@@ -532,6 +532,22 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_nsided_rational)
         set(test_native_nurbs_nsided_rational_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_nsided_rational.cpp")
+        # NURBS roadmap Layer 4 — SETBACK VERTEX BLEND (src/native/blend/vertex_blend.h). Where N
+        # filleted edges meet at a shared vertex (a box corner: N=3) the N fillet surfaces leave a
+        # curvilinear-N-gon gap; the vertex blend fills it with an N-sided Gregory patch by REUSING
+        # the Layer-6 nSidedFillG1 machinery. It (1) extracts each incident fillet's corner-gap
+        # iso-curve exactly (a fixed-iso pole line of the tensor-product fillet), (2) extracts the
+        # fillet's cross-boundary tangent field into the gap, and (3) delegates to nSidedFillG1 with
+        # those prescribed fields so the blend meets each fillet G1. Handles the setback (trimming
+        # the fillet back to a well-formed gap). Airtight closed-form oracles: the SYMMETRIC CUBE
+        # CORNER blend is a spherical octant (points on the sphere of radius r ≤1e-6, gap-curve
+        # interpolation ≤1e-10, G1 to each fillet + across the interior spokes ≤1e-6 rad), plus an
+        # asymmetric-width and an N=4 corner staying G1, and honest declines (creased/G1-infeasible
+        # corner, N<3, rational/malformed fillet, non-closed gap loop) with a measured residual map
+        # — never a widened tolerance. Numsci-gated (reuses nSidedFillG1) for family uniformity.
+        list(APPEND CYBERCAD_TESTS test_native_vertex_blend)
+        set(test_native_vertex_blend_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_vertex_blend.cpp")
         # NURBS roadmap Layer 5 — surface OFFSET (src/native/math/bspline_offset).
         # Samples the true offset locus S + d·N and fits a non-rational NURBS surface
         # through it with the Layer-7 fitter (interpolateSurface → lin_solve), refining
@@ -1298,6 +1314,14 @@ if(CYBERCAD_BUILD_TESTS)
     # like the C0 N-sided gate above (the module is numsci-gated for family uniformity).
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_nsided_rational)
         target_compile_definitions(test_native_nurbs_nsided_rational PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+    # The Layer-4 setback vertex-blend gate includes blend/vertex_blend.h (which under
+    # CYBERCAD_HAS_NUMSCI pulls math/bspline_nsided_g1.h + bspline_nsided_g2.h + bspline_nsided.h
+    # + bspline_ops.h + bspline.h — no substrate header, no numerics solve), so its TU needs the
+    # macro but NOT the substrate include trees, exactly like the Layer-6 N-sided gates above
+    # (the vertex blend reuses nSidedFillG1, hence numsci-gated for family uniformity).
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_vertex_blend)
+        target_compile_definitions(test_native_vertex_blend PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
     # The Layer-5 offset gate includes bspline_offset.h + numerics.h (numerics.h is
     # vec.h + std only, no NumPP/SciPP headers), so its TU needs the macro but NOT the

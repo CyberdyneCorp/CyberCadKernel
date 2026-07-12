@@ -544,6 +544,29 @@ int main() {
     runPair(pc);
   }
 
+  // ── (8) TWO-CIRCLE coaxial cone(frustum) ∩ sphere COMMON / FUSE / CUT (S5-h) — 3 NATIVE
+  // passes ────────────────────────────────────────────────────────────────────────────
+  // The natural extension of the single-circle S5-f pair. The SAME frustum r(y)=0.5+0.5y over
+  // y∈[0,4] and a sphere Rs=1.6 whose centre (0,2,0) lies ON the cone axis (+Y) — now the sphere
+  // pokes THROUGH the cone wall at TWO latitudes (y*_lo≈0.62026, y*_hi≈2.17974) with both poles
+  // (y=0.4, y=3.6) inside the cone. Both circles are S1-analytic; the S3 tracer returns one of the
+  // two co-resident loops, so the S5-h prologue computes both and cross-checks the traced seam.
+  //   COMMON = sphere lower cap + cone frustum band + sphere upper cap (V≈14.67499)
+  //   FUSE   = cone walls + sphere ZONE bulge (mid-band) + cone discs   (V≈34.94542, GROW)
+  //   CUT    = cone − sphere: TWO disconnected spherically-scooped pieces (V≈17.78814, SHRINK)
+  // All three match BRepAlgoAPI_{Common,Fuse,Cut} on volume/area/watertight → NATIVE passes.
+  {
+    PairCase pc;
+    pc.pairName = "cone=sphere(coax-2circle)";
+    pc.nativeA = makeCone(0.5, 0.0, 2.5, 4.0);
+    pc.nativeB = makeSphere(1.6, 2.0);   // radius 1.6, centre (0,2,0) on the cone axis
+    pc.occtA = occtCone(0.5, 0.0, 2.5, 4.0);
+    pc.occtB = occtSphere(1.6, 2.0);
+    pc.relTol = 2e-2;
+    probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
+    runPair(pc);
+  }
+
   std::printf("== %d passed, %d failed, %d fell-back (native-pass=%d) ==\n",
               g_passed, g_failed, g_fellBack, g_nativePass);
   std::fflush(stdout);

@@ -2035,6 +2035,365 @@ topo::Shape buildConeSphereCut(const CurvedSolid& A, const CurvedSolid& B,
   return topo::ShapeBuilder::makeSolid({shell});
 }
 
+// ── S5-h — TWO-CIRCLE coaxial CONE(frustum)∩SPHERE COMMON / FUSE / CUT ──────────────────
+// The natural extension of the single-circle S5-f pair: a cone frustum coaxial with a sphere
+// (centre ON the cone axis) whose wall crosses the sphere at TWO latitudes → TWO analytic
+// circle seams s*_lo < s*_hi and a spherical ZONE (band of the sphere) between them. The seam
+// quadratic (1+tanA²)s² + 2(R0·tanA − sc)s + (sc² + R0² − Rs²) = 0 now has BOTH roots strictly
+// interior to the cone's extent AND to the sphere's axial span [sc−Rs, sc+Rs], with the sphere
+// bulging OUTSIDE the cone wall between the seams (r_sphere(s) > r_cone(s) on the mid-band) and
+// INSIDE it beyond them (each polar cap sits inside the cone). This is the "sphere pokes through
+// the cone wall" pose — the SPHERE is the wider operand on the mid-band, the CONE on the poles.
+//
+// Both seam circles are S1-analytic closed forms (radius ρ=r_cone(s*), station s*); the S3
+// tracer typically returns only ONE of the two co-resident loops (the documented S2 co-resident
+// seeding-recall limit — see the roadmap), so this prologue computes BOTH circles itself and
+// CROSS-CHECKS the traced seam(s) against the analytic roots (height + radius), never trusting a
+// missing loop. The two rings are canonical azimuth samples through a shared VertexPool so every
+// band/cap/zone welds byte-identically.
+//
+//   COMMON (inside BOTH) = r ≤ min(r_cone, r_sphere): the sphere LOWER cap (poleM→seamLo, inside
+//     the cone) + the cone frustum band (seamLo→seamHi, inside the sphere) + the sphere UPPER cap
+//     (seamHi→poleP, inside the cone). V = V_sph-seg(poleM,sLo) + V_frustum(sLo,sHi) +
+//     V_sph-seg(sHi,poleP). A closed form.
+//   FUSE (A∪B) = r ≤ max(r_cone, r_sphere): cone wall (coneNear→seamLo) + the sphere ZONE bulge
+//     (seamLo→seamHi, the mid-band where the sphere is wider) + cone wall (seamHi→coneFar) + two
+//     cone terminal discs. V = V(cone)+V(sphere)−V(COMMON) (a GROW).
+//   CUT (A−B, cone MINUEND) = cone minus the sphere lens. The sphere fully engulfs the cone
+//     cross-section on the mid-band, so the result PINCHES OFF into TWO disconnected components:
+//     a lower cone-tip piece (coneNear→seamLo, its top scooped by the sphere lower cap reversed)
+//     and an upper piece (seamHi→coneFar, its bottom scooped by the sphere upper cap reversed),
+//     each a closed shell of one pool. V = V(cone)−V(COMMON) (a SHRINK). A sphere minuend
+//     (sphere−cone) is a different topology → declines → OCCT.
+//
+// Anything else — a single interior root (the S5-f case, handled there), the sphere NOT bulging
+// outside on the mid-band (an internally-tangent / nested pose), a pole outside the cone, an
+// apex-crossing seam, or a non-coaxial pair — returns {} → OCCT. Nothing is faked.
+struct ConeSphere2Setup {
+  bool ok = false;
+  const CurvedSolid* cone = nullptr;
+  const CurvedSolid* sph = nullptr;
+  math::Point3 O;          ///< cone origin
+  math::Vec3 X, Y, zc;     ///< cone frame
+  math::Point3 C;          ///< sphere centre (on the cone axis)
+  double tanA = 0.0, R0 = 0.0, Rs = 0.0;
+  double sc = 0.0;         ///< sphere-centre axial coord in the cone's s-frame
+  double coneS0 = 0.0, coneS1 = 0.0;  ///< cone's own s-extent
+  double sLo = 0.0, sHi = 0.0;        ///< the TWO interior crossings (sLo < sHi)
+  double rhoLo = 0.0, rhoHi = 0.0;    ///< seam radii r_cone(sLo), r_cone(sHi)
+  double poleM = 0.0, poleP = 0.0;    ///< sphere axial poles (sc−Rs, sc+Rs)
+  int N = 0;                          ///< azimuth sample count (seam-chord bounded)
+  double rCone(double s) const { return R0 + s * tanA; }
+  double rSph(double s) const {
+    const double d = Rs * Rs - (s - sc) * (s - sc);
+    return d > 0.0 ? std::sqrt(d) : 0.0;
+  }
+  std::vector<math::Point3> ring(double r, double s) const {
+    std::vector<math::Point3> out(N);
+    for (int i = 0; i < N; ++i) {
+      const double u = kSsiTwoPi * i / N;
+      const double cx = r * std::cos(u), cy = r * std::sin(u);
+      out[i] = math::Point3{O.x + X.x * cx + Y.x * cy + zc.x * s,
+                            O.y + X.y * cx + Y.y * cy + zc.y * s,
+                            O.z + X.z * cx + Y.z * cy + zc.z * s};
+    }
+    return out;
+  }
+  math::Point3 wallPoint(double r, double s) const {
+    return math::Point3{O.x + X.x * r + zc.x * s, O.y + X.y * r + zc.y * s,
+                        O.z + X.z * r + zc.z * s};
+  }
+  math::Point3 axisPtM() const {  // sphere lower pole (poleM) as a world point
+    return math::Point3{C.x + zc.x * (poleM - sc), C.y + zc.y * (poleM - sc),
+                        C.z + zc.z * (poleM - sc)};
+  }
+  math::Point3 axisPtP() const {  // sphere upper pole (poleP)
+    return math::Point3{C.x + zc.x * (poleP - sc), C.y + zc.y * (poleP - sc),
+                        C.z + zc.z * (poleP - sc)};
+  }
+  /// A `Seam` whose nodes are the analytic seam ring at (radius, station) — the shared weld ring.
+  Seam seamRing(double rho, double s) const {
+    Seam out;
+    out.closed = true;
+    out.pts = ring(rho, s);
+    return out;
+  }
+};
+
+ConeSphere2Setup coneSphere2Setup(const CurvedSolid& A, const CurvedSolid& B,
+                                  const std::vector<Seam>& seams) {
+  ConeSphere2Setup st;
+  if (seams.empty()) return st;  // need at least one traced seam to cross-check
+
+  const CurvedSolid* conePtr = nullptr;
+  const CurvedSolid* sphPtr = nullptr;
+  for (const CurvedSolid* s : {&A, &B}) {
+    if (s->kind == CurvedKind::Cone) conePtr = s;
+    else if (s->kind == CurvedKind::Sphere) sphPtr = s;
+  }
+  if (!conePtr || !sphPtr) return st;
+  const CurvedSolid& cone = *conePtr;
+  const CurvedSolid& sph = *sphPtr;
+
+  const math::Vec3 zc = cone.frame.z.vec();
+  const math::Point3 O = cone.frame.origin;
+  const math::Point3 C = sph.frame.origin;
+  const math::Vec3 d{C.x - O.x, C.y - O.y, C.z - O.z};
+  const double sc = math::dot(d, zc);
+  if (math::norm(d - zc * sc) > 1e-6) return st;  // sphere centre off the cone axis → not coaxial
+  const double tanA = std::tan(cone.semiAngle);
+  if (std::fabs(tanA) < 1e-9) return st;  // degenerate cone
+  const double R0 = cone.radius, Rs = sph.radius;
+  if (!(Rs > 1e-9)) return st;
+
+  // Seam quadratic — require BOTH roots strictly interior to the cone extent.
+  const double Aq = 1.0 + tanA * tanA;
+  const double Bq = 2.0 * (R0 * tanA - sc);
+  const double Cq = sc * sc + R0 * R0 - Rs * Rs;
+  const double disc = Bq * Bq - 4.0 * Aq * Cq;
+  if (disc <= 1e-9) return st;  // tangent / single-touch → decline (S5-f owns single root)
+  const double sq = std::sqrt(disc);
+  double r1 = (-Bq - sq) / (2.0 * Aq), r2 = (-Bq + sq) / (2.0 * Aq);
+  if (r1 > r2) std::swap(r1, r2);
+  const double coneS0 = cone.vLo, coneS1 = cone.vHi;
+  if (!(r1 > coneS0 + 1e-6) || !(r2 < coneS1 - 1e-6)) return st;  // not both interior → S5-f / OCCT
+  if (!(r2 - r1 > 1e-4)) return st;                               // roots too close → near-tangent → OCCT
+  const double rhoLo = R0 + r1 * tanA, rhoHi = R0 + r2 * tanA;
+  if (!(rhoLo > 1e-9) || !(rhoHi > 1e-9)) return st;              // apex-touching seam → decline
+
+  const double poleM = sc - Rs, poleP = sc + Rs;
+
+  // The two-circle "pokes through" pose: between the seams the SPHERE is wider (bulges outside the
+  // cone); beyond them each polar cap is inside the cone. Verify with mid-band + cap samples.
+  auto rCone = [&](double s) { return R0 + s * tanA; };
+  auto rSph = [&](double s) {
+    const double e = Rs * Rs - (s - sc) * (s - sc);
+    return e > 0.0 ? std::sqrt(e) : 0.0;
+  };
+  const double sMid = 0.5 * (r1 + r2);
+  if (!(rSph(sMid) > rCone(sMid) + 1e-6)) return st;  // sphere NOT wider on the mid-band → OCCT
+  const double capLoMid = 0.5 * (poleM + r1), capHiMid = 0.5 * (r2 + poleP);
+  if (!(rSph(capLoMid) < rCone(capLoMid) - 1e-6)) return st;  // lower cap not inside cone → OCCT
+  if (!(rSph(capHiMid) < rCone(capHiMid) - 1e-6)) return st;  // upper cap not inside cone → OCCT
+
+  // The whole sphere axial span must sit inside the cone extent (so both caps close inside the
+  // cone and the CUT pinches cleanly), and both poles must classify INSIDE the cone.
+  if (!(poleM > coneS0 + 1e-6) || !(poleP < coneS1 - 1e-6)) return st;
+  if (classifyPoint(cone, math::Point3{C.x + zc.x * (poleM - sc), C.y + zc.y * (poleM - sc),
+                                       C.z + zc.z * (poleM - sc)}, kSsiTol) != 1)
+    return st;
+  if (classifyPoint(cone, math::Point3{C.x + zc.x * (poleP - sc), C.y + zc.y * (poleP - sc),
+                                       C.z + zc.z * (poleP - sc)}, kSsiTol) != 1)
+    return st;
+
+  // Cross-check EVERY traced seam against ONE of the two analytic circles (height + radius). A
+  // traced loop that matches neither → the pair is not the clean two-circle config → OCCT.
+  auto sOf = [&](const math::Point3& p) {
+    return math::dot(math::Vec3{p.x - O.x, p.y - O.y, p.z - O.z}, zc);
+  };
+  for (const Seam& seam : seams) {
+    if (!seam.closed || seam.pts.size() < 8) return st;
+    math::Point3 c{0, 0, 0};
+    for (const auto& p : seam.pts) { c.x += p.x; c.y += p.y; c.z += p.z; }
+    const double ns = static_cast<double>(seam.pts.size());
+    c.x /= ns; c.y /= ns; c.z /= ns;
+    double rhoTr = 0.0;
+    for (const auto& p : seam.pts) {
+      const math::Vec3 w{p.x - c.x, p.y - c.y, p.z - c.z};
+      rhoTr += math::norm(w - zc * math::dot(w, zc));
+    }
+    rhoTr /= ns;
+    const double sTr = sOf(c);
+    const bool matchLo = std::fabs(sTr - r1) < 1e-3 && std::fabs(rhoTr - rhoLo) < 1e-3;
+    const bool matchHi = std::fabs(sTr - r2) < 1e-3 && std::fabs(rhoTr - rhoHi) < 1e-3;
+    if (!matchLo && !matchHi) return st;  // traced seam matches neither analytic circle → OCCT
+  }
+
+  // Azimuthal resolution: the LARGER seam radius bounds the chord sagitta (same bound as the caps).
+  const double rMax = std::max(rhoLo, rhoHi);
+  const double chord = std::sqrt(std::max(8.0 * kCapSagitta * rMax, 1e-12));
+  st.N = std::clamp(static_cast<int>(std::ceil(kSsiTwoPi * rMax / chord)), 24, 180);
+  st.cone = conePtr;
+  st.sph = sphPtr;
+  st.O = O;
+  st.X = cone.frame.x.vec();
+  st.Y = cone.frame.y.vec();
+  st.zc = zc;
+  st.C = C;
+  st.tanA = tanA;
+  st.R0 = R0;
+  st.Rs = Rs;
+  st.sc = sc;
+  st.coneS0 = coneS0;
+  st.coneS1 = coneS1;
+  st.sLo = r1;
+  st.sHi = r2;
+  st.rhoLo = rhoLo;
+  st.rhoHi = rhoHi;
+  st.poleM = poleM;
+  st.poleP = poleP;
+  st.ok = true;
+  return st;
+}
+
+// ── SPHERE ZONE: a revolved band of the sphere surface between two seam rings (`ringLo` at
+// station sLo, `ringHi` at sHi), following the spherical bulge. Unlike appendRevolvedBand (whose
+// straight ruling is exact on a cone/cylinder), a sphere band bows between the two latitudes, so
+// each meridian is subdivided into `rows` slerp steps of the unit radial direction (great-circle
+// exact on the sphere, robust at the parametric pole). Outward radial normal (the FUSE bulge's
+// outward boundary). All rows share the pool through the ring builder so the zone welds to the
+// neighbouring cone bands along both seam rings.
+void appendSphereZone(const ConeSphere2Setup& s, double sLo, double sHi,
+                      const std::vector<math::Point3>& ringLo,
+                      const std::vector<math::Point3>& ringHi, VertexPool& pool,
+                      std::vector<topo::Shape>& faces) {
+  const int n = static_cast<int>(ringLo.size());
+  if (n < 3 || static_cast<int>(ringHi.size()) != n) return;
+  // Rows from the polar half-angle spanned by the zone at the sphere centre + kCapSagitta.
+  const math::Vec3 dLo{ringLo[0].x - s.C.x, ringLo[0].y - s.C.y, ringLo[0].z - s.C.z};
+  const math::Vec3 dHi{ringHi[0].x - s.C.x, ringHi[0].y - s.C.y, ringHi[0].z - s.C.z};
+  const double denom = std::max(math::norm(dLo) * math::norm(dHi), 1e-12);
+  const double theta = std::acos(std::clamp(math::dot(dLo, dHi) / denom, -1.0, 1.0));
+  const int rows = std::clamp(
+      static_cast<int>(std::ceil(std::max(theta, 1e-6) * std::sqrt(s.Rs / (2.0 * kCapSagitta)))), 2,
+      48);
+  // Per-meridian unit radials at the two seam rings; interior rows slerp between them.
+  std::vector<math::Vec3> dirLo(n), dirHi(n);
+  for (int i = 0; i < n; ++i) {
+    const math::Vec3 a{ringLo[i].x - s.C.x, ringLo[i].y - s.C.y, ringLo[i].z - s.C.z};
+    const math::Vec3 b{ringHi[i].x - s.C.x, ringHi[i].y - s.C.y, ringHi[i].z - s.C.z};
+    const double la = std::max(math::norm(a), 1e-12), lb = std::max(math::norm(b), 1e-12);
+    dirLo[i] = math::Vec3{a.x / la, a.y / la, a.z / la};
+    dirHi[i] = math::Vec3{b.x / lb, b.y / lb, b.z / lb};
+  }
+  auto rowPt = [&](int r, int i) -> math::Point3 {
+    if (r == 0) return ringLo[i];
+    if (r == rows) return ringHi[i];
+    const math::Vec3 dir = slerpDir(dirLo[i], dirHi[i], static_cast<double>(r) / rows);
+    return math::Point3{s.C.x + dir.x * s.Rs, s.C.y + dir.y * s.Rs, s.C.z + dir.z * s.Rs};
+  };
+  for (int r = 0; r < rows; ++r)
+    for (int i = 0; i < n; ++i) {
+      const int j = (i + 1) % n;
+      const math::Point3 a = rowPt(r, i), b = rowPt(r, j);
+      const math::Point3 c = rowPt(r + 1, j), dd = rowPt(r + 1, i);
+      const math::Point3 ctr{(a.x + b.x + c.x + dd.x) / 4, (a.y + b.y + c.y + dd.y) / 4,
+                             (a.z + b.z + c.z + dd.z) / 4};
+      const math::Vec3 ref{ctr.x - s.C.x, ctr.y - s.C.y, ctr.z - s.C.z};  // outward radial
+      pushPlanarTri(a, b, c, ref, pool, faces);
+      pushPlanarTri(a, c, dd, ref, pool, faces);
+    }
+}
+
+// buildConeSphere2Common(A,B) = COMMON of the two-circle coaxial cone∩sphere: sphere lower cap +
+// cone frustum band + sphere upper cap, welded along the two analytic seam rings.
+topo::Shape buildConeSphere2Common(const CurvedSolid& A, const CurvedSolid& B,
+                                   const std::vector<Seam>& seams) {
+  const ConeSphere2Setup s = coneSphere2Setup(A, B, seams);
+  if (!s.ok) return {};
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const Seam seamLo = s.seamRing(s.rhoLo, s.sLo);
+  const Seam seamHi = s.seamRing(s.rhoHi, s.sHi);
+  const std::vector<math::Point3> ringLo = seamLo.pts;
+  const std::vector<math::Point3> ringHi = seamHi.pts;
+  // Cap ring counts from each cap's polar half-angle + kCapSagitta.
+  auto capRings = [&](const std::vector<math::Point3>& ring, const math::Point3& apex) {
+    const math::Vec3 aDir{apex.x - s.C.x, apex.y - s.C.y, apex.z - s.C.z};
+    double theta = 0.0;
+    for (const auto& p : ring) {
+      const math::Vec3 sDir{p.x - s.C.x, p.y - s.C.y, p.z - s.C.z};
+      const double den = std::max(math::norm(aDir) * math::norm(sDir), 1e-12);
+      theta = std::max(theta, std::acos(std::clamp(math::dot(aDir, sDir) / den, -1.0, 1.0)));
+    }
+    return std::clamp(
+        static_cast<int>(std::ceil(std::max(theta, 1e-6) * std::sqrt(s.Rs / (2.0 * kCapSagitta)))),
+        4, 48);
+  };
+  // Sphere lower cap: apex = poleM (the lower pole), outer ring = seamLo.
+  appendSphereCap(*s.sph, s.axisPtM(), seamLo, capRings(ringLo, s.axisPtM()), pool, faces,
+                  /*outer=*/false, /*reversed=*/false);
+  // Cone frustum band inside the sphere (seamLo → seamHi).
+  appendRevolvedBand(ringLo, ringHi, s.O, s.zc, pool, faces);
+  // Sphere upper cap: apex = poleP.
+  appendSphereCap(*s.sph, s.axisPtP(), seamHi, capRings(ringHi, s.axisPtP()), pool, faces,
+                  /*outer=*/false, /*reversed=*/false);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildConeSphere2Fuse(A,B) = A ∪ B: cone wall (coneNear→seamLo) + sphere ZONE bulge (seamLo→
+// seamHi) + cone wall (seamHi→coneFar) + two cone terminal discs. A GROW.
+topo::Shape buildConeSphere2Fuse(const CurvedSolid& A, const CurvedSolid& B,
+                                 const std::vector<Seam>& seams) {
+  const ConeSphere2Setup s = coneSphere2Setup(A, B, seams);
+  if (!s.ok) return {};
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const std::vector<math::Point3> ring0 = s.ring(s.rCone(s.coneS0), s.coneS0);
+  const std::vector<math::Point3> ringLo = s.ring(s.rhoLo, s.sLo);
+  const std::vector<math::Point3> ringHi = s.ring(s.rhoHi, s.sHi);
+  const std::vector<math::Point3> ring1 = s.ring(s.rCone(s.coneS1), s.coneS1);
+  if (!(s.rCone(s.coneS0) > 1e-9) || !(s.rCone(s.coneS1) > 1e-9)) return {};
+  appendDiskCap(*s.cone, s.coneS0, ring0, math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool, faces);
+  appendRevolvedBand(ring0, ringLo, s.O, s.zc, pool, faces);      // cone wall below seamLo
+  appendSphereZone(s, s.sLo, s.sHi, ringLo, ringHi, pool, faces);  // sphere bulge (mid-band)
+  appendRevolvedBand(ringHi, ring1, s.O, s.zc, pool, faces);       // cone wall above seamHi
+  appendDiskCap(*s.cone, s.coneS1, ring1, s.zc, pool, faces);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildConeSphere2Cut(A,B) = A − B (cone MINUEND). The sphere fully engulfs the cone cross-section
+// on the mid-band, so the result is TWO disconnected components welded into one shell: a lower
+// cone-tip piece (coneNear→seamLo, scooped from above by the sphere lower cap reversed) + an upper
+// piece (seamHi→coneFar, scooped from below by the sphere upper cap reversed). A SHRINK.
+// A sphere minuend (sphere−cone) declines → OCCT.
+topo::Shape buildConeSphere2Cut(const CurvedSolid& A, const CurvedSolid& B,
+                                const std::vector<Seam>& seams) {
+  const ConeSphere2Setup s = coneSphere2Setup(A, B, seams);
+  if (!s.ok) return {};
+  if (&A != s.cone) return {};  // A must be the cone minuend; sphere−cone → OCCT
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const Seam seamLo = s.seamRing(s.rhoLo, s.sLo);
+  const Seam seamHi = s.seamRing(s.rhoHi, s.sHi);
+  const std::vector<math::Point3> ringLo = seamLo.pts;
+  const std::vector<math::Point3> ringHi = seamHi.pts;
+  const std::vector<math::Point3> ring0 = s.ring(s.rCone(s.coneS0), s.coneS0);
+  const std::vector<math::Point3> ring1 = s.ring(s.rCone(s.coneS1), s.coneS1);
+  if (!(s.rCone(s.coneS0) > 1e-9) || !(s.rCone(s.coneS1) > 1e-9)) return {};
+  auto capRings = [&](const std::vector<math::Point3>& ring, const math::Point3& apex) {
+    const math::Vec3 aDir{apex.x - s.C.x, apex.y - s.C.y, apex.z - s.C.z};
+    double theta = 0.0;
+    for (const auto& p : ring) {
+      const math::Vec3 sDir{p.x - s.C.x, p.y - s.C.y, p.z - s.C.z};
+      const double den = std::max(math::norm(aDir) * math::norm(sDir), 1e-12);
+      theta = std::max(theta, std::acos(std::clamp(math::dot(aDir, sDir) / den, -1.0, 1.0)));
+    }
+    return std::clamp(
+        static_cast<int>(std::ceil(std::max(theta, 1e-6) * std::sqrt(s.Rs / (2.0 * kCapSagitta)))),
+        4, 48);
+  };
+  // Lower component: cone terminal disc + cone wall (coneNear→seamLo) + sphere lower cap REVERSED
+  // (the dimple scooping the tip from above, apex = poleM).
+  appendDiskCap(*s.cone, s.coneS0, ring0, math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool, faces);
+  appendRevolvedBand(ring0, ringLo, s.O, s.zc, pool, faces);
+  appendSphereCap(*s.sph, s.axisPtM(), seamLo, capRings(ringLo, s.axisPtM()), pool, faces,
+                  /*outer=*/false, /*reversed=*/true);
+  // Upper component: sphere upper cap REVERSED (dimple, apex = poleP) + cone wall (seamHi→coneFar)
+  // + cone terminal disc.
+  appendSphereCap(*s.sph, s.axisPtP(), seamHi, capRings(ringHi, s.axisPtP()), pool, faces,
+                  /*outer=*/false, /*reversed=*/true);
+  appendRevolvedBand(ringHi, ring1, s.O, s.zc, pool, faces);
+  appendDiskCap(*s.cone, s.coneS1, ring1, s.zc, pool, faces);
+  if (faces.size() < 8) return {};  // two components → ≥8 faces
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
 // ── The COMMON of a THROUGH-DRILL transversal pair (design.md §1-4): one operand (the
 // PIERCED wall, whose two seams are full-circle rim loops) is drilled clean through by
 // the other (the PIERCING wall, whose two seams are local patches). The common region
@@ -2675,6 +3034,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-f: coaxial cone(frustum)∩sphere COMMON (cone band + sphere inner cap).
       const topo::Shape coneSph = buildConeSphereCommon(*csA, *csB, seams);
       if (!coneSph.isNull()) return coneSph;
+      // S5-h: TWO-CIRCLE coaxial cone∩sphere COMMON (sphere lower cap + cone band + sphere upper cap).
+      const topo::Shape coneSph2 = buildConeSphere2Common(*csA, *csB, seams);
+      if (!coneSph2.isNull()) return coneSph2;
       // S5-g: coaxial cone(frustum)∩cone(frustum) COMMON (min-radius profile of revolution).
       return buildConeConeCommon(*csA, *csB, seams);
     }
@@ -2691,6 +3053,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-f: coaxial cone(frustum)∩sphere FUSE (sphere outer cap + cone outer wall + disc).
       const topo::Shape coneSph = buildConeSphereFuse(*csA, *csB, seams);
       if (!coneSph.isNull()) return coneSph;
+      // S5-h: TWO-CIRCLE coaxial cone∩sphere FUSE (cone walls + sphere zone bulge + discs).
+      const topo::Shape coneSph2 = buildConeSphere2Fuse(*csA, *csB, seams);
+      if (!coneSph2.isNull()) return coneSph2;
       // S5-g: coaxial cone(frustum)∩cone(frustum) FUSE (max-radius profile of revolution).
       return buildConeConeFuse(*csA, *csB, seams);
     }
@@ -2707,6 +3072,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-f: coaxial cone(frustum)∩sphere CUT (cone outer wall + disc + reversed sphere dimple).
       const topo::Shape coneSph = buildConeSphereCut(*csA, *csB, seams);
       if (!coneSph.isNull()) return coneSph;
+      // S5-h: TWO-CIRCLE coaxial cone∩sphere CUT (two disconnected cone-tip/end dimpled pieces).
+      const topo::Shape coneSph2 = buildConeSphere2Cut(*csA, *csB, seams);
+      if (!coneSph2.isNull()) return coneSph2;
       // S5-g: coaxial cone(frustum)∩cone(frustum) CUT (A washer + reversed B wall + A-only slice).
       return buildConeConeCut(*csA, *csB, seams);
     }

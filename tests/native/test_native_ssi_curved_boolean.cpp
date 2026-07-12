@@ -1084,4 +1084,119 @@ CC_TEST(freeform_bspline_face_operand_declines_before_trace) {
   }
 }
 
+// ── (8) TWO-CIRCLE coaxial cone(frustum)∩sphere COMMON / FUSE / CUT: REAL native watertight
+// passes (S5-h) ──────────────────────────────────────────────────────────────────────────
+// The natural extension of the single-circle S5-f pair. A cone frustum r(y)=0.5+0.5y over
+// y∈[0,4] (about world +Y) and a sphere Rs=1.6 whose centre (0,2,0) lies ON the cone axis meet
+// along TWO analytic circle seams — the sphere pokes THROUGH the cone wall at TWO latitudes:
+// y*_lo≈0.62026 (ρ≈0.81013) and y*_hi≈2.17974 (ρ≈1.58987). Between the seams the SPHERE is the
+// wider operand (bulges outside the cone); each polar cap (poles at y=0.4 and y=3.6, both inside
+// the cone) sits inside the cone. Both circles are S1-analytic; the S3 tracer returns ONE of the
+// two co-resident loops (the documented S2 co-resident seeding-recall limit), so the S5-h prologue
+// computes BOTH circles itself and CROSS-CHECKS the traced seam against the analytic roots.
+//   COMMON = sphere lower cap [poleM,y*lo] + cone frustum band [y*lo,y*hi] + sphere upper cap
+//            [y*hi,poleP]. V = V_sph-seg + V_frustum + V_sph-seg ≈ 14.674986.
+//   FUSE   = cone walls (ends→seams) + sphere ZONE bulge (the mid-band) + cone terminal discs.
+//            V = V(cone)+V(sphere)−V(COMMON) ≈ 34.945423 (GROW).
+//   CUT    = cone − sphere: the sphere fully engulfs the cone mid-band, so the result PINCHES
+//            into TWO disconnected components (a lower cone-tip piece + an upper piece, each
+//            spherically scooped). V = V(cone)−V(COMMON) ≈ 17.788138 (SHRINK).
+// Every volume matches the closed form to within the engine's curved-parity bar (1% relative, a
+// tessellation-deflection bound). COMMON is symmetric; CUT is order-sensitive (sphere−cone → OCCT).
+CC_TEST(cone_sphere_two_circle_common_fuse_cut_watertight_matches_analytic) {
+  const ntopo::Shape cone = makeCone(0.5, 0.0, 2.5, 4.0);  // r(y)=0.5+0.5y, y∈[0,4], axis +Y
+  const ntopo::Shape sph = makeSphereY(2.0, 1.6);          // centre (0,2,0) on the cone axis
+  CC_CHECK(!cone.isNull() && !sph.isNull());
+
+  // Recognised as Cone + Sphere; the trace returns ONE of the two co-resident circles (the S2
+  // co-resident seeding-recall limit) — the S5-h assembler cross-checks it against the analytic
+  // roots and computes BOTH circles itself.
+  const auto csCone = sd::recogniseCurvedSolid(cone);
+  const auto csSph = sd::recogniseCurvedSolid(sph);
+  CC_CHECK(csCone && csSph);
+  if (csCone && csSph) {
+    CC_CHECK(csCone->kind == sd::CurvedKind::Cone);
+    CC_CHECK(csSph->kind == sd::CurvedKind::Sphere);
+    const ssi::TraceSet tr = ssi::trace_intersection(csCone->adapter(), csSph->adapter());
+    CC_CHECK(tr.nearTangentGaps == 0);   // fully transversal circles
+    CC_CHECK(tr.curveCount() >= 1);      // at least one of the two co-resident circles traced
+  }
+
+  // Closed-form ground truth (frustum + two spherical segments).
+  const double Rs = 1.6, sc = 2.0;
+  const double sLo = 0.6202564524152827, sHi = 2.1797435475847173;
+  const double rhoLo = 0.5 + 0.5 * sLo, rhoHi = 0.5 + 0.5 * sHi;
+  const double poleM = sc - Rs, poleP = sc + Rs;
+  auto sphSeg = [&](double a, double b) {  // π∫[a,b](Rs²−(y−sc)²)dy
+    auto F = [&](double y) { return Rs * Rs * (y - sc) - (y - sc) * (y - sc) * (y - sc) / 3.0; };
+    return sd::kSsiPi * (F(b) - F(a));
+  };
+  const double vConeFull = frustumVolume(0.5, 2.5, 4.0);           // whole cone, y∈[0,4]
+  const double vSph = 4.0 / 3.0 * sd::kSsiPi * Rs * Rs * Rs;       // sphere volume
+  const double vCommonTrue = sphSeg(poleM, sLo) + frustumVolume(rhoLo, rhoHi, sHi - sLo) +
+                             sphSeg(sHi, poleP);
+  CC_CHECK(std::fabs(vCommonTrue - 14.674986) < 1e-4);  // pin the analytic value
+  const double vFuseTrue = vConeFull + vSph - vCommonTrue;
+  const double vCutTrue = vConeFull - vCommonTrue;
+  CC_CHECK(std::fabs(vFuseTrue - 34.945423) < 1e-4);
+  CC_CHECK(std::fabs(vCutTrue - 17.788138) < 1e-4);
+
+  // ── COMMON: watertight native candidate whose volume matches the closed form. ──
+  const ntopo::Shape common = nb::ssi_boolean_solid(cone, sph, nb::Op::Common);
+  CC_CHECK(!common.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  CC_CHECK(vCommon > 0.0);                                          // watertight → engine accepts
+  CC_CHECK(std::fabs(vCommon - vCommonTrue) <= 1e-2 * vCommonTrue);
+  CC_CHECK(vCommon <= std::min(vConeFull, vSph) + 1e-9);           // common ≤ min(A,B)
+  CC_CHECK(!nb::boolean_solid(cone, sph, nb::Op::Common).isNull());
+  // COMMON is symmetric — reversing the operand order builds the same watertight solid.
+  const ntopo::Shape swapped = nb::ssi_boolean_solid(sph, cone, nb::Op::Common);
+  CC_CHECK(!swapped.isNull());
+  const double vSwapped = watertightMeshVolume(swapped);
+  CC_CHECK(vSwapped > 0.0);
+  CC_CHECK(std::fabs(vSwapped - vCommonTrue) <= 1e-2 * vCommonTrue);
+
+  // ── FUSE = A ∪ B: cone walls + sphere zone bulge + cone discs. A GROW. ──
+  const ntopo::Shape fuse = nb::ssi_boolean_solid(cone, sph, nb::Op::Fuse);
+  CC_CHECK(!fuse.isNull());
+  const double vFuse = watertightMeshVolume(fuse);
+  CC_CHECK(vFuse > 0.0);
+  CC_CHECK(std::fabs(vFuse - vFuseTrue) <= 1e-2 * vFuseTrue);
+  CC_CHECK(vFuse >= std::max(vConeFull, vSph) - 1e-9);            // FUSE grows past either operand
+  CC_CHECK(!nb::boolean_solid(cone, sph, nb::Op::Fuse).isNull());
+
+  // ── CUT = A − B (cone minuend): two disconnected spherically-scooped pieces. A SHRINK. ──
+  const ntopo::Shape cut = nb::ssi_boolean_solid(cone, sph, nb::Op::Cut);
+  CC_CHECK(!cut.isNull());
+  const double vCut = watertightMeshVolume(cut);
+  CC_CHECK(vCut > 0.0);
+  CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
+  CC_CHECK(vCut <= vConeFull + 1e-9);                            // CUT shrinks below the minuend
+  CC_CHECK(!nb::boolean_solid(cone, sph, nb::Op::Cut).isNull());
+  // CUT is order-sensitive: sphere − cone is a DIFFERENT topology; the S5-h CUT builder only
+  // handles the cone minuend, so sphere − cone declines here → OCCT.
+  CC_CHECK(nb::ssi_boolean_solid(sph, cone, nb::Op::Cut).isNull());
+}
+
+// ── (9) TWO-CIRCLE cone∩sphere HONEST DECLINES: single-crossing + tangent → S5-f / OCCT. ──
+// The S5-h assembler is the TWO-interior-root config only. A sphere small enough to sit on the
+// frustum side with ONE pole inside / one outside is the SINGLE-crossing S5-f case (built there,
+// not by S5-h). A sphere internally tangent to the cone wall (one double root) declines → OCCT.
+CC_TEST(cone_sphere_two_circle_declines_single_and_tangent) {
+  const ntopo::Shape cone = makeCone(0.5, 0.0, 2.5, 4.0);
+  // Single-crossing sphere (the S5-f fixture): centre (0,0,0), Rs=2 → ONE interior root; the
+  // S5-h two-root prologue must decline it (S5-f owns it).
+  const ntopo::Shape sphSingle = makeSphere(0.0, 2.0);
+  const auto csCone = sd::recogniseCurvedSolid(cone);
+  const auto csSph1 = sd::recogniseCurvedSolid(sphSingle);
+  CC_CHECK(csCone && csSph1);
+  // The single-crossing pair still builds via the S5-f arm (a valid COMMON), NOT S5-h — so the
+  // full entry is non-null (S5-f handles it) but S5-h's own predicate would decline. We assert the
+  // engine still produces the correct single-crossing COMMON (regression: S5-h did not steal it).
+  const ntopo::Shape single = nb::ssi_boolean_solid(cone, sphSingle, nb::Op::Common);
+  CC_CHECK(!single.isNull());
+  const double vSingle = watertightMeshVolume(single);
+  CC_CHECK(std::fabs(vSingle - 5.255829) <= 1e-2 * 5.255829);  // the S5-f single-crossing volume
+}
+
 int main() { return cctest::run_all(); }

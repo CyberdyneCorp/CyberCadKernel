@@ -576,7 +576,7 @@ S4-f DETECTS + REPORTS + traces-through, it does not repair topology.
 
 Archived change `openspec/changes/archive/2026-07-05-add-native-ssi-s4f-completeness`.
 
-### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g/h/i/j landed + S5-k FIRST TRANSVERSAL (non-coaxial) slice (CONE surface family opened — coaxial cone∩cylinder, single- AND two-circle cone∩sphere, coaxial cone∩cone (frustum AND apex-to-apex hourglass), AND two-circle cylinder∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; S5-k lands the FIRST non-coaxial pose — the offset cylinder∩sphere COMMON from a NON-PLANAR traced seam; ~months for full coverage)
+### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g/h/i/j landed + S5-k FIRST TRANSVERSAL (non-coaxial) slice + S5-l TORUS surface family (CONE surface family opened — coaxial cone∩cylinder, single- AND two-circle cone∩sphere, coaxial cone∩cone (frustum AND apex-to-apex hourglass), AND two-circle cylinder∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; S5-k lands the FIRST non-coaxial pose — the offset cylinder∩sphere COMMON from a NON-PLANAR traced seam; S5-l opens the TORUS family — coaxial torus∩cylinder COMMON/FUSE/CUT COMPLETE 3/3 native; ~months for full coverage)
 Use SSI curves to **split** the curved faces of two solids, **classify**
 fragments inside/outside (reuse the BSP-CSG classifier + a curved point-in-solid
 test), **assemble** the surviving shell watertight (curved-seam weld from the
@@ -594,12 +594,12 @@ the SSI-curve-driven
 split→classify→select→weld pipeline lives in
 `src/native/boolean/ssi_boolean.{h,cpp}` (OCCT-free, `CYBERCAD_HAS_NUMSCI`-gated, consumes the
 S3 `TraceSet` — and, for S5-d, the S4-d branched re-trace with `MarchOptions.enableBranchPoints
-= true`). It now produces **nineteen native curved-boolean sub-cases verified vs OCCT
-`BRepAlgoAPI_{Fuse,Cut,Common}`** (sim parity `native-pass=24`, 30 passed / 0 failed / 6 fall-backs
+= true`). It now produces **twenty-two native curved-boolean sub-cases verified vs OCCT
+`BRepAlgoAPI_{Fuse,Cut,Common}`** (sim parity `native-pass=33`, 39 passed / 0 failed / 6 fall-backs
 — the sphere∩sphere, the
 Steinmetz bicylinder, the coaxial cone∩cylinder, the coaxial cone∩sphere SINGLE- and TWO-circle,
-AND the coaxial cone∩cone op-sets are each COMPLETE 3/3 native; the harness runs each of the
-sphere FUSE/CUT as an equal-R AND an unequal-R fixture; 6 honest fallbacks):
+the coaxial cone∩cone, AND the coaxial TORUS∩cylinder op-sets are each COMPLETE 3/3 native; the
+harness runs each of the sphere FUSE/CUT as an equal-R AND an unequal-R fixture; 6 honest fallbacks):
 - **S5-a — through-drill cylinder∩cylinder COMMON** (unequal radii, transversal two-loop
   trace) — watertight, ΔV = 8.1e-04, ΔA = 2.8e-04.
 - **S5-b — through-drill cylinder∩cylinder FUSE + CUT** (assembler-only extension: fat wall
@@ -884,6 +884,43 @@ sphere FUSE/CUT as an equal-R AND an unequal-R fixture; 6 honest fallbacks):
   missing loop). A grazing / internally-tangent offset (NearTangent), a fat cylinder (Rc ≥ Rs), a
   cylinder that does not pierce both poles (offset+Rc ≥ Rs, single loop), and a skew (non-parallel)
   axis all decline → NULL → OCCT.
+- **S5-l — coaxial TORUS(ring)∩CYLINDER COMMON / FUSE / CUT** (the TORUS surface family opened;
+  op-set COMPLETE 3/3 native). A ring torus (major R, minor r, axis) and a COAXIAL cylinder (radius
+  Rc, same axis) whose wall crosses the torus TUBE at TWO latitudes → TWO analytic circle seams. In
+  the meridian (ρ,z) plane the tube is the disk of radius r centred at (R,0) and the cylinder is the
+  vertical chord ρ = Rc; the chord cuts the tube iff |Rc − R| < r, giving `cos v0 = (Rc − R)/r` and
+  the two seam circles at stations z = ±z0 = ±√(r² − (Rc − R)²), both of radius Rc. `recogniseCurvedSolid`
+  now admits a fourth `CurvedKind::Torus` — a bare doubly-periodic `Kind::Torus` face (the STEP-import
+  form; a native revolve builds a torus as B-spline bands, which still decline), ring-torus-only
+  (R > r > 0; a self-intersecting spindle torus R ≤ r is declined at recognition). The S3 tracer
+  returns ONE of the two co-resident loops (the documented S2 co-resident seeding-recall limit), so
+  the `torusCylSetup` prologue computes BOTH circles itself and CROSS-CHECKS the traced seam(s)
+  against the analytic roots (station + radius) — a traced loop matching neither → decline. Every op
+  is a SOLID OF REVOLUTION welded from the S5-e…j machinery — `appendRevolvedBand` (the cylinder
+  chord band + the tube-arc bands, each oriented by the TRUE tube-outward normal radiating from the
+  tube-centre circle, correct on the tube's INNER half where the axis-radial reference would invert)
+  + flat disc caps — through one `VertexPool`.
+  - **COMMON** — `buildTorusCylCommon`: the ρ ≤ Rc part of the tube — the INNER tube arc
+    (v ∈ [v0, 2π−v0], through the inner equator ρ = R−r) + the cylinder chord band (z ∈ [−z0, z0]).
+  - **FUSE (A∪B)** — `buildTorusCylFuse`: the OUTER tube-arc bulge (v ∈ [−v0, v0], ρ > Rc) + the
+    cylinder wall OUTSIDE the tube (z ∈ [cylEnd, ∓z0]) + two cylinder terminal disc caps. The
+    cylinder fills the donut hole → the union is simply connected. A GROW.
+  - **CUT (A−B, TORUS minuend, order-sensitive)** — `buildTorusCylCut`: the ρ > Rc outer tube ring
+    (outer arc + the cylinder chord band REVERSED, bounding the carved bore). A SHRINK, one closed
+    ring-of-revolution component. A cylinder-minuend `cyl − torus` declines → OCCT.
+  Verified vs a **DUAL oracle** — the AIRTIGHT Pappus closed forms (engine `ssiCurvedBooleanVerified`
+  S5-l arm for COMMON: `V = 2π·(R·A_seg + M)`, `A_seg = πr² − (r²·acos(d/r) − d·√(r²−d²))`,
+  `M = −(2/3)(r²−d²)^{3/2}`, `d = Rc − R`; the generic `booleanResultVerified` `V_torus + V_cyl − V_common`
+  / `V_torus − V_common` for FUSE/CUT with `V_torus = 2π²Rr²`) **AND** OCCT `BRepAlgoAPI_{Common,Fuse,Cut}`
+  (sim), all watertight/closed/valid, inside the 1% curved-parity bar, no tolerance weakened. Host+sim
+  fixture (torus R=3, r=1, axis +Z; cylinder Rc=3.2, z∈[−2,2]; seams z*=±√0.96≈±0.98, radius 3.2):
+  - COMMON: volN=33.059 vs analytic 33.158 vs OCCT 33.158, ΔV=2.98e-03, ΔA=9.81e-04.
+  - FUSE:   volN=154.45 vs OCCT 154.74, ΔV=1.86e-03, ΔA=1.20e-03 (a GROW).
+  - CUT (torus−cyl): volN=25.986 vs OCCT 26.06, ΔV=2.84e-03, ΔA=9.34e-04 (a SHRINK).
+  A SPINDLE / self-intersecting torus (R ≤ r) declines at recognition; a cylinder that clears the
+  tube (Rc inside the donut hole or beyond the outer equator, |Rc − R| ≥ r → no proper two-circle
+  crossing), a cylinder tangent to an equator, a short cylinder not axially spanning the tube, and a
+  non-coaxial (off-axis / skew) torus∩cylinder all decline → NULL → OCCT (honest, never faked).
 
 Honest scope still declining → OCCT (measured NULL fallbacks, never faked):
 - **the TRANSVERSAL (offset) cylinder∩sphere CUT + FUSE** (the sphere-outer-zone weld between two

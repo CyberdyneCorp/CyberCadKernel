@@ -485,6 +485,34 @@ CurvedCheck ssiCurvedBooleanVerified(const ntopo::Shape& result, const ntopo::Sh
         const double tol = std::max(1e-2 * expected, 1e-6);  // deflection-bounded curved mesh
         return {true, std::fabs(vr - expected) <= tol};
     }
+
+    // ── S5-l arm: COAXIAL torus∩cylinder COMMON (two analytic circle seams). ──
+    // The COMMON is the ρ ≤ Rc part of the torus tube, revolved about the axis. In the
+    // meridian (ρ,z) plane the tube is the disk of radius r centred at (R,0); the cylinder
+    // is the vertical chord ρ = Rc (d = Rc − R). By Pappus V = 2π·(R·A_seg + M), where the
+    // INNER (ρ ≤ Rc) circular segment has area A_seg = πr² − (r²·acos(d/r) − d·√(r²−d²)) and
+    // first moment about ρ=R of M = −(2/3)(r²−d²)^{3/2}. Airtight closed form; mirrors the
+    // buildTorusCylCommon geometry. Applicable only for the clean two-circle poke-through.
+    const auto* tor = csA->kind == CK::Torus ? &*csA : (csB->kind == CK::Torus ? &*csB : nullptr);
+    if (tor && cyl) {
+        const nm::Vec3 zc = tor->frame.z.vec();
+        if (nm::norm(nm::cross(zc, cyl->frame.z.vec())) > 1e-6) return {};  // axes not parallel
+        const nm::Vec3 d = cyl->frame.origin - tor->frame.origin;
+        if (nm::norm(d - zc * nm::dot(d, zc)) > 1e-6) return {};  // origins not colinear → not coaxial
+        const double R = tor->radius, r = tor->minorRadius, Rc = cyl->radius;
+        if (!(r > 1e-9) || !(R > r + 1e-9) || !(Rc > 1e-9)) return {};
+        const double dc = Rc - R;
+        if (!(std::fabs(dc) < r - 1e-6)) return {};  // not a proper two-circle crossing
+        const double root = std::sqrt(std::max(r * r - dc * dc, 0.0));
+        const double aCap = r * r * std::acos(std::clamp(dc / r, -1.0, 1.0)) - dc * root;  // ρ>Rc segment
+        const double aSeg = cv::kPi * r * r - aCap;                                         // ρ≤Rc segment
+        const double mom = -(2.0 / 3.0) * root * root * root;                                // first moment
+        const double expected = 2.0 * cv::kPi * (R * aSeg + mom);
+        const double vr = watertightVolume(result);
+        if (vr < 0.0) return {true, false};  // not watertight
+        const double tol = std::max(1e-2 * expected, 1e-6);  // deflection-bounded curved mesh
+        return {true, std::fabs(vr - expected) <= tol};
+    }
     return {};
 #else
     (void)result; (void)a; (void)b; (void)op;

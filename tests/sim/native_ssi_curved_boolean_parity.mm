@@ -116,6 +116,7 @@
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
+#include <BRepPrimAPI_MakeTorus.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
@@ -211,6 +212,20 @@ ntopo::Shape makeCone(double r0, double y0, double r1, double y1) {
   return ncst::build_revolution_profile({side, topEdge, axisEdge, botEdge}, ax, 2.0 * kPi);
 }
 
+// A native RING TORUS (major R, minor r) about world +Z: a BARE doubly-periodic Kind::Torus
+// face with a NULL outer wire (exactly the shape recogniseCurvedSolid admits — the STEP-import
+// form; a native revolve builds a torus as B-spline bands, which decline). The tessellator
+// meshes the natural (u,v)∈[0,2π]² rectangle, welding both seams → a watertight torus solid.
+ntopo::Shape makeTorus(double R, double r) {
+  ntopo::FaceSurface s;
+  s.kind = ntopo::FaceSurface::Kind::Torus;
+  s.frame = nmath::Ax3{};  // identity: origin 0, axis +Z, x=+X
+  s.radius = R;
+  s.minorRadius = r;
+  const ntopo::Shape face = ntopo::ShapeBuilder::makeFace(s, ntopo::Shape{});
+  return ntopo::ShapeBuilder::makeSolid({ntopo::ShapeBuilder::makeShell({face})});
+}
+
 // ── native mesh self-verify (mimics the engine: watertight + enclosed volume) ──────
 struct NativeMeasure {
   bool present = false;   // native path returned a non-null candidate
@@ -296,6 +311,10 @@ TopoDS_Shape occtSphere(double r, double cy) {
 // A cone about world +Y: base radius r0 at y0, top radius r1 at y1.
 TopoDS_Shape occtCone(double r0, double y0, double r1, double y1) {
   return BRepPrimAPI_MakeCone(gp_Ax2(gp_Pnt(0.0, y0, 0.0), gp_Dir(0, 1, 0)), r0, r1, y1 - y0).Shape();
+}
+// A ring torus (major R, minor r) about world +Z, centred at the origin — matches makeTorus.
+TopoDS_Shape occtTorus(double R, double r) {
+  return BRepPrimAPI_MakeTorus(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), R, r).Shape();
 }
 
 // ── a {pair, op} case ──────────────────────────────────────────────────────────────
@@ -609,6 +628,24 @@ int main() {
     pc.nativeB = makeCone(0.0, 0.0, 2.0, 2.0);   // △ r_B(y)=y,   apex at y=0, coaxial (about +Y)
     pc.occtA = occtCone(2.0, 0.0, 0.0, 2.0);
     pc.occtB = occtCone(0.0, 0.0, 2.0, 2.0);
+    pc.relTol = 2e-2;
+    probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
+    runPair(pc);
+  }
+
+  // ── (11) COAXIAL TORUS ∩ CYLINDER — the TORUS surface family (S5-l) ────────────────
+  // A ring torus (major R=3, minor r=1, axis +Z) and a coaxial cylinder Rc=3.2 over z∈[-2,2].
+  // The cylinder wall crosses the tube at TWO latitudes (|Rc−R|=0.2 < r), two analytic circle
+  // seams. Every op is a Pappus-exact solid of revolution: COMMON = the ρ≤Rc tube part; CUT
+  // (torus−cyl) = the ρ>Rc outer ring; FUSE = the union. All three match
+  // BRepAlgoAPI_{Common,Fuse,Cut} on volume/area/watertight → NATIVE passes.
+  {
+    PairCase pc;
+    pc.pairName = "torus=cyl(coaxial)";
+    pc.nativeA = makeTorus(3.0, 1.0);
+    pc.nativeB = makeCyl(2, 0, 0, 3.2, -2.0, 2.0);   // Z axis, Rc=3.2 (coaxial with the torus)
+    pc.occtA = occtTorus(3.0, 1.0);
+    pc.occtB = occtCyl(2, 0, 0, 3.2, -2.0, 2.0);
     pc.relTol = 2e-2;
     probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
     runPair(pc);

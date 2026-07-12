@@ -47,6 +47,7 @@
 
 #include "harness.h"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -109,6 +110,34 @@ ntopo::Shape makeSphereY(double cy, double R) {
   segs[0].a0 = -sd::kSsiPi / 2.0; segs[0].a1 = sd::kSsiPi / 2.0;
   const cst::RevolveAxis yAxis{0.0, 0.0, 0.0, 1.0};
   return cst::build_revolution_profile(segs, yAxis, 2.0 * sd::kSsiPi);
+}
+
+// A full RING TORUS (major R, minor r) about world +Z as a genuine native B-rep: a BARE
+// doubly-periodic Kind::Torus face with a NULL outer wire (exactly the shape the STEP reader
+// maps a TOROIDAL_SURFACE to, and the ONLY torus form recogniseCurvedSolid admits — a native
+// revolve builds a torus as B-spline bands, which decline). The tessellator meshes the
+// natural (u,v)∈[0,2π]² rectangle, welding both seams (no poles) → a watertight torus.
+ntopo::Shape makeTorus(double R, double r) {
+  ntopo::FaceSurface s;
+  s.kind = ntopo::FaceSurface::Kind::Torus;
+  s.frame = nmath::Ax3{};  // identity: origin 0, axis +Z, x=+X
+  s.radius = R;
+  s.minorRadius = r;
+  const ntopo::Shape face = ntopo::ShapeBuilder::makeFace(s, ntopo::Shape{});
+  return ntopo::ShapeBuilder::makeSolid({ntopo::ShapeBuilder::makeShell({face})});
+}
+
+// Pappus-exact volume of the COMMON (torus ρ ≤ Rc part) of a coaxial torus∩cylinder: the
+// vertical-chord circular segment {ρ ≤ Rc} of the tube disk (radius r, centre ρ=R), revolved.
+// V = 2π·(R·A_seg + M), A_seg = πr² − (r²·acos(d/r) − d·√(r²−d²)), M = −(2/3)(r²−d²)^{3/2},
+// d = Rc − R. Airtight closed form (matches the engine's ssiCurvedBooleanVerified S5-l arm).
+double torusCylCommonVolume(double R, double r, double Rc) {
+  const double d = Rc - R;
+  const double root = std::sqrt(std::max(r * r - d * d, 0.0));
+  const double aCap = r * r * std::acos(std::clamp(d / r, -1.0, 1.0)) - d * root;
+  const double aSeg = sd::kSsiPi * r * r - aCap;
+  const double mom = -(2.0 / 3.0) * root * root * root;
+  return 2.0 * sd::kSsiPi * (R * aSeg + mom);
 }
 
 // A native cone/frustum solid: a slanted line-segment profile (radius r0 at axial y0 →
@@ -1554,6 +1583,103 @@ CC_TEST(cyl_sphere_transversal_reduces_to_coaxial_at_zero_offset) {
   const double vOff = watertightMeshVolume(offCommon);
   CC_CHECK(vOff > 0.0);
   CC_CHECK(vCoax - vOff > 1e-2);   // coaxial overlap strictly larger than the offset overlap
+}
+
+// ── (14) COAXIAL TORUS∩CYLINDER COMMON / FUSE / CUT (S5-l) — the TORUS surface family ──
+// A ring torus (major R=3, minor r=1, axis +Z) and a coaxial cylinder Rc=3.2 over z∈[-2,2]:
+// the cylinder wall crosses the tube at TWO latitudes (|Rc−R|=0.2 < r=1), giving two analytic
+// circle seams at z=±z0=±√(r²−(Rc−R)²) of radius Rc. Every op is a Pappus-exact solid of
+// revolution. COMMON = the ρ ≤ Rc tube part; CUT (torus−cyl) = the ρ > Rc outer ring; FUSE =
+// the union (outer bulge + cylinder wall outside the tube + cylinder disc caps). Verified vs
+// the AIRTIGHT closed forms — no OCCT, no fabricated value (mirrors the engine's S5-l oracle).
+CC_TEST(torus_cyl_coaxial_common_fuse_cut_watertight_matches_analytic) {
+  const double R = 3.0, r = 1.0, Rc = 3.2, cLo = -2.0, cHi = 2.0;
+  const ntopo::Shape tor = makeTorus(R, r);
+  const ntopo::Shape cyl = makeCyl(/*Z*/ 2, Rc, cLo, cHi);
+  CC_CHECK(!tor.isNull() && !cyl.isNull());
+
+  const auto csTor = sd::recogniseCurvedSolid(tor);
+  const auto csCyl = sd::recogniseCurvedSolid(cyl);
+  CC_CHECK(csTor && csCyl);
+  if (csTor && csCyl) {
+    CC_CHECK(csTor->kind == sd::CurvedKind::Torus);
+    CC_CHECK(csCyl->kind == sd::CurvedKind::Cylinder);
+    CC_CHECK(std::fabs(csTor->radius - R) < 1e-9 && std::fabs(csTor->minorRadius - r) < 1e-9);
+    const ssi::TraceSet tr = ssi::trace_intersection(csTor->adapter(), csCyl->adapter());
+    CC_CHECK(tr.nearTangentGaps == 0);   // fully transversal circle seams
+    CC_CHECK(tr.curveCount() >= 1);      // ≥1 of the two co-resident circles traced
+  }
+
+  // Airtight closed-form ground truth (Pappus).
+  const double vTorus = 2.0 * sd::kSsiPi * sd::kSsiPi * R * r * r;   // 2π²Rr²
+  const double vCylFull = cylinderVolume(Rc, cLo, cHi);             // π Rc² (cHi−cLo)
+  const double vCommonTrue = torusCylCommonVolume(R, r, Rc);
+  const double vFuseTrue = vTorus + vCylFull - vCommonTrue;
+  const double vCutTrue = vTorus - vCommonTrue;
+  CC_CHECK(vCommonTrue > 0.0 && vCommonTrue < vTorus);
+
+  // ── COMMON: the ρ ≤ Rc tube part (inner arc + cylinder chord band). ──
+  const ntopo::Shape common = nb::ssi_boolean_solid(tor, cyl, nb::Op::Common);
+  CC_CHECK(!common.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  CC_CHECK(vCommon > 0.0);                                          // watertight → engine accepts
+  CC_CHECK(std::fabs(vCommon - vCommonTrue) <= 1e-2 * vCommonTrue);
+  CC_CHECK(vCommon <= std::min(vTorus, vCylFull) + 1e-9);          // common ≤ min(A,B)
+  CC_CHECK(!nb::boolean_solid(tor, cyl, nb::Op::Common).isNull());
+  // COMMON is symmetric — reversing the operand order builds the same watertight solid.
+  const ntopo::Shape swapped = nb::ssi_boolean_solid(cyl, tor, nb::Op::Common);
+  CC_CHECK(!swapped.isNull());
+  const double vSwapped = watertightMeshVolume(swapped);
+  CC_CHECK(vSwapped > 0.0);
+  CC_CHECK(std::fabs(vSwapped - vCommonTrue) <= 1e-2 * vCommonTrue);
+
+  // ── FUSE = A ∪ B: outer tube bulge + cylinder wall outside the tube + cylinder discs. GROW. ──
+  const ntopo::Shape fuse = nb::ssi_boolean_solid(tor, cyl, nb::Op::Fuse);
+  CC_CHECK(!fuse.isNull());
+  const double vFuse = watertightMeshVolume(fuse);
+  CC_CHECK(vFuse > 0.0);
+  CC_CHECK(std::fabs(vFuse - vFuseTrue) <= 1e-2 * vFuseTrue);
+  CC_CHECK(vFuse >= std::max(vTorus, vCylFull) - 1e-9);            // FUSE grows past either operand
+  CC_CHECK(!nb::boolean_solid(tor, cyl, nb::Op::Fuse).isNull());
+
+  // ── CUT = A − B (torus minuend): the ρ > Rc outer tube ring (a SHRINK). ──
+  const ntopo::Shape cut = nb::ssi_boolean_solid(tor, cyl, nb::Op::Cut);
+  CC_CHECK(!cut.isNull());
+  const double vCut = watertightMeshVolume(cut);
+  CC_CHECK(vCut > 0.0);
+  CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
+  CC_CHECK(vCut <= vTorus + 1e-9);                                // CUT shrinks below the minuend
+  CC_CHECK(!nb::boolean_solid(tor, cyl, nb::Op::Cut).isNull());
+  // CUT is order-sensitive: cylinder − torus is a DIFFERENT topology; the S5-l CUT builder only
+  // handles the TORUS minuend, so cyl − torus declines here → OCCT.
+  CC_CHECK(nb::ssi_boolean_solid(cyl, tor, nb::Op::Cut).isNull());
+}
+
+// ── (15) TORUS∩CYLINDER HONEST DECLINES: spindle torus + clear/tangent cylinder → OCCT ──
+// The S5-l assembler is the strict RING-torus two-circle poke-through only. A self-intersecting
+// SPINDLE torus (R ≤ r) is not even recognised; a cylinder that clears the tube (inside the hole
+// or beyond the outer equator, |Rc−R| ≥ r → no proper two-circle crossing) declines for every op.
+CC_TEST(torus_cyl_declines_spindle_and_non_crossing) {
+  // (a) Spindle torus (R < r) — self-intersecting, degenerate → not recognised as a CurvedSolid.
+  CC_CHECK(!sd::recogniseCurvedSolid(makeTorus(0.5, 1.0)));
+  // A degenerate ring torus R == r is likewise declined (no clear tube).
+  CC_CHECK(!sd::recogniseCurvedSolid(makeTorus(1.0, 1.0)));
+
+  const ntopo::Shape tor = makeTorus(3.0, 1.0);
+  // (b) Cylinder Rc=1.5 sits entirely inside the donut hole (Rc < R−r = 2) — no wall crossing.
+  const ntopo::Shape clear = makeCyl(/*Z*/ 2, 1.5, -2.0, 2.0);
+  CC_CHECK(nb::ssi_boolean_solid(tor, clear, nb::Op::Common).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(tor, clear, nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(tor, clear, nb::Op::Cut).isNull());
+
+  // (c) Cylinder tangent to the outer equator (Rc = R+r = 4 → |Rc−R| = r): boundary, not a proper
+  //     two-circle crossing → declines.
+  const ntopo::Shape tangent = makeCyl(/*Z*/ 2, 4.0, -2.0, 2.0);
+  CC_CHECK(nb::ssi_boolean_solid(tor, tangent, nb::Op::Common).isNull());
+
+  // (d) A short cylinder that does not axially span the tube (a seam falls outside its extent).
+  const ntopo::Shape shortCyl = makeCyl(/*Z*/ 2, 3.2, 0.5, 2.0);  // z∈[0.5,2] misses the −z0 seam
+  CC_CHECK(nb::ssi_boolean_solid(tor, shortCyl, nb::Op::Common).isNull());
 }
 
 int main() { return cctest::run_all(); }

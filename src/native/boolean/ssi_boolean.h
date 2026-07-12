@@ -120,17 +120,20 @@ inline constexpr double kSsiTol = 1e-6;
 // emits and exactly what S3 can trace transversally. We fold the faces into ONE
 // analytic surface + its axial extent + the planar cap half-spaces, so we can (a)
 // build the SurfaceAdapter S3 needs and (b) run the curved point-in-solid test.
-// Anything richer (two distinct curved surfaces, freeform, torus) → nullopt →
-// declined.
-enum class CurvedKind { Cylinder, Sphere, Cone };
+// A closed TORUS (major R, minor r, axis = frame Z) is admitted as a fourth kind:
+// a single doubly-periodic torus wall, no cap planes (a closed surface of revolution
+// with no vertices). Anything richer (two distinct curved surfaces, freeform, a
+// spindle/self-intersecting torus R ≤ r) → nullopt → declined.
+enum class CurvedKind { Cylinder, Sphere, Cone, Torus };
 
 struct CurvedSolid {
   CurvedKind kind = CurvedKind::Cylinder;
   math::Ax3 frame{};        ///< analytic surface placement (world)
-  double radius = 0.0;      ///< cylinder/sphere radius, cone reference radius
+  double radius = 0.0;      ///< cylinder/sphere radius, cone reference radius, torus MAJOR R
   double semiAngle = 0.0;   ///< cone half-angle
-  double vLo = 0.0;         ///< axial/latitude extent of the wall (surface v param)
-  double vHi = 0.0;
+  double minorRadius = 0.0; ///< torus MINOR (tube) radius r; 0 for every other kind
+  double vLo = 0.0;         ///< axial/latitude extent of the wall (surface v param);
+  double vHi = 0.0;         ///< for a torus v is the MINOR (tube) angle → full [0,2π]
   std::vector<std::pair<math::Vec3, math::Point3>> capPlanes;  ///< outward-normal caps
 
   math::Point3 point(double u, double v) const {
@@ -138,6 +141,7 @@ struct CurvedSolid {
       case CurvedKind::Cylinder: return math::Cylinder{frame, radius}.value(u, v);
       case CurvedKind::Sphere:   return math::Sphere{frame, radius}.value(u, v);
       case CurvedKind::Cone:     return math::Cone{frame, radius, semiAngle}.value(u, v);
+      case CurvedKind::Torus:    return math::Torus{frame, radius, minorRadius}.value(u, v);
     }
     return {};
   }
@@ -147,6 +151,7 @@ struct CurvedSolid {
       case CurvedKind::Cylinder: return ssi::makeCylinderAdapter(math::Cylinder{frame, radius}, dom);
       case CurvedKind::Sphere:   return ssi::makeSphereAdapter(math::Sphere{frame, radius}, dom);
       case CurvedKind::Cone:     return ssi::makeConeAdapter(math::Cone{frame, radius, semiAngle}, dom);
+      case CurvedKind::Torus:    return ssi::makeTorusAdapter(math::Torus{frame, radius, minorRadius}, dom);
     }
     return {};
   }
@@ -203,18 +208,33 @@ inline std::optional<CurvedSolid> recogniseCurvedSolid(const topo::Shape& s) {
       case topo::FaceSurface::Kind::Cylinder: ck = CurvedKind::Cylinder; break;
       case topo::FaceSurface::Kind::Sphere:   ck = CurvedKind::Sphere; break;
       case topo::FaceSurface::Kind::Cone:     ck = CurvedKind::Cone; break;
+      case topo::FaceSurface::Kind::Torus:    ck = CurvedKind::Torus; break;
       default: return std::nullopt;  // BSpline / Bezier → freeform → OCCT
     }
     const math::Ax3 fr = worldFrame(*surf, ex.current());
     if (!cs) {
-      cs = CurvedSolid{ck, fr, surf->surface->radius, surf->surface->semiAngle, 0, 0, {}};
+      cs = CurvedSolid{ck, fr, surf->surface->radius, surf->surface->semiAngle,
+                       surf->surface->minorRadius, 0, 0, {}};
     } else {
       if (cs->kind != ck) return std::nullopt;
       if (std::fabs(cs->radius - surf->surface->radius) > kSsiTol) return std::nullopt;
+      if (std::fabs(cs->minorRadius - surf->surface->minorRadius) > kSsiTol) return std::nullopt;
       if (!sameAxis(cs->frame, fr, kSsiTol)) return std::nullopt;
     }
   }
   if (!cs) return std::nullopt;  // no curved face → not this path
+
+  // ── TORUS: a closed doubly-periodic tube — no cap planes, no vertices. The v
+  // extent is the FULL minor angle [0, 2π); the tube must be a RING torus (R > r > 0,
+  // no self-intersection) — a spindle torus (R ≤ r) is degenerate → declined. Fold and
+  // return before the axial-vertex-extent logic (a closed torus has no vertices).
+  if (cs->kind == CurvedKind::Torus) {
+    if (!(cs->minorRadius > 1e-9) || !(cs->radius > cs->minorRadius + 1e-9)) return std::nullopt;
+    if (!planeFaces.empty()) return std::nullopt;  // a partial/trimmed torus is out of scope
+    cs->vLo = 0.0;
+    cs->vHi = kSsiTwoPi;
+    return cs;
+  }
 
   // Axial (v) extent from the solid vertices projected into the surface's v param,
   // plus the vertex centroid — a definitely-interior reference used to orient the
@@ -282,6 +302,16 @@ inline int classifyPoint(const CurvedSolid& cs, const math::Point3& p, double to
       const double axial = math::dot(w, cs.frame.z.vec());
       const double rAt = cs.radius + axial * std::tan(cs.semiAngle);
       wall = (math::norm(w - cs.frame.z.vec() * axial) - rAt) * std::cos(cs.semiAngle);
+      break;
+    }
+    case CurvedKind::Torus: {
+      // Distance to the tube-centre CIRCLE (radius R about the axis) minus r: inside the
+      // tube iff ≤ 0. axial = z, ρ = radial distance; the nearest tube-centre point is at
+      // (ρ→R, z→0), so the in-tube distance is √((ρ−R)² + z²) − r.
+      const double axial = math::dot(w, cs.frame.z.vec());
+      const double rho = math::norm(w - cs.frame.z.vec() * axial);
+      const double dRho = rho - cs.radius;
+      wall = std::sqrt(dRho * dRho + axial * axial) - cs.minorRadius;
       break;
     }
   }

@@ -858,6 +858,21 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_draft_faces)
         set(test_native_draft_faces_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_draft_faces.cpp")
+        # NURBS roadmap Layer 4 (fillet/chamfer) — G2 (curvature-continuous) rolling-ball
+        # fillet where BOTH base faces are GENERAL FREEFORM NURBS surfaces
+        # (blend/fillet_edge_g2_freeform.h). It marches the rolling-ball CENTRE LOCUS
+        # (footpoint on each face + centre Newton to distance r), reads each contact's end
+        # curvature from the LOCAL SECOND FUNDAMENTAL FORM, and places the quintic poles via
+        # the generalised q=(5/4)·κ·h² rule — so a NURBS plane/sphere REDUCES to the existing
+        # analytic G2 result and a bicubic-bump crease gets a genuinely-curved G2 fillet. The
+        # surface derivatives come through native-math nurbsSurfaceDerivs (order 2), which is
+        # the numsci-gated NURBS evaluator, so the host gate builds under CYBERCAD_HAS_NUMSCI.
+        # Airtight oracles: analytic-reduction (plane κ=0, sphere κ=1/R ≤1e-9), G2-to-face
+        # (G1 tangent ≤1e-6 rad + curvature match rel ≤1e-4), and honest-decline when the
+        # ball won't fit (no self-intersecting fillet). Header-only; no lib change.
+        list(APPEND CYBERCAD_TESTS test_native_fillet_g2_freeform)
+        set(test_native_fillet_g2_freeform_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_fillet_g2_freeform.cpp")
     endif()
 
     # The tet-mesher test drives the real TetGen backend, so it is added ONLY when
@@ -1267,6 +1282,13 @@ if(CYBERCAD_BUILD_TESTS)
     # so its TU needs the macro but NOT the substrate include trees, like the thicken gate.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_shell)
         target_compile_definitions(test_native_nurbs_shell PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+    # The Layer-4 freeform G2 fillet gate includes blend/fillet_edge_g2_freeform.h
+    # (→ math/bspline.h + math/vec.h only, no NumPP/SciPP headers), so its TU needs the
+    # CYBERCAD_HAS_NUMSCI macro (to enable the NURBS-evaluator-backed section) but NOT the
+    # substrate include trees, like the thicken/shell/offset gates.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_fillet_g2_freeform)
+        target_compile_definitions(test_native_fillet_g2_freeform PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_ssi_boolean)

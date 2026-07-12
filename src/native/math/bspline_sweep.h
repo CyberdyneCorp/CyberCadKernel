@@ -216,6 +216,100 @@ SweepResult sweepRationalAlongTrajectory(const BsplineCurveData& section,
 SweepResult sweepRotational(const BsplineCurveData& section, const Point3& axisPoint,
                             const Dir3& axisDir, double angle);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Variable-section sweep — the section SCALES and/or TWISTS as it rides the spine.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// VARIABLE-SECTION sweep (§10.4, generalized): sweep `section` along `trajectory` while
+/// applying a station-dependent SCALE and TWIST to the rotation-minimizing-frame–transported
+/// section, then SKIN the placed sections into one tensor-product surface (exactly like
+/// sweepAlongTrajectory, but the placement composes an extra scale+twist in the section's own
+/// plane before the rigid frame). This is the pipe-with-varying-radius / tapered-moulding /
+/// twisted-extrusion primitive.
+///
+/// The variation is supplied as SAMPLED FIELDS, one value per station (analytic laws are
+/// sampled by the caller — a linear taper is `scales[k] = s0 + (s1-s0)*k/(K-1)`):
+///   * `scales[k]` — uniform scale of the section about its ORIGIN at station k (must be > 0).
+///   * `twists[k]` — rotation (radians) of the section about its LOCAL SWEEP AXIS (the spine
+///     tangent) at station k, applied in the section plane before the rigid frame.
+/// Both fields must have exactly `stations` entries. Passing an all-ones `scales` and an
+/// all-zero `twists` reproduces `sweepAlongTrajectory` EXACTLY (the constant-section oracle).
+///
+/// GUARANTEE (containment, inherited from skinSurface): the surface contains each SCALED+
+/// TWISTED+placed section at its station parameter to skinning tolerance (~1e-8). ANALYTIC
+/// oracle: a circular section swept along a straight spine with a linear scale is an exact
+/// cone frustum (the placed sections are concentric scaled circles → the skin reproduces the
+/// frustum). `degreeV` is the across-stations skin degree.
+///
+/// Declines (`ok=false`, no crash) on: fewer than 2 stations; a rational section or trajectory
+/// (use the rational variant); an empty/malformed section or trajectory; a field size !=
+/// `stations`; a non-positive scale; a degenerate (coincident-station) trajectory; or a
+/// downstream skin failure. NON-RATIONAL.
+SweepResult sweepVariable(const BsplineCurveData& section, const BsplineCurveData& trajectory,
+                          const Dir3& sectionNormal, const std::vector<double>& scales,
+                          const std::vector<double>& twists, int stations = 16, int degreeV = 3);
+
+/// RATIONAL analogue of sweepVariable — `section` MUST be rational (strictly-positive weights),
+/// the trajectory is NON-rational. The scale+twist about the section origin is a uniform
+/// similarity (it multiplies every pole's position by the scale and rotates it), which PRESERVES
+/// the section's weights EXACTLY (weights are invariant under a similarity), then RATIONAL-SKINS
+/// the placed rational sections. So a TRUE rational circle scaled linearly along a straight spine
+/// is an EXACT rational cone frustum. Declines mirror sweepVariable (plus non-rational/
+/// non-positive-weight section -> decline; rational trajectory -> decline).
+SweepResult sweepRationalVariable(const BsplineCurveData& section,
+                                  const BsplineCurveData& trajectory, const Dir3& sectionNormal,
+                                  const std::vector<double>& scales,
+                                  const std::vector<double>& twists, int stations = 16,
+                                  int degreeV = 3);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Two-rail sweep — the section is fit between two rail curves at every station.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// TWO-RAIL sweep (the classic "sweep between two guide rails"): the section carries two ANCHOR
+/// points `poles[anchor0]` and `poles[anchor1]`; at each station parameter `t` the section is
+/// positioned/scaled/oriented so that anchor0 rides `rail0(t)` and anchor1 rides `rail1(t)`.
+/// At station k (t sampled evenly over the COMMON rail domain):
+///   * SCALE `s(t) = |rail1(t) - rail0(t)| / |anchor1 - anchor0|` (the section stretches so its
+///     two anchors span the current rail-to-rail chord);
+///   * the section's anchor chord direction is aligned to the rail chord `rail1(t)-rail0(t)`,
+///     and the remaining orientation is carried by a ROTATION-MINIMIZING frame along the
+///     rail-midpoint spine (anti-twist), so the section does not spin between the rails;
+///   * TRANSLATE so anchor0 maps onto `rail0(t)`.
+/// The placed sections are then SKINNED into one tensor-product surface. This is the standard
+/// two-rail construction (BRepFill-class): the profile is anchored to both rails at every
+/// station, exactly.
+///
+/// GUARANTEE: the two anchor iso-curves of the surface LIE ON rail0 and rail1 respectively at
+/// every station (<= ~1e-8), and the surface contains each placed section (skin containment).
+/// ANALYTIC oracles: two parallel straight rails + a straight segment section give a planar/
+/// ruled strip; two rails diverging linearly give the exact tapered surface, with the section
+/// endpoints ON the rails at every station.
+///
+/// `anchor0` / `anchor1` are the section pole INDICES that ride the rails (0-based, distinct,
+/// in range). `sectionNormal` is the section plane normal (the RMF reference). `degreeV` is the
+/// across-stations skin degree.
+///
+/// Declines (`ok=false`, no crash) on: fewer than 2 stations; a rational section or either
+/// rational rail (use the rational variant); an empty/malformed section or rail; anchor indices
+/// out of range / equal; coincident section anchors (`|anchor1-anchor0| ~= 0` — no chord to
+/// scale from); DEGENERATE RAILS (a station where the rail chord `|rail1(t)-rail0(t)| ~= 0`, i.e.
+/// the rails cross or touch — the scale/orientation is undefined, honest-decline); a degenerate
+/// (coincident-midpoint) rail spine; or a downstream skin failure. NON-RATIONAL.
+SweepResult sweepTwoRail(const BsplineCurveData& section, const BsplineCurveData& rail0,
+                         const BsplineCurveData& rail1, const Dir3& sectionNormal, int anchor0,
+                         int anchor1, int stations = 16, int degreeV = 3);
+
+/// RATIONAL analogue of sweepTwoRail — `section` MUST be rational (strictly-positive weights);
+/// both rails are NON-rational (they only provide the rail points that the anchors ride). The
+/// per-station placement is a SIMILARITY (uniform scale + rotation + translation), which
+/// preserves the section's weights EXACTLY, then RATIONAL-SKINS the placed sections. Declines
+/// mirror sweepTwoRail (plus non-rational/non-positive-weight section -> decline; rational rail
+/// -> decline).
+SweepResult sweepRationalTwoRail(const BsplineCurveData& section, const BsplineCurveData& rail0,
+                                 const BsplineCurveData& rail1, const Dir3& sectionNormal,
+                                 int anchor0, int anchor1, int stations = 16, int degreeV = 3);
+
 }  // namespace cybercad::native::math
 
 #endif  // CYBERCAD_NATIVE_MATH_BSPLINE_SWEEP_H

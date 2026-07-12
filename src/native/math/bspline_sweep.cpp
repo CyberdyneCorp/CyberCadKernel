@@ -214,6 +214,198 @@ std::vector<BsplineCurveData> placeSectionsAlongTrajectory(const BsplineCurveDat
   return placed;
 }
 
+// Sample K station points + unit tangents evenly across a curve's clamped domain. Returns
+// false on any stationary spine point or an all-coincident (zero-length) sampled path.
+bool sampleStations(const BsplineCurveData& curve, int stations, std::vector<Point3>& pts,
+                    std::vector<Dir3>& tans) {
+  if (stations < 2) return false;
+  double a = 0.0, b = 0.0;
+  domainOf(curve, a, b);
+  if (!(b > a)) return false;
+  pts.clear();
+  tans.clear();
+  pts.reserve(stations);
+  tans.reserve(stations);
+  for (int k = 0; k < stations; ++k) {
+    const double t = a + (b - a) * (static_cast<double>(k) / (stations - 1));
+    const PointTangent pt = evalPointTangent(curve, t);
+    if (!pt.ok) return false;
+    pts.push_back(pt.p);
+    tans.push_back(pt.tangent);
+  }
+  double pathLen = 0.0;
+  for (int k = 1; k < stations; ++k) pathLen += distance(pts[k], pts[k - 1]);
+  return pathLen > 1e-12;
+}
+
+// Compose the RIGID frame rotation R_k = [uk vk wk]·[u0 v0 n0]^T that maps the section
+// reference basis onto the station basis. Shared by the variable and two-rail placers.
+Mat3 frameRotation(const Vec3& uk, const Vec3& vk, const Vec3& wk, const Vec3& u0, const Vec3& v0,
+                   const Vec3& n0) {
+  Mat3 R;
+  for (int rw = 0; rw < 3; ++rw) {
+    R(rw, 0) = uk[rw] * u0.x + vk[rw] * v0.x + wk[rw] * n0.x;
+    R(rw, 1) = uk[rw] * u0.y + vk[rw] * v0.y + wk[rw] * n0.y;
+    R(rw, 2) = uk[rw] * u0.z + vk[rw] * v0.z + wk[rw] * n0.z;
+  }
+  return R;
+}
+
+// ── VARIABLE-SECTION placement: scale + twist about the section origin, then the rigid RMF
+// placement. The scale (about the origin) and the twist (rotation about the section normal n0)
+// act in the section's OWN plane BEFORE the rigid frame maps (u0,v0,n0) onto the station basis;
+// composed as one affine per station. A uniform scale + rotation is a SIMILARITY, so it
+// preserves the section's weights EXACTLY (the rational variant relies on this). Returns the
+// placed sections, or empty on any sampling / degenerate / bad-field failure (caller declines.)
+std::vector<BsplineCurveData> placeSectionsVariable(const BsplineCurveData& section,
+                                                    const BsplineCurveData& trajectory,
+                                                    const Dir3& sectionNormal,
+                                                    const std::vector<double>& scales,
+                                                    const std::vector<double>& twists,
+                                                    int stations) {
+  std::vector<BsplineCurveData> placed;
+  if (stations < 2 || !sectionNormal.valid()) return placed;
+  if (static_cast<int>(scales.size()) != stations) return placed;
+  if (static_cast<int>(twists.size()) != stations) return placed;
+  for (double s : scales)
+    if (!(s > 0.0)) return placed;  // non-positive scale — undefined section
+
+  std::vector<Point3> pts;
+  std::vector<Dir3> tans;
+  if (!sampleStations(trajectory, stations, pts, tans)) return placed;
+
+  const std::vector<Vec3> rmf = rmfNormals(pts, tans, sectionNormal.vec());
+
+  Vec3 u0, v0;
+  orthonormalBasis(sectionNormal, u0, v0);
+  const Vec3 n0 = sectionNormal.vec();
+
+  placed.reserve(stations);
+  for (int k = 0; k < stations; ++k) {
+    const Vec3 wk = tans[k].vec();
+    const Vec3 uk = rmf[k];
+    const Vec3 vk = cross(wk, uk);
+    const Mat3 R = frameRotation(uk, vk, wk, u0, v0, n0);
+    const Transform place(R, pts[k].asVec());
+
+    // Local scale about the origin, then twist about the section normal (in-plane), both
+    // acting BEFORE the rigid frame. A twist about n0 keeps the section in its plane.
+    const Transform scale = Transform::scaleOf(Point3{0, 0, 0}, scales[k]);
+    const Transform twist =
+        Transform::rotationOf(Point3{0, 0, 0}, Dir3(n0.x, n0.y, n0.z), twists[k]);
+    // full = place ∘ twist ∘ scale (scale first, then twist, then rigid placement).
+    const Transform full = place.composedWith(twist.composedWith(scale));
+
+    BsplineCurveData s = section;  // copies degree / knots / WEIGHTS
+    for (Point3& p : s.poles) p = full.applyToPoint(p);
+    placed.push_back(std::move(s));
+  }
+  return placed;
+}
+
+// ── TWO-RAIL placement: anchor0 rides rail0(t), anchor1 rides rail1(t). Per station the
+// section is scaled so its anchor chord matches the rail chord, oriented so the anchor chord
+// aligns with the rail chord (remaining spin removed by an RMF along the rail-midpoint spine),
+// and translated so anchor0 lands on rail0(t). The composed map is a SIMILARITY (uniform scale
+// + rotation + translation), preserving weights exactly. Returns placed sections, or empty on
+// any degenerate configuration (coincident anchors, zero rail chord, degenerate spine).
+std::vector<BsplineCurveData> placeSectionsTwoRail(const BsplineCurveData& section,
+                                                   const BsplineCurveData& rail0,
+                                                   const BsplineCurveData& rail1,
+                                                   const Dir3& sectionNormal, int anchor0,
+                                                   int anchor1, int stations) {
+  std::vector<BsplineCurveData> placed;
+  if (stations < 2 || !sectionNormal.valid()) return placed;
+
+  const int N = nPolesOf(section);
+  if (anchor0 < 0 || anchor1 < 0 || anchor0 >= N || anchor1 >= N || anchor0 == anchor1)
+    return placed;
+
+  const Point3 A0 = section.poles[anchor0];
+  const Point3 A1 = section.poles[anchor1];
+  const Vec3 anchorChord = A1 - A0;
+  const double anchorLen = norm(anchorChord);
+  if (!(anchorLen > 1e-12)) return placed;  // coincident section anchors — no chord to scale
+  const Vec3 anchorDir = anchorChord / anchorLen;
+
+  // Rails must share a common clamped domain (the standard two-rail pre-condition).
+  double a0 = 0.0, b0 = 0.0, a1 = 0.0, b1 = 0.0;
+  domainOf(rail0, a0, b0);
+  domainOf(rail1, a1, b1);
+  if (!(b0 > a0) || !(b1 > a1)) return placed;
+  if (std::fabs(a0 - a1) > 1e-9 || std::fabs(b0 - b1) > 1e-9) return placed;
+
+  // Sample both rails + build the midpoint spine (points + tangents) for the RMF.
+  std::vector<Point3> p0(stations), p1(stations), mid(stations);
+  std::vector<Vec3> railChord(stations);
+  for (int k = 0; k < stations; ++k) {
+    const double t = a0 + (b0 - a0) * (static_cast<double>(k) / (stations - 1));
+    p0[k] = curvePoint(rail0.degree, rail0.poles, rail0.knots, t);
+    p1[k] = curvePoint(rail1.degree, rail1.poles, rail1.knots, t);
+    railChord[k] = p1[k] - p0[k];
+    if (!(norm(railChord[k]) > 1e-9)) return placed;  // rails cross/touch — undefined
+    mid[k] = p0[k] + railChord[k] * 0.5;
+  }
+
+  // Midpoint-spine tangents (finite difference; the spine only carries the anti-twist frame).
+  std::vector<Dir3> spineTan(stations);
+  for (int k = 0; k < stations; ++k) {
+    const int kp = (k + 1 < stations) ? k + 1 : k;
+    const int km = (k > 0) ? k - 1 : k;
+    Vec3 d = mid[kp] - mid[km];
+    Dir3 td(d);
+    if (!td.valid()) {
+      // Fall back to a stable perpendicular to the rail chord when the spine is stationary.
+      Vec3 u, v;
+      orthonormalBasis(Dir3(railChord[k]), u, v);
+      td = Dir3(u);
+    }
+    spineTan[k] = td;
+  }
+  double spineLen = 0.0;
+  for (int k = 1; k < stations; ++k) spineLen += distance(mid[k], mid[k - 1]);
+  if (!(spineLen > 1e-12)) return placed;  // degenerate spine (coincident midpoints)
+
+  // RMF along the midpoint spine gives an anti-twist reference normal r_k ⟂ spineTan_k.
+  const std::vector<Vec3> rmf = rmfNormals(mid, spineTan, sectionNormal.vec());
+
+  // Section reference basis: u0 = anchor chord direction (the axis the rails span), n0 = the
+  // section plane normal, v0 = n0 × u0 (right-handed). We map (u0,v0,n0) onto the station
+  // basis (uk = rail chord dir, nk = RMF normal, vk = nk × uk).
+  const Vec3 n0 = sectionNormal.vec();
+  Vec3 u0 = anchorDir;
+  // Orthonormalize u0 against n0 so the reference basis is orthonormal (the anchor chord is
+  // assumed to lie in the section plane; project out any normal component for numerical safety).
+  u0 = u0 - n0 * dot(u0, n0);
+  const double nu0 = norm(u0);
+  if (!(nu0 > 1e-12)) return placed;  // anchor chord parallel to the normal — ill-posed
+  u0 = u0 / nu0;
+  const Vec3 v0 = cross(n0, u0);
+
+  placed.reserve(stations);
+  for (int k = 0; k < stations; ++k) {
+    const Vec3 uk = railChord[k] / norm(railChord[k]);  // station axis = rail chord direction
+    const Vec3 nk = rmf[k];                              // RMF normal (anti-twist)
+    const Vec3 vk = cross(nk, uk);                       // right-handed station basis
+    // R maps (u0,v0,n0) -> (uk,vk,nk).
+    const Mat3 R = frameRotation(uk, vk, nk, u0, v0, n0);
+
+    const double s = norm(railChord[k]) / anchorLen;  // scale = rail chord / anchor chord
+    // Similarity S = s·R about the section origin; then translate so anchor0 -> rail0(t).
+    // full(p) = s·R·p + translation, translation chosen so full(A0) = p0[k].
+    Mat3 sR;
+    for (int i = 0; i < 3; ++i)
+      for (int j = 0; j < 3; ++j) sR(i, j) = R(i, j) * s;
+    const Vec3 trans = p0[k].asVec() - sR * A0.asVec();
+    const Transform full(sR, trans);
+
+    BsplineCurveData sec = section;  // copies degree / knots / WEIGHTS
+    for (Point3& p : sec.poles) p = full.applyToPoint(p);
+    placed.push_back(std::move(sec));
+  }
+  return placed;
+}
+
 }  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -472,6 +664,109 @@ SweepResult sweepRotational(const BsplineCurveData& section, const Point3& axisP
   // If the profile was NON-rational, the only weights are the arc's cos-half-angle pattern —
   // that is correct (a non-rational profile revolved is still a rational surface). Keep them.
   r.vParams = {0.0, 1.0};
+  r.ok = true;
+  return r;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Variable-section sweep (scale + twist along the spine, transform-then-skin).
+// ─────────────────────────────────────────────────────────────────────────────
+
+SweepResult sweepVariable(const BsplineCurveData& section, const BsplineCurveData& trajectory,
+                          const Dir3& sectionNormal, const std::vector<double>& scales,
+                          const std::vector<double>& twists, int stations, int degreeV) {
+  SweepResult r;
+  if (stations < 2) return r;
+  if (!section.weights.empty() || !trajectory.weights.empty()) return r;  // rational — decline
+  if (!wellFormed(section) || !wellFormed(trajectory)) return r;
+  if (!sectionNormal.valid()) return r;
+
+  const std::vector<BsplineCurveData> placed =
+      placeSectionsVariable(section, trajectory, sectionNormal, scales, twists, stations);
+  if (static_cast<int>(placed.size()) != stations) return r;  // sampling / degenerate / bad field
+
+  const SkinResult skin = skinSurface(std::span<const BsplineCurveData>(placed), degreeV);
+  if (!skin.ok) return r;
+
+  r.surface = skin.surface;
+  r.vParams = skin.vParams;
+  r.ok = true;
+  return r;
+}
+
+SweepResult sweepRationalVariable(const BsplineCurveData& section,
+                                  const BsplineCurveData& trajectory, const Dir3& sectionNormal,
+                                  const std::vector<double>& scales,
+                                  const std::vector<double>& twists, int stations, int degreeV) {
+  SweepResult r;
+  if (stations < 2) return r;
+  if (section.weights.empty()) return r;         // non-rational — use sweepVariable
+  if (!trajectory.weights.empty()) return r;     // rational spine — decline
+  if (!wellFormedRational(section) || !wellFormed(trajectory)) return r;
+  if (!sectionNormal.valid()) return r;
+
+  // The similarity (scale+twist) preserves weights exactly; place then rational-skin.
+  const std::vector<BsplineCurveData> placed =
+      placeSectionsVariable(section, trajectory, sectionNormal, scales, twists, stations);
+  if (static_cast<int>(placed.size()) != stations) return r;
+
+  const SkinResult skin =
+      skinRationalSurface(std::span<const BsplineCurveData>(placed), degreeV);
+  if (!skin.ok) return r;
+
+  r.surface = skin.surface;
+  r.vParams = skin.vParams;
+  r.ok = true;
+  return r;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Two-rail sweep (anchor the section to both rails, transform-then-skin).
+// ─────────────────────────────────────────────────────────────────────────────
+
+SweepResult sweepTwoRail(const BsplineCurveData& section, const BsplineCurveData& rail0,
+                         const BsplineCurveData& rail1, const Dir3& sectionNormal, int anchor0,
+                         int anchor1, int stations, int degreeV) {
+  SweepResult r;
+  if (stations < 2) return r;
+  if (!section.weights.empty() || !rail0.weights.empty() || !rail1.weights.empty())
+    return r;                                    // rational — decline
+  if (!wellFormed(section) || !wellFormed(rail0) || !wellFormed(rail1)) return r;
+  if (!sectionNormal.valid()) return r;
+
+  const std::vector<BsplineCurveData> placed =
+      placeSectionsTwoRail(section, rail0, rail1, sectionNormal, anchor0, anchor1, stations);
+  if (static_cast<int>(placed.size()) != stations) return r;  // degenerate rails / anchors / spine
+
+  const SkinResult skin = skinSurface(std::span<const BsplineCurveData>(placed), degreeV);
+  if (!skin.ok) return r;
+
+  r.surface = skin.surface;
+  r.vParams = skin.vParams;
+  r.ok = true;
+  return r;
+}
+
+SweepResult sweepRationalTwoRail(const BsplineCurveData& section, const BsplineCurveData& rail0,
+                                 const BsplineCurveData& rail1, const Dir3& sectionNormal,
+                                 int anchor0, int anchor1, int stations, int degreeV) {
+  SweepResult r;
+  if (stations < 2) return r;
+  if (section.weights.empty()) return r;         // non-rational — use sweepTwoRail
+  if (!rail0.weights.empty() || !rail1.weights.empty()) return r;  // rational rails — decline
+  if (!wellFormedRational(section) || !wellFormed(rail0) || !wellFormed(rail1)) return r;
+  if (!sectionNormal.valid()) return r;
+
+  const std::vector<BsplineCurveData> placed =
+      placeSectionsTwoRail(section, rail0, rail1, sectionNormal, anchor0, anchor1, stations);
+  if (static_cast<int>(placed.size()) != stations) return r;
+
+  const SkinResult skin =
+      skinRationalSurface(std::span<const BsplineCurveData>(placed), degreeV);
+  if (!skin.ok) return r;
+
+  r.surface = skin.surface;
+  r.vParams = skin.vParams;
   r.ok = true;
   return r;
 }

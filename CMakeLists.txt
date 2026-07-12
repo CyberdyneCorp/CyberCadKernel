@@ -415,6 +415,22 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_sweep)
         set(test_native_nurbs_sweep_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_sweep.cpp")
+        # NURBS roadmap Layer 6 — VARIABLE-SECTION + TWO-RAIL swept surfaces
+        # (src/native/math/bspline_sweep: sweepVariable / sweepRationalVariable / sweepTwoRail /
+        # sweepRationalTwoRail). The variable sweep scales+twists the RMF-transported section per
+        # station (a similarity, so weights ride through exactly) and skins; the two-rail sweep
+        # anchors two section poles to two rail curves (scale = rail chord / anchor chord, RMF on
+        # the midpoint spine) and skins. Composes bspline_skin — under CYBERCAD_HAS_NUMSCI, like
+        # the base sweep gate. Airtight oracles: constant-section degenerate (scales≡1, twists≡0
+        # reproduces sweepAlongTrajectory pointwise ~1e-12), LINEAR-TAPER exact rational CONE
+        # frustum (radius s(t)*R, true circle ~1e-9), TWO-RAIL on-rails (section anchor isos lie
+        # ON both rails at every station ~1e-9, parallel rails → planar ruled strip, diverging
+        # rails → exact linear taper), and honest degenerate declines (crossing / zero-chord
+        # rails, coincident anchors, bad anchor indices, wrong-size/non-positive scale fields,
+        # rational input on the non-rational routines).
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_vsweep)
+        set(test_native_nurbs_vsweep_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_vsweep.cpp")
         # NURBS roadmap Layer 6 — GORDON / NETWORK surface (src/native/math/bspline_gordon).
         # A surface through a NETWORK of K u-curves and L v-curves that intersect at a K×L
         # grid, built as the boolean sum G = S_u ⊕ S_v ⊖ T (skin of u-curves + skin of
@@ -1172,6 +1188,13 @@ if(CYBERCAD_BUILD_TESTS)
     # but NOT the substrate include trees, exactly like the Layer-6 skinning gate above.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_sweep)
         target_compile_definitions(test_native_nurbs_sweep PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+
+    # The Layer-6 variable-section / two-rail sweep gate includes bspline_sweep.h (which under
+    # CYBERCAD_HAS_NUMSCI pulls bspline_skin.h → bspline_ops.h), so its TU needs the macro but
+    # NOT the substrate include trees, exactly like the base swept-surface gate above.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_vsweep)
+        target_compile_definitions(test_native_nurbs_vsweep PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
     # The Layer-6 Gordon/network gate includes bspline_gordon.h (which under
     # CYBERCAD_HAS_NUMSCI pulls bspline_skin.h → bspline_ops.h + numerics.h), so its TU

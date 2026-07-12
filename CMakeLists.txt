@@ -340,6 +340,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_surfacing
         test_native_step_writer
         test_native_step_reader
+        test_native_step_brep
         test_native_step_pmi
         test_native_stl
         test_native_gltf
@@ -1380,6 +1381,17 @@ if(CYBERCAD_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step_writer.cpp")
     set(test_native_step_reader_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step_reader.cpp")
+    # L8-EXCHANGE — exact trimmed-NURBS B-rep STEP AP214 round-trip
+    # (src/native/exchange/step_brep.{h,cpp}). The OCCT-free native writer/reader for
+    # the Layer-8 exact model (topology::TrimmedNurbsFace): a (rational) B-spline
+    # surface + trim loops of (rational) B-spline / analytic pcurves → a valid Part-21
+    # file and back. Always-on (string emit + parse over always-visible topology/math
+    # decls; no numsci link). Airtight oracles: round-trip EXACT (poles/knots/weights/
+    # trims ≤ 1e-9 + sampled S(u,v) agreement ≤ 1e-9), RATIONAL preserved
+    # (RATIONAL_B_SPLINE_SURFACE weights exact), valid part21 (header + DATA well-formed,
+    # refs resolve), honest-decline (out-of-scope surface → empty string, never invalid STEP).
+    set(test_native_step_brep_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step_brep.cpp")
     set(test_native_step_pmi_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step_pmi.cpp")
     set(test_native_stl_SRC

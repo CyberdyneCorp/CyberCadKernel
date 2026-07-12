@@ -27,26 +27,34 @@
 // ever widened (the fold merely threads the binary boolean's own gates). An empty list is a
 // first-class decline; a single-element list is the identity (that one solid, unchanged).
 //
-// ── RE-ADMISSION BOUNDARY (MEASURED — the honest edge of the current fold) ──────────
-// A fold of MORE than two freeform operands re-feeds the FIRST binary boolean's OUTPUT solid
-// as the next step's operand `acc`. The binary NURBS boolean's welded result carries a
-// seam-SPLIT freeform wall — an ANNULUS with the seam as an interior HOLE loop (Fuse/Cut) or
-// a bare disk pair (Common) — which the B1 admission gate `recogniseFreeformSolid`
-// deliberately declines (`HoledFreeformFace` / `NotWatertight`; it admits exactly ONE
-// untrimmed-or-simply-trimmed freeform wall). So on the current freeform pose a ≥3-operand
-// fold HONEST-DECLINES at fold index 2 with `StepDeclined` carrying the binary boolean's
-// `NotAdmittedA` — a MEASURED re-admission boundary, NOT a leaky/partial solid. This header
-// does NOT widen that gate (it is byte-frozen and DISAGREED-sacred); it composes the boolean
-// as-is and reports the boundary honestly. Two-operand folds (union of two parts, base minus
-// one tool, common of two) weld watertight at the inclusion-exclusion volume. When the
-// binary boolean's output is later made re-admissible (a wall-seam heal that restores a
-// simply-trimmed freeform wall), the SAME fold immediately extends to N with no change here.
+// ── RE-ADMISSION (BOOL-READMIT — the fold now re-admits the boolean's output) ───────
+// A fold of MORE than two freeform operands re-feeds the prior binary boolean's OUTPUT solid
+// as the next step's operand `acc`. That output is NOT a pristine single-wall bowl-cup: it is
+// a MULTI-freeform-wall solid whose walls are SEAM-SPLIT ANNULI (the seam is an interior HOLE
+// loop), which the byte-frozen B1 gate `recogniseFreeformSolid` declines on two counts
+// (`HoledFreeformFace` + its exactly-one-simply-trimmed-wall rule). `boolean_readmit.h`
+// (additive; does NOT edit the frozen gate) makes it re-admissible: `nurbsSolidBooleanReadmit`
+// admits the holed/multi-wall output through a MORE-PERMISSIVE sibling recogniser, and:
+//   * step 1 (pristine acc) DEFERS bit-identically to `nurbsSolidBoolean` — 2-operand folds
+//     stay UNREGRESSED;
+//   * a REDUNDANT operand (a re-applied part contained in the union, a tool disjoint from the
+//     remaining material, an intersect operand containing the acc) SHORT-CIRCUITS to `acc`
+//     EXACTLY by a coincidence-tolerant membership witness — no weld, no synthesised
+//     geometry, so DISAGREED=0 is structural. This welds the reachable idempotent ≥3 folds
+//     (`{A,B,B}` union, `(base−T)−T` cut) watertight at the inclusion-exclusion volume.
+// The residual boundary is now SHARPER and NARROWER: a GENUINELY-OVERLAPPING ≥3 fold whose
+// second seam lands on an ALREADY-HOLED annulus needs a MULTI-HOLE / multi-crossing face split
+// (splitting an annulus that already carries a seam-hole by a second seam) — the readiness
+// doc's UNLANDED §4 multi-crossing split. That sub-case HONEST-DECLINES `StepDeclined` with
+// the weld's residual map at the failing fold index — NOT a leaky/partial solid; NO tolerance
+// widened. When that multi-hole split lands, the SAME fold extends with no change here.
 //
 // OCCT-FREE (0 OCCT includes). Header-only. clang++ -std=c++20.
 //
 #ifndef CYBERCAD_NATIVE_BOOLEAN_NURBS_SOLID_BOOLEAN_NARY_H
 #define CYBERCAD_NATIVE_BOOLEAN_NURBS_SOLID_BOOLEAN_NARY_H
 
+#include "native/boolean/boolean_readmit.h"
 #include "native/boolean/nurbs_solid_boolean.h"
 #include "native/topology/native_topology.h"
 
@@ -136,8 +144,13 @@ inline topo::Shape foldBoolean(const std::vector<topo::Shape>& solids, SolidBool
     const double stepAnalytic =
         (i == last) ? analyticFold : std::numeric_limits<double>::quiet_NaN();
     SolidBoolReport srep;
+    // Fold via the RE-ADMITTING boolean: step 1 (pristine acc) defers bit-identically to
+    // `nurbsSolidBoolean` (2-operand folds UNREGRESSED); steps ≥ 2 re-admit the prior
+    // boolean's holed/multi-wall output — a redundant operand short-circuits to `acc`
+    // exactly, a genuine-overlap ≥3 case honest-declines at the measured multi-hole-split
+    // boundary (never a leaky solid).
     const topo::Shape next =
-        nurbsSolidBoolean(acc, solids[i], op, deflection, &srep, stepAnalytic);
+        nurbsSolidBooleanReadmit(acc, solids[i], op, deflection, &srep, stepAnalytic);
     ++rep.steps;
     if (next.isNull() || srep.decline != SolidBoolDecline::Ok) {
       rep.stepReport = srep;

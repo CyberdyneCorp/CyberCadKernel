@@ -512,6 +512,48 @@ watertight sew is MISSING.
 > unchanged: the closed-loop seeding recall, the mesher-level holed-seam weld, and re-entrant
 > split shapes.
 
+### The boolean OUTPUT made RE-ADMISSIBLE as a boolean INPUT · **LANDED (BOOL-READMIT)**
+
+> **UPDATE (BOOL-READMIT — the N-operand fold now RE-ADMITS the binary boolean's welded output
+> for ≥3 operands, track `worktree-agent-afe5a62bce3b42fe4`):** the N-ary fold
+> (`nurbs_solid_boolean_nary.h`) previously HONEST-DECLINED at fold index 2 because the binary
+> boolean's welded output is NOT a pristine single-wall bowl-cup — it is a MULTI-freeform-wall
+> solid whose walls are SEAM-SPLIT ANNULI (the shared seam is an interior HOLE loop), which the
+> byte-frozen B1 gate `recogniseFreeformSolid` declines on TWO measured counts (`HoledFreeformFace`
+> + its exactly-ONE-simply-trimmed-wall rule). `src/native/boolean/boolean_readmit.h` (additive,
+> header-only; the frozen `recogniseFreeformSolid` / `freeformWall` and the five stage verbs stay
+> **BYTE-UNCHANGED**) makes it re-admissible:
+> - `recogniseFreeformSolidReadmit` — a strictly MORE-PERMISSIVE B1 sibling that ADMITS a holed
+>   annulus wall (the seam is a legitimate trim loop, not a defect) and ANY number of freeform
+>   walls, reusing `fodetail::{classifyFaceRole, faceOutwardNormal, foldAabb}` byte-identically and
+>   accepting EITHER the topology edge-incidence audit OR a mesh-level `isWatertight` (the boolean
+>   output shares its seam geometrically, not by vertex-identity — the same exactly-two-incidences
+>   predicate the binary boolean already self-verified). **The operand is now ADMISSIBLE** — the
+>   first measured blocker is cleared.
+> - `nurbsSolidBooleanReadmit` — a pristine accumulator DEFERS bit-identically to the frozen
+>   `nurbsSolidBoolean` (2-operand folds **UNREGRESSED**); a REDUNDANT operand (a re-applied part
+>   CONTAINED in the union, a CUT tool DISJOINT from the remaining material, an INTERSECT operand
+>   CONTAINING the acc) SHORT-CIRCUITS to `acc` **EXACTLY** by a COINCIDENCE-TOLERANT membership
+>   witness — no weld, no synthesised geometry, so DISAGREED=0 is structural.
+>
+> **Impact.** The reachable idempotent ≥3-operand folds now **WELD watertight** (χ=2, be=0) at the
+> inclusion-exclusion volume within the tessellation band: `UnionN({A,B,B})` → V(A)+V(B)−lens,
+> `CutN(A,{B,B})` → V(A)−lens, `IntersectN({B,A,A})` → the lens. Host
+> `tests/native/test_native_boolean_readmit.cpp` (5/5) + the updated
+> `test_native_nurbs_solid_boolean_nary.cpp` (12/12) prove admission, 2-operand bit-identity, the
+> three short-circuit welds, and the honest-decline. `src/native` stays **OCCT-free**; **no `cc_*`
+> ABI**; the binary boolean flagship suite is **unregressed** (8/8).
+>
+> **The SHARPENED (narrower) residual boundary.** A GENUINELY-OVERLAPPING ≥3 fold whose second
+> seam lands on an ALREADY-HOLED annulus needs a **MULTI-HOLE / multi-crossing face split**
+> (splitting an annulus that already carries a seam-hole by a second seam): `splitFaceSmoothTrim`
+> treats the face as simply-connected and does NOT preserve the existing hole, so the survivor
+> sub-faces are geometrically incomplete and the weld HONEST-DECLINES `NotWatertight` (measured
+> be≈768, never leaky). This is exactly the readiness table's **UNLANDED §4 multi-crossing / re-
+> entrant split** (stage 3, PARTIAL). The boundary is now a full step NARROWER than pre-BOOL-READMIT:
+> the operand is ADMITTED and its seam is TRACED — only the multi-hole split remains, and when it
+> lands the SAME fold extends to the general genuine-overlap ≥3 case with no change to this header.
+
 ### Summary table
 
 | stage | readiness | one-line evidence |

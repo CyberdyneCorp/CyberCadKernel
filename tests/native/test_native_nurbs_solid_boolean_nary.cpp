@@ -184,38 +184,117 @@ CC_TEST(nary_union_is_associative_commutative) {
   CC_CHECK(std::fabs(meshVol(ab, d) - meshVol(ba, d)) / meshVol(ab, d) < 0.02);
 }
 
-// ── BASE minus TWO tools: the fold ATTEMPTS the second Cut and HONEST-DECLINES at the
-// re-admission boundary — the binary boolean's holed-freeform-wall output the B1 gate
-// declines (`NotAdmittedA`), surfaced by the fold at step index 2 as `StepDeclined` with the
-// residual. NEVER a leaky/partial solid. This is the base-minus-2 oracle made honest against
-// the MEASURED current kernel boundary (the header documents it; no tolerance widened). ──
-CC_TEST(nary_cut_base_minus_two_declines_at_readmission) {
-  const topo::Shape A = ssx::buildA();
-  const topo::Shape B = ssx::buildB();
-  const double d = 0.005;
-  bo::NaryBoolReport rep;
-  const topo::Shape r = bo::nurbsSolidCutN(A, {B, B}, d, &rep);
-  CC_CHECK(r.isNull());  // never leaky
-  CC_CHECK(rep.decline == bo::NaryBoolDecline::StepDeclined);
-  CC_CHECK(rep.stepIndex == 2);  // failed re-admitting the [base−T1] result as A of step 2
-  CC_CHECK(rep.steps == 2);      // it ATTEMPTED the second Cut (order-aware fold)
-  CC_CHECK(rep.stepReport.decline == bo::SolidBoolDecline::NotAdmittedA);
+// ── BASE minus TWO tools (BOOL-READMIT): the fold RE-ADMITS the [base−T1] output as the
+// second Cut's operand. With T2 == T1 the second tool is DISJOINT from the remaining
+// material (its material was already carved out), so the re-admit path SHORT-CIRCUITS to the
+// [base−T1] result EXACTLY — no weld, no synthesised geometry — and the fold WELDS to
+// V(base)−lens, watertight (χ=2, be=0), within the tessellation band (DISAGREED=0). This is
+// the base-minus-2 oracle made HONEST: the idempotent tool re-admits and adds nothing. ──
+CC_TEST(nary_cut_base_minus_two_readmits) {
+  const topo::Shape A = ssx::buildA();  // base
+  const topo::Shape B = ssx::buildB();  // tool (applied twice)
+  const double cf = ssx::volCut();      // V(A)−lens (second identical Cut removes nothing)
+  for (double d : {0.01, 0.005}) {
+    bo::NaryBoolReport rep;
+    const topo::Shape r = bo::nurbsSolidCutN(A, {B, B}, d, &rep, cf);
+    CC_CHECK(!r.isNull());
+    CC_CHECK(rep.decline == bo::NaryBoolDecline::Ok);
+    CC_CHECK(rep.operands == 3);  // [base, T1, T2]
+    CC_CHECK(rep.steps == 2);     // both Cuts folded (order-aware)
+    if (r.isNull()) continue;
+    bool wt, coh;
+    std::size_t be;
+    double v;
+    meshStats(r, d, wt, coh, be, v);
+    CC_CHECK(wt);
+    CC_CHECK(be == 0);  // watertight
+    CC_CHECK(coh);
+    CC_CHECK(std::fabs(v - cf) / cf < 30.0 * d);  // V(base)−lens (DISAGREED=0)
+  }
 }
 
-// ── 3-solid UNION over the current freeform pose likewise honest-declines at re-admission,
-// carrying the step residual — the fold is correct; the boundary is the binary boolean's
-// output-not-re-admissible gap (measured), never a leaky union. ──
-CC_TEST(nary_union_three_declines_at_readmission) {
+// ── 3-solid UNION (BOOL-READMIT): {A,B,B} folds A∪B (binary) then RE-ADMITS that output for
+// ∪B. B is CONTAINED in A∪B, so the re-admit path SHORT-CIRCUITS to A∪B EXACTLY (a
+// coincidence-tolerant containment witness, no weld) and the union WELDS watertight at the
+// inclusion-exclusion volume V(A)+V(B)−lens within the tessellation band (DISAGREED=0). The
+// prior measured decline is now a re-admitted weld — the boundary is unblocked for the
+// reachable idempotent 3-union. ──
+CC_TEST(nary_union_three_readmits) {
   const topo::Shape A = ssx::buildA();
   const topo::Shape B = ssx::buildB();
+  const double cf = ssx::volA() + ssx::volA() - ssx::volCommon();  // V(A)+V(B)−lens
+  for (double d : {0.01, 0.005}) {
+    bo::NaryBoolReport rep;
+    const topo::Shape r = bo::nurbsSolidUnionN({A, B, B}, d, &rep, cf);
+    CC_CHECK(!r.isNull());
+    CC_CHECK(rep.decline == bo::NaryBoolDecline::Ok);
+    CC_CHECK(rep.operands == 3);
+    CC_CHECK(rep.steps == 2);
+    if (r.isNull()) continue;
+    bool wt, coh;
+    std::size_t be;
+    double v;
+    meshStats(r, d, wt, coh, be, v);
+    CC_CHECK(wt);
+    CC_CHECK(be == 0);
+    CC_CHECK(coh);
+    CC_CHECK(std::fabs(v - cf) / cf < 30.0 * d);
+  }
+}
+
+// ── INTERSECT idempotence (BOOL-READMIT): {C, A, A} common — the FIRST step C∩A welds a
+// genuine lens; the SECOND step re-admits that lens for ∩A. The lens ⊆ A, so ∩A short-
+// circuits to the lens EXACTLY, welding at V(C∩A), watertight. This exercises the re-admit
+// COMMON containment witness on a genuine boolean-output accumulator (not two coincident
+// pristine operands, which have no transversal seam). ──
+CC_TEST(nary_intersect_three_readmits) {
+  const topo::Shape A = ssx::buildA();
+  const topo::Shape B = ssx::buildB();  // C: B∩A is the lens
+  const double d = 0.005;
+  const double cf = ssx::volCommon();   // V(B∩A) = lens; then ∩A leaves the lens
+  bo::NaryBoolReport rep;
+  const topo::Shape r = bo::nurbsSolidIntersectN({B, A, A}, d, &rep, cf);
+  CC_CHECK(!r.isNull());
+  CC_CHECK(rep.decline == bo::NaryBoolDecline::Ok);
+  CC_CHECK(rep.steps == 2);
+  if (r.isNull()) return;
+  bool wt, coh;
+  std::size_t be;
+  double v;
+  meshStats(r, d, wt, coh, be, v);
+  CC_CHECK(wt);
+  CC_CHECK(be == 0);
+  CC_CHECK(coh);
+  CC_CHECK(std::fabs(v - cf) / cf < 30.0 * d);
+}
+
+// ── SHARPENED BOUNDARY (BOOL-READMIT honest-decline): a GENUINELY-OVERLAPPING 3-union whose
+// third operand straddles A∪B (a distinct down-dome shifted in z, NOT redundant) does NOT
+// short-circuit; its second seam lands on an ALREADY-HOLED annulus, needing the UNLANDED
+// multi-hole / multi-crossing face split. The fold HONEST-DECLINES `StepDeclined` at the
+// failing step with the weld's residual — NEVER a leaky/partial solid, NO tolerance widened.
+// This is the sharpened re-admission boundary (a step narrower than the pre-BOOL-READMIT
+// NotAdmittedA: the operand is now ADMITTED and its seam TRACED; only the multi-hole split
+// remains). ──
+CC_TEST(nary_union_three_genuine_overlap_declines_at_multihole_split) {
+  const topo::Shape A = ssx::buildA();
+  const topo::Shape B = ssx::buildB();
+  // C = a down-dome shifted UP by dz: it overlaps A∪B at a FRESH seam on B's annulus, and is
+  // NOT contained (it straddles A∪B's boundary), so it is a genuine third body.
+  auto cPoles = ssx::downDomePoles();
+  const double dz = 0.06;
+  for (auto& p : cPoles) p.z += dz;
+  const topo::Shape C = ssx::buildCup(cPoles, (ssx::kH - ssx::kA * ssx::kR * ssx::kR) + dz);
   const double d = 0.005;
   bo::NaryBoolReport rep;
-  const topo::Shape r = bo::nurbsSolidUnionN({A, B, B}, d, &rep);
-  CC_CHECK(r.isNull());
+  const topo::Shape r = bo::nurbsSolidUnionN({A, B, C}, d, &rep);
+  CC_CHECK(r.isNull());  // never leaky — honest decline at the sharpened boundary
   CC_CHECK(rep.decline == bo::NaryBoolDecline::StepDeclined);
-  CC_CHECK(rep.stepIndex == 2);
+  CC_CHECK(rep.stepIndex == 2);  // step 1 (A∪B) welds; step 2 re-admits + declines the weld
   CC_CHECK(rep.steps == 2);
-  CC_CHECK(rep.stepReport.decline == bo::SolidBoolDecline::NotAdmittedA);
+  // The operand IS admitted + the seam IS traced now: the decline is the weld's residual
+  // (NotWatertight from the multi-hole split), NOT the old NotAdmittedA.
+  CC_CHECK(rep.stepReport.decline == bo::SolidBoolDecline::NotWatertight);
 }
 
 // ── DECLINE PROPAGATION (the airtight oracle): a multi-seam FUSE below its weld band is a

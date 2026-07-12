@@ -1063,6 +1063,23 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_solid_boolean_nary)
         set(test_native_nurbs_solid_boolean_nary_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_solid_boolean_nary.cpp")
+        # BOOL-READMIT / LAYER 3 — host GATE, the OCCT-free proof that the binary boolean's
+        # WELDED OUTPUT is made RE-ADMISSIBLE as a boolean INPUT (boolean_readmit.h, additive;
+        # the frozen B1 gate recogniseFreeformSolid / freeformWall are NOT edited). The
+        # more-permissive recogniseFreeformSolidReadmit ADMITS the boolean's holed / multi-
+        # freeform-wall output the frozen gate declines (HoledFreeformFace); a PRISTINE-
+        # accumulator re-admit is bit-identical to the frozen nurbsSolidBoolean (2-operand
+        # UNREGRESSED); the coincidence-tolerant REDUNDANT-operand short-circuit welds the
+        # reachable idempotent ≥3 folds EXACTLY (contained UNION operand, disjoint CUT tool)
+        # at the inclusion-exclusion volume, watertight (χ=2, be=0), no synthesised geometry;
+        # a genuinely-overlapping third body HONEST-DECLINES at the sharpened multi-hole-split
+        # boundary — NEVER a leaky/partial solid, NO tolerance widened. Its seams are the real
+        # S3 trace, so this host suite builds only under CYBERCAD_HAS_NUMSCI. Additive header-
+        # only (boolean_readmit.h; nurbs_solid_boolean.h + the five stage verbs byte-unchanged);
+        # no lib change, no cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_boolean_readmit)
+        set(test_native_boolean_readmit_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_boolean_readmit.cpp")
         # NURBS roadmap LAYER 3, SLICE 3 (L3-S3) — host GATE (a), the OCCT-free closed-
         # form proof of the THIRD (deepest) exact-NURBS B-rep boolean: a genuine NURBS
         # (Kind::BSpline) face SPLIT BY ANOTHER FREEFORM NURBS face, welded watertight —

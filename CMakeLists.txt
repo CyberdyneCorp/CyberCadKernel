@@ -375,6 +375,21 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_fit)
         set(test_native_nurbs_fit_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_fit.cpp")
+        # NURBS roadmap Layer 7 reverse-engineering — analytic-primitive detection /
+        # fitting (src/native/math/primitive_fit). fitPlane is a total-least-squares
+        # plane via a self-contained symmetric-3×3 Jacobi eigensolver (smallest
+        # eigenvector of the centered covariance — no external SVD, no facade widening);
+        # fitSphere/fitCylinder/fitCone linearize (numerics::lstsq) then refine
+        # (numerics::least_squares), so the module + its host gate build only under
+        # CYBERCAD_HAS_NUMSCI (mirroring test_native_nurbs_fit). Airtight oracles: EXACT
+        # recovery of a KNOWN plane/sphere/cylinder/cone (params ≤1e-9, RMS ≤1e-12),
+        # DISCRIMINATION (sphere→Sphere not cyl/cone, plane→Plane, bicubic bump→Freeform
+        # not a spurious primitive), and HONEST robustness (noisy sphere → params in the
+        # noise band, RMS reported as the TRUE non-zero residual, never claimed exact) +
+        # degenerate honest-decline guards.
+        list(APPEND CYBERCAD_TESTS test_native_primitive_fit)
+        set(test_native_primitive_fit_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_primitive_fit.cpp")
         # NURBS roadmap Layer 6 — skinning / lofting (src/native/math/bspline_skin).
         # Composes Layer 1 (elevate/refine for section compatibility) + Layer 7 (curve
         # interpolation across sections via lin_solve), so the module + its host gate
@@ -1215,6 +1230,14 @@ if(CYBERCAD_BUILD_TESTS)
     # headers), so its TU needs the macro but NOT the substrate include trees.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_fit)
         target_compile_definitions(test_native_nurbs_fit PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+
+    # The Layer-7 primitive-fit gate includes primitive_fit.h, which under
+    # CYBERCAD_HAS_NUMSCI pulls in the numerics facade header (numerics.h — vec.h + std
+    # only, no NumPP/SciPP headers), so its TU needs the macro but NOT the substrate
+    # include trees, exactly like the Layer-7 nurbs-fit gate above.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_primitive_fit)
+        target_compile_definitions(test_native_primitive_fit PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     # The Layer-8 trimmed-NURBS gate is ALWAYS built (its containment + fidelity +

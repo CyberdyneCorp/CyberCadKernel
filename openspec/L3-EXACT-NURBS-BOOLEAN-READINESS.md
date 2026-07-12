@@ -59,7 +59,18 @@ same pipeline to NURBS↔NURBS operands.** The pieces, per stage:
 All residuals `file:line` are in `src/native/**`. The harness output cited is from
 `test_native_l3_boolean_readiness` (numsci build, host, OCCT-free oracle).
 
-### Stage 1 — Surface–surface intersection · **WORKS (transversal) / PARTIAL (closed loops)**
+### Stage 1 — Surface–surface intersection · **WORKS (transversal + closed interior loops)**
+
+> **CORRECTION (Wave C, C2 investigation):** the earlier "1c closed interior loop → 0 seeds"
+> below was a **flawed fixture, not a recall gap**. The `makeParaboloidPatch(-1.0, 1.2)` used for
+> probe 1c has an actual surface maximum of z=0.30, while the probe plane sat at z=0.40 — so the
+> true intersection is **empty**, and returning 0 seeds was **correct**. Re-measured with the
+> plane *below* the dome's true max (z≈0.15–0.28): the seeder returns **1 seed → a fully-closed
+> 446-point loop, radius 0.5, on-both-surfaces residual 2.0e-11** (the AABB-overlap prune fires
+> on 3-D overlap, NOT on a domain-boundary crossing, so interior loops ARE bracketed). Co-resident
+> interior loops already recover 2→2 via the landed scale-adaptive seeding. **Stage 1 closed
+> interior loops WORK.** The genuine Stage-1 residual is the **near-tangent / merged multi-branch
+> moat** (S4 marching/transversality), not a seeding-detector gap.
 
 The `src/native/ssi/**` pipeline is **sound and now the L3 front-end**: `makeNurbsAdapter`
 builds an adapter directly from a rational-NURBS pole/weight/knot grid, and
@@ -70,11 +81,11 @@ B-spline seams. Measured on real NURBS operands:
 |---|---|---|---|
 | **1a exact** | rational-NURBS quarter-**cylinder** (R=1, exact `x²+y²=R²`) ∩ NURBS-**plane** z=1 | **WORKS** | 1 seed, 1 WLine; max on-both-surfaces residual **1.9e-11**; **max deviation from the exact analytic circle 5.6e-16** — the traced NURBS seam is the exact circle to machine precision, no OCCT |
 | **1b transversal freeform** | two crossing bicubic NURBS "planes" (open line) | **WORKS** | 1 seed, 1 WLine; on-both-surfaces **4.2e-13** |
-| **1c closed interior loop** | downward bicubic-NURBS **dome** ∩ NURBS **plane** (exact intersection = a circle **interior** to the (u,v) domain) | **PARTIAL — 0 seeds (measured RECALL-GAP)** | the subdivision seeder's AABB-overlap does not isolate an interior closed loop with **no domain-boundary exit**; returns **0 seeds** — an HONEST miss, never a fabricated curve. Independently confirmed on a plain dome-vs-flat-plane pair (0 seeds even at `initialGrid=8`, `minPatchFrac=1/128`) |
+| **1c closed interior loop** | downward bicubic-NURBS **dome** ∩ NURBS **plane** (plane *below* the dome's true max) | **WORKS** (corrected) | **1 seed → fully-closed 446-point loop, radius 0.5, on-both-surfaces 2.0e-11.** The original "0 seeds" reading used a plane *above* the dome max (empty intersection) — a flawed fixture, not a gap. Co-resident interior loops recover 2→2. |
 
-**Verdict 1: WORKS for NURBS operands that reduce to a transversal trace (exact + freeform
-open curves both land, on both surfaces). PARTIAL as a general boolean front-end** — the
-**closed interior loop that a boolean seam usually is** is the measured seeding-recall gap.
+**Verdict 1: WORKS for NURBS operands with a transversal OR closed-interior-loop trace (exact,
+freeform-open, and closed loops all land, on both surfaces).** The genuine Stage-1 residual is
+the **near-tangent / merged multi-branch moat** (S4 marching/transversality) —
 This corroborates the SSI-ROADMAP NURBS-Layer-2 empirical decline map: the general
 NURBS↔NURBS decline is **≈13.9%** (canonical, DISAGREED==0), of which **~83% is
 multi-branch / small-loop seeding-recall** — *not* the near-tangent marching moat (that
@@ -165,7 +176,7 @@ watertight sew is MISSING.
 
 | stage | readiness | one-line evidence |
 |---|---|---|
-| 1 Surface–surface intersection | **WORKS / PARTIAL** | exact NURBS-cyl∩plane circle to **5.6e-16**; freeform open line on both surfaces to **4.2e-13**; **closed interior loop → 0 seeds** (seeding-recall gap, ≈13.9% general decline) |
+| 1 Surface–surface intersection | **WORKS** | exact NURBS-cyl∩plane circle to **5.6e-16**; freeform open line **4.2e-13**; closed interior loop **1 seed → 446-pt loop 2.0e-11** (the "0 seeds" reading was a flawed empty-intersection fixture — corrected). Residual = near-tangent multi-branch moat (S4), ≈13.9% general decline |
 | 2 Pcurve construction | **PARTIAL** | `constructPcurve` declines the iso-curve round-trip (parametrisation + non-rational fit); data model + fidelity guard land |
 | 3 Face split | **PARTIAL** | `classify` inside-test WORKS; split = convex-1-chord + closed-interior-seam only; multi-crossing + healing MISSING |
 | 4 Region classification | **PARTIAL** | single-face In/Out + elementary set-algebra land; general NURBS solid membership MISSING |

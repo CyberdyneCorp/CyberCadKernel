@@ -957,6 +957,24 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_freeform_freeform_multiseam)
         set(test_native_freeform_freeform_multiseam_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_freeform_freeform_multiseam.cpp")
+        # BOOL-INT / NURBS roadmap LAYER 3 — host GATE (a), the OCCT-free closed-form proof
+        # of the FLAGSHIP: the general two-freeform-solid NURBS boolean ORCHESTRATOR
+        # nurbsSolidBoolean(A, B, op) for op ∈ {Fuse, Cut, Common} (nurbs_solid_boolean.h).
+        # It COMPOSES the five landed L3 stage verbs (SSI → pcurve → split+heal → membership
+        # → sew) — re-implementing NONE of them — into ONE watertight result or an honest
+        # decline to NULL with a measured residual map. On the canonical single-transversal-
+        # seam bowl-cup pose COMMON/CUT/FUSE all weld watertight (χ=2, be=0, coherent) at the
+        # closed-form volumes within the tessellation band (DISAGREED=0), FUSE being the
+        # outer-envelope op the single-seam CUT/COMMON verb did not expose; op-algebra holds
+        # (V(fuse)+V(common)=V(A)+V(B)); the genuine MULTI-SEAM pose HONEST-DECLINES the
+        # annulus↔annulus inner-seam sew (the frozen-M0-mesher holed-curved-seam gap, L3-d)
+        # with a residual map, never a leaky solid. Its seams are the real S3 trace, so this
+        # host suite builds only under CYBERCAD_HAS_NUMSCI. Additive header-only orchestrator
+        # (nurbs_solid_boolean.h; the five stage-verb files byte-unchanged); no lib change,
+        # no cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_solid_boolean)
+        set(test_native_nurbs_solid_boolean_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_solid_boolean.cpp")
         # NURBS roadmap LAYER 3, SLICE 3 (L3-S3) — host GATE (a), the OCCT-free closed-
         # form proof of the THIRD (deepest) exact-NURBS B-rep boolean: a genuine NURBS
         # (Kind::BSpline) face SPLIT BY ANOTHER FREEFORM NURBS face, welded watertight —

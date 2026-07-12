@@ -886,6 +886,20 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_fillet_g2_freeform)
         set(test_native_fillet_g2_freeform_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_fillet_g2_freeform.cpp")
+        # NURBS roadmap Layer 4 (fillet/chamfer) — the CHAMFER half. The native NURBS
+        # chamfer generator (blend/chamfer_edge_nurbs.h) traces the two SETBACK CURVES
+        # (one per face, at a setback measured ALONG each face's surface) and lofts a
+        # ruled (Piegl & Tiller) flat-bevel chamfer face between them — the C0 flat-bevel
+        # counterpart to the G2 fillet family, additive alongside the byte-frozen
+        # solid-clip chamfer_edges.h. Airtight oracles: planar-dihedral exactness (setback
+        # lines + exactly-planar face ≤1e-12), symmetric/asymmetric/distance-angle mode
+        # equivalence (≤1e-12), cylinder-substrate geodesic setback (≤1e-9), and honest
+        # decline on over-large setback / degenerate dihedral / freeform substrate. It is
+        # OCCT-free over native/math/vec.h only; gated under CYBERCAD_HAS_NUMSCI for
+        # roadmap parity with the freeform fillet gate. Header-only; no lib change.
+        list(APPEND CYBERCAD_TESTS test_native_chamfer_edge_nurbs)
+        set(test_native_chamfer_edge_nurbs_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_chamfer_edge_nurbs.cpp")
     endif()
 
     # The tet-mesher test drives the real TetGen backend, so it is added ONLY when
@@ -1309,6 +1323,13 @@ if(CYBERCAD_BUILD_TESTS)
     # substrate include trees, like the thicken/shell/offset gates.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_fillet_g2_freeform)
         target_compile_definitions(test_native_fillet_g2_freeform PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+
+    # The Layer-4 NURBS chamfer gate includes blend/chamfer_edge_nurbs.h (→ math/vec.h
+    # only, no NumPP/SciPP headers), so its TU needs the CYBERCAD_HAS_NUMSCI macro (to
+    # enable the gated generator) but NOT the substrate include trees.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_chamfer_edge_nurbs)
+        target_compile_definitions(test_native_chamfer_edge_nurbs PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_ssi_boolean)

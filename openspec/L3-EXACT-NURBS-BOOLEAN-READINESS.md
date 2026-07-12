@@ -346,6 +346,39 @@ watertight sew is MISSING.
 > scope). The residual L3 tail is now the **re-entrant** split shape (nesting handled; a
 > genuinely self-re-entering seam untested) and that mesher-level holed-seam weld.
 
+> **UPDATE (W2 — annulus↔annulus inner-seam weld MEASURED to mesher-rewrite scale; honest
+> re-decline with a SHARPENED root-cause map, track `worktree-agent-a25f2777e6216cfa6`):** a
+> measurement-first attack on the exact L3-d residual (the multi-seam INNER-seam weld) confirms
+> it is a **genuine M0 CDT mesher rewrite, NOT a bounded topology weld**, and sharpens the map
+> from "holed-curved-seam gap" to the precise failing mechanism. **Localization (host, d=0.0025,
+> `SolidMesher`):** the COMMON survivor set (A's middle annulus + B's middle annulus) meshes to
+> **boundaryEdges = 59, ALL 59 at the INNER seam** (r₁≈0.131, z=H/2=0.015; `nearOuter=0,
+> other=0`) — the OUTER seam (r₂≈0.374) welds watertight (0 unpaired). CUT = 307, likewise all
+> inner. **Root cause (measured, not assumed):** the two annuli's inner-seam boundary VERTICES
+> are near-coincident (the seam NODES agree to **1.3e-11** across the two walls; the seam-chord
+> pin places the subdivided samples within ULP), yet the two faces are meshed by **INDEPENDENT
+> per-face constrained-Delaunay triangulations** whose inner-HOLE boundary tessellations
+> disagree by one edge (A=822 vs B=823 hole-boundary edges) — the CDT's hole-culling
+> (`triangles()` centroid-in-hole test) drops a thin near-boundary triangle on ONE annulus but
+> not the other, because the two annuli bulge OPPOSITE ways off the shared flat chord, so a
+> near-hole centroid lands inside the hole loop for one wall and outside for the other. The
+> unpaired edge propagates around the ring. **The residual GROWS with refinement** — measured
+> boundaryEdges **2 → 22 → 59 → 233 → 769** over deflection **0.01 → 0.005 → 0.0025 → 0.00125 →
+> 0.000625** — the unambiguous signature of a per-face-CDT PARITY gap (more boundary samples ⇒
+> more independent-CDT disagreement), not a boundary-placement gap (which would SHRINK with
+> refinement, as the OUTER seam does). **A bounded topology fix was implemented and measured to
+> NOT help:** unifying both walls' inner-seam 3-D chord geometry to bit-identical canonical
+> poles (so `EdgeCache` hands both annuli the SAME `d.points`) leaves the residual UNCHANGED at
+> 59 — proving the gap is in the CDT triangulation of the shared hole strip, NOT in boundary
+> vertex placement. The genuine enabler is a **mesher-level shared-seam-as-hole weld** (mesh the
+> shared inner-hole boundary strip ONCE, shared by both faces, instead of two independent
+> per-face CDTs) — a change to the frozen M0 mesher CORE, explicitly out of the additive
+> boolean slice's scope. **So W2 re-affirms the L3-d honest-decline** (`NotWatertight`, residual
+> localized + refinement-growing) as a first-class, DISAGREED=0-safe outcome, with the residual
+> now mapped to the exact CDT parity mechanism. `src/native` UNCHANGED (the bounded fix was
+> measured and reverted as non-improving); no `cc_*` ABI touched; the 8/8 host gate + 7/7 SIM
+> parity (DISAGREED=0) remain GREEN.
+
 ### Summary table
 
 | stage | readiness | one-line evidence |

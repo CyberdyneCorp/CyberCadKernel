@@ -2101,6 +2101,220 @@ CC_TEST(g2_curved_cyl_cone_scope_defers) {
   CC_CHECK(!blend::curved_fillet_edge_g2_cone(frus, cids, 1, 1.0, 0.004).isNull());
 }
 
+// ── VARIABLE-RADIUS G2 curvature-MATCHING fillet on a CURVED substrate ─────────────--
+// The COMBINED slice: variable radius r(θ)=r1+(r2−r1)·θ/(2π) lofted around a CURVED
+// (circular) rim, with the section curvature MATCHED to the substrate at EACH station.
+// The crux the feature exercises: on a curved rim the per-station meridian half-planes FAN
+// around the axis (not parallel like the planar straight-crease case), and each station's
+// quintic must hit BOTH the varying seam geometry r(θ) AND the substrate's section-plane
+// curvature (0 for the straight-ruled cylinder wall; 1/R for the umbilic sphere). These
+// gates prove: (1) curvature MATCH at MULTIPLE stations along the curved rim (closed form +
+// discrete Menger witness) vs a G1 control that JUMPS; (2) watertight + a sensible MONOTONE
+// volume bracketed by the two constant-radius endpoints, reducing to constant at r1==r2;
+// (3) self-intersection guard (too-fast ramp → DECLINE); (4) honest scope declines + no
+// cross-firing with the constant-radius-curved or planar-variable builders.
+
+namespace {
+// Constant-radius G2 volume on a cyl↔cap rim, for the monotone-bracket check.
+double g2CylConstVol(double Rc, double h, double r, double defl) {
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  const int rim = findRimAtZ(cyl, h);
+  int ids[] = {rim};
+  bool wt = false;
+  return vol(blend::curved_fillet_edge_g2_cyl(cyl, ids, 1, r, defl), wt);
+}
+// Menger curvature (1/circumradius) of a station's meridian quintic at parameter s.
+double mengerAt(const std::array<blend::detail::Mrd, 6>& poles, double s) {
+  const double ds = 1e-3;
+  const blend::detail::Mrd pm = blend::detail::quinticMeridian(poles, s - ds);
+  const blend::detail::Mrd p0 = blend::detail::quinticMeridian(poles, s);
+  const blend::detail::Mrd pp = blend::detail::quinticMeridian(poles, s + ds);
+  const double ax = p0.rho - pm.rho, ay = p0.z - pm.z;
+  const double cx = pp.rho - p0.rho, cy = pp.z - p0.z;
+  const double bx = pp.rho - pm.rho, by = pp.z - pm.z;
+  const double la = std::hypot(ax, ay), lc = std::hypot(cx, cy), lb = std::hypot(bx, by);
+  if (la * lc * lb < 1e-18) return 0.0;
+  return 2.0 * std::fabs(ax * cy - ay * cx) / (la * lc * lb);
+}
+}  // namespace
+
+CC_TEST(g2var_curved_cyl_curvature_matches_zero_at_every_station) {
+  // FANNING-SECTION curvature-MATCH PROOF (no OCCT, no mesh): sample the variable radius law
+  // r(θ)=r1+(r2−r1)·θ/(2π) at several stations along the CURVED rim; at EACH station the κ=0
+  // curvature-MATCHING quintic has meridian curvature EXACTLY 0 at both the cylinder-wall
+  // rail and the cap rail — matching the straight-ruled cylinder's meridian normal curvature
+  // (0) even as the LOCAL radius r(θ) varies. The G1 torus tube's section curvature 1/r(θ)
+  // is a station-varying JUMP the quintic removes at every station.
+  const double Rc = 6.0, h = 10.0, r1 = 0.8, r2 = 2.0, s = 1.0;
+  for (int k = 0; k <= 6; ++k) {
+    const double theta = k / 6.0;                 // fraction of the turn
+    const double r = r1 + (r2 - r1) * theta;      // local radius r(θ)
+    const auto st = blend::detail::g2VarCylStation(Rc, h, s, r);
+    CC_CHECK(st.has_value());
+    // Closed-form: meridian curvature EXACTLY 0 at BOTH rails at THIS station (matched to the
+    // straight ruling + flat cap, r-independent — the genuine curvature-MATCH, not the tube 1/r).
+    CC_CHECK(std::fabs(blend::detail::meridianCurvature(st->poles, 0.0)) < 1e-12);
+    CC_CHECK(std::fabs(blend::detail::meridianCurvature(st->poles, 1.0)) < 1e-12);
+    // G1 CONTROL: the equal-r torus tube has CONSTANT section curvature 1/r(θ) at the wall —
+    // a real JUMP that grows as r(θ) shrinks. The G2 station's near-rail Menger curvature is
+    // far below it (the quintic rises from 0 only into the curved middle, not a step to 1/r).
+    const double kTubeG1 = 1.0 / r;
+    CC_CHECK(kTubeG1 > 0.4);                            // the G1 jump at this station
+    CC_CHECK(mengerAt(st->poles, 0.003) < 0.1 * kTubeG1);  // G2 near-rail κ ≪ the G1 tube jump
+    // Seam geometry VARIES with r(θ): wall seam r below the cap, cap seam radius Rc−r.
+    CC_CHECK(nearRel(st->seamAx, h - r, 1e-12));
+    CC_CHECK(nearRel(st->capR, Rc - r, 1e-12));
+    // Mid-section IS curved (a real blend, not a collapsed flat).
+    CC_CHECK(mengerAt(st->poles, 0.5) > 1e-3);
+  }
+}
+
+CC_TEST(g2var_curved_sphere_curvature_matches_1_over_R_at_every_station) {
+  // The SPHERE arm — the genuinely HARDER curvature-match under varying r. A sphere is
+  // UMBILIC, so its normal curvature is 1/R in EVERY section direction independent of the
+  // ball radius r; hence at EVERY station along the rim the curvature-MATCHING quintic's
+  // wall-rail curvature is 1/R (NOT the torus tube's 1/r(θ), and NOT zero), while the cap
+  // rail matches the flat cap's 0. This proves the varying-r + curvature-match combination.
+  const double R = 6.0, zc = 2.0, r1 = 0.7, r2 = 1.6;
+  blend::detail::SphereCapGeom g;
+  g.axis.origin = nmath::Point3{0, 0, 0};
+  g.axis.x = nmath::Dir3{nmath::Vec3{1, 0, 0}};
+  g.axis.y = nmath::Dir3{nmath::Vec3{0, 1, 0}};
+  g.axis.z = nmath::Dir3{nmath::Vec3{0, 0, 1}};
+  g.R = R; g.capH = zc; g.capNormal = nmath::Vec3{0, 0, 1};
+  for (int k = 0; k <= 6; ++k) {
+    const double r = r1 + (r2 - r1) * (k / 6.0);
+    const auto st = blend::detail::g2VarSphereStation(g, r);
+    CC_CHECK(st.has_value());
+    const double kWall = blend::detail::meridianCurvature(st->poles, 0.0);
+    const double kCap = blend::detail::meridianCurvature(st->poles, 1.0);
+    CC_CHECK(nearRel(kWall, 1.0 / R, 1e-9));  // MATCHES 1/R at this station (varying r, same κ)
+    CC_CHECK(std::fabs(kCap) < 1e-9);         // MATCHES the flat cap's 0
+    // The matched curvature is r-INDEPENDENT (umbilic): 1/R at every station regardless of r.
+    CC_CHECK(std::fabs(kWall - 1.0 / R) < 1e-9);
+    // The G1 tube would jump to 1/r(θ) — a station-varying jump the quintic removes.
+    const double jumpG1 = std::fabs(1.0 / r - 1.0 / R);
+    CC_CHECK(std::fabs(kWall - 1.0 / R) < 0.01 * jumpG1);
+    // The wall seam sits EXACTLY on the sphere at this station (G0), radius √(R²)=R from centre.
+    const double distW = std::hypot(st->poles[0].rho, st->poles[0].z);
+    CC_CHECK(nearRel(distW, R, 1e-9));
+    // Menger witness near the wall rail agrees with 1/R.
+    CC_CHECK(std::fabs(mengerAt(st->poles, 0.003) - 1.0 / R) < 0.02);
+  }
+}
+
+CC_TEST(g2var_curved_cyl_watertight_volume_monotone_bracket) {
+  // WATERTIGHT + SENSIBLE MONOTONE VOLUME: the variable fillet on a cyl↔cap rim (r ramps
+  // r1→r2 around the rim) is watertight and REMOVES material; its removed volume is bracketed
+  // strictly between the two constant-radius G2 fillets at rMin and rMax (a ramp removes more
+  // than a uniform rMin and less than a uniform rMax), and reduces to the constant fillet at
+  // r1==r2. This is the swept fanning-section band welded via the helix/spiral/seam-wall idiom.
+  const double Rc = 6.0, h = 10.0, r1 = 0.8, r2 = 2.0, defl = 0.006;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  bool wt0 = false;
+  const double v0 = vol(cyl, wt0);
+  CC_CHECK(wt0);
+  const int rim = findRimAtZ(cyl, h);
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  topo::Shape f = blend::curved_fillet_edge_g2_cyl_variable(cyl, ids, 1, r1, r2, defl);
+  bool wt = false;
+  const double v = vol(f, wt);
+  CC_CHECK(!f.isNull());
+  CC_CHECK(wt);                          // helix/spiral/seam-wall + quintic band welds watertight
+  CC_CHECK(v < v0);                      // convex fillet REMOVES material
+  // Monotone bracket: rMin removes least (largest volume), rMax removes most (smallest).
+  const double vMin = g2CylConstVol(Rc, h, r1, defl);   // constant rMin=0.8 (largest solid)
+  const double vMax = g2CylConstVol(Rc, h, r2, defl);   // constant rMax=2.0 (smallest solid)
+  CC_CHECK(vMax < v);                    // variable keeps MORE than the uniform-rMax fillet
+  CC_CHECK(v < vMin);                    // variable removes MORE than the uniform-rMin fillet
+  // Reversing the ramp (r2→r1) removes the SAME total (symmetry of the linear law).
+  topo::Shape fr = blend::curved_fillet_edge_g2_cyl_variable(cyl, ids, 1, r2, r1, defl);
+  bool wtr = false;
+  const double vr = vol(fr, wtr);
+  CC_CHECK(wtr);
+  CC_CHECK(nearRel(vr, v, 1e-2));        // same removed volume either ramp direction
+  // r1==r2 reduces to the constant-radius G2 fillet (byte-equivalent volume).
+  bool wtc = false;
+  const double vConst = vol(blend::curved_fillet_edge_g2_cyl_variable(cyl, ids, 1, 1.3, 1.3, defl), wtc);
+  const double vRef = g2CylConstVol(Rc, h, 1.3, defl);
+  CC_CHECK(wtc);
+  CC_CHECK(nearRel(vConst, vRef, 1e-9)); // reduces to constant at r1==r2
+}
+
+CC_TEST(g2var_curved_sphere_watertight_volume_monotone) {
+  // The SPHERE arm is watertight and removes material, bracketed between the constant-radius
+  // sphere G2 endpoints. (The curvature match to 1/R is proven analytically above; here we
+  // exercise the swept-band watertight weld on the doubly-curved substrate.)
+  const double R = 6.0, zc = 2.5, r1 = 0.8, r2 = 1.6, defl = 0.005;
+  topo::Shape s = truncatedBall(R, zc);
+  CC_CHECK(!s.isNull());
+  const nmath::Vec3 axisY{0, 1, 0};
+  const int rim = findRimAtAxial(s, axisY, zc, std::sqrt(R * R - zc * zc));
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  topo::Shape f = blend::curved_fillet_edge_g2_variable(s, ids, 1, r1, r2, defl);
+  bool wt = false;
+  const double v = vol(f, wt);
+  const double vSharp = truncatedBallVolume(R, zc);
+  CC_CHECK(!f.isNull());
+  CC_CHECK(wt);                          // fanning-section band welds watertight on the sphere
+  CC_CHECK(v < vSharp);                  // convex fillet REMOVES material
+  // Bracket between the constant-radius sphere G2 endpoints.
+  bool wtMin = false, wtMax = false;
+  const double vMin = vol(blend::curved_fillet_edge_g2(s, ids, 1, r1, defl), wtMin);  // rMin
+  const double vMax = vol(blend::curved_fillet_edge_g2(s, ids, 1, r2, defl), wtMax);  // rMax
+  CC_CHECK(wtMin && wtMax);
+  CC_CHECK(vMax < v && v < vMin);        // sensible monotone bracket
+  // r1==r2 reduces to the constant-radius sphere G2 fillet.
+  bool wtc = false;
+  const double vConst = vol(blend::curved_fillet_edge_g2_variable(s, ids, 1, 1.2, 1.2, defl), wtc);
+  bool wtRef = false;
+  const double vRef = vol(blend::curved_fillet_edge_g2(s, ids, 1, 1.2, defl), wtRef);
+  CC_CHECK(wtc && wtRef);
+  // At r1==r2 the section is the SAME constant-radius quintic; the variable builder's
+  // distinct wall-band / spiral-band decomposition faceting-differs only at the deflection
+  // bound (both watertight, both revolve the identical meridian). Facet-level agreement.
+  CC_CHECK(nearRel(vConst, vRef, 3e-3));
+}
+
+CC_TEST(g2var_curved_self_intersection_and_scope_defers) {
+  // SELF-INTERSECTION GUARD + honest scope declines + NO cross-firing.
+  const double Rc = 6.0, h = 10.0;
+  topo::Shape cyl = cappedCylinder(Rc, h);
+  const int rim = findRimAtZ(cyl, h);
+  CC_CHECK(rim != 0);
+  int ids[] = {rim};
+  // Degenerate radii → NULL.
+  CC_CHECK(blend::curved_fillet_edge_g2_cyl_variable(cyl, ids, 1, 0.0, 2.0, 0.01).isNull());
+  CC_CHECK(blend::curved_fillet_edge_g2_cyl_variable(cyl, ids, 1, 2.0, 0.0, 0.01).isNull());
+  // Ring-torus guard at the deepest station: Rc < 2·rMax → NULL.
+  CC_CHECK(blend::curved_fillet_edge_g2_cyl_variable(cyl, ids, 1, 1.0, 3.5, 0.01).isNull());
+  // SELF-INTERSECTION: a too-fast ramp (|r2−r1| ≥ 0.75·Rc = 4.5) → DECLINE (never a bad solid).
+  CC_CHECK(blend::curved_fillet_edge_g2_cyl_variable(cyl, ids, 1, 0.2, 5.0, 0.01).isNull());
+  // Multi-edge → NULL.
+  int ids2[] = {rim, 1};
+  CC_CHECK(blend::curved_fillet_edge_g2_cyl_variable(cyl, ids2, 2, 1.0, 2.0, 0.01).isNull());
+  // NO cross-firing: the SPHERE variable arm declines the cylinder rim (needs a Sphere face),
+  // and the cylinder variable arm declines a truncated ball (needs a Cylinder↔cap rim).
+  CC_CHECK(blend::curved_fillet_edge_g2_variable(cyl, ids, 1, 1.0, 2.0, 0.01).isNull());
+  const nmath::Vec3 axisY{0, 1, 0};
+  topo::Shape ball = truncatedBall(6.0, 2.5);
+  const int brim = findRimAtAxial(ball, axisY, 2.5, std::sqrt(36.0 - 6.25));
+  CC_CHECK(brim != 0);
+  int bids[] = {brim};
+  CC_CHECK(blend::curved_fillet_edge_g2_cyl_variable(ball, bids, 1, 1.0, 2.0, 0.01).isNull());
+  // A planar box edge (Line, not a circular crease) → NULL for both variable-curved arms.
+  topo::Shape b = box(10, 10, 10);
+  const int le = findEdgeId(b, {0, 10, 10}, {10, 10, 10});
+  int idsb[] = {le};
+  CC_CHECK(blend::curved_fillet_edge_g2_cyl_variable(b, idsb, 1, 1.0, 2.0, 0.01).isNull());
+  CC_CHECK(blend::curved_fillet_edge_g2_variable(b, idsb, 1, 1.0, 2.0, 0.01).isNull());
+  // Control: both variable-curved arms DO land on their own substrates (no spurious decline).
+  CC_CHECK(!blend::curved_fillet_edge_g2_cyl_variable(cyl, ids, 1, 0.8, 2.0, 0.005).isNull());
+  CC_CHECK(!blend::curved_fillet_edge_g2_variable(ball, bids, 1, 0.8, 1.6, 0.005).isNull());
+}
+
 // ── offset_face ────────────────────────────────────────────────────────────────--
 
 CC_TEST(offset_top_face_grows_slab) {

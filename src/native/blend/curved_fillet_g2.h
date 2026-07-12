@@ -653,6 +653,461 @@ inline std::vector<nb::Polygon> buildG2StraightBand(const math::Ax3& ax, const G
   return polys;
 }
 
+// ── VARIABLE-RADIUS G2 curvature-MATCHING fillet on a CURVED rim (the combined slice) ─
+//
+// This is the union of the two landed hard features:
+//   * fillet_edges_g2_variable — variable radius r(τ) lofted along a STRAIGHT crease, and
+//   * curved_fillet_g2         — a CONSTANT-radius curvature-MATCHING quintic revolved
+//                                around a CURVED (circular) rim.
+// Here the radius VARIES along a CURVED rim. The crux the task names: on a curved rim the
+// crease is a CIRCLE, so the per-station section planes are NOT parallel — they FAN around
+// the axis (each is a MERIDIAN half-plane at its own azimuth θ). And the section curvature
+// must MATCH the substrate's (possibly non-zero) section-plane normal curvature at EACH
+// station, NOT zero — like the constant-radius curved case, but now with a varying radius.
+//
+// ── PARAMETRIZATION (the fanning meridian half-planes) ─────────────────────────────
+// Parametrize the rim by azimuth θ∈[0,2π); the radius ramps LINEARLY around the rim,
+//     r(θ) = r1 + (r2 − r1)·θ/(2π).
+// The station at azimuth θ_i lives in the MERIDIAN half-plane at that azimuth — the plane
+// spanned by the radial direction radial(θ_i) and the axis. These half-planes all contain
+// the axis, so they FAN (share only the axis line), never parallel. In its own half-plane
+// each station carries the constant-radius curvature-MATCHING quintic for its LOCAL radius
+// r(θ_i): the SAME q=(5/4)·κ_section·h² pole rule, with h(θ_i) the local seam chord.
+//
+// ── CURVATURE MATCH UNDER VARYING r (closed form, per station) ─────────────────────
+//   * CYLINDER (straight-ruled) wall: κ_section(wall)=0 at EVERY station (the ruling is a
+//     straight line — the substrate's meridian normal curvature is 0 regardless of r), and
+//     κ_section(cap)=0. Both triples are collinear at every station; the HOOP curvature
+//     1/Rc is matched automatically by the revolution once G1 fixes the seam normal radial.
+//   * SPHERE wall: κ_section(wall)=1/R at EVERY station — a sphere is UMBILIC, so its
+//     normal curvature is 1/R in every section direction INDEPENDENT of the ball radius r;
+//     the per-station pole offset q0(θ)=(5/4)·(1/R)·h(θ)² then hits 1/R at each station even
+//     as h(θ) (hence q0) varies with r(θ). κ_section(cap)=0 (collinear cap triple).
+// So each station's quintic matches BOTH the varying seam geometry (r(θ)) AND the (constant)
+// substrate curvature 1/R (sphere) or 0 (cylinder). The G1 torus tube's 1/r(θ) section
+// curvature is a JUMP at every station — the very jump the varying quintic removes.
+//
+// ── WHY THE SWEEP IS WATERTIGHT + CANNOT CROSS-STATION SELF-INTERSECT ───────────────
+// Each station's section lives entirely in its own meridian half-plane, and distinct
+// half-planes meet ONLY on the axis (which no section point touches — every section point
+// has radius > 0). So two sections at different θ can NEVER share a 3-D point ⇒ the swept
+// surface is EMBEDDED (no cross-station self-intersection) for ANY r1,r2 that keep each
+// station's section valid and monotone — this is the curved-rim analogue of the planar
+// slice's "parallel cross-planes are injective" argument (here the injective coordinate is
+// the AZIMUTH θ instead of the crease coordinate). The remaining self-intersection risk is
+// (a) a section folding WITHIN its own half-plane (a too-large local radius), guarded by the
+// per-station monotonicity check, and (b) the ring-torus violation Rc < 2·rMax. The weld
+// mirrors buildVariableFilletedCylinder EXACTLY (helix wall seam + spiral cap seam + a seam
+// wall in the azimuth-0 half-plane bridging the r1 and r2 meridians), so it closes with no
+// T-junction; r1==r2 collapses every band + the seam wall to zero → byte-identical to the
+// constant-radius revolved quintic band.
+//
+// ── SELF-INTERSECTION / SCOPE GUARD (a too-fast ramp DECLINES) ─────────────────────
+// We reject up front: Rc < 2·rMax (ring torus); |r2−r1| ≥ kG2VarCurvedMaxRamp·Rc (a ramp
+// so fast the spiral cap seam laps the axis / the section overlaps its neighbour); and per
+// station we re-run g2Curved*Section + the monotone-arc guard. Any failure ⇒ empty ⇒ NULL
+// ⇒ OCCT. Freeform / concave / tilted / multi-frustum substrates decline through the SAME
+// wholesale classifiers the constant-radius curved builders use (sphereCapGeom / rimGeom).
+
+// Max radius-ramp fraction of the wall radius: reject |r2−r1| ≥ kG2VarCurvedMaxRamp·Rc so
+// the spiral cap seam never approaches the axis and neighbouring stations never overlap.
+inline constexpr double kG2VarCurvedMaxRamp = 0.75;
+
+// A single evaluated variable-radius CYLINDER↔cap station: its κ=0 quintic poles in the
+// (ρ,z) meridian half-plane at this station's local radius, plus the local seam positions.
+struct G2VarCylStation {
+  std::array<Mrd, 6> poles;  // (ρ,z) quintic poles P0..P5, P0=wall seam, P5=cap seam
+  double r = 0.0;            // local rolling-ball radius r(θ)
+  double seamAx = 0.0;       // wall-seam axial coord (helix)
+  double capR = 0.0;         // cap-seam radius (spiral) = Rc − r(θ)
+};
+
+// Build one cylinder↔cap variable station's κ=0 quintic for local radius r at wall radius
+// Rc, cap axial capH, sign s (+z toward the cap). κ(0)=0 (straight ruling) and κ(1)=0
+// (flat cap) — both collinear triples — matching the substrate's meridian curvature at
+// this station EXACTLY as the constant-radius g2CurvedCylSection does, but with per-station r.
+inline std::optional<G2VarCylStation> g2VarCylStation(double Rc, double capH, double s, double r) {
+  const double Rin = Rc - r;                                  // cap-seam radius at this station
+  if (!(r > kCurveEps) || !(Rin > kCurveEps)) return std::nullopt;
+  const double seamAx = capH - s * r;                         // wall seam r below the cap
+  const Mrd W{Rc, seamAx};                                    // P0 — wall seam (on the cylinder)
+  const Mrd C{Rin, capH};                                     // P5 — cap seam (on the cap)
+  const Mrd t0{0.0, s};                                       // wall tangent (axial, toward cap)
+  const Mrd t1{-1.0, 0.0};                                    // travel dir AT the cap seam
+  const double chord = std::sqrt((C.rho - W.rho) * (C.rho - W.rho) + (C.z - W.z) * (C.z - W.z));
+  if (!(chord > 1e-9)) return std::nullopt;
+  const double h = kG2CylSpacing * chord;
+  G2VarCylStation st;
+  st.r = r;
+  st.seamAx = seamAx;
+  st.capR = Rin;
+  st.poles[0] = W;
+  st.poles[1] = W + t0 * h;                                   // collinear triple (q0 = 0)
+  st.poles[2] = W + t0 * (2.0 * h);
+  st.poles[5] = C;
+  st.poles[4] = C - t1 * h;                                   // collinear triple (q1 = 0)
+  st.poles[3] = C - t1 * (2.0 * h);
+  return st;
+}
+
+// A single evaluated variable-radius SPHERE↔cap station: its curvature-MATCHING quintic
+// poles (κ(0)=1/R at the wall seam — the sphere is umbilic so 1/R is r-independent — and
+// κ(1)=0 at the cap seam), plus the local seam geometry. Reuses g2CurvedSphereSection for
+// the exact per-station pole placement (which already encodes q0=(5/4)·(1/R)·h²).
+struct G2VarSphereStation {
+  std::array<Mrd, 6> poles;  // (ρ,z) quintic poles P0..P5, P0=wall seam, P5=cap seam
+  double r = 0.0;            // local rolling-ball radius r(θ)
+  double seamRad = 0.0;      // wall-seam radius (on the sphere)
+  double seamAx = 0.0;       // wall-seam axial coord
+  double latSeam = 0.0;      // sphere latitude of the wall seam (for the wall band)
+  double capR = 0.0;         // cap-seam radius (= Rmaj at this station)
+};
+
+inline std::optional<G2VarSphereStation> g2VarSphereStation(const SphereCapGeom& g, double r) {
+  const auto sec = g2CurvedSphereSection(g, r);
+  if (!sec) return std::nullopt;
+  G2VarSphereStation st;
+  st.poles = sec->poles;
+  st.r = r;
+  st.seamRad = sec->poles[0].rho;
+  st.seamAx = sec->poles[0].z;
+  st.latSeam = std::atan2(st.seamAx, st.seamRad);
+  st.capR = sec->poles[5].rho;
+  return st;
+}
+
+// Per-station monotone-arc guard for a variable curved section (same intent as the
+// constant-radius builders): the revolved meridian must be a clean SIMPLE arc — z strictly
+// toward the cap, ρ single-valued, staying at/below the cap. A folded section (poles
+// crossing at a too-large local radius) would revolve into a self-intersecting band.
+inline bool g2VarSectionMonotone(const std::array<Mrd, 6>& poles, double s, double capH) {
+  Mrd prev = quinticMeridian(poles, 0.0);
+  for (int i = 1; i <= 48; ++i) {
+    const Mrd m = quinticMeridian(poles, static_cast<double>(i) / 48.0);
+    if (m.rho > prev.rho + 1e-9) return false;         // ρ must be non-increasing wall→cap
+    if (s * (m.z - prev.z) < -1e-9) return false;      // z must head toward the cap
+    if (s * (m.z - capH) > 1e-9) return false;         // never overshoot the cap
+    prev = m;
+  }
+  return true;
+}
+
+// Assemble a VARIABLE-radius G2-filleted capped cylinder as a planar-facet soup. Same weld
+// idiom as buildVariableFilletedCylinder (far cap + lower wall + helical band + variable
+// quintic band + spiral band + inner cap + azimuth-0 seam wall, all sharing N angular
+// samples), but the middle band's meridian is the per-station κ=0 curvature-MATCHING quintic
+// instead of the circular torus tube. Empty on any degeneracy → NULL → OCCT.
+inline std::vector<nb::Polygon> buildG2VarFilletedCylinder(const RimGeom& g, double r1, double r2,
+                                                           double defl) {
+  const double Rc = g.radius;
+  const double rMax = std::max(r1, r2);
+  const double rMin = std::min(r1, r2);
+  const double Rin = Rc - rMax;                              // inner (deepest) trimmed-cap radius
+  if (!(rMin > kCurveEps)) return {};
+  if (!(Rc - 2.0 * rMax >= -1e-12)) return {};               // ring-torus guard (deepest station)
+  if (!(Rin > 1e-9)) return {};
+  if (std::fabs(r2 - r1) >= kG2VarCurvedMaxRamp * Rc) return {};  // ramp too fast → decline
+  const math::Ax3& ax = g.axis;
+
+  const double s = (g.capH >= g.farH) ? 1.0 : -1.0;
+  const double hCap = g.capH, hFar = g.farH;
+  const double hLow = hCap - s * rMax;                       // deepest wall→section seam
+  if (s * (hLow - hFar) <= 1e-9) return {};                  // far end beyond the deepest seam
+
+  // Angular stations: the major-radius sagitta bound PLUS a radius-gradient term so the
+  // per-station seam step stays ≤ defl (the swept section never oversteps).
+  const int Ngrad = static_cast<int>(std::ceil(std::fabs(r2 - r1) / std::max(defl, kCurveEps)));
+  const int N = std::clamp(std::max(sagittaSteps(Rc, kTwoPi, defl, 8, 256), Ngrad), 8, 512);
+  const int M = sagittaSteps(rMax, kTwoPi / 4.0, defl, 6, 96);  // section meridian steps
+
+  auto rAt = [&](int i) { return r1 + (r2 - r1) * (static_cast<double>(i) / N); };
+  auto uAt = [&](int i) { return kTwoPi * i / N; };
+
+  // Build + validate every station up front (any invalid/folded station → decline whole).
+  std::vector<G2VarCylStation> st;
+  st.reserve(static_cast<std::size_t>(N) + 1);
+  for (int i = 0; i <= N; ++i) {
+    const auto s0 = g2VarCylStation(Rc, hCap, s, rAt(i));
+    if (!s0) return {};
+    if (!g2VarSectionMonotone(s0->poles, s, hCap)) return {};
+    st.push_back(*s0);
+  }
+
+  auto seamH = [&](int i) { return st[static_cast<std::size_t>(i)].seamAx; };   // helix axial
+  auto capR = [&](int i) { return st[static_cast<std::size_t>(i)].capR; };      // spiral radius
+  auto sectionPoint = [&](int i, double sp) -> math::Point3 {
+    const Mrd m = quinticMeridian(st[static_cast<std::size_t>(i)].poles, sp);
+    return ringPoint(ax, m.rho, uAt(i), m.z);
+  };
+  auto sectionNormal = [&](int i, double sp) -> math::Vec3 {
+    const double ds = 1e-4;
+    const Mrd a = quinticMeridian(st[static_cast<std::size_t>(i)].poles, std::max(0.0, sp - ds));
+    const Mrd b = quinticMeridian(st[static_cast<std::size_t>(i)].poles, std::min(1.0, sp + ds));
+    const Mrd tang{b.rho - a.rho, b.z - a.z};
+    Mrd nrm{s * tang.z, -s * tang.rho};                     // outward meridian normal
+    const double ln = std::sqrt(nrm.rho * nrm.rho + nrm.z * nrm.z);
+    if (ln < 1e-12) return ax.z.vec();
+    nrm = Mrd{nrm.rho / ln, nrm.z / ln};
+    const math::Vec3 radial = ax.x.vec() * std::cos(uAt(i)) + ax.y.vec() * std::sin(uAt(i));
+    return radial * nrm.rho + ax.z.vec() * nrm.z;
+  };
+
+  std::vector<nb::Polygon> polys;
+  polys.reserve(static_cast<std::size_t>(N) * (M + 3) + 8);
+
+  auto emit = [&](std::vector<math::Point3> loop, const math::Vec3& outward) {
+    const math::Dir3 nd{outward};
+    if (!nd.valid() || loop.size() < 3) return;
+    math::Vec3 area{0, 0, 0};
+    for (std::size_t i = 0; i < loop.size(); ++i)
+      area += math::cross(loop[i].asVec(), loop[(i + 1) % loop.size()].asVec());
+    if (math::dot(area, nd.vec()) < 0.0) std::reverse(loop.begin(), loop.end());
+    polys.emplace_back(std::move(loop), nb::Plane::fromPointNormal(loop.front(), nd.vec()));
+  };
+  auto emitTri = [&](const math::Point3& a, const math::Point3& b, const math::Point3& cc,
+                     const math::Vec3& outward) {
+    math::Vec3 nrm = math::cross(b - a, cc - a);
+    if (math::dot(nrm, outward) < 0.0) nrm = nrm * -1.0;
+    emit({a, b, cc}, nrm);
+  };
+  auto emitQuad = [&](const math::Point3& p00, const math::Point3& p10, const math::Point3& p11,
+                      const math::Point3& p01, const math::Vec3& outward) {
+    emitTri(p00, p10, p11, outward);
+    emitTri(p00, p11, p01, outward);
+  };
+
+  // 1. Far cap: full disk radius Rc at hFar, outward = −capNormal.
+  {
+    std::vector<math::Point3> ring;
+    ring.reserve(static_cast<std::size_t>(N));
+    for (int i = 0; i < N; ++i) ring.push_back(ringPoint(ax, Rc, uAt(i), hFar));
+    emit(std::move(ring), g.capNormal * -1.0);
+  }
+  // 2. Lower cylinder wall: hFar → hLow (closed ring), N quads.
+  for (int i = 0; i < N; ++i) {
+    const double u0 = uAt(i), u1 = uAt(i + 1), um = 0.5 * (u0 + u1);
+    emitQuad(ringPoint(ax, Rc, u0, hFar), ringPoint(ax, Rc, u1, hFar), ringPoint(ax, Rc, u1, hLow),
+             ringPoint(ax, Rc, u0, hLow), ax.x.vec() * std::cos(um) + ax.y.vec() * std::sin(um));
+  }
+  // 3. Helical band: hLow → seamH(i) (the wall seam), N quads (zero at the rMax station).
+  for (int i = 0; i < N; ++i) {
+    const double u0 = uAt(i), u1 = uAt(i + 1), um = 0.5 * (u0 + u1);
+    emitQuad(ringPoint(ax, Rc, u0, hLow), ringPoint(ax, Rc, u1, hLow),
+             ringPoint(ax, Rc, u1, seamH(i + 1)), ringPoint(ax, Rc, u0, seamH(i)),
+             ax.x.vec() * std::cos(um) + ax.y.vec() * std::sin(um));
+  }
+  // 4. Variable G2 section band: s ∈ [0,1] (wall→cap) × the N stations, N·M quads. The
+  //    j=0 ring snaps to the wall seam (helix) and j=M ring to the cap seam (spiral) so the
+  //    band welds EXACTLY to the helical + spiral bands.
+  auto sectionRingPoint = [&](int i, int j) -> math::Point3 {
+    if (j <= 0) return ringPoint(ax, Rc, uAt(i), seamH(i));
+    if (j >= M) return ringPoint(ax, capR(i), uAt(i), hCap);
+    return sectionPoint(i, static_cast<double>(j) / M);
+  };
+  for (int i = 0; i < N; ++i) {
+    for (int j = 0; j < M; ++j) {
+      const double sm = (static_cast<double>(j) + 0.5) / M;
+      const math::Vec3 nrm = sectionNormal(i, sm);  // representative outward at station i
+      emitQuad(sectionRingPoint(i, j), sectionRingPoint(i + 1, j), sectionRingPoint(i + 1, j + 1),
+               sectionRingPoint(i, j + 1), nrm);
+    }
+  }
+  // 5. Spiral band: Rin → capR(i) at hCap, N quads (zero at the rMax station). Outward capNormal.
+  for (int i = 0; i < N; ++i) {
+    const double u0 = uAt(i), u1 = uAt(i + 1);
+    emitQuad(ringPoint(ax, Rin, u0, hCap), ringPoint(ax, Rin, u1, hCap),
+             ringPoint(ax, capR(i + 1), u1, hCap), ringPoint(ax, capR(i), u0, hCap), g.capNormal);
+  }
+  // 6. Inner trimmed cap: full disk radius Rin at hCap, outward = +capNormal.
+  {
+    std::vector<math::Point3> ring;
+    ring.reserve(static_cast<std::size_t>(N));
+    for (int i = 0; i < N; ++i) ring.push_back(ringPoint(ax, Rin, uAt(i), hCap));
+    emit(std::move(ring), g.capNormal);
+  }
+  // 7. Seam wall (load-bearing): the planar lens in the azimuth-0 half-plane bridging the
+  //    station-0 (r1) and station-N (r2) meridians — the material step the larger fillet
+  //    removes. Its struts coincide with the min-r station's band edges so it welds with no
+  //    T-junction. Outward points toward the LARGER-r (more-removed / void) side.
+  {
+    const math::Vec3 seamOut = ax.y.vec() * (r1 > r2 ? 1.0 : -1.0);
+    // The seam wall must span from the wall seam of BOTH meridians down to hLow / Rin so it
+    // shares struts with the helical + spiral bands. Bridge the two full section meridians
+    // plus the wall strut (Rc, hLow)→(Rc, seam) and cap strut (Rin, hCap)→(capR, hCap).
+    auto p0 = [&](int j) { return sectionRingPoint(0, j); };
+    auto pN = [&](int j) { return sectionRingPoint(N, j); };
+    for (int j = 0; j < M; ++j)
+      emitQuad(p0(j), p0(j + 1), pN(j + 1), pN(j), seamOut);
+    // Wall strut lens (Rc, hLow)→(Rc, seamH) at both meridians.
+    emitTri(ringPoint(ax, Rc, 0.0, hLow), p0(0), pN(0), seamOut);
+    // Cap strut lens (Rin, hCap)→(capR, hCap) at both meridians.
+    emitTri(ringPoint(ax, Rin, 0.0, hCap), p0(M), pN(M), seamOut);
+  }
+  return polys;
+}
+
+// Assemble a VARIABLE-radius G2-filleted truncated ball as a planar-facet soup. The section
+// is the per-station curvature-MATCHING quintic (κ(0)=1/R, κ(1)=0) at the LOCAL radius r(θ);
+// the sphere is umbilic so 1/R is matched at every station regardless of r. The weld follows
+// the same idiom as buildG2FilletedSphere but the wall seam (a latitude that varies with θ)
+// is bridged by a per-station wall band down to the DEEPEST-station latitude, plus a spiral
+// cap band and an azimuth-0 seam wall — mirroring the variable cylinder builder. Empty on any
+// degeneracy → NULL → OCCT.
+inline std::vector<nb::Polygon> buildG2VarFilletedSphere(const SphereCapGeom& g, double r1,
+                                                         double r2, double defl) {
+  const double R = g.R, capH = g.capH;
+  const double rMax = std::max(r1, r2);
+  const double rMin = std::min(r1, r2);
+  if (!(rMin > kCurveEps) || !(R - rMax > kCurveEps)) return {};
+  const math::Ax3& ax = g.axis;
+
+  // Deepest station (rMax) sets the inner cap radius Rin and the wall-band bottom latitude.
+  const auto stDeep = g2VarSphereStation(g, rMax);
+  if (!stDeep) return {};
+  const double Rin = stDeep->capR;                          // deepest (smallest) cap-seam radius
+  const double latLow = stDeep->latSeam;                    // deepest wall-seam latitude (lowest)
+  if (!(Rin > 1e-9)) return {};
+  // Ramp guard against the rim radius Rrim = √(R²−capH²).
+  const double Rrim = std::sqrt(std::max(0.0, R * R - capH * capH));
+  if (std::fabs(r2 - r1) >= kG2VarCurvedMaxRamp * Rrim) return {};
+
+  const int Ngrad = static_cast<int>(std::ceil(std::fabs(r2 - r1) / std::max(defl, kCurveEps)));
+  const int N = std::clamp(std::max(sagittaSteps(Rrim, kTwoPi, defl, 8, 256), Ngrad), 8, 512);
+  const int M = sagittaSteps(rMax, kTwoPi / 4.0, defl, 6, 96);        // section meridian
+  const double latSouth = -kTwoPi / 4.0;
+  const int K = sagittaSteps(R, latLow - latSouth, defl, 4, 128);     // sphere wall latitude
+
+  auto rAt = [&](int i) { return r1 + (r2 - r1) * (static_cast<double>(i) / N); };
+  auto uAt = [&](int i) { return kTwoPi * i / N; };
+
+  // Build + validate every station up front.
+  std::vector<G2VarSphereStation> st;
+  st.reserve(static_cast<std::size_t>(N) + 1);
+  for (int i = 0; i <= N; ++i) {
+    const auto s0 = g2VarSphereStation(g, rAt(i));
+    if (!s0) return {};
+    if (!g2VarSectionMonotone(s0->poles, 1.0, capH)) return {};
+    st.push_back(*s0);
+  }
+
+  auto spherePoint = [&](double u, double lat) -> math::Point3 {
+    return ringPoint(ax, R * std::cos(lat), u, R * std::sin(lat));
+  };
+  auto seamPoint = [&](int i) -> math::Point3 {
+    return ringPoint(ax, st[static_cast<std::size_t>(i)].seamRad, uAt(i),
+                     st[static_cast<std::size_t>(i)].seamAx);
+  };
+  auto capR = [&](int i) { return st[static_cast<std::size_t>(i)].capR; };
+  auto sectionPoint = [&](int i, double sp) -> math::Point3 {
+    const Mrd m = quinticMeridian(st[static_cast<std::size_t>(i)].poles, sp);
+    return ringPoint(ax, m.rho, uAt(i), m.z);
+  };
+  auto sectionNormal = [&](int i, double sp) -> math::Vec3 {
+    const double ds = 1e-4;
+    const Mrd a = quinticMeridian(st[static_cast<std::size_t>(i)].poles, std::max(0.0, sp - ds));
+    const Mrd b = quinticMeridian(st[static_cast<std::size_t>(i)].poles, std::min(1.0, sp + ds));
+    const Mrd tang{b.rho - a.rho, b.z - a.z};
+    Mrd nrm{tang.z, -tang.rho};
+    const double ln = std::sqrt(nrm.rho * nrm.rho + nrm.z * nrm.z);
+    if (ln < 1e-12) return ax.z.vec();
+    nrm = Mrd{nrm.rho / ln, nrm.z / ln};
+    const math::Vec3 radial = ax.x.vec() * std::cos(uAt(i)) + ax.y.vec() * std::sin(uAt(i));
+    return radial * nrm.rho + ax.z.vec() * nrm.z;
+  };
+
+  std::vector<nb::Polygon> polys;
+  polys.reserve(static_cast<std::size_t>(N) * (K + M + 3) + 4);
+
+  auto emit = [&](std::vector<math::Point3> loop, const math::Vec3& outward) {
+    const math::Dir3 nd{outward};
+    if (!nd.valid() || loop.size() < 3) return;
+    math::Vec3 area{0, 0, 0};
+    for (std::size_t i = 0; i < loop.size(); ++i)
+      area += math::cross(loop[i].asVec(), loop[(i + 1) % loop.size()].asVec());
+    if (math::dot(area, nd.vec()) < 0.0) std::reverse(loop.begin(), loop.end());
+    polys.emplace_back(std::move(loop), nb::Plane::fromPointNormal(loop.front(), nd.vec()));
+  };
+  auto emitTri = [&](const math::Point3& a, const math::Point3& b, const math::Point3& cc,
+                     const math::Vec3& outward) {
+    math::Vec3 nrm = math::cross(b - a, cc - a);
+    if (math::dot(nrm, outward) < 0.0) nrm = nrm * -1.0;
+    emit({a, b, cc}, nrm);
+  };
+  auto emitQuad = [&](const math::Point3& p00, const math::Point3& p10, const math::Point3& p11,
+                      const math::Point3& p01, const math::Vec3& outward) {
+    emitTri(p00, p10, p11, outward);
+    emitTri(p00, p11, p01, outward);
+  };
+
+  // 1. Sphere wall: latSouth → latLow (the DEEPEST wall-seam latitude), N·K quads. The wall
+  //    below the deepest seam is untouched by ANY station, so it is a closed surface of
+  //    revolution up to latLow.
+  for (int i = 0; i < N; ++i) {
+    const double u0 = uAt(i), u1 = uAt(i + 1), um = 0.5 * (u0 + u1);
+    for (int k = 0; k < K; ++k) {
+      const double lat0 = latSouth + (latLow - latSouth) * k / K;
+      const double lat1 = latSouth + (latLow - latSouth) * (k + 1) / K;
+      const double latm = 0.5 * (lat0 + lat1);
+      const math::Vec3 radial = ax.x.vec() * std::cos(um) + ax.y.vec() * std::sin(um);
+      const math::Vec3 outN = radial * std::cos(latm) + ax.z.vec() * std::sin(latm);
+      emitQuad(spherePoint(u0, lat0), spherePoint(u1, lat0), spherePoint(u1, lat1),
+               spherePoint(u0, lat1), outN);
+    }
+  }
+  // 2. Sphere-wall "helical" band: from latLow (the deepest seam ring, a closed circle) up
+  //    to each station's own wall seam (a varying latitude). At station i this is the sphere
+  //    patch between latLow and latSeam(i); it tapers to zero at the rMax (deepest) station.
+  for (int i = 0; i < N; ++i) {
+    const double u0 = uAt(i), u1 = uAt(i + 1), um = 0.5 * (u0 + u1);
+    const math::Vec3 radial = ax.x.vec() * std::cos(um) + ax.y.vec() * std::sin(um);
+    const math::Vec3 outN = radial * std::cos(latLow) + ax.z.vec() * std::sin(latLow);
+    // Bottom edge on the shared latLow circle; top edge on each station's wall seam.
+    emitQuad(spherePoint(u0, latLow), spherePoint(u1, latLow), seamPoint(i + 1), seamPoint(i), outN);
+  }
+  // 3. Variable G2 section band: s ∈ [0,1] (wall→cap) × N stations, N·M quads. j=0 snaps to
+  //    the station's wall seam, j=M snaps to the station's cap seam (radius capR(i) at capH).
+  auto sectionRingPoint = [&](int i, int j) -> math::Point3 {
+    if (j <= 0) return seamPoint(i);
+    if (j >= M) return ringPoint(ax, capR(i), uAt(i), capH);
+    return sectionPoint(i, static_cast<double>(j) / M);
+  };
+  for (int i = 0; i < N; ++i) {
+    for (int j = 0; j < M; ++j) {
+      const double sm = (static_cast<double>(j) + 0.5) / M;
+      emitQuad(sectionRingPoint(i, j), sectionRingPoint(i + 1, j), sectionRingPoint(i + 1, j + 1),
+               sectionRingPoint(i, j + 1), sectionNormal(i, sm));
+    }
+  }
+  // 4. Spiral cap band: Rin → capR(i) at capH, N quads (zero at the rMax station). Outward capNormal.
+  for (int i = 0; i < N; ++i) {
+    const double u0 = uAt(i), u1 = uAt(i + 1);
+    emitQuad(ringPoint(ax, Rin, u0, capH), ringPoint(ax, Rin, u1, capH),
+             ringPoint(ax, capR(i + 1), u1, capH), ringPoint(ax, capR(i), u0, capH), g.capNormal);
+  }
+  // 5. Inner trimmed cap: full disk radius Rin at capH, outward = capNormal.
+  {
+    std::vector<math::Point3> ring;
+    ring.reserve(static_cast<std::size_t>(N));
+    for (int i = 0; i < N; ++i) ring.push_back(ringPoint(ax, Rin, uAt(i), capH));
+    emit(std::move(ring), g.capNormal);
+  }
+  // 6. Seam wall (load-bearing): the planar lens in the azimuth-0 half-plane bridging the
+  //    station-0 (r1) and station-N (r2) meridians. Its struts coincide with the wall-band
+  //    top edge and spiral-band inner edge of the meridians so it welds with no T-junction.
+  {
+    const math::Vec3 seamOut = ax.y.vec() * (r1 > r2 ? 1.0 : -1.0);
+    auto p0 = [&](int j) { return sectionRingPoint(0, j); };
+    auto pN = [&](int j) { return sectionRingPoint(N, j); };
+    for (int j = 0; j < M; ++j)
+      emitQuad(p0(j), p0(j + 1), pN(j + 1), pN(j), seamOut);
+    // Wall strut: from the shared latLow seam ring point to each meridian's wall seam.
+    emitTri(spherePoint(0.0, latLow), p0(0), pN(0), seamOut);
+    // Cap strut: from the shared inner-cap ring (Rin, capH) to each meridian's cap seam.
+    emitTri(ringPoint(ax, Rin, 0.0, capH), p0(M), pN(M), seamOut);
+  }
+  return polys;
+}
+
 }  // namespace detail
 
 // G2 (curvature-continuous) fillet on a single CONVEX CIRCULAR crease between a coaxial
@@ -745,6 +1200,75 @@ inline topo::Shape curved_fillet_edge_g2_cone(const topo::Shape& solid, const in
   const double Rfar = g->Rref + g->farH * std::tan(g->semiAngle);
   std::vector<nb::Polygon> polys =
       detail::buildG2StraightBand(g->axis, *sec, g->capH, g->farH, Rfar, g->capNormal, deflection);
+  if (polys.size() < 4) return {};
+  return nb::assembleSolid(polys);
+}
+
+// ── VARIABLE-RADIUS G2 curvature-MATCHING fillet on a CURVED substrate (public API) ──
+
+// VARIABLE-radius G2 (curvature-continuous) fillet on a single CONVEX CIRCULAR crease
+// between a coaxial CYLINDER lateral face and a coaxial planar cap of `solid`, with the
+// rolling-ball radius ramping LINEARLY around the rim r(θ)=r1+(r2−r1)·θ/(2π), θ∈[0,2π).
+// The section at each azimuth θ is the constant-radius κ=0 curvature-MATCHING quintic for
+// its LOCAL radius r(θ) — so κ_meridian=0 is matched at both seams at EVERY station (the
+// cylinder is straight-ruled) while the HOOP curvature 1/Rc is matched by the revolution.
+// The per-station meridian half-planes FAN around the axis; distinct half-planes meet only
+// on the axis, so the swept section band is EMBEDDED (no cross-station self-intersection).
+// The blend welds watertight through the SAME helix/spiral/seam-wall idiom as the G1
+// variable_fillet_edge, only the meridian is the G2 quintic. Returns the filleted solid
+// (deflection-bounded planar-facet soup, watertight) or a NULL Shape (→ OCCT) when the edge
+// is not a convex cylinder↔cap circular rim, when Rc < 2·max(r1,r2) (ring-torus guard),
+// when the ramp is too fast (|r2−r1| ≥ 0.75·Rc → self-intersection guard), when a station's
+// section folds, or on any degeneracy. r1==r2 reduces to the constant-radius revolved
+// quintic band. A merely-G1 (circular tube) blend is NEVER emitted. Multiple edges → NULL.
+inline topo::Shape curved_fillet_edge_g2_cyl_variable(const topo::Shape& solid, const int* edgeIds,
+                                                      int edgeCount, double r1, double r2,
+                                                      double deflection = 0.01) {
+  if (edgeIds == nullptr || edgeCount != 1 || !(r1 > kBlendEps) || !(r2 > kBlendEps)) return {};
+  const topo::ShapeMap emap = topo::mapShapes(solid, topo::ShapeType::Edge);
+  if (edgeIds[0] < 1 || static_cast<std::size_t>(edgeIds[0]) > emap.size()) return {};
+  const auto ce = topo::curveOf(emap.shape(edgeIds[0]));
+  if (!ce || ce->curve->kind != topo::EdgeCurve::Kind::Circle) return {};
+
+  detail::RimFaces rf;
+  if (!detail::facesOnRim(solid, edgeIds[0], rf)) return {};  // not a cyl↔cap rim → OCCT
+  const auto cyl = detail::cylinderInfo(solid, rf.cyl);
+  if (!cyl) return {};
+  const auto cap = facePlane(solid, rf.cap);
+  if (!cap) return {};
+  const auto g = detail::rimGeom(solid, edgeIds[0], *cyl, *cap);
+  if (!g) return {};
+
+  std::vector<nb::Polygon> polys = detail::buildG2VarFilletedCylinder(*g, r1, r2, deflection);
+  if (polys.size() < 4) return {};
+  return nb::assembleSolid(polys);
+}
+
+// VARIABLE-radius G2 (curvature-continuous) fillet on a single CONVEX CIRCULAR crease
+// between a coaxial SPHERE lateral face and a coaxial planar cap (a truncated ball / dome)
+// of `solid`, with the rolling-ball radius ramping LINEARLY around the rim
+// r(θ)=r1+(r2−r1)·θ/(2π), θ∈[0,2π). The section at each azimuth θ is the constant-radius
+// curvature-MATCHING quintic for its LOCAL radius r(θ): because the sphere is UMBILIC its
+// normal curvature is 1/R in every section direction regardless of r, so κ(0)=1/R is matched
+// at EVERY station even as the seam geometry (and h(θ), q0(θ)) varies with r(θ); κ(1)=0 at
+// the flat cap. The fanning meridian half-planes meet only on the axis → the swept band is
+// EMBEDDED. Returns the filleted solid (deflection-bounded planar-facet soup, watertight) or
+// a NULL Shape (→ OCCT) when the edge is not a convex sphere↔cap circular rim, when the
+// ring-torus / seam guards fail, when the ramp is too fast, when a station's section folds,
+// or on any degeneracy — same wholesale truncated-ball classification as sphere_fillet_edge.
+// r1==r2 reduces to the constant-radius revolved quintic band. Multiple picked edges → NULL.
+inline topo::Shape curved_fillet_edge_g2_variable(const topo::Shape& solid, const int* edgeIds,
+                                                  int edgeCount, double r1, double r2,
+                                                  double deflection = 0.01) {
+  if (edgeIds == nullptr || edgeCount != 1 || !(r1 > kBlendEps) || !(r2 > kBlendEps)) return {};
+  const topo::ShapeMap emap = topo::mapShapes(solid, topo::ShapeType::Edge);
+  if (edgeIds[0] < 1 || static_cast<std::size_t>(edgeIds[0]) > emap.size()) return {};
+  const auto ce = topo::curveOf(emap.shape(edgeIds[0]));
+  if (!ce || ce->curve->kind != topo::EdgeCurve::Kind::Circle) return {};
+
+  const auto g = detail::sphereCapGeom(solid, edgeIds[0]);
+  if (!g) return {};  // not a pure truncated-ball sphere↔cap rim → OCCT
+  std::vector<nb::Polygon> polys = detail::buildG2VarFilletedSphere(*g, r1, r2, deflection);
   if (polys.size() < 4) return {};
   return nb::assembleSolid(polys);
 }

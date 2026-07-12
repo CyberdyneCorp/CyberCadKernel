@@ -646,6 +646,15 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_shell)
         set(test_native_nurbs_shell_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_shell.cpp")
+        # Wave-H track H1 — curve↔curve (CCI) + curve↔surface (CSI) NURBS
+        # intersection (src/native/math/bspline_intersect.{h,cpp}). The intersection
+        # entry points live in the numsci-gated NURBS layer, so this host gate builds
+        # only under CYBERCAD_HAS_NUMSCI (like test_native_ssi_seeding). Airtight
+        # oracles: line↔rational-circle (2/1-tangent/0 crossings), two parabolas,
+        # coincident-decline, line↔plane, line↔rational-cylinder, curve-on-surface.
+        list(APPEND CYBERCAD_TESTS test_native_bspline_intersect)
+        set(test_native_bspline_intersect_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_bspline_intersect.cpp")
         # SSI Stage S2 subdivision seeding — the refine (least_squares) is under
         # CYBERCAD_HAS_NUMSCI, so its host suite builds only in that config.
         list(APPEND CYBERCAD_TESTS test_native_ssi_seeding)
@@ -1447,6 +1456,13 @@ if(CYBERCAD_BUILD_TESTS)
     # NURBS-evaluator-backed freeform march) but NOT the substrate include trees.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_chamfer_edge_variable_freeform)
         target_compile_definitions(test_native_chamfer_edge_variable_freeform PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+    # The Wave-H track H1 CCI/CSI gate includes bspline_intersect.h (→ math/bspline.h
+    # + math/vec.h only, no NumPP/SciPP headers), so its TU needs the CYBERCAD_HAS_NUMSCI
+    # macro (to enable the numsci-gated intersection body) but NOT the substrate include
+    # trees, like the offset/thicken/shell gates.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_bspline_intersect)
+        target_compile_definitions(test_native_bspline_intersect PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_ssi_boolean)

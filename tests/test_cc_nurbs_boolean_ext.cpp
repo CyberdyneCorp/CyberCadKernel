@@ -179,22 +179,40 @@ CC_TEST(cc_nary_two_operand_watertight_and_volume) {
     cc_surface_release(wallB);
 }
 
-// ── A >=3-operand freeform union HONEST-DECLINES at the re-admission boundary ──
-CC_TEST(cc_nary_three_operand_union_honest_declines) {
+// ── A >=3-operand union with a REDUNDANT (contained) third operand now WELDS ──
+// BOOL-READMIT re-admits the binary boolean output as an N-ary input; the third solid here
+// is a duplicate of A, which is contained in A∪B, so the fold short-circuits it to acc EXACTLY
+// (no synthesized geometry) and the result equals the 2-operand union V(A)+V(B)−lens.
+// (The general genuine-overlap ≥3 weld — a second seam on an already-holed annulus — remains a
+// documented multi-hole-split residual; it still honest-declines, never leaky.)
+CC_TEST(cc_nary_three_operand_redundant_union_welds) {
     cc_surface wA = makeBowlWall(false);
     cc_surface wB = makeBowlWall(true);
-    cc_surface wC = makeBowlWall(false);
+    cc_surface wC = makeBowlWall(false);  // duplicate of A ⇒ redundant (contained in A∪B)
     CC_CHECK(wA.id != 0 && wB.id != 0 && wC.id != 0);
     const double lidA = kA * kR * kR;
     const double lidB = kH - kA * kR * kR;
+    const double d = 0.005;
     const cc_surface walls[3] = {wA, wB, wC};
     const double rims[3] = {kR, kR, kR};
     const double lids[3] = {lidA, lidB, lidA};
     CCMesh out{};
-    const int ok = cc_nurbs_solid_union_n(walls, rims, lids, 3, 0.005, &out);
-    CC_CHECK(ok == 0);  // re-admission boundary (numsci ON) or numsci-absent decline
-    CC_CHECK(out.vertexCount == 0 && out.triangleCount == 0);  // no leaky mesh
+    const int ok = cc_nurbs_solid_union_n(walls, rims, lids, 3, d, &out);
+#ifdef CYBERCAD_HAS_NUMSCI
+    CC_CHECK(ok == 1);  // redundant third operand short-circuits ⇒ welds to A∪B
+    if (ok == 1) {
+        CC_CHECK(ccMeshWatertight(out));
+        CC_CHECK(ccMeshEuler(out) == 2);
+        const double v = std::fabs(ccMeshVolume(out));
+        const double cf = volA() + volA() - volCommon();  // = V(A∪B)
+        CC_CHECK(std::fabs(v - cf) / cf < 30.0 * d);
+        cc_mesh_free(out);
+    }
+#else
+    CC_CHECK(ok == 0);  // numsci-absent decline
+    CC_CHECK(out.vertexCount == 0 && out.triangleCount == 0);
     CC_CHECK(cc_last_error()[0] != '\0');
+#endif
     cc_surface_release(wA);
     cc_surface_release(wB);
     cc_surface_release(wC);

@@ -368,16 +368,26 @@ def test_cut_n_single_tool_watertight(kernel, trimesh_or_skip):
         assert abs(abs(tm.volume) - cf) / cf < 30.0 * d
 
 
-def test_union_n_three_operand_raises(kernel):
-    """A ≥3-operand freeform union RAISES KernelError at the measured re-admission boundary
-    (never a leaky mesh) — and likewise honest-declines on a no-numsci dylib."""
+def test_union_n_three_operand_redundant_welds(kernel, trimesh_or_skip):
+    """A ≥3-operand union whose third operand is REDUNDANT (a duplicate of A, contained in
+    A∪B) now WELDS: BOOL-READMIT re-admits the boolean output as an N-ary input, so the fold
+    short-circuits the contained operand to the accumulator exactly (no synthesized geometry)
+    and the result is the watertight A∪B. The general genuine-overlap ≥3 weld (a second seam on
+    an already-holed annulus) remains a documented multi-hole-split residual that still
+    honest-declines — never a leaky mesh."""
+    d = 0.005
     lid_a = _BOWL_A * _BOWL_R**2
     lid_b = _BOWL_H - _BOWL_A * _BOWL_R**2
     with _bowl_wall(False) as wa, _bowl_wall(True) as wb, _bowl_wall(False) as wc:
-        with pytest.raises(KernelError):
-            nurbs.union_n(
-                [(wa, _BOWL_R, lid_a), (wb, _BOWL_R, lid_b), (wc, _BOWL_R, lid_a)], 0.005
+        try:
+            mesh = nurbs.union_n(
+                [(wa, _BOWL_R, lid_a), (wb, _BOWL_R, lid_b), (wc, _BOWL_R, lid_a)], d
             )
+        except KernelError as exc:
+            _numsci_or_skip(exc)
+        tm = mesh.to_trimesh()
+        assert tm.is_watertight
+        assert tm.euler_number == 2
 
 
 def test_pocket_and_boss_watertight(kernel, trimesh_or_skip):

@@ -167,12 +167,13 @@ CC_TEST(nsb_op_algebra_inclusion_exclusion) {
   }
 }
 
-// ── MULTI-SEAM pose: split+classify lands, annulus↔annulus sew HONEST-DECLINES ──
+// ── MULTI-SEAM pose: split+classify lands, annulus↔annulus sew WELDS watertight ──
 // Two degree-4 mirror cups meeting in TWO concentric circular seams. The orchestrator
-// dispatches to the multi-seam path, which splits + classifies exactly but the inner-seam
-// annulus↔annulus sew hits the frozen M0 mesher's holed-curved-seam gap → NULL with a
-// residual map (the sharpened boundaryEdges), NOT a leaky solid.
-CC_TEST(nsb_multi_seam_honest_declines_never_leaky) {
+// dispatches to the multi-seam path, which splits + classifies exactly and now WELDS the
+// inner-seam annulus↔annulus sew (M0-WELD: the shared seam-as-hole strip is culled
+// topologically, so both annuli triangulate it identically). CUT/COMMON weld watertight at
+// the closed-form volume; FUSE (the outer-envelope compose) is not exposed by the sew verb.
+CC_TEST(nsb_multi_seam_welds_watertight) {
   const topo::Shape A = msx::buildA();
   const topo::Shape B = msx::buildB();
   // Use the fixture's CACHED 2-seam trace (the expensive degree-4 trace runs ONCE) via the
@@ -184,13 +185,24 @@ CC_TEST(nsb_multi_seam_honest_declines_never_leaky) {
     const double cf = op == bo::SolidBoolOp::Common ? msx::volCommon() : msx::volCut();
     bo::SolidBoolReport rep;
     const topo::Shape r = bo::nurbsSolidBooleanWithSeams(A, B, seams, op, 0.0025, &rep, cf);
-    CC_CHECK(r.isNull());                                       // NEVER a leaky solid
+    CC_CHECK(!r.isNull());                                      // welds, never NULL, never leaky
     CC_CHECK(rep.multiSeam);                                    // dispatched to multi-seam
     CC_CHECK(rep.seamLoops == 2);
+    CC_CHECK(rep.decline == bo::SolidBoolDecline::Ok);
+    CC_CHECK(rep.multiDecline == bo::MultiSeamCutDecline::Ok);
+    CC_CHECK(rep.watertight && rep.coherent);
+    CC_CHECK(rep.boundaryEdges == 0);                          // the inner seam welds
+    CC_CHECK(rep.survivorFaces >= 2);
+    // The meshed volume converges to the closed-form op-volume (within the tessellation band).
+    CC_CHECK(std::fabs(rep.enclosedVolume - cf) / cf < 0.10);
+  }
+  // FUSE over a multi-seam pose still honest-declines (outer-envelope compose not exposed).
+  {
+    bo::SolidBoolReport rep;
+    const topo::Shape r = bo::nurbsSolidBooleanWithSeams(A, B, seams, bo::SolidBoolOp::Fuse,
+                                                         0.0025, &rep, msx::volA() + msx::volB());
+    CC_CHECK(r.isNull());
     CC_CHECK(rep.decline == bo::SolidBoolDecline::MultiSeamDeclined);
-    CC_CHECK(rep.multiDecline == bo::MultiSeamCutDecline::NotWatertight);
-    CC_CHECK(rep.survivorFaces >= 2);                          // the machinery reached the weld
-    CC_CHECK(rep.boundaryEdges > 0 && rep.boundaryEdges < 500);  // residual localized to inner seam
   }
 }
 

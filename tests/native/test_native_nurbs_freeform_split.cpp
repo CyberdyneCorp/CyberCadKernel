@@ -193,26 +193,29 @@ static void gate2_honest_declines() {
                "non-intersecting decline is SeamUnusable");
   }
 
-  // (c) The CUT leg's survivor membership now RESOLVES honestly (robust interior-UV winding,
-  // not a fragile apex sample), so the CUT no longer declines at ClassifyAmbiguous — it
-  // advances to the weld and HONEST-DECLINES there (NotWatertight) because the frozen M0
-  // mesher does not weld a holed curved annulus to a curved disk across the shared seam. It
-  // reports a MEASURED residual map (cutMembershipResolved + weldOpenEdges > 0) and stays
-  // NULL — never a leaky/wrong solid, no tolerance widened (the honest CUT residual outcome).
+  // (c) The CUT leg now WELDS watertight. Its survivor membership RESOLVES honestly (robust
+  // interior-UV winding, not a fragile apex sample), and its annulus↔disk shared seam-as-hole
+  // sew now welds through the M0-WELD shared-strip cull (uv_triangulate.h ConstrainedDelaunay:
+  // the CDT hole-cull is a TOPOLOGICAL flood fill so the annulus and the disk triangulate the
+  // shared seam strip identically). The CUT keep-side solid meshes to a closed 2-manifold
+  // (weldOpenEdges 0) whose volume passes the two-sided closed-form self-verify — a real weld,
+  // not a decline.
   {
     const bool_::NurbsFreeformSplitResult res =
         bool_::nurbsFaceFreeformSplit(F, G, bool_::FfOp::Cut, 0.005);
-    std::printf("  CUT: decline=%s solid-null=%d membershipResolved=%d weldOpenEdges=%d\n",
+    std::printf("  CUT: decline=%s solid-null=%d membershipResolved=%d weldOpenEdges=%d wt=%d V=%.6f\n",
                 bool_::nurbsFreeformSplitDeclineName(res.decline), res.solid.isNull() ? 1 : 0,
-                res.cutMembershipResolved ? 1 : 0, res.weldOpenEdges);
-    expectTrue(!res.ok() && res.solid.isNull(), "CUT HONEST-DECLINES to NULL (never leaky)");
-    // Regression: the robust winding test separates annulus-Out from disk-In, so the CUT no
-    // longer declines at the apex-membership ambiguity — it resolves and the blocker moves to
-    // the measured weld residual. This asserts the fix (not merely a still-declining CUT).
+                res.cutMembershipResolved ? 1 : 0, res.weldOpenEdges, res.watertight ? 1 : 0,
+                res.enclosedVolume);
+    expectTrue(res.ok() && !res.solid.isNull(), "CUT WELDS watertight (never leaky, never NULL)");
     expectTrue(res.cutMembershipResolved, "CUT survivor membership RESOLVES (robust winding, not apex)");
-    expectTrue(res.decline == bool_::NurbsFreeformSplitDecline::NotWatertight,
-               "CUT decline is the measured WELD residual (not ClassifyAmbiguous)");
-    expectTrue(res.weldOpenEdges > 0, "CUT weld residual map records the unpaired boundary edges");
+    expectTrue(res.decline == bool_::NurbsFreeformSplitDecline::Ok, "CUT welds (decline Ok)");
+    expectTrue(res.watertight, "CUT welded solid is watertight");
+    expectTrue(res.weldOpenEdges == 0, "CUT weld leaves NO unpaired boundary edges (shared-strip weld)");
+    // The CUT keep-side volume V(F)−lens matches the closed form within the tessellation band.
+    const double cf = fx::volCut();
+    expectTrue(res.enclosedVolume > 0.0 && std::fabs(res.enclosedVolume - cf) / cf < 0.15,
+               "CUT welded volume ~ V(F)-lens (closed form) within band");
   }
 }
 

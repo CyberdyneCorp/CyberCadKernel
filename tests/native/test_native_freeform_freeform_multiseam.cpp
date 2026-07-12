@@ -14,12 +14,11 @@
 //     nesting-aware multi-seam split;
 //   * the hole-respecting membership vote (track W's `subFaceInteriorReps` fix) classifies
 //     EACH sub-region — the middle annulus of A is INSIDE B, of B is INSIDE A (the lens);
-//   * `freeformFreeformMultiSeamCut` sews the survivors and MANDATORILY self-verifies: the
-//     OUTER seam (seam-as-OUTER on both annuli) welds watertight, but the INNER seam
-//     (seam-as-HOLE on both annuli) hits the FROZEN M0 mesher's holed-curved-annulus weld
-//     gap (the SAME residual the L3-S3 NURBS CUT leg named), so the verb HONEST-DECLINES to
-//     NULL (`NotWatertight`) with the residual localized to the inner seam — NEVER a
-//     leaky/partial/wrong solid, no tolerance widened;
+//   * `freeformFreeformMultiSeamCut` sews the survivors and MANDATORILY self-verifies: BOTH
+//     the OUTER seam (seam-as-OUTER on both annuli) AND the INNER seam (seam-as-HOLE on both
+//     annuli) now weld watertight (M0-WELD: the CDT hole-cull is a TOPOLOGICAL flood fill so
+//     the two annuli cull the shared hole strip IDENTICALLY), and the meshed volume converges
+//     to the closed-form annular-lens oracle;
 //   * the closed-form partition is self-consistent (V(A−B)+V(A∩B)=V(A));
 //   * a SINGLE-seam pose (track W's bowl-cup) is DECLINED `NoMultiSeam` (the single-seam
 //     case belongs to `freeformFreeformClosedSeamCut`, byte-unchanged here), and a
@@ -145,41 +144,51 @@ CC_TEST(ffms_membership_selects_the_lens_annuli) {
   CC_CHECK(bIn == 1);  // the middle annulus of B is inside A — the lens survivors
 }
 
-// ── The verb HONEST-DECLINES the annulus lens (frozen-mesher seam-as-hole gap), never
-//    leaky — the residual is localized to the inner seam, the outer seam welds. ──
+// ── The verb WELDS the annulus lens watertight across the SHARED-SEAM-STRIP inner seam
+//    (M0-WELD) and converges to the closed-form volume. ──
 // The multi-seam COMMON/CUT survivor set is curved-annulus↔curved-annulus: the OUTER seam
-// (seam-as-OUTER on both annuli) welds watertight through the M0w seam pin, but the INNER
-// seam (seam-as-HOLE on both annuli) hits the FROZEN M0 mesher's holed-curved-annulus weld
-// gap (the SAME residual the L3-S3 NURBS CUT leg named). The verb therefore HONEST-DECLINES
-// `NotWatertight` with a sharpened residual map (`boundaryEdges` = the unpaired seam edges,
-// small and localized to the inner seam) rather than emit a leaky/partial solid. This is a
-// first-class Stage-5 outcome: the general multi-seam annulus↔annulus sew is beyond the
-// frozen M0 mesher, and the honest-decline is DISAGREED=0-safe (never a wrong solid).
-CC_TEST(ffms_declines_annulus_lens_never_leaky) {
+// (seam-as-OUTER on both annuli) always welded through the M0w seam pin, and the INNER seam
+// (seam-as-HOLE on both annuli) now ALSO welds. The former frozen-M0-mesher holed-curved-
+// annulus gap was a per-face-CDT PARITY gap: the CDT's hole-culling dropped a thin near-hole
+// triangle on ONE annulus but not the other (the two annuli bulge opposite ways off the
+// shared flat chord, so a near-hole centroid landed inside the hole for one wall and outside
+// for the other), and the residual GREW with refinement (2→22→59→233→769). The M0-WELD fix
+// replaces the fragile per-triangle centroid-in-hole cull with a TOPOLOGICAL flood fill
+// bounded by the constrained loop edges (uv_triangulate.h ConstrainedDelaunay::triangles):
+// a triangle is kept iff reachable, across non-constrained edges only, from the OUTER
+// boundary — so the two annuli cull IDENTICALLY on the SHARED hole loop and the inner seam
+// welds 2-manifold. The inner-seam boundaryEdge residual now SHRINKS to 0 in the working
+// deflection band and the volume converges to the closed form.
+CC_TEST(ffms_welds_annulus_lens_watertight) {
   const topo::Shape A = ffx::buildA();
   const topo::Shape B = ffx::buildB();
   const std::vector<bo::ssi::WLine> seams = ffx::closedSeams();
   if (seams.size() != 2) { CC_CHECK(false); return; }
   for (bo::FfOp op : {bo::FfOp::Common, bo::FfOp::Cut}) {
     const double cf = op == bo::FfOp::Common ? ffx::volCommon() : ffx::volCut();
-    for (double d : {0.0025}) {
+    double prevErr = 1e300;
+    for (double d : {0.005, 0.0025}) {
       bo::MultiSeamCutReport rep;
       const topo::Shape r =
           bo::freeformFreeformMultiSeamCutWithSeams(A, B, seams, op, d, &rep, cf);
-      // The verb declines (NULL) — never a leaky solid.
-      CC_CHECK(r.isNull());
-      CC_CHECK(rep.decline == bo::MultiSeamCutDecline::NotWatertight);
+      // The verb WELDS a watertight, coherent solid (never NULL, never leaky).
+      CC_CHECK(!r.isNull());
+      CC_CHECK(rep.decline == bo::MultiSeamCutDecline::Ok);
       // The machinery reached the weld: both seams traced, both walls split into 3, and the
       // lens survivors selected (≥ 2 curved caps).
       CC_CHECK(rep.seamLoops == 2);
       CC_CHECK(rep.subRegionsA == 3 && rep.subRegionsB == 3);
       CC_CHECK(rep.survivorFaces >= 2);
-      // The residual is SMALL and localized (the outer seam welds; only the inner seam —
-      // seam-as-hole on both annuli — leaves unpaired edges) — a sharpened residual map, not
-      // a wholesale weld failure. Measured: COMMON ~59, CUT ~307 unpaired edges at the inner
-      // seam, out of ~10⁴ shell edges — the sew is complete but for the one holed seam.
-      CC_CHECK(rep.boundaryEdges > 0);
-      CC_CHECK(rep.boundaryEdges < 500);
+      // The inner seam now welds: 0 unpaired boundary edges, closed 2-manifold, coherent.
+      CC_CHECK(rep.watertight);
+      CC_CHECK(rep.coherent);
+      CC_CHECK(rep.boundaryEdges == 0);
+      // The meshed volume CONVERGES monotonely to the closed-form op-volume (the residual
+      // SHRINKS with refinement — the signature of a closed seam, not a parity gap).
+      const double err = std::fabs(rep.enclosedVolume - cf) / cf;
+      CC_CHECK(rep.enclosedVolume > 0.0);
+      CC_CHECK(err < prevErr);  // monotone convergence
+      prevErr = err;
     }
   }
 }

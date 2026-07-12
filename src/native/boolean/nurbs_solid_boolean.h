@@ -385,11 +385,14 @@ inline topo::Shape nurbsSolidBooleanWithSeams(const topo::Shape& A, const topo::
 
   rep.seamLoops = static_cast<int>(seams.size());
 
-  // (2) MULTI-SEAM dispatch (≥ 2 closed loops) — split+classify exactly, honest-decline
-  // the annulus↔annulus inner-seam sew (L3-d) with the residual map.
+  // (2) MULTI-SEAM dispatch (≥ 2 closed loops) — split+classify exactly, then WELD the
+  // annulus↔annulus inner seam (M0-WELD: the shared seam-as-hole strip is culled
+  // topologically so both annuli triangulate it identically). CUT/COMMON weld watertight;
+  // FUSE (the outer-envelope compose) is not exposed by the multi-seam sew verb yet.
   if (seams.size() >= 2) {
     rep.multiSeam = true;
-    // FUSE over a multi-seam pose is the same annulus↔annulus inner-seam sew as CUT/COMMON.
+    // FUSE over a multi-seam pose is the outer-envelope compose the multi-seam CUT/COMMON
+    // sew verb does not yet expose — honest-decline (never a leaky solid).
     if (op == SolidBoolOp::Fuse) return fail(SolidBoolDecline::MultiSeamDeclined);
     MultiSeamCutReport mrep;
     const FfOp fop = op == SolidBoolOp::Common ? FfOp::Common : FfOp::Cut;

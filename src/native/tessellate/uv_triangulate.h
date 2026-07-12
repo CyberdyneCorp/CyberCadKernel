@@ -363,25 +363,124 @@ class ConstrainedDelaunay {
     }
   }
 
-  // Export CCW triangles, dropping any whose centroid falls inside a hole loop.
+  // Export CCW triangles of the TRIMMED region (between the outer loop and the
+  // holes). A holed region is trimmed by a TOPOLOGICAL FLOOD FILL bounded by the
+  // constrained loop edges, NOT by a per-triangle centroid-in-hole geometric test.
+  //
+  // WHY (M0-WELD): the seam-as-hole weld of two curved annuli sharing an inner-hole
+  // seam requires the two faces to place the SAME triangle strip on the shared hole
+  // boundary. The centroid-in-hole test decides KEEP/DROP per triangle by where its
+  // centroid falls relative to the hole polygon — a GEOMETRIC test that, for a thin
+  // near-boundary triangle whose centroid sits ~on the hole loop, flips parity when
+  // the two annuli bulge opposite ways off the shared flat seam chord (the two faces'
+  // interior CDTs disagree by one edge, and the residual GROWS with refinement — the
+  // measured per-face-CDT parity gap). The flood fill removes that fragility: the
+  // hole loop is a set of CONSTRAINED edges (never flipped), a hard topological wall.
+  // A triangle is kept iff it is reachable, across NON-constrained edges only, from a
+  // triangle incident to the OUTER boundary loop — so a hole-interior triangle (walled
+  // off behind the constrained hole loop) is dropped and a ring triangle is kept, with
+  // NO dependence on the centroid's side of the (bulging) hole polygon. Because the
+  // decision depends only on the constrained-edge topology — the SAME shared seam loop
+  // on both annuli — the two faces cull IDENTICALLY and the shared hole strip welds.
+  //
+  // A hole-free region (loops_.size()==1) keeps every triangle, unchanged. For a holed
+  // region whose base triangulation has no flip artifacts the flood reaches exactly the
+  // ring triangles the centroid test kept, so existing holed meshes are unchanged.
   std::vector<UVTri> triangles() const {
+    if (loops_.size() <= 1) {
+      std::vector<UVTri> out;
+      out.reserve(tris_.size());
+      for (const DTri& t : tris_) out.push_back(UVTri{t.v[0], t.v[1], t.v[2]});
+      return out;
+    }
+    std::vector<char> keep = floodFillKeep();
+    dropConstrainedFolds(keep);
     std::vector<UVTri> out;
     out.reserve(tris_.size());
-    for (const DTri& t : tris_) {
-      if (loops_.size() > 1) {
-        const UV cen{(pts_[t.v[0]].u + pts_[t.v[1]].u + pts_[t.v[2]].u) / 3.0,
-                     (pts_[t.v[0]].v + pts_[t.v[1]].v + pts_[t.v[2]].v) / 3.0};
-        bool inHole = false;
-        for (std::size_t h = 1; h < loops_.size(); ++h)
-          if (pipImpl(loops_[h], cen)) { inHole = true; break; }
-        if (inHole) continue;
-      }
-      out.push_back(UVTri{t.v[0], t.v[1], t.v[2]});
-    }
+    for (std::size_t i = 0; i < tris_.size(); ++i)
+      if (keep[i]) out.push_back(UVTri{tris_[i].v[0], tris_[i].v[1], tris_[i].v[2]});
     return out;
   }
 
  private:
+  // Topological trim: mark each triangle KEEP iff it is reachable, crossing only
+  // NON-constrained edges, from a triangle incident to the outer boundary loop
+  // (loops_[0]). Constrained edges (every loop edge) are hard walls, so triangles
+  // inside a hole loop are unreachable and dropped. Seeds are triangles that carry an
+  // outer-loop directed edge; the annulus ring is connected across its (unconstrained)
+  // interior diagonals, so one BFS covers it. If no seed is found (degenerate), keep
+  // all triangles — the pre-flood behaviour — so a pathological input never empties.
+  std::vector<char> floodFillKeep() const {
+    const int nt = static_cast<int>(tris_.size());
+    std::vector<char> keep(nt, 0);
+    std::vector<int> stack;
+    // Seed from triangles incident to an OUTER-loop constrained edge.
+    std::unordered_set<long long> outerEdges;
+    if (!loops_.empty())
+      for (std::size_t i = 0; i < loops_[0].size(); ++i)
+        outerEdges.insert(edgeKey(loops_[0][i], loops_[0][(i + 1) % loops_[0].size()]));
+    for (int i = 0; i < nt; ++i) {
+      const DTri& t = tris_[i];
+      bool onOuter = false;
+      for (int e = 0; e < 3 && !onOuter; ++e)
+        onOuter = outerEdges.count(edgeKey(t.v[e], t.v[(e + 1) % 3])) != 0;
+      if (onOuter) { keep[i] = 1; stack.push_back(i); }
+    }
+    if (stack.empty()) return std::vector<char>(nt, 1);  // degenerate — keep all
+    while (!stack.empty()) {
+      const int ti = stack.back();
+      stack.pop_back();
+      const DTri& t = tris_[ti];
+      for (int e = 0; e < 3; ++e) {
+        const int nb = t.n[e];
+        if (nb < 0 || keep[nb]) continue;
+        if (constrained_.count(edgeKey(t.v[e], t.v[(e + 1) % 3]))) continue;  // wall
+        keep[nb] = 1;
+        stack.push_back(nb);
+      }
+    }
+    return keep;
+  }
+
+  // Enforce the boundary invariant: every CONSTRAINED loop edge (outer or hole) must
+  // border EXACTLY ONE kept triangle. `triangulatePolygon` bridges each hole into the
+  // outer loop by a zero-width cut that DOUBLES a vertex and emits a collinear (≈ zero-
+  // UV-area) sliver whose edge lies on a hole loop; that sliver shares its hole-loop edge
+  // with the real ring triangle beside it, so the hole edge is used by TWO kept triangles
+  // in ONE face — and once the two annuli weld across the shared hole seam that edge is
+  // used by FOUR triangles (non-manifold). This pass finds every constrained edge used by
+  // >1 kept triangle and drops the DEGENERATE one (the collinear sliver, whose 3-D area is
+  // zero so area/volume are unchanged), restoring one-triangle-per-boundary-edge so the
+  // shared hole seam welds 2-manifold. It NEVER drops a positive-area ring triangle (a
+  // clean boundary edge already has exactly one kept neighbour), so a normal holed mesh is
+  // unaffected. The two annuli make the SAME decision (both drop their own bridge sliver),
+  // so the shared seam stays consistent.
+  void dropConstrainedFolds(std::vector<char>& keep) const {
+    // Map each constrained edge → the kept triangles bordering it.
+    std::unordered_map<long long, std::vector<int>> onEdge;
+    for (int i = 0; i < static_cast<int>(tris_.size()); ++i) {
+      if (!keep[i]) continue;
+      const DTri& t = tris_[i];
+      for (int e = 0; e < 3; ++e) {
+        const long long k = edgeKey(t.v[e], t.v[(e + 1) % 3]);
+        if (constrained_.count(k)) onEdge[k].push_back(i);
+      }
+    }
+    for (auto& [k, tri] : onEdge) {
+      if (tri.size() < 2) continue;  // clean boundary edge — one kept neighbour
+      // Drop the degenerate (smallest |area|) triangles until one remains.
+      std::sort(tri.begin(), tri.end(), [&](int a, int b) {
+        return triArea(a) < triArea(b);
+      });
+      for (std::size_t j = 0; j + 1 < tri.size(); ++j) keep[tri[j]] = 0;
+    }
+  }
+
+  double triArea(int i) const {
+    const DTri& t = tris_[i];
+    return std::fabs(orient2d(pts_[t.v[0]], pts_[t.v[1]], pts_[t.v[2]]));
+  }
+
   void build() {
     const std::vector<UVTri> base = triangulatePolygon(pts_, loops_);
     tris_.reserve(base.size());

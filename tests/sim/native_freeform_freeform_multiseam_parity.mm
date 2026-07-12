@@ -6,20 +6,20 @@
 // The native verb `freeformFreeformMultiSeamCut` (src/native/boolean/freeform_freeform_multiseam.h,
 // OCCT-FREE) composes recognise[B1] → trace[M1] (≥2 closed loops) → split[multi-seam smooth
 // trim] → classify[hole-respecting vote] → weld[M0] for TWO curved operands whose walls meet
-// in MULTIPLE closed seams. It HONEST-DECLINES to NULL when the two-curved-side annulus↔annulus
-// sew hits the frozen M0 mesher's holed-curved-annulus weld gap (the inner seam-as-hole). This
-// harness GROUNDS the enabler + the honest fallthrough against OCCT:
+// in MULTIPLE closed seams. It now WELDS the two-curved-side annulus↔annulus sew across BOTH
+// seams (M0-WELD: the CDT hole-cull is a TOPOLOGICAL flood fill, so the two annuli triangulate
+// the shared inner seam-as-hole strip IDENTICALLY and it welds 2-manifold). This harness
+// GROUNDS the weld against OCCT:
 //   * the native shared seams `A.wall ∩ B.wall` (the real S3 trace) are TWO closed loops, each
 //     lying ON BOTH OCCT degree-4 Bézier surfaces (A's valley AND B's mirror dome),
 //     BRepExtrema ≤ tol — the multi-seam intersection is the genuine curved↔curved one;
 //   * OCCT's `BRepAlgoAPI_Common(A,B)` (the ORACLE) yields the closed-form annular-lens volume
 //     V(A∩B) = π∫(z_B−z_A) over the ring between the two seams — the CORRECT answer OCCT owns;
-//   * the native verb HONEST-DECLINES the annulus lens (returns NULL, `NotWatertight`, residual
-//     localized to the inner seam) — it NEVER emits a leaky/partial/wrong solid, so the SIM
-//     confirms native does not disagree with OCCT by faking a solid (DISAGREED=0: native
-//     abstains, OCCT answers);
-//   * the native MACHINERY reaches the weld (2 seams, both walls split into 3 tiling regions,
-//     lens survivors selected) — the honest boundary is the M0 mesher, not any earlier stage.
+//   * the native verb WELDS the annulus lens watertight (closed 2-manifold, boundaryEdges 0,
+//     coherent) and its volume AGREES with OCCT `BRepAlgoAPI_Common` within the tessellation
+//     band — DISAGREED=0 by AGREEMENT (native answers, OCCT confirms), never a leaky solid;
+//   * the native MACHINERY tiles both walls exactly (2 seams, both walls split into 3 tiling
+//     regions, lens survivors selected) before the shared-strip weld.
 //
 // OCCT is the ORACLE ONLY, never linked into src/native. Build:
 // scripts/run-sim-native-freeform-freeform-multiseam.sh. Gate (a) (host, no OCCT) is
@@ -200,25 +200,34 @@ int main() {
   std::snprintf(buf, sizeof buf, "V=%.6f cf=%.6f", vCom, ffx::volCommon());
   report("occt", "common-matches-closed-form", std::fabs(vCom - ffx::volCommon()) / ffx::volCommon() < vrel, buf);
 
-  // ── (3) the native verb HONEST-DECLINES the annulus lens (NULL, never leaky) ─────────
-  // OCCT owns the annular-lens solid (its volume above). The native verb reaches the weld
-  // (2 seams, both walls split into 3 tiling regions, lens survivors selected) but the
-  // annulus↔annulus sew hits the frozen M0 mesher's holed-curved-annulus gap at the inner
-  // seam, so it HONEST-DECLINES to NULL with the residual localized there — DISAGREED=0
-  // (native abstains, never fabricates a solid OCCT would contradict).
+  // ── (3) the native verb WELDS the annulus lens watertight AND agrees with OCCT ───────
+  // The multi-seam annulus↔annulus sew now welds across BOTH seams (M0-WELD: the CDT
+  // hole-cull is a TOPOLOGICAL flood fill, so the two annuli triangulate the shared inner
+  // seam-as-hole strip IDENTICALLY and it welds 2-manifold). The native COMMON solid meshes
+  // to a closed 2-manifold (boundaryEdges 0, χ correct, coherent) whose volume matches OCCT
+  // `BRepAlgoAPI_Common` = the closed-form annular lens within the tessellation band —
+  // DISAGREED=0 by AGREEMENT (native answers, OCCT confirms), not by abstention.
   const nt::Shape A = ffx::buildA();
   const nt::Shape B = ffx::buildB();
   bo::MultiSeamCutReport rep;
   const nt::Shape ncom = bo::freeformFreeformMultiSeamCutWithSeams(A, B, seams, bo::FfOp::Common,
                                                                    0.0025, &rep, ffx::volCommon());
-  const bool declinedCleanly = ncom.isNull() && rep.decline == bo::MultiSeamCutDecline::NotWatertight;
-  std::snprintf(buf, sizeof buf, "null=%d decline=%s seams=%d subA=%d subB=%d surv=%d be=%zu",
+  const bool weldedCleanly = !ncom.isNull() && rep.decline == bo::MultiSeamCutDecline::Ok &&
+                             rep.watertight && rep.coherent && rep.boundaryEdges == 0;
+  std::snprintf(buf, sizeof buf, "null=%d decline=%s seams=%d subA=%d subB=%d surv=%d be=%zu vol=%.6f",
                 ncom.isNull(), bo::multiSeamCutDeclineName(rep.decline), rep.seamLoops,
-                rep.subRegionsA, rep.subRegionsB, rep.survivorFaces, rep.boundaryEdges);
-  report("native", "honest-declines-never-leaky",
-         declinedCleanly && rep.seamLoops == 2 && rep.subRegionsA == 3 && rep.subRegionsB == 3 &&
-             rep.survivorFaces >= 2 && rep.boundaryEdges > 0,
+                rep.subRegionsA, rep.subRegionsB, rep.survivorFaces, rep.boundaryEdges,
+                rep.enclosedVolume);
+  report("native", "welds-watertight-never-leaky",
+         weldedCleanly && rep.seamLoops == 2 && rep.subRegionsA == 3 && rep.subRegionsB == 3 &&
+             rep.survivorFaces >= 2,
          buf);
+
+  // The native welded volume agrees with OCCT Common (= the closed-form lens) within band —
+  // DISAGREED=0 by agreement.
+  const double nrel = std::fabs(rep.enclosedVolume - vCom) / vCom;
+  std::snprintf(buf, sizeof buf, "native=%.6f occt=%.6f rel=%.3f", rep.enclosedVolume, vCom, nrel);
+  report("native", "common-vs-occt-agrees", !ncom.isNull() && nrel < 0.10, buf);
 
   // The machinery reached the weld: the split TILES both walls exactly (gap ≈ 0).
   std::snprintf(buf, sizeof buf, "tilingGapA=%.1e tilingGapB=%.1e", rep.tilingGapA, rep.tilingGapB);

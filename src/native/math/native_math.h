@@ -39,6 +39,13 @@
 //                    across every spoke, machine-exact for smooth/planar boundaries) via shared
 //                    spoke columns + a shared cross-spoke rib; declines a creased 3-D corner
 //                    honestly. (numsci-gated; additive to the C0 API.)
+//   * bspline_nsided_g2.h—G2 (curvature-continuous) N-SIDED fill (NURBS-SCOPE Layer 6):
+//                    the G2 Gregory/Chiyokura-Kimura upgrade of the G1 N-sided fill — N
+//                    QUINTIC-in-v "pie slices" meeting the boundary + each other G2 (unit
+//                    normal AND normal curvature continuous across every spoke) via shared
+//                    seam-adjacent u-columns (position + 1st-inward rib + 2nd-inward rib);
+//                    declines a creased corner / corner-incompatible curvature honestly.
+//                    (numsci-gated; additive to the C0 + G1 APIs.)
 //   * bspline_offset.h—NURBS surface offset (NURBS-SCOPE Layer 5): S + d·N sampled on
 //                    an adaptive grid + fitted to a NURBS surface (Layer-7), with a
 //                    curvature-radius self-intersection guard. (numsci-gated; the fit +
@@ -75,6 +82,7 @@
 #include "bspline_coons.h"
 #include "bspline_nsided.h"
 #include "bspline_nsided_g1.h"
+#include "bspline_nsided_g2.h"
 #include "bspline_offset.h"
 #include "bezier.h"
 #include "elementary.h"

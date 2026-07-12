@@ -501,6 +501,24 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_nsided_g1)
         set(test_native_nurbs_nsided_g1_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_nsided_g1.cpp")
+        # NURBS roadmap Layer 6 — G2 (curvature-continuous) N-SIDED boundary-filled surface
+        # (src/native/math/bspline_nsided_g2). The G2 upgrade of the G1 N-sided fill: fills a
+        # CLOSED N-gon (N ≥ 3) with N GREGORY QUINTIC-in-v "pie-slice" sub-patches meeting at the
+        # centroid. Each slice covers one full boundary edge at v=0 (u carries the edge basis →
+        # boundary interpolation machine-exact) and shrinks to the centroid at v=1 (a quintic G2
+        # Hermite in v carrying position + cross-tangent + cross-2nd-derivative). Adjacent slices
+        # share the THREE seam-adjacent u-columns per spoke (position + 1st-inward rib + 2nd-
+        # inward rib) so they meet C0/G1/G2 across the seam by POLE EQUALITY — the unit normal AND
+        # the normal curvature are continuous; the degenerate hub apex (Gregory twist) is kept
+        # finite by radially-tapered interior 1st/2nd rows. Airtight oracles: boundary
+        # interpolation ≤1e-12, G2 across every spoke (unit-normal ≤1e-6 rad AND normal-curvature
+        # relative ≤1e-5), analytic sphere/cylinder point + curvature match, degenerate-corner
+        # no-blowup, and honest non-closed / rational / N<3 / malformed / G1-incompatible-tangent
+        # / corner-incompatible-curvature declines (never a widened tolerance). Additive to the C0
+        # and G1 APIs.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_nsided_g2)
+        set(test_native_nurbs_nsided_g2_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_nsided_g2.cpp")
         # NURBS roadmap Layer 5 — surface OFFSET (src/native/math/bspline_offset).
         # Samples the true offset locus S + d·N and fits a non-rational NURBS surface
         # through it with the Layer-7 fitter (interpolateSurface → lin_solve), refining
@@ -1223,6 +1241,14 @@ if(CYBERCAD_BUILD_TESTS)
     # like the Layer-6 C0 N-sided gate above (the module is numsci-gated for family uniformity).
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_nsided_g1)
         target_compile_definitions(test_native_nurbs_nsided_g1 PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+    # The Layer-6 G2 N-sided boundary-fill gate includes bspline_nsided_g2.h (which under
+    # CYBERCAD_HAS_NUMSCI pulls bspline_nsided_g1.h + bspline_nsided.h + bspline_ops.h — no
+    # substrate header, no numerics solve), so its TU needs the macro but NOT the substrate
+    # include trees, exactly like the Layer-6 C0 / G1 N-sided gates above (numsci-gated for
+    # family uniformity).
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_nsided_g2)
+        target_compile_definitions(test_native_nurbs_nsided_g2 PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
     # The Layer-5 offset gate includes bspline_offset.h + numerics.h (numerics.h is
     # vec.h + std only, no NumPP/SciPP headers), so its TU needs the macro but NOT the

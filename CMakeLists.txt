@@ -308,6 +308,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_nurbs_ops_fuzz
         test_native_trimmed_nurbs
         test_native_trim_boolean
+        test_native_split_healing
         test_native_topology
         test_native_tessellate
         test_native_display_mesh
@@ -1140,6 +1141,17 @@ if(CYBERCAD_BUILD_TESTS)
     # circular-lens area (≤1e-8), coincident-edge honest-decline.
     set(test_native_trim_boolean_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_trim_boolean.cpp")
+    # NURBS roadmap Layer 3, Stage 3 residual — the TOLERANT-TOPOLOGY SPLIT-HEALING
+    # PRE-PASS (src/native/boolean/split_healing.h). Host GATE: the OCCT-free airtight
+    # oracle (clean loop → byte-identical no-op with 0 heals; small-gap loop → welded
+    # closed + split-ready with signed area preserved ≤ 1e-12; figure-eight pinch →
+    # simple sub-loops reusing G5 splitAtPinches, signed area preserved; over-tolerance
+    # gap → honest LargeGap decline, never force-welded, tolerance never widened). It
+    # COMPOSES the Wave-G/G5 healing already in topology/trimmed_nurbs (healTrimLoop /
+    # splitTrimLoopAtPinches / flattenTrimLoop — all always-compiled), so this gate lives
+    # in the always-on native suite. Additive header-only verb; no lib / cc_* ABI change.
+    set(test_native_split_healing_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_split_healing.cpp")
     set(test_native_tessellate_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_tessellate.cpp")
     # Render-quality DISPLAY mesh (src/native/render) — host GATE (a), the OCCT-free

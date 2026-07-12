@@ -173,6 +173,37 @@ resolution) — declined today.
 **Verdict 3: MOSTLY LANDED** — the inside-test primitive + THREE split slices (convex-1-chord,
 closed-interior-seam, general multi-crossing/re-entrant/hole-crossing) land with exact
 (machine-precision) tiling on the closed-form oracles; only tolerant-topology healing remains.
+The **split machinery itself is PARTIAL**: `boolean/face_split.h` tiles a **CONVEX** outer
+loop cut by **ONE clean chord** (enters one boundary edge, exits another — no tangency, no
+re-entry) with a host-checkable self-verify (`area(L1)+area(L2)==area(parent)`);
+`boolean/smooth_trim_split.h` adds a **CLOSED interior seam** (disk + annulus). Both are
+proven in isolation (`test_native_face_split`, `test_native_smooth_trim_split`). **MISSING:**
+general multi-crossing / re-entrant / hole-crossing splits.
+> **UPDATE (L3-HEAL landed) — the TOLERANT-TOPOLOGY HEALING PRE-PASS is now RESOLVED.**
+> `boolean/split_healing.h` (`healTrimLoops`) repairs a RAW SSI-derived trim-loop set (small
+> gaps, near-coincident vertices, pinch points) into split-ready valid simple loops OR declines
+> honestly — the "auto-closing gapped loops, pinch-point resolution" this row named as MISSING.
+> It is a bounded PRE-PASS by **COMPOSITION**, not a re-implemented healer: it drives the
+> Wave-G/G5 healing ALREADY in `topology/trimmed_nurbs` byte-identically — `healTrimLoop`
+> (gap-close / snap / large-gap decline diagnosis) + `splitTrimLoopAtPinches` (weld small gaps →
+> resolve N-way / crossing pinches into simple sub-loops, region- AND signed-area-preserving) +
+> `flattenTrimLoop` (the split's own seam-consistent flattener) — and ADDS one host-checkable
+> gate: Σ signedArea(output) == Σ signedArea(input) within a scale-relative tolerance, else the
+> whole set honest-declines (a split never consumes a partially-healed set). Four airtight oracles
+> (`test_native_split_healing`, host, OCCT-free, always-on suite — the composed primitives are
+> not numsci-gated): **(1) clean loop → byte-identical NO-OP** (0 real heals, arcs unchanged;
+> ULP-level closing-dedup welds are floored out as noise); **(2) small-gap loop → welded CLOSED +
+> SPLIT-READY** (signed area preserved ≤ 1e-12; the closed loop passes face_split's own
+> simple-polygon / area-floor readiness predicates); **(3) figure-eight PINCH → two valid simple
+> sub-loops** (reusing G5 `splitAtPinches`, signed area preserved); **(4) over-tolerance gap
+> (≫ tol) → HONEST LargeGap DECLINE** — never force-welded, and the tolerance is never widened to
+> force a heal (a wider-but-still-<gap tol still declines). 52 checks GREEN. `src/native` stays
+> OCCT-free; no `cc_*` ABI; `trimmed_nurbs.{h,cpp}` / `face_split.h` / `smooth_trim_split.h`
+> UNCHANGED (composed byte-identically). The residual is now the **general multi-crossing /
+> re-entrant / hole-crossing SPLIT** itself — NOT the tolerant-topology healing, which is landed.
+**Verdict 3: PARTIAL** — the inside-test primitive + two split slices (convex-1-chord,
+closed-interior-seam) **+ the tolerant-topology healing pre-pass (L3-HEAL, `split_healing.h`)**
+land; the general multi-crossing / re-entrant split is the remaining MISSING piece.
 
 ### Stage 4 — Region classification · **PARTIAL**
 
@@ -284,6 +315,9 @@ watertight sew is MISSING.
 | 2 Pcurve construction | **WORKS** (L3-a) | parameter-aligned + rational `constructPcurve` welds the iso-curve **1.1e-15**, a curved freeform seam on a plane **1.6e-16**, a rational circular seam on a rational NURBS cylinder **4.0e-16** (was 0.026 decline); a curved seam on a nonlinear bicubic honestly declines its ~2e-7 surface-truncation residual (never widened) |
 | 3 Face split | **PARTIAL** | `classify` inside-test WORKS; split = convex-1-chord + closed-interior-seam only; multi-crossing + healing MISSING |
 | 4 Region classification | **WORKS** | single-face In/Out + elementary set-algebra land; general point-in-NURBS-solid membership across MULTIPLE trimmed faces now LANDED (`nurbs_solid_membership.h`, exact ray-cast: `intersectCurveSurface` ∩ `classify`, tangent/on-edge → re-cast → honest `Unknown`): 945-pt grid **100% crisp-correct**, fragment vote well-defined |
+| 2 Pcurve construction | **PARTIAL** | `constructPcurve` declines the iso-curve round-trip (parametrisation + non-rational fit); data model + fidelity guard land |
+| 3 Face split | **PARTIAL** | `classify` inside-test WORKS; split = convex-1-chord + closed-interior-seam; **tolerant-topology healing pre-pass LANDED** (`split_healing.h`, L3-HEAL: gap-close + snap + G5 pinch-resolve + area-preservation gate + honest over-gap decline); general multi-crossing / re-entrant split MISSING |
+| 4 Region classification | **PARTIAL** | single-face In/Out + elementary set-algebra land; general NURBS solid membership MISSING |
 | 5 Reassembly / sew | **PARTIAL** | `pcurveFidelity` welds good / rejects drifted seam; general freeform↔freeform watertight sew MISSING |
 
 ---
@@ -440,6 +474,9 @@ followed by **G3** (the split self-verify on a NURBS grid). G1/G2/G4/G6 are low-
 | **Boolean-grade general `constructPcurve`** | 2 | ✅ **LANDED (L3-a)** for the affine/rational seam family: parameter-aligned (`interpolateCurveWithParams`) + rational-capable fit at an edge-length-relative fidelity bar — iso-curve **1.1e-15**, plane freeform seam **1.6e-16**, rational NURBS-cyl circle **4.0e-16**. Residual: the curved-seam-on-a-**nonlinear** surface truncation (~2e-7), honest-declined | **~0 done / 0.25–0.5 residual** |
 | **General multi-crossing / re-entrant face split + tolerant-topology healing** | 3 | the BOPAlgo-class combinatorial split + gapped-loop / pinch-point healing | **1–2** |
 | ~~**General NURBS solid membership** (point-in-trimmed-NURBS-solid)~~ **✅ LANDED (L3-c)** | 4 | ~~ray-cast / winding across many trimmed NURBS faces, robust on tangencies~~ — landed in `nurbs_solid_membership.h` (exact ray-cast over the true face surfaces, tangent/on-edge re-cast → honest `Unknown`); 945-pt grid 100% crisp-correct | ~~0.5–1~~ **done** |
+| **Boolean-grade general `constructPcurve`** | 2 | parameter-aligned + rational-capable fit at an edge-length-relative fidelity bar | **0.5–1** |
+| **General multi-crossing / re-entrant face split** | 3 | the BOPAlgo-class combinatorial split (the gapped-loop / pinch-point tolerant-topology **healing pre-pass is now LANDED** — `boolean/split_healing.h`, L3-HEAL — so this row narrows to the combinatorial multi-crossing split alone) | **1–1.5** |
+| **General NURBS solid membership** (point-in-trimmed-NURBS-solid) | 4 | ray-cast / winding across many trimmed NURBS faces, robust on tangencies | **0.5–1** |
 | **General freeform↔freeform watertight sew** | 5 | the curved↔curved seam weld `freeform_freeform_cut.h` declines today | **1–2** |
 
 **Deep-tail total ≈ 4–9 py** — consistent with `docs/NURBS-SCOPE.md`'s Layer-3 estimate of

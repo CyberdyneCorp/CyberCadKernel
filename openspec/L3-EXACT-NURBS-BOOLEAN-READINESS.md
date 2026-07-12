@@ -143,16 +143,36 @@ The split's inside-test primitive — `trimmed_nurbs.h` `classify` — **WORKS**
 | on-edge (0.2,0.5) | `OnBoundary` | correct (boolean cannot tolerate an either-way boundary — this is the whole point of Layer 8 over the mesher's `trim.h`) |
 | open/degenerate loop | `Unknown` | honest decline, never a fabricated verdict |
 
-The **split machinery itself is PARTIAL**: `boolean/face_split.h` tiles a **CONVEX** outer
-loop cut by **ONE clean chord** (enters one boundary edge, exits another — no tangency, no
-re-entry) with a host-checkable self-verify (`area(L1)+area(L2)==area(parent)`);
-`boolean/smooth_trim_split.h` adds a **CLOSED interior seam** (disk + annulus). Both are
-proven in isolation (`test_native_face_split`, `test_native_smooth_trim_split`). **MISSING:**
-general multi-crossing / re-entrant / hole-crossing splits, and tolerant-topology healing
-(auto-closing gapped loops, pinch-point resolution) — all declined today.
+The **split machinery** now has THREE proven slices: `boolean/face_split.h` tiles a
+**CONVEX** outer loop cut by **ONE clean chord** (enters one boundary edge, exits another —
+no tangency, no re-entry) with a host-checkable self-verify (`area(L1)+area(L2)==area(parent)`);
+`boolean/smooth_trim_split.h` adds a **CLOSED interior seam** (disk + annulus); and (L3-b)
+`boolean/multi_crossing_split.h` adds the **general MULTI-CROSSING / RE-ENTRANT / HOLE-
+CROSSING** split into **N ≥ 2** sub-regions. The multi-crossing verb builds the planar
+arrangement of boundary arcs (outer + holes) + seam arcs — splitting every arc at all
+pairwise crossings (seam×outer, seam×hole, seam×seam) with the Wave-I `trim_boolean` segment-
+crossing closed form — welds them into a DCEL, and walks the sub-region faces by the tightest-
+clockwise rotational rule (the same orientation-coherent arc-walk family as `trim_boolean.cpp`:
+outer CCW, holes CW). It self-verifies **Σ area(sub-regions) == area(parent)** and each
+sub-region a simple loop; tangent/coincident seams honest-decline (`Degenerate`), non-cutting
+seams `NoSubdivision` — never a wrong tiling. All three are proven in isolation
+(`test_native_face_split`, `test_native_smooth_trim_split`, `test_native_multi_crossing_split`).
 
-**Verdict 3: PARTIAL** — the inside-test primitive + two split slices (convex-1-chord,
-closed-interior-seam) land; general multi-crossing splits + healing are MISSING.
+| oracle | verdict | area error |
+|---|---|---|
+| 2-chord (3 regions), convex face | `Ok` | Σ == parent, gap **0** (machine) |
+| crossing chords (4 quadrants, each 0.25) | `Ok` | Σ == parent, gap **0** |
+| hole-crossing seam (net-area tiling) | `Ok` | Σ net == parent (15), gap **0** |
+| isolated-hole attribution | `Ok` | Σ net == parent, gap **0** |
+| re-entrant U-cut (3 pieces) | `Ok` | Σ == parent (8), gap **0** |
+| coincident-edge / non-cutting seam | **DECLINE (honest)** | `Degenerate` / `NoSubdivision`, no tiling |
+
+**Still MISSING:** tolerant-topology healing (auto-closing gapped loops, pinch-point
+resolution) — declined today.
+
+**Verdict 3: MOSTLY LANDED** — the inside-test primitive + THREE split slices (convex-1-chord,
+closed-interior-seam, general multi-crossing/re-entrant/hole-crossing) land with exact
+(machine-precision) tiling on the closed-form oracles; only tolerant-topology healing remains.
 
 ### Stage 4 — Region classification · **PARTIAL**
 

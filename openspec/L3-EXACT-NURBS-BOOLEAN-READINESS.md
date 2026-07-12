@@ -416,6 +416,51 @@ watertight sew is MISSING.
 > the shared ear-clip base — a distinct, smaller effect than the closed parity gap, out of this
 > bounded slice's scope; the working deflection band [0.0025, 0.01] welds cleanly and converges.
 
+> **UPDATE (MESH-FINE — the fine-deflection residuals MEASURED to the exact mechanism; honest
+> re-decline with a SHARPENED root-cause map, track `worktree-agent-a41f35719341d5809`):** a
+> measurement-first attack on the two named fine-deflection residuals (the M0-WELD inner-seam
+> sliver at d ≤ 0.00125 and the BOOL-FUSE-MULTI outer-seam T-junction at d ≤ 0.004) confirms
+> BOTH are the SAME rewrite-scale mechanism W2 named — a **per-face-CDT-in-UV vs shared-3-D-seam
+> parity gap** — NOT bounded ear-clip/topology fixes, and sharpens the map to the precise
+> failing geometry. **Localization (host, `SolidMesher`, raw welded edge-use histogram by
+> radius):** COMMON/CUT are the two MIDDLE annuli sharing BOTH seams; CUT welds watertight to
+> **d = 0.001** (0 non-manifold), COMMON welds to **d = 0.002** and reappears **NONMANIF = 4 → 9**
+> at d = 0.00125 → 0.001, ALL at the INNER seam r₁ (the residual GROWS with refinement — the
+> parity-gap signature). FUSE keeps each wall's OUTER background annulus (bounded by the rim) and
+> reappears **NONMANIF = 1 → 5 → 19 → 57** at d = 0.0025 → 0.002 → 0.00125 → 0.001, ALL at the
+> OUTER seam r₂, PLUS a broad `oth` open-boundary crack (8368 / 14128 edges at d = 0.002 / 0.00125)
+> in the rim-to-r₂ background↔lid tessellation — a THIRD, coarser defect. **Root cause (measured,
+> not assumed — per-face mesh dump at d = 0.001):** at fine deflection the CDT refinement inserts
+> an interior curvature Steiner point whose (u,v) is genuinely INTERIOR to the annulus (it passes
+> `region.inside` and `locate`), yet whose SURFACE value S(u,v) lands ~ON the shared seam CIRCLE
+> (r = r₁ in 3-D) — the wall surface is steep/near-vertical there, so a UV-interior point maps onto
+> the 3-D seam. Because the two annuli sharing the seam sample the SAME domain, the M0-WELD flood
+> fill makes them place the **IDENTICAL** on-seam interior vertex (verified: A and B produce
+> 77 = 77 seam-lying interior edges at d = 0.00125), and the interior edges to it lie on the seam,
+> so the welded solid uses that shared 3-D edge FOUR times (two triangles per face) — a
+> non-manifold edge. **Three bounded UV-space fixes were implemented and each measured to NOT help
+> without a volume-convergence regression, then reverted:** (a) a grid-margin guard that keeps
+> curvature samples a fraction of a cell off every loop, (b) a CDT `insert()` guard that skips a
+> Steiner point within a UV margin of any hole loop, and (c) a `legalize()` guard that refuses a
+> flip creating a boundary-hugging same-hole-loop chord — (a) at a broad margin FIXED the coarse
+> defect but flipped CUT's strict monotone-convergence check (a real regression), and at a tight
+> margin left tris byte-identical; (b) and (c) were **exact no-ops even at 3× the seam step**,
+> because the offending point is FAR from the seam in UV (the surface distortion is exactly what
+> makes a UV-interior point map onto the 3-D seam) — proving the gap is unreachable from any
+> per-face UV-space reasoning. **The genuine enabler is unchanged from W2:** a **mesher-level
+> shared-seam-strip weld** — mesh the seam-adjacent strip ONCE, shared by both faces (so the
+> near-seam interior samples are common, not two independently-welded coincidences), instead of
+> two independent per-face CDTs in each face's own (u,v) — a change to the frozen M0 mesher CORE,
+> explicitly out of the additive boolean slice's scope. **So MESH-FINE re-affirms the fine-band
+> honest-decline** (`NotWatertight`, residual localized to the shared seam + refinement-growing) as
+> a first-class, DISAGREED=0-safe outcome, with the residual now mapped to the exact UV-interior-
+> maps-onto-3-D-seam mechanism (a step past W2's "per-face-CDT parity" to the precise geometry).
+> `src/native` UNCHANGED (the three bounded fixes were measured and reverted as non-improving or
+> regressing); no `cc_*` ABI touched; `src/native` stays OCCT-free; the working deflection band
+> ([0.002, 0.01] for COMMON, [0.001, 0.01] for CUT modulo an isolated d = 0.004 edge-discretization
+> resonance, [0.005, 0.01] for FUSE) welds watertight + converges, and the full host + SIM gates
+> remain GREEN.
+
 ### The COMPOSED two-freeform-solid NURBS boolean ORCHESTRATOR · **LANDED (BOOL-INT)**
 
 > **UPDATE (BOOL-INT — the general two-freeform-solid boolean ORCHESTRATOR that COMPOSES all

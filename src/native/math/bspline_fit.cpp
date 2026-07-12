@@ -913,6 +913,194 @@ SurfaceFitResult interpolateRationalSurface(const PointGrid& grid, const WeightG
   return r;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Rational SURFACE weight ESTIMATION (Ma–Kruth, tensor-product) — recover the
+// control net AND the weight net from an UNWEIGHTED grid. The tensor rational fit
+// S(uₖ,vₗ)=Q(k,l) is BILINEAR: writing the weighted control net Hᵢⱼ = wᵢⱼ·Pᵢⱼ, the
+// condition Σᵢⱼ Nᵢ(uₖ)Nⱼ(vₗ)·wᵢⱼ·(Pᵢⱼ − Q(k,l)) = 0 becomes
+//   Σᵢⱼ Nᵢ(uₖ)Nⱼ(vₗ)·Hᵢⱼ − Q(k,l)·(Σᵢⱼ Nᵢ(uₖ)Nⱼ(vₗ)·wᵢⱼ) = 0
+// which is LINEAR and HOMOGENEOUS in z = (H₀₀..H_{mn}, w₀₀..w_{mn}). Each grid datum
+// contributes 3 scalar rows (x/y/z), each coupling the H-block of that axis with the
+// shared w-block through the (degU+1)·(degV+1) basis products active at (uₖ,vₗ). Over-
+// determined (3·nU·nV > 4·nCtrlU·nCtrlV) ⇒ the fit is the 1-D null space of M, found as
+// the smallest eigenvector of MᵀM by the SAME shifted inverse iteration (smallestEigvec)
+// as the curve case (no external SVD). Then Pᵢⱼ=Hᵢⱼ/wᵢⱼ, gauge-normalized to w₀₀=1.
+// The unknown layout is [Hx | Hy | Hz | w], each block nCtrl = nCtrlU·nCtrlV long,
+// control point (i,j) at flat index i·nCtrlV + j (row-major U-outer, matching poles).
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+
+// Assemble MᵀM (size 4·nCtrl, nCtrl = nCtrlU·nCtrlV) for the tensor weight-estimation
+// system over the given grid/params/knots. Unknown layout: [Hx | Hy | Hz | w].
+std::vector<double> buildSurfaceWeightEstNormalMatrix(const PointGrid& g,
+                                                      std::span<const double> uP,
+                                                      std::span<const double> vP,
+                                                      std::span<const double> U,
+                                                      std::span<const double> V, int nCtrlU,
+                                                      int nCtrlV, int degU, int degV) {
+  const int nCtrl = nCtrlU * nCtrlV;
+  const int nUnknown = 4 * nCtrl;
+  const int W0 = 3 * nCtrl;  // weight-block offset
+  const int lastU = nCtrlU - 1, lastV = nCtrlV - 1;
+  std::vector<double> AtA(static_cast<std::size_t>(nUnknown) * nUnknown, 0.0);
+  std::vector<double> Nu(degU + 1), Nv(degV + 1);
+  std::vector<std::pair<int, double>> terms;
+  terms.reserve(2 * (degU + 1) * (degV + 1));
+  for (int k = 0; k < g.nU; ++k) {
+    const int spanU = findSpan(lastU, degU, uP[k], U);
+    basisFuns(spanU, uP[k], degU, U, Nu);
+    for (int l = 0; l < g.nV; ++l) {
+      const int spanV = findSpan(lastV, degV, vP[l], V);
+      basisFuns(spanV, vP[l], degV, V, Nv);
+      const Point3 q = g.at(k, l);
+      const double qd[3] = {q.x, q.y, q.z};
+      for (int axis = 0; axis < 3; ++axis) {
+        // Row for axis d: +Nᵢⱼ at H_d[i,j], −Q(k,l)_d·Nᵢⱼ at w[i,j]. MᵀM += row ⊗ row.
+        terms.clear();
+        for (int a = 0; a <= degU; ++a) {
+          const int ii = spanU - degU + a;
+          for (int b = 0; b <= degV; ++b) {
+            const int jj = spanV - degV + b;
+            const int ctrl = ii * nCtrlV + jj;          // flat control index (U outer)
+            const double Nij = Nu[a] * Nv[b];
+            terms.emplace_back(axis * nCtrl + ctrl, Nij);
+            terms.emplace_back(W0 + ctrl, -qd[axis] * Nij);
+          }
+        }
+        for (const auto& [ci, cv] : terms)
+          for (const auto& [cj, cw] : terms)
+            AtA[static_cast<std::size_t>(ci) * nUnknown + cj] += cv * cw;
+      }
+    }
+  }
+  return AtA;
+}
+
+}  // namespace
+
+RationalSurfaceFitResult fitRationalSurfaceEstimateWeightsWithParams(
+    const PointGrid& grid, std::span<const double> uParams, std::span<const double> vParams,
+    std::span<const double> knotsU, std::span<const double> knotsV, int nCtrlU, int nCtrlV,
+    int degreeU, int degreeV, double flatTol) {
+  RationalSurfaceFitResult r;
+  const int nU = grid.nU, nV = grid.nV;
+  if (degreeU < 1 || degreeV < 1 || nCtrlU < degreeU + 1 || nCtrlV < degreeV + 1 ||
+      nU < nCtrlU || nV < nCtrlV) {
+    r.diagnostic = "invalid dimensions (need degree+1 <= nCtrl <= nGrid in each direction)";
+    return r;
+  }
+  if (static_cast<int>(uParams.size()) != nU || static_cast<int>(vParams.size()) != nV) {
+    r.diagnostic = "uParams/vParams size must equal grid.nU/grid.nV";
+    return r;
+  }
+  if (static_cast<int>(knotsU.size()) != nCtrlU + degreeU + 1 ||
+      static_cast<int>(knotsV.size()) != nCtrlV + degreeV + 1) {
+    r.diagnostic = "knotsU/knotsV size must equal nCtrl+degree+1";
+    return r;
+  }
+  // Over-determination: 3 rows/datum, 4 unknowns/control point. Need a clean 1-D
+  // null space, so demand strictly more rows than unknowns.
+  const int nCtrl = nCtrlU * nCtrlV;
+  const int nUnknown = 4 * nCtrl;  // Hx,Hy,Hz,w per control point
+  if (3 * nU * nV <= nUnknown) {
+    r.diagnostic = "under-determined: need 3*nU*nV > 4*nCtrlU*nCtrlV to pin the weights";
+    return r;
+  }
+  const int W0 = 3 * nCtrl;  // offset of the weight block in the unknown vector
+
+  // Assemble MᵀM for the homogeneous bilinear tensor system (see comment block above).
+  const std::vector<double> AtA = buildSurfaceWeightEstNormalMatrix(
+      grid, uParams, vParams, knotsU, knotsV, nCtrlU, nCtrlV, degreeU, degreeV);
+
+  // Scale-invariant shift for inverse iteration (trace-relative) — same as the curve.
+  double trace = 0.0;
+  for (int i = 0; i < nUnknown; ++i) trace += AtA[static_cast<std::size_t>(i) * nUnknown + i];
+  const double shift = (trace > 0.0 ? trace / nUnknown : 1.0) * 1e-12;
+
+  double eig0 = 0.0, eig1 = 0.0;
+  std::vector<double> z = smallestEigvec(AtA, nUnknown, shift, nullptr, eig0);
+  if (static_cast<int>(z.size()) != nUnknown) {
+    r.diagnostic = "eigen solve failed (singular shifted system)";
+    return r;
+  }
+  const std::vector<double> z1 = smallestEigvec(AtA, nUnknown, shift, &z, eig1);
+  if (static_cast<int>(z1.size()) == nUnknown) {
+    // Rank test: a clean 1-D null space means eig0 ≪ eig1 (large relative GAP). A
+    // comparable eig1 (small gap) means the null space is not one-dimensional
+    // (rank-deficient) — weights not unique, decline. Same criterion as the curve.
+    const double gap = eig1 / std::max(eig0, 1e-300);
+    if (!(gap > 50.0)) {
+      r.diagnostic = "rank-deficient: null space not one-dimensional (weights not unique)";
+      return r;
+    }
+  }
+
+  // Extract weights; enforce a single shared sign (flip the whole vector if needed).
+  std::vector<double> w(nCtrl);
+  double sumW = 0.0;
+  for (int i = 0; i < nCtrl; ++i) { w[i] = z[W0 + i]; sumW += w[i]; }
+  if (sumW < 0.0) for (double& e : z) e = -e;   // gauge the shared sign to +
+  for (int i = 0; i < nCtrl; ++i) w[i] = z[W0 + i];
+
+  // Sign-flip guard: a valid rational needs all weights strictly the SAME sign.
+  double wmin = w[0], wmax = w[0];
+  for (int i = 0; i < nCtrl; ++i) { wmin = std::min(wmin, w[i]); wmax = std::max(wmax, w[i]); }
+  const double wref = std::fabs(w[0]) > 0.0 ? std::fabs(w[0]) : 1.0;
+  if (!(wmin > 1e-9 * wref)) {
+    r.diagnostic = "sign-flipping / near-zero weight recovered (invalid rational)";
+    return r;
+  }
+
+  // De-homogenize: Pᵢⱼ = Hᵢⱼ/wᵢⱼ, then normalize weights to the w₀₀ = 1 gauge.
+  const double g = w[0];
+  r.surface.degreeU = degreeU;
+  r.surface.degreeV = degreeV;
+  r.surface.nPolesU = nCtrlU;
+  r.surface.nPolesV = nCtrlV;
+  r.surface.knotsU.assign(knotsU.begin(), knotsU.end());
+  r.surface.knotsV.assign(knotsV.begin(), knotsV.end());
+  r.surface.poles.resize(nCtrl);
+  r.surface.weights.resize(nCtrl);
+  for (int i = 0; i < nCtrl; ++i) {
+    const double wi = w[i];
+    r.surface.poles[i] = {z[i] / wi, z[nCtrl + i] / wi, z[2 * nCtrl + i] / wi};
+    r.surface.weights[i] = wi / g;  // gauge w₀₀ = 1
+  }
+
+  // Weight spread after the gauge fix — the non-rationality detector.
+  double gmin = r.surface.weights[0], gmax = r.surface.weights[0];
+  for (double wi : r.surface.weights) { gmin = std::min(gmin, wi); gmax = std::max(gmax, wi); }
+  r.weightSpread = gmax - gmin;
+  r.rationalityDetected = (r.weightSpread > flatTol);
+
+  rationalSurfaceErrors(r.surface, grid, uParams, vParams, r.maxError, r.rmsError);
+  r.ok = true;
+  return r;
+}
+
+RationalSurfaceFitResult fitRationalSurfaceEstimateWeights(const PointGrid& grid, int nCtrlU,
+                                                           int nCtrlV, int degreeU,
+                                                           int degreeV, ParamMethod method,
+                                                           double flatTol) {
+  RationalSurfaceFitResult r;
+  const int nU = grid.nU, nV = grid.nV;
+  if (degreeU < 1 || degreeV < 1 || nCtrlU < degreeU + 1 || nCtrlV < degreeV + 1 ||
+      nU < nCtrlU || nV < nCtrlV) {
+    r.diagnostic = "invalid dimensions (need degree+1 <= nCtrl <= nGrid in each direction)";
+    return r;
+  }
+  const std::vector<double> uP = gridParams(grid, method, /*dirU=*/true);
+  const std::vector<double> vP = gridParams(grid, method, /*dirU=*/false);
+  if (static_cast<int>(uP.size()) != nU || static_cast<int>(vP.size()) != nV) {
+    r.diagnostic = "degenerate parametrization (all-coincident grid line)";
+    return r;
+  }
+  const std::vector<double> U = approxKnotsImpl(uP, degreeU, nCtrlU);
+  const std::vector<double> V = approxKnotsImpl(vP, degreeV, nCtrlV);
+  return fitRationalSurfaceEstimateWeightsWithParams(grid, uP, vP, U, V, nCtrlU, nCtrlV,
+                                                     degreeU, degreeV, flatTol);
+}
+
 SurfaceFitResult approximateSurface(const PointGrid& grid, int nCtrlU, int nCtrlV,
                                     int degreeU, int degreeV, ParamMethod method) {
   return fitSurface(grid, nCtrlU, nCtrlV, degreeU, degreeV, method);

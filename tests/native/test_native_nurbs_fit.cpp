@@ -145,6 +145,30 @@ static BsplineSurfaceData rationalHalfCylinder() {
   return s;
 }
 
+// An exact rational quarter-cylinder patch (degree U=2 circular quarter-arc,
+// degree V=1 linear extrude): the surface WEIGHT-ESTIMATION oracle. The U direction
+// is a rational quadratic quarter circle {(1,0),(1,1),(0,1)} weights {1,cos45,1};
+// each V row is that arc translated to height z=j. 3 poles in U, 2 in V — the
+// smallest net that spans the shape, so a dense grid over-determines the weights.
+static BsplineSurfaceData rationalQuarterCylinder() {
+  BsplineSurfaceData s;
+  s.degreeU = 2;  // circular quarter-arc direction
+  s.degreeV = 1;  // linear extrude direction
+  s.nPolesU = 3;
+  s.nPolesV = 2;
+  const double w = std::sqrt(2.0) / 2.0;
+  const Point3 arc[3] = {{1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+  const double aw[3] = {1, w, 1};
+  s.knotsU = {0, 0, 0, 1, 1, 1};  // 3 + 2 + 1 = 6
+  s.knotsV = {0, 0, 1, 1};        // 2 + 1 + 1 = 4
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 2; ++j) {
+      s.poles.push_back({arc[i].x, arc[i].y, 2.0 * j});
+      s.weights.push_back(aw[i]);
+    }
+  return s;
+}
+
 // A known non-rational cubic B-spline (the round-trip oracle source).
 static BsplineCurveData knownCubic() {
   BsplineCurveData c;
@@ -796,6 +820,121 @@ int main() {
     // A declined fit returns no curve.
     expectTrue(ru.curve.weights.empty() && rd.curve.weights.empty(),
                "declined weight-est returns no curve");
+  }
+
+  // ═══ RATIONAL SURFACE WEIGHT ESTIMATION (Ma–Kruth, tensor) — Pᵢⱼ AND wᵢⱼ ══════
+  //
+  // The tensor analogue of the curve estimator: recover BOTH the control net and the
+  // weight net from an UNWEIGHTED grid, so a quadric patch (quarter-cylinder) — a
+  // rational shape a polynomial surface fit cannot represent — is reconstructed
+  // exactly. Airtight oracles:
+  //   (a) QUADRIC RECOVERY — sample a KNOWN rational quarter-cylinder at its OWN
+  //       projective NURBS parameters and feed those params + the cylinder's knots so
+  //       the recovery is machine-exact; the estimator recovers the middle-arc weight
+  //       cos(45°) and a surface on the true quarter-cylinder (deviation ≤ 1e-8).
+  //   (b) POLYNOMIAL DEGENERATE — data from a NON-rational polynomial surface yields
+  //       weights all ≈ equal (spread ≤ 1e-6): it detects "no rationality needed".
+  //   (c) DE-HOMOGENIZE CONSISTENCY — recovered (Pᵢⱼ,wᵢⱼ) reproduce the input grid
+  //       to the fit tolerance (maxError small).
+  //   (d) HONEST GUARDS — under-determined / degenerate / mismatched decline.
+  {
+    // (a) QUADRIC — exact rational quarter-cylinder. Sample it on a dense grid at the
+    // patch's OWN NURBS parameters (uniform in [0,1] IS the projective param here) and
+    // feed those params + the cylinder's knots so the recovery is machine-exact.
+    const BsplineSurfaceData cyl = rationalQuarterCylinder();
+    const int gU = 12, gV = 6, nCU = 3, nCV = 2, dU = 2, dV = 1;
+    std::vector<Point3> qpts(static_cast<std::size_t>(gU) * gV);
+    std::vector<double> upar(gU), vpar(gV);
+    for (int i = 0; i < gU; ++i) upar[i] = static_cast<double>(i) / (gU - 1);
+    for (int j = 0; j < gV; ++j) vpar[j] = static_cast<double>(j) / (gV - 1);
+    for (int i = 0; i < gU; ++i)
+      for (int j = 0; j < gV; ++j)
+        qpts[static_cast<std::size_t>(i) * gV + j] = evalSurface(cyl, upar[i], vpar[j]);
+    PointGrid qgrid{std::span<const Point3>(qpts), gU, gV};
+
+    RationalSurfaceFitResult rc = fitRationalSurfaceEstimateWeightsWithParams(
+        qgrid, upar, vpar, cyl.knotsU, cyl.knotsV, nCU, nCV, dU, dV);
+    expectTrue(rc.ok, "quarter-cylinder surface weight estimation ok");
+    expectTrue(!rc.surface.weights.empty(), "quadric estimation returns a rational surface");
+    expectTrue(rc.rationalityDetected, "quadric estimation DETECTS rationality (non-flat weights)");
+    // Middle-arc weight (U-index 1) equals cos(45°); with w₀₀=1 gauge every such
+    // control weight is w. The corner weights (U-index 0,2) are 1.
+    const double wtrue = std::sqrt(2.0) / 2.0;
+    double worstW = 0.0;
+    for (int j = 0; j < nCV; ++j)
+      worstW = std::max(worstW, std::fabs(rc.surface.weights[1 * nCV + j] - wtrue));
+    expectLE(worstW, 1e-8, "quarter-cylinder: recovered middle weights == cos(45°) to 1e-8");
+    // Surface lies on the true unit-radius cylinder everywhere (the strongest oracle):
+    // for any (u,v) the x/y projection has unit radius.
+    double worstRad = 0.0;
+    for (int a = 0; a <= 40; ++a)
+      for (int b = 0; b <= 20; ++b) {
+        const Point3 p = evalSurface(rc.surface, static_cast<double>(a) / 40, static_cast<double>(b) / 20);
+        worstRad = std::max(worstRad, std::fabs(std::sqrt(p.x * p.x + p.y * p.y) - 1.0));
+      }
+    expectLE(worstRad, 1e-8, "quarter-cylinder: recovered surface on the true cylinder to 1e-8");
+    expectLE(rc.maxError, 1e-8, "quarter-cylinder: de-homogenize reproduces the grid to 1e-8");
+    std::printf("INFO surface weight-est: worst |w-cos45|=%.3e radius dev=%.3e maxErr=%.3e\n",
+                worstW, worstRad, rc.maxError);
+
+    // (b) POLYNOMIAL DEGENERATE — sample a NON-rational biquadratic patch at its own
+    // params and fit with its own knots: recovered weights must be all ≈ equal.
+    const BsplineSurfaceData poly = knownPatch();  // degree (3,2), non-rational
+    const int pU = 12, pV = 9, pCU = 5, pCV = 4;
+    std::vector<Point3> ppts(static_cast<std::size_t>(pU) * pV);
+    std::vector<double> pupar(pU), pvpar(pV);
+    for (int i = 0; i < pU; ++i) pupar[i] = static_cast<double>(i) / (pU - 1);
+    for (int j = 0; j < pV; ++j) pvpar[j] = static_cast<double>(j) / (pV - 1);
+    for (int i = 0; i < pU; ++i)
+      for (int j = 0; j < pV; ++j)
+        ppts[static_cast<std::size_t>(i) * pV + j] = evalSurface(poly, pupar[i], pvpar[j]);
+    PointGrid pgrid{std::span<const Point3>(ppts), pU, pV};
+    RationalSurfaceFitResult rp = fitRationalSurfaceEstimateWeightsWithParams(
+        pgrid, pupar, pvpar, poly.knotsU, poly.knotsV, pCU, pCV, poly.degreeU, poly.degreeV);
+    expectTrue(rp.ok, "polynomial-degenerate surface estimation ok");
+    expectLE(rp.weightSpread, 1e-6, "polynomial surface → weights all ≈ equal (spread ≤ 1e-6)");
+    expectTrue(!rp.rationalityDetected, "polynomial surface → rationality NOT detected");
+    expectLE(rp.maxError, 1e-8, "polynomial surface de-homogenize reproduces the grid to 1e-8");
+    std::printf("INFO polynomial-degenerate surface weight-est: spread=%.3e (rationality=%d)\n",
+                rp.weightSpread, rp.rationalityDetected);
+
+    // (c) DE-HOMOGENIZE CONSISTENCY — the pass-through at the grid nodes for the
+    // quarter-cylinder (recovered surface interpolates every sample it was built from).
+    double worstNode = 0.0;
+    for (int i = 0; i < gU; ++i)
+      for (int j = 0; j < gV; ++j)
+        worstNode = std::max(worstNode, distance(evalSurface(rc.surface, upar[i], vpar[j]),
+                                                 qpts[static_cast<std::size_t>(i) * gV + j]));
+    expectLE(worstNode, 1e-8, "de-homogenize: recovered (Pᵢⱼ,wᵢⱼ) reproduce every grid point");
+
+    // (d) HONEST GUARDS.
+    // Under-determined: 3·nU·nV must exceed 4·nCtrlU·nCtrlV. Here nGrid == nCtrl.
+    std::vector<Point3> tiny(static_cast<std::size_t>(nCU) * nCV);
+    for (int i = 0; i < nCU; ++i)
+      for (int j = 0; j < nCV; ++j)
+        tiny[static_cast<std::size_t>(i) * nCV + j] = evalSurface(cyl, static_cast<double>(i) / (nCU - 1),
+                                                                  static_cast<double>(j) / (nCV - 1));
+    PointGrid tinyGrid{std::span<const Point3>(tiny), nCU, nCV};
+    RationalSurfaceFitResult ru = fitRationalSurfaceEstimateWeights(tinyGrid, nCU, nCV, dU, dV);
+    expectTrue(!ru.ok, "surface weight-est: under-determined declines honestly");
+    // Degenerate parametrization (all-coincident grid).
+    std::vector<Point3> same(static_cast<std::size_t>(gU) * gV, Point3{3, 3, 3});
+    PointGrid sameGrid{std::span<const Point3>(same), gU, gV};
+    RationalSurfaceFitResult rd = fitRationalSurfaceEstimateWeights(sameGrid, nCU, nCV, dU, dV);
+    expectTrue(!rd.ok, "surface weight-est: all-coincident grid declines honestly");
+    // Mismatched param length (explicit overload).
+    std::vector<double> shortU = {0.0, 0.5};
+    RationalSurfaceFitResult rm = fitRationalSurfaceEstimateWeightsWithParams(
+        qgrid, shortU, vpar, cyl.knotsU, cyl.knotsV, nCU, nCV, dU, dV);
+    expectTrue(!rm.ok, "surface weight-est: mismatched param length declines honestly");
+    // Wrong knot length.
+    std::vector<double> badKnotsU = {0, 0, 1, 1};
+    RationalSurfaceFitResult rk = fitRationalSurfaceEstimateWeightsWithParams(
+        qgrid, upar, vpar, badKnotsU, cyl.knotsV, nCU, nCV, dU, dV);
+    expectTrue(!rk.ok, "surface weight-est: wrong knot length declines honestly");
+    // A declined fit returns no surface.
+    expectTrue(ru.surface.weights.empty() && rd.surface.weights.empty(),
+               "declined surface weight-est returns no surface");
   }
 
   // ── report ──

@@ -276,6 +276,79 @@ SurfaceFitResult interpolateRationalSurface(const PointGrid& grid, const WeightG
                                             int degreeU, int degreeV,
                                             ParamMethod method = ParamMethod::ChordLength);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Rational SURFACE weight ESTIMATION (Ma–Kruth, tensor-product) — recover BOTH the
+// control-point net AND the weight net from an UNWEIGHTED grid, so a fitted rational
+// surface can exactly represent a quadric patch (quarter-cylinder, sphere octant)
+// that a polynomial fit cannot. The surface analogue of
+// fitRationalCurveEstimateWeights — the harder inverse that
+// interpolateRationalSurface does NOT do (there the weights are prescribed).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Result of a rational SURFACE weight-estimating fit.
+///
+/// Lifts the tensor-product rational-fit condition S(uₖ,vₗ)=Q(k,l) to its bilinear
+/// form Σᵢⱼ Nᵢ(uₖ)Nⱼ(vₗ)·wᵢⱼ·(Pᵢⱼ − Q(k,l)) = 0. Writing the WEIGHTED control net
+/// Hᵢⱼ = wᵢⱼ·Pᵢⱼ this is LINEAR and HOMOGENEOUS in the unknown vector
+/// z = (H₀₀..H_{mn}, w₀₀..w_{mn}): one 3-vector equation per grid datum, stacked into
+/// M·z = 0. The nontrivial null-space direction (smallest-singular-vector, gauge =
+/// overall scale) is the least-squares rational fit; recovered by the SAME shifted
+/// inverse iteration on MᵀM through numerics::lin_solve (no external SVD) as the curve
+/// case. After solving, Pᵢⱼ = Hᵢⱼ/wᵢⱼ and the weights are normalized to w₀₀ = 1.
+/// See Ma & Kruth (Computer-Aided Design 1998) and Piegl & Tiller §9.
+struct RationalSurfaceFitResult {
+  bool ok = false;                   ///< true ⇔ a VALID positive-weight rational surface was recovered
+  BsplineSurfaceData surface;        ///< fitted rational surface (poles + positive weights)
+  double maxError = 0.0;             ///< max ‖S(uᵢ,vⱼ) − Q(i,j)‖ over the grid
+  double rmsError = 0.0;             ///< RMS of the grid deviations
+  double weightSpread = 0.0;         ///< max wᵢⱼ − min wᵢⱼ after w₀₀=1 gauge (≈0 ⇒ non-rational)
+  bool rationalityDetected = false;  ///< true ⇔ weightSpread exceeds the flatness threshold
+  const char* diagnostic = "";       ///< on decline: WHY (rank-deficient / sign-flip / degenerate)
+};
+
+/// Estimate BOTH the (nCtrlU × nCtrlV) control net AND its weights of a degree
+/// (degreeU,degreeV) rational tensor-product B-spline surface that fits the grid —
+/// the weights are UNKNOWN and recovered (Ma–Kruth), not prescribed. Uses `method`
+/// for the U/V parameters (averaged across the grid, Euclidean geometry) and
+/// approximation knots (Eq 9.68/9.69). The estimation is a HOMOGENEOUS null-space
+/// solve, so it must be OVER-determined: pass MORE grid data than unknowns. A
+/// quarter-cylinder / sphere-octant patch is a rational quadratic in the circular
+/// direction — sample it densely and fit with the small control net that spans it.
+/// Requires degreeU+1 ≤ nCtrlU ≤ nU, degreeV+1 ≤ nCtrlV ≤ nV, and
+/// 3·nU·nV > 4·nCtrlU·nCtrlV (enough grid data to pin the weights).
+///
+/// GAUGE — weights are defined only up to a common scale; the result is normalized so
+/// w₀₀ = 1 (the null vector is also sign-normalized so the shared sign is +).
+/// GUARDS (HONEST-DECLINE, never a faked rational): declines with a `diagnostic` when
+/// the grid is degenerate, when the system is not over-determined, when the null space
+/// is not cleanly one-dimensional (the two smallest eigenvalues are comparable —
+/// rank-deficient, no stable weights), or when the recovered weights do not all share
+/// one sign (a sign-flipping / near-zero weight makes the rational denominator vanish
+/// inside the domain — an INVALID NURBS). On success every weight is strictly positive.
+///
+/// Detects the POLYNOMIAL (non-rational) case: if the recovered weights are all
+/// ≈ equal (weightSpread ≤ `flatTol`, default 1e-6) the data needs no rationality;
+/// rationalityDetected is false (the fit is still returned, with ≈unit weights).
+RationalSurfaceFitResult fitRationalSurfaceEstimateWeights(
+    const PointGrid& grid, int nCtrlU, int nCtrlV, int degreeU, int degreeV,
+    ParamMethod method = ParamMethod::ChordLength, double flatTol = 1e-6);
+
+/// Surface weight-estimating fit with EXPLICIT U/V parameters and knots — the airtight
+/// form for exact quadric recovery. Same homogeneous Ma–Kruth tensor null-space solve
+/// as the method-based overload, but the caller supplies the parameter uᵢ for every
+/// grid ROW, vⱼ for every grid COLUMN, and both flat knot vectors directly. This
+/// matters because a rational shape's projective parameter is NOT its chord length: an
+/// exact quarter-cylinder / sphere octant is recovered to MACHINE precision only when
+/// the data carries its own NURBS parameters. Requires uParams.size()==grid.nU,
+/// vParams.size()==grid.nV, knotsU.size()==nCtrlU+degreeU+1,
+/// knotsV.size()==nCtrlV+degreeV+1, the dimension bounds above, and
+/// 3·nU·nV > 4·nCtrlU·nCtrlV. Same gauge (w₀₀=1), positivity, rank and non-rationality
+/// handling as the other overload.
+RationalSurfaceFitResult fitRationalSurfaceEstimateWeightsWithParams(
+    const PointGrid& grid, std::span<const double> uParams, std::span<const double> vParams,
+    std::span<const double> knotsU, std::span<const double> knotsV, int nCtrlU, int nCtrlV,
+    int degreeU, int degreeV, double flatTol = 1e-6);
+
 /// Tensor-product surface APPROXIMATION (A9.4-class): least-squares fit a
 /// nCtrlU × nCtrlV control net (each dimension fewer than the data) of degree
 /// (degreeU,degreeV). Approximates each row in V to nCtrlV control points, then

@@ -26,14 +26,15 @@
 #include <string>
 #include <vector>
 
-using namespace cybercad::native;
+namespace exchange = cybercad::native::exchange;
+namespace topo = cybercad::native::topology;
+namespace math = cybercad::native::math;
 using topo::EdgeCurve;
 using topo::FaceSurface;
 using topo::PCurve;
 using topo::PcurveSegment;
 using topo::TrimLoop;
 using topo::TrimmedNurbsFace;
-namespace math = cybercad::native::math;
 
 static int g_failures = 0;
 static int g_checks = 0;

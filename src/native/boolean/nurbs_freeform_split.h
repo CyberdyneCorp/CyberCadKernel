@@ -394,6 +394,10 @@ inline NurbsFreeformSplitResult nurbsFaceFreeformSplit(
     return r;
   };
 
+  // This split verb composes only Cut/Common; Fuse's outer envelope is not one of its two
+  // survivor sets (an honest decline, never the wrong Cut branch below).
+  if (op == FfOp::Fuse) return fail(NurbsFreeformSplitDecline::ClassifyAmbiguous);
+
   // ── (1) B1 recognise both operands, each requiring ONE genuine NURBS wall ──────
   const auto foF = recogniseFreeformSolid(F);
   if (!foF) return fail(NurbsFreeformSplitDecline::NotAdmittedF);

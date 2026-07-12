@@ -20,9 +20,10 @@
 //   Stage 5  sew          — `freeformFreeformClosedSeamCut` (track W single-seam weld) +
 //                           `freeformFreeformMultiSeamCut` (L3-d multi-seam).
 // This header COMPOSES those verbs; it re-implements NONE of them. The five stage-verb
-// files stay BYTE-UNCHANGED. It adds exactly the op-level dispatch + the FUSE survivor
-// select/weld the single-seam CUT/COMMON verb did not expose, and the honest-decline
-// routing for the poses a sub-verb abstains on (multi-seam annulus↔annulus).
+// files stay BYTE-UNCHANGED. It adds exactly the op-level dispatch + the single-seam FUSE
+// survivor select/weld the single-seam CUT/COMMON verb did not expose, routes the
+// multi-seam FUSE outer envelope to the (now complete) multi-seam sew verb, and honest-
+// declines the poses a sub-verb genuinely abstains on (never a leaky solid).
 //
 // ── THE OPERATIONS (per-op survivor set over the single closed transversal seam) ───
 // For the canonical bowl-cup pose (A opens one way, B the mirror, walls meet in ONE
@@ -44,11 +45,12 @@
 // ── HONESTY (DISAGREED=0 SACRED) ──────────────────────────────────────────────────
 // Every op self-verifies: watertight + consistently-oriented + a positive enclosed volume
 // under a per-op UPPER bound (COMMON ⊂ min(A,B); CUT ⊂ A; FUSE ⊂ A+B and ⊇ max(A,B)),
-// TWO-SIDED against the closed-form op-volume when supplied. Any sub-case that does not
-// weld to a verified watertight/coherent solid — notably the MULTI-SEAM annulus↔annulus
-// inner-seam sew (the frozen-M0-mesher holed-curved-seam gap, per L3-d) — returns a NULL
-// Shape with a MEASURED decline + a residual map (the sharpened `boundaryEdges`). NEVER a
-// leaky/partial/wrong solid; NO tolerance is ever widened.
+// TWO-SIDED against the closed-form op-volume when supplied. The multi-seam annulus↔annulus
+// inner seam now WELDS (M0-WELD shared-seam strip) and the multi-seam FUSE outer envelope
+// composes, so the multi-seam op-set is complete. Any sub-case that genuinely does not weld
+// to a verified watertight/coherent solid returns a NULL Shape with a MEASURED decline + a
+// residual map (the sharpened `boundaryEdges`). NEVER a leaky/partial/wrong solid; NO
+// tolerance is ever widened.
 //
 // OCCT-FREE (0 OCCT includes). Header-only. clang++ -std=c++20.
 //
@@ -340,10 +342,10 @@ inline topo::Shape nurbsSolidFuse(const topo::Shape& A, const topo::Shape& B,
 //   * ONE closed seam (single transversal): COMMON/CUT DELEGATE byte-identically to
 //     `freeformFreeformClosedSeamCut`; FUSE runs `nurbsSolidFuse` (the OUTER-envelope
 //     compose the single-seam verb did not expose).
-//   * ≥ 2 closed seams (genuine multi-seam): dispatch to `freeformFreeformMultiSeamCut`
-//     (CUT/COMMON) — which splits + classifies exactly and HONEST-DECLINES the
-//     annulus↔annulus inner-seam sew (the frozen-M0-mesher holed-curved-seam gap, L3-d)
-//     with a residual map. FUSE over a multi-seam pose declines the same way.
+//   * ≥ 2 closed seams (genuine multi-seam): dispatch to the multi-seam sew verb for ALL
+//     THREE ops — CUT/COMMON weld the annular lens (M0-WELD inner seam), FUSE welds the
+//     OUTER envelope (A∪B, complement of the lens on both walls + both lids), each self-
+//     verified; a genuinely non-weldable sub-case honest-declines with a residual map.
 //   * NO usable seam ⇒ NoSeam.
 //
 // `analyticOpVolume` (optional) enables the TWO-SIDED closed-form volume band.
@@ -387,15 +389,15 @@ inline topo::Shape nurbsSolidBooleanWithSeams(const topo::Shape& A, const topo::
 
   // (2) MULTI-SEAM dispatch (≥ 2 closed loops) — split+classify exactly, then WELD the
   // annulus↔annulus inner seam (M0-WELD: the shared seam-as-hole strip is culled
-  // topologically so both annuli triangulate it identically). CUT/COMMON weld watertight;
-  // FUSE (the outer-envelope compose) is not exposed by the multi-seam sew verb yet.
+  // topologically so both annuli triangulate it identically). CUT/COMMON weld the annular
+  // lens; FUSE welds the OUTER envelope (A∪B = the complement of that lens on BOTH walls +
+  // both operands' lids), sewn watertight across EVERY seam through the SAME M0-WELD strip.
   if (seams.size() >= 2) {
     rep.multiSeam = true;
-    // FUSE over a multi-seam pose is the outer-envelope compose the multi-seam CUT/COMMON
-    // sew verb does not yet expose — honest-decline (never a leaky solid).
-    if (op == SolidBoolOp::Fuse) return fail(SolidBoolDecline::MultiSeamDeclined);
     MultiSeamCutReport mrep;
-    const FfOp fop = op == SolidBoolOp::Common ? FfOp::Common : FfOp::Cut;
+    const FfOp fop = op == SolidBoolOp::Common ? FfOp::Common
+                   : op == SolidBoolOp::Cut    ? FfOp::Cut
+                                               : FfOp::Fuse;
     const topo::Shape r = freeformFreeformMultiSeamCutWithSeams(A, B, seams, fop, deflection, &mrep,
                                                                analyticOpVolume);
     rep.multiDecline = mrep.decline;

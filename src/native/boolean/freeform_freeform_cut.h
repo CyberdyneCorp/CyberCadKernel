@@ -78,8 +78,10 @@ namespace tess = cybercad::native::tessellate;
 namespace math = cybercad::native::math;
 namespace ssi  = cybercad::native::ssi;
 
-/// The requested freeform↔freeform operator.
-enum class FfOp { Cut, Common };
+/// The requested freeform↔freeform operator. `Fuse` (the A∪B outer envelope) is composed
+/// only by the MULTI-SEAM verb (`freeformFreeformMultiSeamCutWithSeams`); the single-seam
+/// `freeformFreeformClosedSeamCut` handles Cut/Common and treats Fuse as an unusable op.
+enum class FfOp { Cut, Common, Fuse };
 
 /// The measured blocker (logged before the OCCT fall-through). `Ok` iff a verified
 /// watertight result solid is returned.
@@ -299,6 +301,11 @@ inline topo::Shape freeformFreeformClosedSeamCut(const topo::Shape& A, const top
                                                      std::numeric_limits<double>::quiet_NaN()) {
   using namespace ffcdetail;
   auto fail = [&](FfCutDecline d) -> topo::Shape { if (why) *why = d; return {}; };
+
+  // This single-seam verb composes only Cut/Common; Fuse's outer envelope is exposed by
+  // the multi-seam verb (and, for the single-seam pose, by `nurbsSolidFuse`). A Fuse
+  // request here is an honest decline (never the wrong Common branch below).
+  if (op == FfOp::Fuse) return fail(FfCutDecline::ClassifyAmbiguous);
 
   // (1) B1 recognise both operands.
   const auto foA = recogniseFreeformSolid(A);

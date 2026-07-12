@@ -193,6 +193,45 @@ CC_TEST(ffms_welds_annulus_lens_watertight) {
   }
 }
 
+// ── The verb WELDS the FUSE outer envelope watertight across EVERY seam ──
+// FUSE = A∪B = the complement of the COMMON annular lens on BOTH walls (A's inner disk +
+// A's background + A's lid, all OUTSIDE B; likewise B's OUTSIDE-A fragments), sewn across
+// both seams (r₁ and r₂ — the lens boundaries) through the SAME M0-WELD shared-seam strip.
+// The meshed volume lands in the tessellation band of V(A)+V(B)−V(A∩B) and the solid is
+// watertight + coherent through the working deflection band [0.005, 0.01].
+//
+// Band note: unlike the COMMON/CUT annular LENS (whose survivors are the two middle annuli
+// sharing BOTH seams, welding to arbitrarily fine deflection), the FUSE survivor set keeps
+// each wall's OUTER background annulus, whose OTHER boundary is the rim. The M0 mesher
+// tessellates that rim-to-r₂ background at a curvature-driven density that, below d≈0.004,
+// leaves a single T-junction (one non-manifold edge) on the shared OUTER seam r₂ — a frozen-
+// mesher per-face-CDT PARITY residual the verb HONEST-DECLINES (self-verify NULL), NEVER a
+// leaky solid. Within the working band the two backgrounds tessellate r₂ identically and the
+// envelope welds watertight at the correct volume (asserted here + at the finer-band decline).
+CC_TEST(ffms_welds_fuse_outer_envelope) {
+  const topo::Shape A = ffx::buildA();
+  const topo::Shape B = ffx::buildB();
+  const std::vector<bo::ssi::WLine> seams = ffx::closedSeams();
+  if (seams.size() != 2) { CC_CHECK(false); return; }
+  const double cf = ffx::volA() + ffx::volB() - ffx::volCommon();  // V(A)+V(B)−lens
+  for (double d : {0.01, 0.006, 0.005}) {
+    bo::MultiSeamCutReport rep;
+    const topo::Shape r =
+        bo::freeformFreeformMultiSeamCutWithSeams(A, B, seams, bo::FfOp::Fuse, d, &rep, cf);
+    CC_CHECK(!r.isNull());                                        // welds, never NULL, never leaky
+    CC_CHECK(rep.decline == bo::MultiSeamCutDecline::Ok);
+    CC_CHECK(rep.seamLoops == 2);
+    CC_CHECK(rep.subRegionsA == 3 && rep.subRegionsB == 3);
+    CC_CHECK(rep.survivorFaces >= 2);
+    CC_CHECK(rep.watertight);
+    CC_CHECK(rep.coherent);
+    CC_CHECK(rep.boundaryEdges == 0);                            // every seam welds
+    const double err = std::fabs(rep.enclosedVolume - cf) / cf;
+    CC_CHECK(rep.enclosedVolume > 0.0);
+    CC_CHECK(err < 30.0 * d);                                    // within the tessellation band
+  }
+}
+
 // ── The closed-form partition is self-consistent (oracle unit-check) ──
 CC_TEST(ffms_closed_form_partition_is_consistent) {
   CC_CHECK(std::fabs((ffx::volCut() + ffx::volCommon()) - ffx::volA()) < ffx::volA() * 1e-9);

@@ -16,8 +16,9 @@
 //
 //   1. COMMON / CUT / FUSE → a WATERTIGHT CCMesh (χ=2, every edge used exactly twice),
 //      whose meshed volume matches the closed-form op-volume within the tessellation band.
-//   2. A MULTI-SEAM pose (two degree-4 mirror cups meeting in TWO seams) → the wrapper
-//      HONEST-DECLINES: 0 return, *out zeroed, cc_last_error set — NEVER a leaky mesh.
+//   2. A MULTI-SEAM pose (two degree-4 mirror cups meeting in TWO seams) → COMMON / CUT /
+//      FUSE all WELD to a watertight CCMesh (the M0-WELD inner seam + the FUSE outer
+//      envelope); a genuinely non-weldable sub-case would honest-decline (never a leaky mesh).
 //
 // The native boolean composes the numsci SSI seam trace, so the substantive assertions are
 // gated on CYBERCAD_HAS_NUMSCI (with the guard OFF the wrapper honest-declines, asserted).
@@ -207,10 +208,11 @@ CC_TEST(cc_solid_boolean_single_seam_watertight_and_volume) {
     cc_surface_release(wallB);
 }
 
-// ── Multi-seam pose: after the M0-WELD shared-seam-strip fix, COMMON/CUT now WELD watertight
-//    (the annulus↔annulus inner seam closes); FUSE still honest-declines (outer-envelope compose
-//    not exposed by the sew verb). No op is ever a leaky mesh. ──
-CC_TEST(cc_solid_boolean_multi_seam_common_cut_weld_fuse_declines) {
+// ── Multi-seam pose: after the M0-WELD shared-seam-strip fix and the FUSE outer-envelope
+//    compose, ALL THREE ops WELD watertight — COMMON/CUT the annular lens (inner seam closes),
+//    FUSE the outer envelope (A∪B, complement of the lens on both walls). No op is ever a
+//    leaky mesh: the wrapper returns ok only when its own watertight self-verify passes. ──
+CC_TEST(cc_solid_boolean_multi_seam_all_ops_weld) {
     cc_surface wallA = makeValleyWall(/*downDome=*/false);
     cc_surface wallB = makeValleyWall(/*downDome=*/true);
     CC_CHECK(wallA.id != 0 && wallB.id != 0);
@@ -221,24 +223,20 @@ CC_TEST(cc_solid_boolean_multi_seam_common_cut_weld_fuse_declines) {
     const double lidA = zAatR;       // A's top lid
     const double lidB = H - zAatR;   // B's bottom lid
 #ifdef CYBERCAD_HAS_NUMSCI
-    // COMMON / CUT weld to a closed 2-manifold — the wrapper returns ok only when its own
-    // watertight + coherence self-verify passes, so a returned mesh is never leaky.
-    for (CCBoolOp op : {CC_BOOL_COMMON, CC_BOOL_CUT}) {
+    // COMMON / CUT / FUSE all weld to a closed 2-manifold — the wrapper returns ok only when
+    // its own watertight + coherence self-verify passes, so a returned mesh is never leaky.
+    // COMMON/CUT (the annular lens) weld to fine deflection; FUSE (the outer envelope, whose
+    // survivors include each wall's rim-bounded background annulus) welds in the working band
+    // [0.005, 0.01] and honest-declines the finer-deflection frozen-mesher parity residual.
+    struct { CCBoolOp op; double d; } cases[] = {
+        {CC_BOOL_COMMON, 0.0025}, {CC_BOOL_CUT, 0.0025}, {CC_BOOL_FUSE, 0.005}};
+    for (const auto& c : cases) {
         CCMesh out{};
-        const int ok = cc_nurbs_solid_boolean(wallA, rimR, lidA, wallB, rimR, lidB, op, 0.0025, &out);
-        CC_CHECK(ok == 1);                                     // multi-seam now welds (M0-WELD)
+        const int ok = cc_nurbs_solid_boolean(wallA, rimR, lidA, wallB, rimR, lidB, c.op, c.d, &out);
+        CC_CHECK(ok == 1);                                     // multi-seam now welds (incl. FUSE)
         CC_CHECK(out.vertexCount > 0 && out.triangleCount > 0);
         CC_CHECK(ccMeshWatertight(out));                       // closed: every edge used exactly twice
         cc_mesh_free(out);
-    }
-    // FUSE (multi-seam) still honest-declines: 0 return, *out zeroed, cc_last_error — no leak.
-    {
-        CCMesh out{};
-        const int ok = cc_nurbs_solid_boolean(wallA, rimR, lidA, wallB, rimR, lidB, CC_BOOL_FUSE, 0.0025, &out);
-        CC_CHECK(ok == 0);
-        CC_CHECK(out.vertices == nullptr && out.vertexCount == 0);
-        CC_CHECK(out.triangles == nullptr && out.triangleCount == 0);
-        CC_CHECK(cc_last_error()[0] != '\0');
     }
 #else
     // Without the numsci substrate the whole path honest-declines.

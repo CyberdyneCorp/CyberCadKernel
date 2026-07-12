@@ -36,9 +36,14 @@
 //   3. MULTI-CAP COHERENT WELD (`weldMultiCoherent`) — the survivors from BOTH walls are
 //      welded into a Solid; orientation coherence is repaired by trying the identity, a
 //      single last-flip (W's exact repair, so a degenerate-to-single-seam case is
-//      byte-identical), and the flip-the-B-group repair (the two curved sides wind
-//      oppositely across every seam). The mandatory M0 watertight + consistent-orientation
+//      byte-identical), the flip-the-B-group repair (the two curved sides wind oppositely
+//      across every seam), and the flip-the-A-group repair (the FUSE outer envelope's two
+//      region groups wind oppositely). The mandatory M0 watertight + consistent-orientation
 //      + positive/bounded-volume self-verify gates the result; ANY decline → NULL.
+//
+// The op-set is COMPLETE: COMMON (the annular lens), CUT (A minus the lens), and FUSE
+// (the OUTER envelope of A∪B = the complement of the lens on BOTH walls + both operands'
+// lids, sewn across every seam) all compose here from the SAME split+select+weld primitives.
 //
 // ── HONESTY (DISAGREED=0 SACRED) ──────────────────────────────────────────────────
 // Every predicate is a geometry test. A degenerate multi-seam pose (a seam that is not a
@@ -341,6 +346,11 @@ inline std::optional<std::pair<topo::Shape, tess::Mesh>> weldMultiCoherent(
     for (std::size_t i = nFromA; i < faces.size(); ++i) b.push_back(i);
     repairs.push_back(std::move(b));
   }
+  if (nFromA > 0 && nFromA < faces.size()) {                  // flip the whole A-group
+    std::vector<std::size_t> a;                               // (the FUSE outer envelope's two
+    for (std::size_t i = 0; i < nFromA; ++i) a.push_back(i);  // curved-region groups wind
+    repairs.push_back(std::move(a));                          // oppositely across every seam)
+  }
   for (const std::vector<std::size_t>& flip : repairs) {
     std::vector<topo::Shape> f = faces;
     for (std::size_t i : flip) f[i] = f[i].reversedShape();
@@ -432,15 +442,21 @@ inline topo::Shape freeformFreeformMultiSeamCutWithSeams(
   // (4) SELECT survivors by the hole-respecting membership vote (W's fix), per region.
   //   COMMON — A's regions INSIDE B ∪ B's regions INSIDE A (the lens between the seams).
   //   CUT    — A's regions OUTSIDE B ∪ A's lids OUTSIDE B ∪ B's regions INSIDE A.
+  //   FUSE   — A's regions OUTSIDE B ∪ A's lids OUTSIDE B ∪ B's regions OUTSIDE A ∪ B's
+  //            lids OUTSIDE A: the OUTER envelope (the complement of the COMMON annular
+  //            lens on BOTH walls), sewn watertight across EVERY seam.
   const Membership wantA = op == FfOp::Common ? Membership::In : Membership::Out;
+  const Membership wantB = op == FfOp::Common || op == FfOp::Cut ? Membership::In : Membership::Out;
   std::vector<topo::Shape> faces;
   std::size_t nFromA = 0;
   for (const WallRegion& reg : regA)
     if (subFaceHasMembership(reg.face, meshB, bbB, deflection, wantA)) { faces.push_back(reg.face); ++nFromA; }
-  if (op == FfOp::Cut)
+  if (op == FfOp::Cut || op == FfOp::Fuse)
     collectAnalyticByMembership(*foA, meshB, bbB, deflection, Membership::Out, faces), nFromA = faces.size();
   for (const WallRegion& reg : regB)
-    if (subFaceHasMembership(reg.face, meshA, bbA, deflection, Membership::In)) faces.push_back(reg.face);
+    if (subFaceHasMembership(reg.face, meshA, bbA, deflection, wantB)) faces.push_back(reg.face);
+  if (op == FfOp::Fuse)
+    collectAnalyticByMembership(*foB, meshA, bbA, deflection, Membership::Out, faces);
 
   if (faces.size() < 2) return fail(MultiSeamCutDecline::WeldOpen);
   rep.survivorFaces = static_cast<int>(faces.size());
@@ -460,12 +476,21 @@ inline topo::Shape freeformFreeformMultiSeamCutWithSeams(
   rep.enclosedVolume = v;
   if (!(v > 0.0) || std::isnan(v)) return fail(MultiSeamCutDecline::VolumeInconsistent);
 
-  // Self-verify — op-volume UPPER bound (CUT ⊂ A; COMMON ⊂ A and ⊂ B).
+  // Self-verify — op-volume bounds (CUT ⊂ A; COMMON ⊂ A and ⊂ B; FUSE ⊇ max(A,B) and
+  // ⊂ A+B). FUSE is two-sided (a too-small envelope — an orientation-collapsed shell that
+  // dropped one operand's material — is rejected as VolumeInconsistent, never returned).
   const double vA = std::fabs(tess::enclosedVolume(meshA));
   const double vB = std::fabs(tess::enclosedVolume(meshB));
-  const double upper = op == FfOp::Cut ? vA : std::min(vA, vB);
-  const double upperTol = 0.05 * std::max(std::max(vA, vB), 1e-12);
-  if (v > upper + upperTol) return fail(MultiSeamCutDecline::VolumeInconsistent);
+  const double tol = 0.05 * std::max(std::max(vA, vB), 1e-12);
+  double upper;
+  switch (op) {
+    case FfOp::Cut: upper = vA; break;
+    case FfOp::Common: upper = std::min(vA, vB); break;
+    case FfOp::Fuse: upper = vA + vB; break;
+  }
+  if (v > upper + tol) return fail(MultiSeamCutDecline::VolumeInconsistent);
+  if (op == FfOp::Fuse && v < std::max(vA, vB) - tol)
+    return fail(MultiSeamCutDecline::VolumeInconsistent);
 
   // TWO-SIDED band vs the closed-form op-volume, if supplied.
   if (!std::isnan(analyticOpVolume) && analyticOpVolume > 0.0) {

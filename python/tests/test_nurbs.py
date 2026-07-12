@@ -298,27 +298,26 @@ def test_solid_boolean_single_seam_watertight_volume(kernel, trimesh_or_skip, op
         assert abs(abs(tm.volume) - cf) / cf < 30.0 * d
 
 
-def test_solid_boolean_multi_seam_common_cut_weld_fuse_raises(kernel, trimesh_or_skip):
-    """After the M0-WELD shared-seam-strip fix, a MULTI-seam pose (two degree-4 mirror cups
-    meeting in TWO seams) welds the annulus↔annulus inner seam: COMMON/CUT return a WATERTIGHT
-    mesh; FUSE still honest-declines (outer-envelope compose not exposed by the sew verb) →
-    RAISES ``KernelError``. Never a leaky mesh."""
+def test_solid_boolean_multi_seam_all_ops_weld(kernel, trimesh_or_skip):
+    """After the M0-WELD shared-seam-strip fix and the FUSE outer-envelope compose, a
+    MULTI-seam pose (two degree-4 mirror cups meeting in TWO seams) welds ALL THREE ops to a
+    WATERTIGHT mesh: COMMON/CUT the annular lens (inner seam closes), FUSE the outer envelope
+    (A∪B, complement of the lens on both walls). Never a leaky mesh."""
     H = 0.03
     rim = 0.45
     z_at_r = 4.0 * (rim * rim - 0.28**2) ** 2
     lid_a, lid_b = z_at_r, H - z_at_r
-    d = 0.0025
     with _valley_wall(False) as wa, _valley_wall(True) as wb:
-        # COMMON / CUT now weld to a watertight mesh (skip cleanly on a no-numsci dylib).
-        for op in (nurbs.BoolOp.COMMON, nurbs.BoolOp.CUT):
+        # COMMON / CUT / FUSE all weld to a watertight mesh (skip cleanly on a no-numsci dylib).
+        # COMMON/CUT (the lens) weld to fine deflection; FUSE (the outer envelope) welds in the
+        # working band [0.005, 0.01] and honest-declines the finer-deflection mesher parity gap.
+        for op, d in ((nurbs.BoolOp.COMMON, 0.0025), (nurbs.BoolOp.CUT, 0.0025),
+                      (nurbs.BoolOp.FUSE, 0.005)):
             try:
                 mesh = nurbs.solid_boolean(wa, rim, lid_a, wb, rim, lid_b, op, d)
             except KernelError as exc:
                 _numsci_or_skip(exc)
             assert mesh.to_trimesh().is_watertight
-        # FUSE (multi-seam) still honest-declines → RAISES, never a leaky mesh.
-        with pytest.raises(KernelError):
-            nurbs.solid_boolean(wa, rim, lid_a, wb, rim, lid_b, nurbs.BoolOp.FUSE, d)
 
 
 def test_solid_boolean_unknown_wall_raises(kernel):

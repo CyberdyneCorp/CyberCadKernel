@@ -16,8 +16,9 @@
 //     order-sensitive (A−B ≠ B−A here since they are z-mirror-symmetric ⇒ equal volume,
 //     so we instead assert the CUT/COMMON partition V(cut)+V(common)=V(A));
 //   * MULTI-SEAM pose (two solids meeting in TWO seams): the split+classify lands exactly
-//     but the annulus↔annulus inner-seam sew HONEST-DECLINES to NULL with a residual map
-//     (per L3-d) — NOT a leaky solid, and the orchestrator surfaces MultiSeamDeclined;
+//     and ALL THREE ops weld watertight — CUT/COMMON the annular lens (M0-WELD inner seam),
+//     FUSE the OUTER envelope (A∪B, complement of the lens on both walls + both lids), sewn
+//     across every seam; op-algebra V(fuse)+V(common)=V(A)+V(B) holds on the meshed volumes;
 //   * honest declines for a null operand.
 //
 // Requires CYBERCAD_HAS_NUMSCI (the seams are the real S3 trace between two Béziers).
@@ -167,12 +168,13 @@ CC_TEST(nsb_op_algebra_inclusion_exclusion) {
   }
 }
 
-// ── MULTI-SEAM pose: split+classify lands, annulus↔annulus sew WELDS watertight ──
+// ── MULTI-SEAM pose: split+classify lands, all three ops WELD watertight ──
 // Two degree-4 mirror cups meeting in TWO concentric circular seams. The orchestrator
-// dispatches to the multi-seam path, which splits + classifies exactly and now WELDS the
+// dispatches to the multi-seam path, which splits + classifies exactly and WELDS the
 // inner-seam annulus↔annulus sew (M0-WELD: the shared seam-as-hole strip is culled
-// topologically, so both annuli triangulate it identically). CUT/COMMON weld watertight at
-// the closed-form volume; FUSE (the outer-envelope compose) is not exposed by the sew verb.
+// topologically, so both annuli triangulate it identically). CUT/COMMON weld the annular
+// lens; FUSE welds the OUTER envelope (A∪B = the complement of that lens on BOTH walls +
+// both operands' lids), sewn watertight across EVERY seam — the op completed by this track.
 CC_TEST(nsb_multi_seam_welds_watertight) {
   const topo::Shape A = msx::buildA();
   const topo::Shape B = msx::buildB();
@@ -181,29 +183,59 @@ CC_TEST(nsb_multi_seam_welds_watertight) {
   const std::vector<bo::ssi::WLine>& seams = msx::closedSeams();
   CC_CHECK(seams.size() == 2);
   if (seams.size() != 2) return;
-  for (bo::SolidBoolOp op : {bo::SolidBoolOp::Common, bo::SolidBoolOp::Cut}) {
-    const double cf = op == bo::SolidBoolOp::Common ? msx::volCommon() : msx::volCut();
+  const double vFuseCf = msx::volA() + msx::volB() - msx::volCommon();  // V(A)+V(B)−lens
+  // COMMON/CUT (the annular lens) weld to fine deflection; FUSE (the outer envelope, whose
+  // survivors include each wall's rim-bounded background annulus) welds in the working band
+  // [0.005, 0.01] and HONEST-DECLINES the single-T-junction frozen-mesher parity residual on
+  // the shared outer seam below d≈0.004 (measured; never a leaky solid). Each op is tested at
+  // a deflection inside its weld band.
+  struct { bo::SolidBoolOp op; double cf; double d; } cases[] = {
+      {bo::SolidBoolOp::Common, msx::volCommon(), 0.0025},
+      {bo::SolidBoolOp::Cut, msx::volCut(), 0.0025},
+      {bo::SolidBoolOp::Fuse, vFuseCf, 0.005},
+  };
+  for (const auto& c : cases) {
     bo::SolidBoolReport rep;
-    const topo::Shape r = bo::nurbsSolidBooleanWithSeams(A, B, seams, op, 0.0025, &rep, cf);
+    const topo::Shape r = bo::nurbsSolidBooleanWithSeams(A, B, seams, c.op, c.d, &rep, c.cf);
     CC_CHECK(!r.isNull());                                      // welds, never NULL, never leaky
     CC_CHECK(rep.multiSeam);                                    // dispatched to multi-seam
     CC_CHECK(rep.seamLoops == 2);
     CC_CHECK(rep.decline == bo::SolidBoolDecline::Ok);
     CC_CHECK(rep.multiDecline == bo::MultiSeamCutDecline::Ok);
     CC_CHECK(rep.watertight && rep.coherent);
-    CC_CHECK(rep.boundaryEdges == 0);                          // the inner seam welds
+    CC_CHECK(rep.boundaryEdges == 0);                          // every seam welds
     CC_CHECK(rep.survivorFaces >= 2);
-    // The meshed volume converges to the closed-form op-volume (within the tessellation band).
-    CC_CHECK(std::fabs(rep.enclosedVolume - cf) / cf < 0.10);
+    // The meshed volume lands within the tessellation band of the closed-form op-volume.
+    CC_CHECK(std::fabs(rep.enclosedVolume - c.cf) / c.cf < 0.10);
   }
-  // FUSE over a multi-seam pose still honest-declines (outer-envelope compose not exposed).
-  {
-    bo::SolidBoolReport rep;
-    const topo::Shape r = bo::nurbsSolidBooleanWithSeams(A, B, seams, bo::SolidBoolOp::Fuse,
-                                                         0.0025, &rep, msx::volA() + msx::volB());
-    CC_CHECK(r.isNull());
-    CC_CHECK(rep.decline == bo::SolidBoolDecline::MultiSeamDeclined);
-  }
+}
+
+// ── MULTI-SEAM op-algebra: V(fuse)+V(common) == V(A)+V(B) on the 2-seam meshed volumes ──
+// Inclusion-exclusion on the two orchestrated multi-seam results, measured at the SAME
+// deflection so the O(deflection) cap bias cancels between them and the identity holds
+// within a tight band — the dual oracle that the FUSE outer envelope is the true A∪B.
+CC_TEST(nsb_multi_seam_op_algebra) {
+  const topo::Shape A = msx::buildA();
+  const topo::Shape B = msx::buildB();
+  const std::vector<bo::ssi::WLine>& seams = msx::closedSeams();
+  CC_CHECK(seams.size() == 2);
+  if (seams.size() != 2) return;
+  const double d = 0.005;  // the FUSE outer envelope's weld band (both ops weld here)
+  bo::SolidBoolReport rf, rc;
+  const topo::Shape fuse = bo::nurbsSolidBooleanWithSeams(A, B, seams, bo::SolidBoolOp::Fuse, d, &rf);
+  const topo::Shape common =
+      bo::nurbsSolidBooleanWithSeams(A, B, seams, bo::SolidBoolOp::Common, d, &rc);
+  CC_CHECK(!fuse.isNull() && !common.isNull());
+  if (fuse.isNull() || common.isNull()) return;
+  bool wt, coh; std::size_t be;
+  double vFuse, vCommon;
+  meshStats(fuse, d, wt, coh, be, vFuse);
+  meshStats(common, d, wt, coh, be, vCommon);
+  tess::MeshParams mp; mp.deflection = d;
+  const double vA = std::fabs(tess::enclosedVolume(tess::SolidMesher(mp).mesh(A)));
+  const double vB = std::fabs(tess::enclosedVolume(tess::SolidMesher(mp).mesh(B)));
+  const double lhs = vFuse + vCommon, rhs = vA + vB;
+  CC_CHECK(std::fabs(lhs - rhs) / rhs < 0.02);
 }
 
 // ── The multi-seam closed-form partition is self-consistent (oracle unit-check) ──

@@ -325,6 +325,34 @@ seed, or re-baselining the `onCurve` fit gate — both refused. `DISAGREED == 0`
 marcher's emitted geometry is correct on every node. The moat's next honest frontier is
 **S2 seeding recall for co-resident branches**, not deeper S4-c graze marching.
 
+**S2 CO-RESIDENT SEEDING-RECALL — FIXED + RE-MEASURED (freeform fuzzer, 3 seeds, N=48,
+`0x5515D1FF0F0F`+2).** The frontier above was diagnosed and closed at the S2 layer (seeding.cpp
+only; src/native stays OCCT-free; cc_* ABI byte-unchanged). Diagnosis (env-gated `CYBERCAD_SSI_SEED_DIAG`
+per-cluster dump + host replay of the exact fuzz poses): on the `seeded=1 traced=1 deduped=0 occtComp=2`
+cases, ALL candidate leaves of BOTH co-resident loci land in ONE param-adjacency cluster; the
+distinct-locus split (`splitDistinctBranches`) then failed to separate them for a mechanical reason —
+the per-cluster accumulator FIFO-appended refined seeds until a **flat 256 cap**, and one dense
+locus tiles thousands of leaves that filled the cap in candidate-iteration order, **STARVING** the
+co-resident locus's later leaves before the single-linkage split ever saw them (a second observed
+sub-mode: `clusters=2` where one cluster's cells refine-missed). The fix (seeding.cpp): keep the
+**FULL refined-seed density** per cluster (a thinned reservoir was tried and REJECTED — it left arc
+gaps that spuriously split a SINGLE loop, breaking `march_bspline_bspline_closed_loop`), and make
+the single-linkage split **O(m) via a uniform 3D spatial grid hash** so full density is affordable
+(the old O(m²) linkage was what forced the small starving cap). The 256 cap becomes a pure safety
+ceiling (65536) with no per-locus bias. HONEST/DISAGREED-safe: every retained seed is still a real
+refined on-both-surfaces transversal crossing (`refineRegion` already gates point-on-both ≤ tol and
+‖n₁×n₂‖ ≥ tangentSinTol); density only changes WHICH real seeds reach the split — never fabricates
+a locus. **Measured before → after: AGREED 124→130/144 (86.1%→90.3%), HONESTLY-DECLINED 20→14
+(13.9%→9.7%), multi-branch declines 14→9, DISAGREED 0→0 (bar holds).** Every recovered case became
+AGREED (not DISAGREED), so the new seeds trace to curves on BOTH input surfaces AND on the OCCT
+locus — genuineness confirmed by the oracle. Regression fixture: `seed_freeform_two_coresident_loci_recovered`
+(the verbatim fuzz pose seed `0x5715d1ff1275` case 17 — two rational-NURBS∩B-spline loci; old S2
+emitted 1 seed, new emits 2, each on both surfaces ≤ 1e-7 and transversal). Residual tail (9
+declines): the remaining multi-branch cases are near-tangent-family poses where a co-resident locus
+is itself near-tangent (a SEEDING-tangency deferral, honest → OCCT) or the `genuineOcctOnNat` miss
+is a sub-`onCurve` fitted-spline bow (≈ 1.1e-3, just over the fixed 1e-3 gate) — the documented
+fit-density artifact, not a fabrication.
+
 #### S4-d — Branch points · ◐ TWO HONEST SLICES DONE AT THE BAR (analytic Steinmetz self-crossing + FIRST FREEFORM branch point: a B-spline saddle ∩ plane OPEN-ARM X-crossing; general multi-line/cusp/saddle∩saddle branches remain)
 The hardest SSI piece: where the intersection **locus itself crosses** (multiple curve arms
 meet at one point), LOCALIZE the branch point, ENUMERATE the outgoing arms from the local

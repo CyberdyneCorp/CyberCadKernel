@@ -20,7 +20,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -679,13 +683,24 @@ struct ClusterAcc {
       : xversal(k), haveSeed(k, 0), sawTangent(k, 0), ntBest(k) {}
 };
 
-// Cap on transversal seeds retained per cluster for the single-linkage split. Bounds memory
-// and the O(m²) linkage; ample for any real multi-loop merge (splitMaxPerCluster ≪ this).
-constexpr std::size_t kMaxSeedsPerCluster = 256;
+// Hard SAFETY ceiling on transversal seeds retained per cluster for the distinct-locus split.
+// This is NOT the recall knob any more — it is a pure memory guard. The starving bug was a
+// FLAT-FIFO cap SO SMALL (256) that one dense locus's leaves filled it in candidate-iteration
+// order and DROPPED a co-resident locus's later leaves (measured multi-branch decline: the
+// seeder handed the marcher ONE seed for a twice-piercing pose, seeded=1 occtComp=2). The fix is
+// two-fold: (1) keep the FULL refined-seed density per cluster (so the single-linkage split still
+// sees the dense chain that keeps ONE physical loop connected — a thinned set can leave arc gaps
+// that spuriously split one loop); (2) make that split O(m) via a spatial grid hash (see
+// splitDistinctLoci) so full density is affordable. The ceiling is now high enough that a real
+// intersection field never reaches it, and if it ever did the tail is dropped uniformly (no
+// per-locus bias). DISAGREED-safe: every retained seed is a real refined on-both-surfaces
+// transversal crossing; density only changes WHICH real seeds reach the split, never fabricates.
+constexpr std::size_t kMaxSeedsPerCluster = 65536;
 
-// Fold one refined region into its cluster's accumulator: append the transversal seed (for
-// the distinct-locus split), else keep the flattest (most degenerate) near-tangent solution
-// for S4-b typing. With the split OFF, only the single tightest transversal seed is retained.
+// Fold one refined region into its cluster's accumulator: append the transversal seed at FULL
+// density (for the distinct-locus split), else keep the flattest (most degenerate) near-tangent
+// solution for S4-b typing. With the split OFF, only the single tightest transversal seed is
+// retained (byte-identical to the pre-split path).
 void accumulateRegion(const SurfaceAdapter& A, const SurfaceAdapter& B,
                       const CandidateRegion& reg, const SeedOptions& opts, double onSurfTol,
                       bool doSplit, int cid, ClusterAcc& acc) {
@@ -719,16 +734,53 @@ void accumulateRegion(const SurfaceAdapter& A, const SurfaceAdapter& B,
 // seed of each component into `outSeeds`, deterministic in seed-append order, capped at
 // `maxOut`. An over-split (same loop, two components) only re-traces the loop — the S3 marcher's
 // per-branch locus-dedup collapses it, so this is recall-only and never a wrong result.
+//
+// LINKAGE IS SPATIAL-HASHED (O(m), not O(m²)): the seeds are binned into a uniform 3D grid of
+// cell size `sep`, and each seed is only unite-tested against seeds in its own and the 26
+// neighbouring cells — every pair within `sep` shares such a neighbourhood, so the linkage is
+// EXACT while the cost is linear in the seed count. This is what lets the accumulator keep the
+// FULL refined-seed density (needed to keep one physical loop connected) without the old O(m²)
+// blow-up that forced the small starving cap. Deterministic (integer cell keys, stable order).
 void splitDistinctLoci(const std::vector<Seed>& seeds, double sep, std::size_t maxOut,
                        std::vector<Seed>& outSeeds) {
   const std::size_t m = seeds.size();
   if (m == 0) return;
   DisjointSet ds(static_cast<int>(m));
   const double sep2 = sep * sep;
-  for (std::size_t i = 0; i < m; ++i)
-    for (std::size_t j = i + 1; j < m; ++j)
-      if (math::normSquared(seeds[i].point - seeds[j].point) <= sep2)
-        ds.unite(static_cast<int>(i), static_cast<int>(j));
+  const double inv = 1.0 / (sep > 0.0 ? sep : 1.0);
+  // Integer cell key per seed (floor(coord/sep)); bucket seed indices by key in a hash map.
+  struct Key { long x, y, z; bool operator==(const Key& o) const { return x==o.x && y==o.y && z==o.z; } };
+  struct KeyHash {
+    std::size_t operator()(const Key& k) const noexcept {
+      // 64-bit mix of the three cell indices (deterministic, order-independent).
+      auto h = static_cast<std::uint64_t>(k.x * 73856093L) ^
+               static_cast<std::uint64_t>(k.y * 19349663L) ^
+               static_cast<std::uint64_t>(k.z * 83492791L);
+      return static_cast<std::size_t>(h);
+    }
+  };
+  auto cellOf = [&](const Seed& s) -> Key {
+    return Key{static_cast<long>(std::floor(s.point.x * inv)),
+               static_cast<long>(std::floor(s.point.y * inv)),
+               static_cast<long>(std::floor(s.point.z * inv))};
+  };
+  std::unordered_map<Key, std::vector<int>, KeyHash> grid;
+  grid.reserve(m * 2);
+  for (std::size_t i = 0; i < m; ++i) grid[cellOf(seeds[i])].push_back(static_cast<int>(i));
+  // Unite each seed with neighbours in its own + 26 adjacent cells that are within `sep`.
+  for (std::size_t i = 0; i < m; ++i) {
+    const Key c = cellOf(seeds[i]);
+    for (long dx = -1; dx <= 1; ++dx)
+      for (long dy = -1; dy <= 1; ++dy)
+        for (long dz = -1; dz <= 1; ++dz) {
+          const auto it = grid.find(Key{c.x + dx, c.y + dy, c.z + dz});
+          if (it == grid.end()) continue;
+          for (const int j : it->second)
+            if (static_cast<std::size_t>(j) > i &&
+                math::normSquared(seeds[i].point - seeds[static_cast<std::size_t>(j)].point) <= sep2)
+              ds.unite(static_cast<int>(i), j);
+        }
+  }
   // Tightest seed per connected component, in first-appearance order of the component root.
   std::vector<int> compOf(m, -1);
   std::vector<int> order;          // component-id → index of its current tightest seed
@@ -763,6 +815,11 @@ void refineClusters(const SurfaceAdapter& A, const SurfaceAdapter& B,
   const bool bothFreeform = A.freeformSpanCount >= 1 && B.freeformSpanCount >= 1;
   const bool doSplit = opts.splitDistinctBranches && bothFreeform;
 
+  // Distinct-locus separation: two refined seeds beyond this 3D distance are on distinct loci.
+  // Scale-relative + deterministic; sized so one physical loop never splits (its refined
+  // points are ≪ this apart) yet two co-resident loops (typically an operand-scale apart) do.
+  const double sep = std::max(scale * opts.splitDistinctFrac, onSurfTol * 4.0);
+
   ClusterAcc acc(static_cast<std::size_t>(std::max(0, numClusters)));
   for (std::size_t i = 0; i < regs.size(); ++i) {
     const int cid = cluster[i];
@@ -770,13 +827,16 @@ void refineClusters(const SurfaceAdapter& A, const SurfaceAdapter& B,
     if (!suppressed.empty() && suppressed[cid]) continue;  // S4-a coincident cluster
     accumulateRegion(A, B, regs[i], opts, onSurfTol, doSplit, cid, acc);
   }
-  // Distinct-locus separation: two refined seeds beyond this 3D distance are on distinct loci.
-  // Scale-relative + deterministic; sized so one physical loop never splits (its refined
-  // points are ≪ this apart) yet two co-resident loops (typically an operand-scale apart) do.
-  const double sep = std::max(scale * opts.splitDistinctFrac, onSurfTol * 4.0);
   const std::size_t maxPer = doSplit
                                  ? static_cast<std::size_t>(std::max(1, opts.splitMaxPerCluster))
                                  : 1u;
+  // DIAGNOSTIC (env-gated, OCCT-free): dump per-cluster accumulation so a declined
+  // co-resident case reveals WHERE the second locus was lost — was a distinct-locus
+  // component ever refined (split-merge problem), or was the cluster left with a single
+  // spatial component (candidate never produced / never converged there)? Off by default;
+  // no behaviour change.
+  const bool diag = std::getenv("CYBERCAD_SSI_SEED_DIAG") != nullptr;
+
   int branchId = 0;
   for (int cid = 0; cid < numClusters; ++cid) {
     if (acc.haveSeed[cid]) {
@@ -785,12 +845,19 @@ void refineClusters(const SurfaceAdapter& A, const SurfaceAdapter& B,
       // so this splits into one component and emits it — byte-identical to the pre-split path.
       const double effSep = doSplit ? sep : std::numeric_limits<double>::infinity();
       splitDistinctLoci(acc.xversal[static_cast<std::size_t>(cid)], effSep, maxPer, emit);
+      if (diag)
+        std::fprintf(stderr,
+            "[SEED-DIAG] cid=%d xversalSeeds=%zu emitted=%zu sep=%.4e doSplit=%d scale=%.4e\n",
+            cid, acc.xversal[static_cast<std::size_t>(cid)].size(), emit.size(), sep,
+            doSplit ? 1 : 0, scale);
       for (Seed& s : emit) {
         ++out.refinedAccepted;
         s.branchId = branchId++;
         out.seeds.push_back(s);
       }
     } else if (acc.sawTangent[cid]) {
+      if (diag)
+        std::fprintf(stderr, "[SEED-DIAG] cid=%d NO-XVERSAL sawTangent=1 (deferred)\n", cid);
       // A near-tangent cluster with no transversal seed: TYPE the contact (S4-b) and keep the
       // compatibility counter. NearTangentTransversal is handed on to S4-c (never traced here);
       // Undecided → OCCT. deferredTangent stays the per-cluster count for pre-S4-b callers.
@@ -798,6 +865,8 @@ void refineClusters(const SurfaceAdapter& A, const SurfaceAdapter& B,
       const NearTangentSolution& nt = acc.ntBest[cid];
       out.tangentContacts.push_back(classifyTangentContact(
           A, B, nt.u1, nt.v1, nt.u2, nt.v2, nt.point, nt.nA, nt.nB, nt.crossingSine, scale));
+    } else if (diag) {
+      std::fprintf(stderr, "[SEED-DIAG] cid=%d NO-SEED (no region converged, no tangent)\n", cid);
     }
   }
 }
@@ -954,6 +1023,13 @@ SeedSet seed_intersection(const SurfaceAdapter& A, const SurfaceAdapter& B,
   }
 
   refineClusters(A, B, candidates, cluster, numClusters, opts, onSurfTol, scale, suppressed, result);
+  if (std::getenv("CYBERCAD_SSI_SEED_DIAG") != nullptr) {
+    std::fprintf(stderr,
+        "[SEED-DIAG] SUMMARY candidates=%d clusters=%d seeds=%d refinedAccepted=%d "
+        "deferredTangent=%d gu=%d gv=%d minFrac=%.5f scale=%.4e\n",
+        result.candidateRegions, numClusters, result.branchCount(), result.refinedAccepted,
+        result.deferredTangent, gu, gv, minFrac, scale);
+  }
   return result;
 }
 

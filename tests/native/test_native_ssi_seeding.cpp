@@ -325,4 +325,84 @@ CC_TEST(seed_bspline_x_bspline_transversal) {
   }
 }
 
+// ── REGRESSION: two co-resident loci in ONE adjacency cluster → both seeded ────────
+// A general rational-NURBS ∩ B-spline pose lifted VERBATIM from the freeform SSI fuzzer
+// (base seed 0x5715d1ff1275, case 17) — a MEASURED HONESTLY-DECLINED multi-branch case:
+// OCCT (GeomAPI_IntSS) finds TWO distinct co-resident intersection loci, but the old S2
+// seeder handed the marcher only ONE seed (seeded=1, occtComp=2). The two loci's candidate
+// leaves land in ONE param-adjacency cluster (dense wavy nets), and the old per-cluster
+// FIFO cap (256) was filled by the FIRST locus's thousands of leaves in candidate-iteration
+// order, DROPPING the co-resident locus's later leaves before the distinct-locus split ran
+// (cap-starvation). The fix keeps the FULL refined-seed density per cluster (single-linkage,
+// now spatially hashed → O(m)), so BOTH loci reach the split and each gets a seed.
+//
+// The bar is HONEST: each of the two seeds must be a real refined crossing — on BOTH
+// surfaces ≤ 1e-7 AND transversal (‖n₁×n₂‖ well above zero) — never a fabricated seed. The
+// two seeds sit on genuinely distinct loci (x < 0 vs x > 0), matching OCCT's two lines.
+CC_TEST(seed_freeform_two_coresident_loci_recovered) {
+  // A: rational NURBS (degU=2, degV=3, 5×6), B: B-spline (degU=degV=3, 4×4).
+  const std::vector<Point3> polesA = {
+      {-1.21128996,-1.21908255,0.145194143}, {-1.1998045,-0.722431005,0.224019689}, {-1.18528066,-0.240523095,0.155081873},
+      {-1.20727003,0.256315325,-0.138305492}, {-1.2354309,0.715989591,-0.200995692}, {-1.20477968,1.22381342,-0.17295903},
+      {-0.603062904,-1.20405458,0.249045448}, {-0.630416413,-0.736780525,0.292108207}, {-0.590607468,-0.267882158,0.18571183},
+      {-0.569124592,0.208057258,-0.153559289}, {-0.623577718,0.743414313,-0.288390673}, {-0.564966836,1.20348526,-0.183951177},
+      {-0.0321369714,-1.17667275,0.0223528906}, {0.0241783425,-0.734134854,-0.0267444078}, {0.000435944203,-0.27465435,0.0401421085},
+      {-0.0163486114,0.213345658,0.0355759456}, {0.00226608137,0.697959808,-0.035579903}, {0.0011811433,1.1879855,-0.0126770427},
+      {0.610210827,-1.19415663,-0.248624759}, {0.586780427,-0.731082198,-0.346625078}, {0.60464737,-0.208876998,-0.088524004},
+      {0.605188924,0.21654637,0.0973368863}, {0.560749299,0.684907247,0.297323106}, {0.570826047,1.1866793,0.182843186},
+      {1.20178856,-1.18389511,-0.162002595}, {1.21041922,-0.699763741,-0.217308605}, {1.2066239,-0.235290063,-0.11281356},
+      {1.20567144,0.257189991,0.116754358}, {1.19057293,0.716091403,0.277167898}, {1.23408035,1.16662419,0.178675021},
+  };
+  const std::vector<double> wtsA = {
+      0.745691173, 2.32800202, 0.650444672, 1.94652488, 1.79007235, 0.949630341, 1.3192024, 0.415428797,
+      1.11515914, 1.28193655, 1.32265724, 2.15411339, 0.811730387, 2.48288942, 1.24483187, 0.454868667,
+      1.19505552, 2.03923881, 1.02506307, 1.47794648, 1.61358937, 1.09160037, 2.48373184, 1.07685357,
+      2.47985123, 0.419704979, 0.578314701, 2.46531896, 1.27958702, 1.25362873};
+  const std::vector<double> kUA = {0, 0, 0, 0.333333333, 0.666666667, 1, 1, 1};
+  const std::vector<double> kVA = {0, 0, 0, 0, 0.333333333, 0.666666667, 1, 1, 1, 1};
+  const int degUA = 2, degVA = 3, nUA = 5, nVA = 6;
+
+  const std::vector<Point3> polesB = {
+      {-1.19880228,-1.17163648,-0.0314569395}, {-1.21302274,-0.425076316,0.129553685}, {-1.18057683,0.36861656,0.07855668},
+      {-1.22927937,1.22946816,-0.0118351196}, {-0.371965995,-1.18319903,-0.112030629}, {-0.396434246,-0.390625897,-0.037090016},
+      {-0.417584575,0.409947941,-0.00188247391}, {-0.388263411,1.20029292,-0.0328895578}, {0.416179816,-1.22583395,-0.132113178},
+      {0.41765547,-0.424009998,0.046062877}, {0.430070828,0.437054778,-0.0428521935}, {0.425333701,1.17950658,-0.0343344577},
+      {1.20776824,-1.17688741,-0.0328426964}, {1.23649816,-0.381455868,0.0880619564}, {1.16708503,0.432960939,0.0725515852},
+      {1.219396,1.19339302,-0.0403895591},
+  };
+  const std::vector<double> kUB = {0, 0, 0, 0, 1, 1, 1, 1};
+  const std::vector<double> kVB = {0, 0, 0, 0, 1, 1, 1, 1};
+  const int degUB = 3, degVB = 3, nUB = 4, nVB = 4;
+
+  auto A = ssi::makeNurbsAdapter(degUA, degVA, polesA, wtsA, nUA, nVA, kUA, kVA);
+  auto B = ssi::makeBSplineAdapter(degUB, degVB, polesB, nUB, nVB, kUB, kVB);
+
+  // The fuzzer runs S2 with this grid/leaf; keep it identical so the fixture is the pose.
+  ssi::SeedOptions o;
+  o.initialGridU = 6;
+  o.initialGridV = 6;
+  o.minPatchFrac = 1.0 / 32.0;
+  auto ss = ssi::seed_intersection(A, B, o);
+
+  // BOTH co-resident loci recovered (was 1 before the cap-starvation fix).
+  CC_CHECK(ss.branchCount() == 2);
+  CC_CHECK(ss.deferredTangent == 0);  // both loci are transversal — no fabricated tangent
+
+  // Each seed is a GENUINE crossing: on both surfaces ≤ 1e-7 and transversal. Never faked.
+  nmath::SurfaceGrid gA{polesA, nUA, nVA};
+  nmath::SurfaceGrid gB{polesB, nUB, nVB};
+  for (const auto& s : ss.seeds) {
+    CC_CHECK(s.onSurfResidual < 1e-7);
+    CC_CHECK(s.crossingSine > 0.1);
+    const Point3 pa = nmath::nurbsSurfacePoint(degUA, degVA, gA, wtsA, kUA, kVA, s.u1, s.v1);
+    const Point3 pb = nmath::surfacePoint(degUB, degVB, gB, kUB, kVB, s.u2, s.v2);
+    CC_CHECK(nmath::distance(pa, s.point) < 1e-7);  // on surface A (rational)
+    CC_CHECK(nmath::distance(pb, s.point) < 1e-7);  // on surface B
+  }
+  // The two seeds are on genuinely DISTINCT loci (opposite sides in x), matching OCCT's
+  // two lines — not one locus over-split (a duplicate would sit near the other).
+  if (ss.seeds.size() == 2)
+    CC_CHECK(ss.seeds[0].point.x * ss.seeds[1].point.x < 0.0);
+}
+
 int main() { return cctest::run_all(); }

@@ -190,6 +190,50 @@ CurveFitResult interpolateCurve(std::span<const Point3> points, int degree,
   return r;
 }
 
+CurveFitResult interpolateCurveWithParams(std::span<const Point3> points,
+                                          std::span<const double> params, int degree) {
+  CurveFitResult r;
+  const int n = static_cast<int>(points.size());
+  if (degree < 1 || n < degree + 1) return r;                 // need ≥ p+1 points
+  if (static_cast<int>(params.size()) != n) return r;         // one param per datum
+  // Params must be a valid monotone increasing sequence in [0,1] (Piegl & Tiller §9.2:
+  // the collocation is well-conditioned only for a strictly increasing parametrization).
+  if (!(params.front() >= 0.0) || !(params.back() <= 1.0 + 1e-12)) return r;
+  for (int k = 1; k < n; ++k)
+    if (!(params[k] > params[k - 1])) return r;               // non-monotone → honest decline
+
+  const std::vector<double> u(params.begin(), params.end());
+  const std::vector<double> U = avgKnots(u, degree);
+
+  // Build the (n)×(n) collocation matrix A(k,i) = N_{i,p}(u_k), row-major — SAME as
+  // interpolateCurve, but with the prescribed params.
+  const int lastPole = n - 1;
+  std::vector<double> A(static_cast<std::size_t>(n) * n, 0.0);
+  std::vector<double> N(degree + 1);
+  for (int k = 0; k < n; ++k) {
+    const int span = findSpan(lastPole, degree, u[k], U);
+    basisFuns(span, u[k], degree, U, N);
+    for (int j = 0; j <= degree; ++j)
+      A[static_cast<std::size_t>(k) * n + (span - degree + j)] = N[j];
+  }
+
+  const std::vector<double> cx = solveAxis(A, n, points, px);
+  const std::vector<double> cy = solveAxis(A, n, points, py);
+  const std::vector<double> cz = solveAxis(A, n, points, pz);
+  if (static_cast<int>(cx.size()) != n || static_cast<int>(cy.size()) != n ||
+      static_cast<int>(cz.size()) != n)
+    return r;  // singular collocation
+
+  r.curve.degree = degree;
+  r.curve.knots = U;
+  r.curve.poles.resize(n);
+  for (int i = 0; i < n; ++i) r.curve.poles[i] = {cx[i], cy[i], cz[i]};
+
+  curveErrors(r.curve, points, u, r.maxError, r.rmsError);
+  r.ok = true;
+  return r;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Rational curve interpolation with prescribed weights.
 //

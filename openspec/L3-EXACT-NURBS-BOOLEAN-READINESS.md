@@ -92,28 +92,45 @@ multi-branch / small-loop seeding-recall** — *not* the near-tangent marching m
 bucket measured **0%**; the marcher steps through freeform grazes cleanly). **The no-silent-
 wrong invariant held: native never traced a curve off both surfaces.**
 
-### Stage 2 — Pcurve construction · **PARTIAL**
+### Stage 2 — Pcurve construction · **WORKS (parameter-aligned + rational; honest-declines the surface-nonlinearity residual)**
 
 `topology/trimmed_nurbs.h` `constructPcurve` is exactly the stage-2 verb: project sampled
 3-D edge points to (u,v) via `numerics::closest_point_on_surface` and fit a 2-D B-spline,
 then round-trip-verify `S(pcurve(t)) == C(t)`.
 
+> **✅ STRENGTHENED (L3-a, `L3-a-stage2-boolean-pcurve`).** The earlier decline was a
+> **parametrisation mismatch**, now FIXED. The fit re-parametrised by CHORD-LENGTH while
+> fidelity re-evaluated at the edge's ORIGINAL parameter → for a *curved* (u,v) seam the two
+> drifted by ~0.30 at worst (the 0.026-class decline). The fix is a **parameter-aligned fit**:
+> the edge C(t) is sampled at UNIFORM t and the projected feet are fitted with those SAME
+> uniform parameters (new `math::interpolateCurveWithParams` — Piegl & Tiller §9.2 collocation
+> with prescribed params, NOT a fresh chord-length reparam), knots remapped to [first,last], so
+> `pcurve(t)` lands on `C(t)`'s foot at EVERY t, not just the sampled knots. **Measured, same
+> host oracle:**
+
 | probe | result | evidence |
 |---|---|---|
-| iso-curve `S(u, 0.5)` on a bicubic NURBS surface | **DECLINE (honest)** | projection residual (edge-on-S) **9.6e-5** (edge IS on S), but round-trip fidelity **maxDev 0.026** ≫ the scale-relative tol **2.1e-9** → `ok=false`, honest decline |
+| iso-curve `S(u, 0.5)` on a bicubic NURBS surface | **WELDS boolean-grade** | round-trip **maxDev 1.1e-15** (was 0.026) — the iso-line is affine-representable, reproduced to machine precision; second iso `S(u,0.35)` also ≤1e-9 |
+| curved **freeform** seam on an **affine** surface (plane) | **WELDS boolean-grade** | chord-length fit drifts **0.30**; parameter-aligned welds **1.6e-16** (≥6 orders tighter) — the exact preimage is a genuine low-degree curve |
+| **rational** circular seam on a **rational NURBS cylinder** (exact x²+y²=R²) | **WELDS boolean-grade** | round-trip **4.0e-16**; S(pcurve(t)) lies on the exact quadric to ≤1e-9 (was the old polynomial sag). A circular seam on a PLANE builds an EXACT **rational** pcurve (`interpolateRationalCurve`, weights non-empty), maxDev **0** |
+| curved **freeform** seam on a **general bicubic** surface | **HONEST-DECLINE** | parameter-alignment slashes the drift **0.30 → ~2e-7** (≥4 orders), but the nonlinear-S preimage is NOT low-degree → the truncation residual stays above the 1e-9 bar → `ok=false`, TRUE deviation reported, **never a widened tolerance** |
 
-The decline is **honest and instructive**: the projection lands the feet on S, but the fit
-re-parametrises by chord-length while fidelity re-evaluates at the edge's *original*
-parameter — a **parametrisation mismatch** between `C(t)` and the fitted pcurve's `t`, plus
-the fit being **non-rational** (a rational seam is approximated and its *true* deviation
-reported, never a widened tolerance). So stage 2 **WORKS as a data model + fidelity guard**
-(it detects a bad pcurve — see stage 5) but **constructPcurve does not yet reliably produce
-a boolean-grade pcurve for a general NURBS seam** at the default bar. This is the
-lowest-cost stage to strengthen (a parameter-aligned fit + a boolean-appropriate,
-edge-length-relative fidelity tolerance).
+The fidelity tolerance is **edge-length-relative** (`tol = absTol + relTol·L`, L the 3-D edge
+length scale) so the guard stays honest: it welds a parameter-aligned seam and REJECTS a
+genuinely drifted one. The residual is now sharply characterised: an **affine surface** (plane,
+or a rational NURBS cylinder whose u-parameter IS the rational-quadratic parameter) reproduces
+ANY polynomial/rational seam to machine precision; a **general bicubic** surface with a curved
+seam retains an honest surface-nonlinearity truncation and DECLINES (never faked). This is the
+**boolean-grade pcurve for the affine/rational seam family** the readiness map named as the
+lowest-cost strengthening.
 
-**Verdict 2: PARTIAL** — the pcurve data model + fidelity guard land; robust construction
-of a boolean-grade pcurve on a general NURBS operand is the residual.
+**Verdict 2: WORKS** — parameter-aligned + rational-capable `constructPcurve` welds a
+boolean-grade pcurve on an affine or rational NURBS operand (iso-curve, curved freeform on a
+plane, and a rational circular seam on a rational NURBS cylinder all ≤1e-9 / machine precision);
+the general **curved-seam-on-a-nonlinear-surface** truncation is honestly declined with a
+measured, orders-of-magnitude-reduced residual — never widened. Regression:
+`test_native_trimmed_nurbs` (`testConstructionIsoCurve`, `testFreeformSeam`,
+`testRationalCylinderSeam`).
 
 ### Stage 3 — Face trimming / splitting · **PARTIAL**
 
@@ -211,7 +228,7 @@ watertight sew is MISSING.
 | stage | readiness | one-line evidence |
 |---|---|---|
 | 1 Surface–surface intersection | **WORKS** | exact NURBS-cyl∩plane circle to **5.6e-16**; freeform open line **4.2e-13**; closed interior loop **1 seed → 446-pt loop 2.0e-11** (the "0 seeds" reading was a flawed empty-intersection fixture — corrected). Residual = near-tangent multi-branch moat (S4), ≈13.9% general decline |
-| 2 Pcurve construction | **PARTIAL** | `constructPcurve` declines the iso-curve round-trip (parametrisation + non-rational fit); data model + fidelity guard land |
+| 2 Pcurve construction | **WORKS** (L3-a) | parameter-aligned + rational `constructPcurve` welds the iso-curve **1.1e-15**, a curved freeform seam on a plane **1.6e-16**, a rational circular seam on a rational NURBS cylinder **4.0e-16** (was 0.026 decline); a curved seam on a nonlinear bicubic honestly declines its ~2e-7 surface-truncation residual (never widened) |
 | 3 Face split | **PARTIAL** | `classify` inside-test WORKS; split = convex-1-chord + closed-interior-seam only; multi-crossing + healing MISSING |
 | 4 Region classification | **PARTIAL** | single-face In/Out + elementary set-algebra land; general NURBS solid membership MISSING |
 | 5 Reassembly / sew | **PARTIAL** | `pcurveFidelity` welds good / rejects drifted seam; general freeform↔freeform watertight sew MISSING |
@@ -367,7 +384,7 @@ followed by **G3** (the split self-verify on a NURBS grid). G1/G2/G4/G6 are low-
 | tail gap | stage | why it is the deep frontier | rough py |
 |---|---|---|---|
 | **Closed-interior-loop seeding recall** on freeform pairs | 1 | the ≈13.9% general NURBS decline, ~83% multi-branch/small-loop; a boolean seam is *usually* a closed loop; the SSI-ROADMAP measured a targeted-reseed campaign that landed 0.0 pt (hard) | **1–3** |
-| **Boolean-grade general `constructPcurve`** | 2 | parameter-aligned + rational-capable fit at an edge-length-relative fidelity bar | **0.5–1** |
+| **Boolean-grade general `constructPcurve`** | 2 | ✅ **LANDED (L3-a)** for the affine/rational seam family: parameter-aligned (`interpolateCurveWithParams`) + rational-capable fit at an edge-length-relative fidelity bar — iso-curve **1.1e-15**, plane freeform seam **1.6e-16**, rational NURBS-cyl circle **4.0e-16**. Residual: the curved-seam-on-a-**nonlinear** surface truncation (~2e-7), honest-declined | **~0 done / 0.25–0.5 residual** |
 | **General multi-crossing / re-entrant face split + tolerant-topology healing** | 3 | the BOPAlgo-class combinatorial split + gapped-loop / pinch-point healing | **1–2** |
 | **General NURBS solid membership** (point-in-trimmed-NURBS-solid) | 4 | ray-cast / winding across many trimmed NURBS faces, robust on tangencies | **0.5–1** |
 | **General freeform↔freeform watertight sew** | 5 | the curved↔curved seam weld `freeform_freeform_cut.h` declines today | **1–2** |

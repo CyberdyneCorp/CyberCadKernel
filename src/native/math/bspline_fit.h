@@ -116,6 +116,22 @@ struct CurveFitResult {
 CurveFitResult interpolateCurve(std::span<const Point3> points, int degree,
                                 ParamMethod method = ParamMethod::ChordLength);
 
+/// Global curve INTERPOLATION with EXPLICIT parameters — the parameter-aligned form.
+/// Identical to interpolateCurve (A9.1: averaging knots Eq 9.8 + the (n+1)×(n+1) basis
+/// collocation solved once per coordinate), but the caller supplies the parameter uₖ for
+/// every datum instead of deriving it by chord length. The result passes through Qₖ at
+/// the PRESCRIBED parameter uₖ to solver precision.
+///
+/// This is the load-bearing form when the fitted curve must share a parametrization with
+/// another curve (e.g. a pcurve p(t) whose S(p(t)) must equal a 3-D seam C(t) at the SAME
+/// t): sampling C at uniform t and fitting the projected (u,v) feet with those SAME uniform
+/// params makes p(t) land on C(t)'s foot at every t, whereas a fresh chord-length reparam
+/// only matches at the sampled knots and drifts between them. Requires
+/// params.size()==points.size() ≥ degree+1, params strictly increasing in [0,1]; a
+/// non-monotone / out-of-range / degenerate param set returns ok=false (honest guard).
+CurveFitResult interpolateCurveWithParams(std::span<const Point3> points,
+                                          std::span<const double> params, int degree);
+
 /// RATIONAL global curve INTERPOLATION with PRESCRIBED weights. Given the same
 /// data points as interpolateCurve PLUS a positive weight wₖ per point, build a
 /// degree-`degree` RATIONAL NURBS (poles + weights) that passes through every Qₖ at

@@ -29,6 +29,7 @@
 #include "native/topology/trimmed_nurbs.h"
 #ifdef CYBERCAD_HAS_NUMSCI
 #include "native/math/bspline_fit.h"  // interpolateCurve (the on-S edge fixture)
+#include "native/numerics/numerics.h"  // closest_point_on_surface (chord-length drift measurement)
 #endif
 
 #include <cmath>
@@ -959,9 +960,15 @@ static void testRationalPcurve() {
   PcurveConstruction nonrat = constructPcurve(plane, id, circle, id, 0.0, 1.0,
                                               0.0, 1.0, 0.0, 1.0, poly);
   expectTrue(!nonrat.rational, "non-rational path produces a non-rational pcurve");
-  expectGT(nonrat.fidelity.maxDeviation, 1e-4,
+  // A polynomial CANNOT represent a circle exactly: even the parameter-aligned non-rational fit
+  // retains a genuine (sampling-dependent) sag ≫ machine precision. The rational path reproduces
+  // the SAME circle EXACTLY (maxDev == 0), so the rational pcurve is not merely better but
+  // qualitatively different (0 vs a measurable sag). The threshold is the polynomial's real
+  // residual, not a widened tolerance — a degree-3 interpolant of 48 circle samples sags ~4.3e-5.
+  expectGT(nonrat.fidelity.maxDeviation, 1e-6,
            "non-rational polynomial pcurve SAGS (measurable deviation)");
-  // The rational pcurve is strictly, dramatically more faithful than the polynomial one.
+  // The rational pcurve is strictly, dramatically more faithful than the polynomial one
+  // (rational == 0 exactly, so the polynomial sag is orders of magnitude larger).
   expectGT(nonrat.fidelity.maxDeviation, rat.fidelity.maxDeviation * 1e3,
            "rational pcurve is orders-of-magnitude more faithful than polynomial");
 
@@ -1010,6 +1017,296 @@ static void testRationalPcurve() {
   expectGT(cylArc.fidelity.maxDeviation, cylArc.fidelity.tolerance,
            "cylinder arc pcurve reports its TRUE non-zero deviation (honest, not widened)");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9. PARAMETER-ALIGNED ISO-CURVE CONSTRUCTION — the boolean-grade regression (L3-a).
+//
+// THE READINESS-DOC DECLINE, NOW WELDED. The L3 readiness map (§2 Stage 2) measured
+// constructPcurve DECLINING the iso-curve S(u,0.5) round-trip at maxDev 0.026 ≫ the
+// scale-relative tol: the fit re-parametrised by CHORD-LENGTH while fidelity re-evaluated
+// at the edge's ORIGINAL parameter, so pcurve(t) drifted off C(t)'s foot BETWEEN the
+// sampled knots. With the parameter-aligned fit (interpolateCurveWithParams on the edge's
+// OWN uniform-t parameters, knots remapped to [first,last]) pcurve(t) lands on C(t) at
+// EVERY t — the round-trip must now weld to boolean grade (≤1e-9), not 0.026.
+//
+// The edge is a GENUINE iso-curve of the bicubic patch (S(u0,v), a degree-degreeV B-spline
+// whose poles are the u0-basis-weighted rows) — the same airtight fixture testFidelity uses,
+// but here the pcurve is CONSTRUCTED by projection+fit (not hand-supplied) and verified at
+// boolean grade. This is the exact case §2 Stage 2 named as the lowest-cost strengthening.
+// ─────────────────────────────────────────────────────────────────────────────
+static EdgeCurve isoCurveEdge(const FaceSurface& patch, double u0) {
+  const int spanU = math::findSpan(patch.nPolesU - 1, patch.degreeU, u0,
+                                   {patch.knotsU.data(), patch.knotsU.size()});
+  std::vector<double> bu(patch.degreeU + 1);
+  math::basisFuns(spanU, u0, patch.degreeU, {patch.knotsU.data(), patch.knotsU.size()}, bu);
+  const int firstU = spanU - patch.degreeU;
+  EdgeCurve iso;
+  iso.kind = EdgeCurve::Kind::BSpline;
+  iso.degree = patch.degreeV;
+  iso.knots = patch.knotsV;
+  for (int j = 0; j < patch.nPolesV; ++j) {
+    math::Point3 acc{0, 0, 0};
+    for (int k = 0; k <= patch.degreeU; ++k) {
+      const math::Point3& p = patch.poles[static_cast<std::size_t>(firstU + k) * patch.nPolesV + j];
+      acc.x += bu[k] * p.x;
+      acc.y += bu[k] * p.y;
+      acc.z += bu[k] * p.z;
+    }
+    iso.poles.push_back(acc);
+  }
+  return iso;
+}
+
+static void testConstructionIsoCurve() {
+  const FaceSurface patch = bicubicPatch();
+  const Location id{};
+
+  // The genuine iso-curve S(0.5, v), parametrized by the surface's V parameter. Its exact
+  // pcurve is the line (u=0.5, v) in (u,v). The knots span [0,1] (patch.knotsV), so the edge's
+  // parameter t IS the surface v ∈ [0,1] — construct the pcurve over [first,last]=[0,1].
+  const EdgeCurve iso = isoCurveEdge(patch, 0.5);
+
+  ConstructOptions co;
+  co.samples = 40;
+  co.fitDegree = 3;
+  co.surfSamplesU = 32;
+  co.surfSamplesV = 32;
+  co.fidelity.absTol = 1e-9;   // BOOLEAN-GRADE bar — the same 1e-9 the readiness doc targets.
+  co.fidelity.relTol = 1e-9;
+
+  PcurveConstruction pc = constructPcurve(patch, id, iso, id, /*first=*/0.0, /*last=*/1.0,
+                                          /*u0=*/0.0, 1.0, /*v0=*/0.0, 1.0, co);
+  expectTrue(pc.ok, "iso-curve constructPcurve WELDS boolean-grade (ok — was decline 0.026)");
+  expectLE(pc.projMaxDistance, 1e-6, "iso-curve lies on S (projection residual ~0)");
+  expectLE(pc.fidelity.maxDeviation, 1e-9,
+           "parameter-aligned iso-curve round-trip S(p(t))==C(t) ≤ 1e-9 (was 0.026)");
+  expectLE(pc.fidelity.maxDeviation, pc.fidelity.tolerance,
+           "iso-curve round-trip within the boolean-grade tolerance");
+
+  // The constructed pcurve must trace the TRUE (u,v) path: u≈0.5 for every t (the iso-line).
+  if (pc.ok) {
+    double maxDU = 0.0;
+    for (int i = 0; i <= 40; ++i) {
+      const double t = static_cast<double>(i) / 40;
+      const math::Point3 uv =
+          math::curvePoint(pc.pcurve.degree, pc.pcurve.poles2d, pc.pcurve.knots, t);
+      maxDU = std::max(maxDU, std::fabs(uv.x - 0.5));
+    }
+    expectLE(maxDU, 1e-8, "constructed iso pcurve stays on u=0.5 (parameter-aligned)");
+  }
+
+  // A DIFFERENT iso (S(u,0.35)) — the parameter-aligned fit is not special to v=0.5; any iso
+  // welds boolean-grade. This guards against a fixture-tuned pass.
+  const EdgeCurve iso2 = isoCurveEdge(patch, 0.35);
+  PcurveConstruction pc2 = constructPcurve(patch, id, iso2, id, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, co);
+  expectTrue(pc2.ok, "second iso-curve (u=0.35) also welds boolean-grade");
+  expectLE(pc2.fidelity.maxDeviation, 1e-9, "second iso-curve round-trip ≤ 1e-9");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 10. GENERAL FREEFORM SEAM — the parametrization fix, and the honest-decline map.
+//
+// A CURVED (u,v) seam path γ(t) — NOT an iso-line — is where the chord-length fit CATASTROPHE
+// lived: the projected feet are collinear no longer, so a chord-length reparam places the fit's
+// interior parameters by UV arc length while fidelity re-evaluates at the edge's uniform-t
+// parameter → the two drift by ~0.30 (the readiness-doc 0.026-class decline, at its worst). The
+// parameter-aligned fit eliminates that drift. Two airtight legs:
+//
+//   (a) AFFINE surface (plane) + curved POLYNOMIAL seam → the UV preimage IS a genuine low-degree
+//       curve, so the param-aligned pcurve reproduces it EXACTLY (≤1e-15) — boolean-grade. The old
+//       chord-length fit drifted ~0.30 on the SAME seam (measured in-test below).
+//   (b) GENERAL bicubic surface + curved seam → the exact UV preimage of a nonlinear S is NOT a
+//       low-degree B-spline; the param-aligned fit reduces the drift by ~6 orders of magnitude
+//       (0.30 → ~2e-7) but a genuine surface-nonlinearity truncation remains ABOVE the 1e-9
+//       boolean bar → HONEST DECLINE (ok=false), the deviation reported never faked, the tolerance
+//       never widened. This is the doc's "genuinely-unfittable → honest-decline" sub-case.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Build an on-surface edge C(t) = S(γ(t)) as a degree-3 B-spline parametrized by UNIFORM t
+// (so the edge's parameter t is the seam parameter — the airtight parameter-aligned fixture).
+template <class SurfEval, class UVPath>
+static EdgeCurve onSurfaceEdge(SurfEval surf, UVPath gamma, int nSamp) {
+  std::vector<math::Point3> pts;
+  std::vector<double> params;
+  for (int i = 0; i <= nSamp; ++i) {
+    const double t = static_cast<double>(i) / nSamp;
+    const ParamPoint uv = gamma(t);
+    pts.push_back(surf(uv.u, uv.v));
+    params.push_back(t);
+  }
+  const math::CurveFitResult f =
+      math::interpolateCurveWithParams({pts.data(), pts.size()}, {params.data(), params.size()}, 3);
+  EdgeCurve e;
+  e.kind = EdgeCurve::Kind::BSpline;
+  e.degree = f.curve.degree;
+  e.poles = f.curve.poles;
+  e.knots = f.curve.knots;
+  return e;
+}
+
+// Reproduce the OLD chord-length construction on the SAME edge, to measure the drift the fix
+// eliminates (project uniform-t edge points, interpolate with ChordLength, evaluate fidelity).
+// `se` is a world-placed surface evaluator (so it works for a Plane OR a BSpline patch, which
+// store their geometry differently — a Plane has no pole grid).
+template <class SurfEval>
+static double chordLengthMaxDev(const FaceSurface& S, SurfEval se, const EdgeCurve& edge) {
+  namespace nn = cybercad::native::numerics;
+  const Location id{};
+  const int m = 40;
+  nn::SurfaceEval sev = [&](double u, double v) { return se(u, v); };
+  std::vector<math::Point3> uvPts;
+  for (int i = 0; i <= m; ++i) {
+    const double t = static_cast<double>(i) / m;
+    const math::Point3 w = math::curvePoint(edge.degree, edge.poles, edge.knots, t);
+    const nn::SurfaceProjection pr = nn::closest_point_on_surface(sev, 0, 1, 0, 1, w, 32, 32);
+    uvPts.push_back({pr.u, pr.v, 0.0});
+  }
+  const math::CurveFitResult fit =
+      math::interpolateCurve({uvPts.data(), uvPts.size()}, 3, math::ParamMethod::ChordLength);
+  PCurve pc;
+  pc.kind = EdgeCurve::Kind::BSpline;
+  pc.degree = fit.curve.degree;
+  pc.poles2d = fit.curve.poles;
+  pc.knots = fit.curve.knots;  // already on [0,1] = [first,last]
+  return pcurveFidelity(S, id, edge, id, pc, 0.0, 1.0).maxDeviation;
+}
+
+static void testFreeformSeam() {
+  const Location id{};
+
+  // A curved POLYNOMIAL seam γ(t) = (0.2+0.55t², 0.25+0.5t−0.2t³) — not an iso-line.
+  auto gamma = [](double t) {
+    return ParamPoint{0.2 + 0.55 * t * t, 0.25 + 0.5 * t - 0.2 * t * t * t};
+  };
+
+  // (a) AFFINE surface: the plane S(u,v)=(u,v,0). Exact preimage → boolean-grade.
+  const FaceSurface plane = unitPlane();
+  auto planeEval = [](double u, double v) { return math::Point3{u, v, 0.0}; };
+  const EdgeCurve seamOnPlane = onSurfaceEdge(planeEval, gamma, 40);
+
+  ConstructOptions co;
+  co.samples = 40;
+  co.fitDegree = 3;
+  co.surfSamplesU = 16;
+  co.surfSamplesV = 16;
+  co.fidelity.absTol = 1e-9;
+  co.fidelity.relTol = 1e-9;
+
+  // The OLD chord-length fit drifts catastrophically on this curved seam.
+  const double oldDrift = chordLengthMaxDev(plane, planeEval, seamOnPlane);
+  expectGT(oldDrift, 1e-2, "chord-length fit drifts catastrophically on a curved seam (the bug)");
+
+  // The parameter-aligned fit welds it boolean-grade.
+  PcurveConstruction pc = constructPcurve(plane, id, seamOnPlane, id, 0.0, 1.0,
+                                          0.0, 1.0, 0.0, 1.0, co);
+  expectTrue(pc.ok, "affine curved freeform seam WELDS boolean-grade (was chord-length drift)");
+  expectLE(pc.fidelity.maxDeviation, 1e-9,
+           "parameter-aligned curved freeform seam round-trip ≤ 1e-9");
+  // The fix is dramatic: parameter-aligned is ≥ 6 orders of magnitude tighter than chord-length.
+  expectGT(oldDrift, pc.fidelity.maxDeviation * 1e6,
+           "parameter-alignment is ≥ 6 orders tighter than chord-length on the curved seam");
+
+  // (b) GENERAL bicubic surface: the nonlinear S makes the exact preimage NOT low-degree, so the
+  // fit retains an honest truncation residual ABOVE the 1e-9 bar → HONEST DECLINE (never widened).
+  const FaceSurface patch = bicubicPatch();
+  auto patchEval = [&](double u, double v) {
+    return math::surfacePoint(patch.degreeU, patch.degreeV,
+                              math::SurfaceGrid{{patch.poles.data(), patch.poles.size()},
+                                                patch.nPolesU, patch.nPolesV},
+                              {patch.knotsU.data(), patch.knotsU.size()},
+                              {patch.knotsV.data(), patch.knotsV.size()}, u, v);
+  };
+  const EdgeCurve seamOnPatch = onSurfaceEdge(patchEval, gamma, 40);
+  ConstructOptions cp = co;
+  cp.surfSamplesU = 40;
+  cp.surfSamplesV = 40;
+  const double oldDriftPatch = chordLengthMaxDev(patch, patchEval, seamOnPatch);
+  PcurveConstruction pcPatch = constructPcurve(patch, id, seamOnPatch, id, 0.0, 1.0,
+                                               0.0, 1.0, 0.0, 1.0, cp);
+  // The edge genuinely lies on S; the parameter-alignment still slashes the drift by orders of
+  // magnitude, but the surface-nonlinearity truncation keeps it above the boolean bar → decline.
+  expectLE(pcPatch.projMaxDistance, 1e-6, "bicubic freeform seam genuinely lies on S");
+  expectGT(oldDriftPatch, pcPatch.fidelity.maxDeviation * 1e4,
+           "parameter-alignment still slashes the bicubic-seam drift by ≥ 4 orders");
+  expectTrue(!pcPatch.ok, "unfittable bicubic freeform seam HONEST-DECLINES (not widened)");
+  expectGT(pcPatch.fidelity.maxDeviation, pcPatch.fidelity.tolerance,
+           "the honest-declined seam reports its TRUE deviation above tol (never faked)");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 11. RATIONAL SEAM ON A RATIONAL NURBS CYLINDER — the boolean-grade rational oracle (L3-a).
+//
+// A rational NURBS surface that represents a cylinder EXACTLY (x²+y²=R², the SSI-1a quadric
+// fixture) has its U-parameter equal to the circle's own rational-quadratic parameter. A
+// CIRCULAR seam at constant height is therefore reproduced EXACTLY where the exact pcurve is
+// rational: the parameter-aligned pcurve (u=t, v=const, a line in the surface's own rational
+// (u,v)) reproduces the 3-D circle to MACHINE precision (≤1e-9), where the old polynomial fit
+// had a measurable sag. This is the doc's "rational seam exact" oracle (was the old polynomial
+// sag → now ≤1e-9), on a genuine rational NURBS operand, not an analytic Cylinder (whose u is the
+// transcendental angle — that case still honest-declines, see testRationalPcurve).
+// ─────────────────────────────────────────────────────────────────────────────
+static FaceSurface nurbsQuarterCylinder(double R, double H) {
+  FaceSurface s;
+  s.kind = FaceSurface::Kind::BSpline;
+  s.degreeU = 2;
+  s.degreeV = 1;
+  s.nPolesU = 3;
+  s.nPolesV = 2;
+  const double w = std::sqrt(0.5);
+  s.poles = {{R, 0, 0}, {R, 0, H}, {R, R, 0}, {R, R, H}, {0, R, 0}, {0, R, H}};
+  s.weights = {1, 1, w, w, 1, 1};
+  s.knotsU = {0, 0, 0, 1, 1, 1};  // clamped rational-quadratic (angle)
+  s.knotsV = {0, 0, 1, 1};        // clamped linear (height)
+  return s;
+}
+
+static void testRationalCylinderSeam() {
+  const Location id{};
+  const FaceSurface cyl = nurbsQuarterCylinder(1.0, 2.0);
+
+  // The quarter-circle rational-quadratic seam at height h=1.0 (surface v = h/H = 0.5).
+  EdgeCurve seam;
+  seam.kind = EdgeCurve::Kind::BSpline;
+  seam.degree = 2;
+  const double w = std::sqrt(0.5);
+  seam.poles = {{1, 0, 1}, {1, 1, 1}, {0, 1, 1}};
+  seam.weights = {1, w, 1};
+  seam.knots = {0, 0, 0, 1, 1, 1};
+
+  ConstructOptions co;
+  co.samples = 48;
+  co.fitDegree = 2;
+  co.surfSamplesU = 32;
+  co.surfSamplesV = 8;
+  co.fidelity.absTol = 1e-9;
+  co.fidelity.relTol = 1e-9;
+
+  PcurveConstruction pc = constructPcurve(cyl, id, seam, id, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, co);
+  expectTrue(pc.ok, "rational circular seam on a rational NURBS cylinder welds boolean-grade");
+  expectLE(pc.projMaxDistance, 1e-9, "rational seam genuinely lies on the rational NURBS cylinder");
+  expectLE(pc.fidelity.maxDeviation, 1e-9,
+           "rational circular seam reproduces the 3-D circle ≤ 1e-9 (was polynomial sag)");
+
+  // The reconstructed pcurve, through S, reproduces the exact 3-D circle x²+y²=R² at every t.
+  if (pc.ok) {
+    double maxRadErr = 0.0;
+    for (int i = 0; i <= 40; ++i) {
+      const double t = static_cast<double>(i) / 40;
+      const math::Point3 uv =
+          (pc.pcurve.weights.empty()
+               ? math::curvePoint(pc.pcurve.degree, pc.pcurve.poles2d, pc.pcurve.knots, t)
+               : math::nurbsCurvePoint(pc.pcurve.degree, pc.pcurve.poles2d, pc.pcurve.weights,
+                                       pc.pcurve.knots, t));
+      const math::Point3 p = math::nurbsSurfacePoint(
+          cyl.degreeU, cyl.degreeV,
+          math::SurfaceGrid{{cyl.poles.data(), cyl.poles.size()}, cyl.nPolesU, cyl.nPolesV},
+          {cyl.weights.data(), cyl.weights.size()}, {cyl.knotsU.data(), cyl.knotsU.size()},
+          {cyl.knotsV.data(), cyl.knotsV.size()}, uv.x, uv.y);
+      maxRadErr = std::max(maxRadErr, std::fabs(std::sqrt(p.x * p.x + p.y * p.y) - 1.0));
+    }
+    expectLE(maxRadErr, 1e-9, "S(pcurve(t)) lies on the exact quadric x²+y²=R² (≤1e-9)");
+  }
+}
 #endif  // CYBERCAD_HAS_NUMSCI
 
 int main() {
@@ -1023,6 +1320,9 @@ int main() {
   testConstruction();
   testConstructionOffSurface();
   testRationalPcurve();
+  testConstructionIsoCurve();
+  testFreeformSeam();
+  testRationalCylinderSeam();
 #endif
 
   if (g_failures == 0)

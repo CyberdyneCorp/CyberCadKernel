@@ -1062,13 +1062,24 @@ PcurveConstruction constructPcurve(const FaceSurface& surface, const Location& s
   }
 
   // Non-rational (or rational-fallback) 2-D interpolation through the projected UV path
-  // (passes through every projected foot). Degree clamped so degree+1 ≤ #points. The fit
-  // parametrizes on [0,1]; reparametrize the knots onto [first,last] so pcurve(t) is evaluated at
-  // the SAME parameter as C(t). Exact for a polynomial edge; a rational edge fitted here keeps
-  // its honest (non-zero) deviation — never a widened tolerance.
+  // (passes through every projected foot). Degree clamped so degree+1 ≤ #points.
+  //
+  // PARAMETER-ALIGNED FIT (the boolean-grade contract). The edge C(t) is sampled at UNIFORM
+  // t over [first,last] (t_k = first + span·k/m), so its k-th foot uvPts[k] sits at parameter
+  // fraction k/m. We fit the pcurve with those SAME uniform parameters (k/m) — NOT a fresh
+  // chord-length reparam of the projected feet — so pcurve's parameter fraction matches C's:
+  // pcurve(first+span·a) lands on the foot of C(first+span·a) at EVERY a, not just at the
+  // sampled knots. (A chord-length reparam would place its interior parameters by the projected
+  // UV arc length, which drifts from the edge's uniform-t parameter between samples → the 0.026
+  // round-trip mismatch the readiness doc measured.) The knots are then remapped [0,1]→[first,
+  // last] so pcurve(t) is evaluated at the SAME t as C(t). Exact for a polynomial edge; a
+  // rational edge fitted here keeps its honest (non-zero) deviation — never a widened tolerance.
   const int degree = std::clamp(opts.fitDegree, 1, static_cast<int>(uvPts.size()) - 1);
-  const math::CurveFitResult fit =
-      math::interpolateCurve({uvPts.data(), uvPts.size()}, degree, math::ParamMethod::ChordLength);
+  std::vector<double> fitParams(uvPts.size());
+  for (std::size_t i = 0; i < uvPts.size(); ++i)
+    fitParams[i] = static_cast<double>(i) / static_cast<double>(uvPts.size() - 1);
+  const math::CurveFitResult fit = math::interpolateCurveWithParams(
+      {uvPts.data(), uvPts.size()}, {fitParams.data(), fitParams.size()}, degree);
   if (!fit.ok) return out;  // fit failed → honest decline
 
   pc.degree = fit.curve.degree;

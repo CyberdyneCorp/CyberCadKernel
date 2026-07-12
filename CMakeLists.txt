@@ -390,6 +390,26 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_primitive_fit)
         set(test_native_primitive_fit_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_primitive_fit.cpp")
+        # NURBS roadmap Layer 1 — exact analytic↔NURBS conversion (src/native/math/
+        # analytic_nurbs). Analytic→NURBS builds the EXACT rational forms (P&T Ch.7):
+        # circle/arc/ellipse/line as rational-quadratic curves (weight cos(halfSweep),
+        # full circle = 4 quarter segments), plane as a bilinear patch, and cylinder/
+        # cone/sphere/torus as exact rational surfaces of revolution. NURBS→analytic
+        # RECOGNITION uses the H3 primitive-fit machinery on sampled points as a
+        # candidate generator, then VERIFIES exactness algebraically: the curve
+        # control net satisfies the conic (circle/ellipse tangent-pole + weight
+        # pattern), and the surface homogeneous control-net bilinear form P̃ᵢᵀQP̃ⱼ=0
+        # against the fitted quadric Q — control-point-level, ≤1e-12, never a widened
+        # tolerance. It calls primitive_fit (numsci facade), so the module + its host
+        # gate build only under CYBERCAD_HAS_NUMSCI (mirroring test_native_primitive_fit).
+        # Airtight oracles: round-trip recognize(toNurbs(prim))==prim for each primitive
+        # (params ≤1e-12), evaluation exactness (points on circleToNurbs / cylinderToNurbs
+        # lie on the TRUE circle/cylinder ≤1e-14 — rational quadratic is exact), and
+        # DISCRIMINATION (a bicubic freeform bump → General; a non-uniform-weight almost-
+        # circle that ISN'T a circle → General, not a spurious primitive).
+        list(APPEND CYBERCAD_TESTS test_native_analytic_nurbs)
+        set(test_native_analytic_nurbs_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_analytic_nurbs.cpp")
         # NURBS roadmap Layer 6/7 — minimal-energy FAIRING (src/native/math/bspline_fair).
         # Smooths a noisy/wiggly B-spline by minimizing the discrete bending energy
         # (curve Σ|ΔΔP|² ≈ ∫|C''|²; surface thin-plate Σ|S_uu|²+2|S_uv|²+|S_vv|²) over the
@@ -1281,6 +1301,14 @@ if(CYBERCAD_BUILD_TESTS)
     # include trees, exactly like the Layer-7 nurbs-fit gate above.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_primitive_fit)
         target_compile_definitions(test_native_primitive_fit PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+
+    # The Layer-1 analytic↔NURBS gate includes analytic_nurbs.h, which under
+    # CYBERCAD_HAS_NUMSCI pulls in primitive_fit.h → numerics.h (vec.h + std only, no
+    # NumPP/SciPP headers), so its TU needs the macro but NOT the substrate include
+    # trees, exactly like the Layer-7 primitive-fit gate above.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_analytic_nurbs)
+        target_compile_definitions(test_native_analytic_nurbs PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
     # The Layer-6/7 fairing gate includes bspline_fair.h (which under CYBERCAD_HAS_NUMSCI
     # only pulls bspline_ops.h — no substrate header; the solve goes through the facade in

@@ -633,6 +633,19 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_offset)
         set(test_native_nurbs_offset_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_offset.cpp")
+        # Wave-J track J4 — the cc_nurbs_* blend + offset/thicken FACADE wrappers
+        # (src/facade/cc_nurbs_blend_offset.cpp). Driven entirely through the public cc_*
+        # surface: cc_surface_create builds the inputs, the J4 wrappers produce results,
+        # cc_surface_* / CCMesh accessors read them back. Airtight oracles: a freeform G2
+        # fillet on two bicubic bumps → valid cc_surface (or documented decline), an
+        # over-radius fillet → 0 handle + cc_last_error; the rational offset of a NURBS
+        # cylinder radius R by d lies on radius R+d (≤ 1e-6); a gentle patch thickens to a
+        # watertight, positive-volume CCMesh. The offset/thicken paths compose the numsci
+        # Layer-5 fit, so the gate is wired into the CYBERCAD_HAS_NUMSCI block (mirroring
+        # test_native_nurbs_offset); the compile-def is added below.
+        list(APPEND CYBERCAD_TESTS test_cc_nurbs_blend_offset)
+        set(test_cc_nurbs_blend_offset_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cc_nurbs_blend_offset.cpp")
         # NURBS roadmap Layer 1 — tolerance-BOUNDED simplification (src/native/math/
         # bspline_simplify). The CAD complement to the EXACT bspline_ops removeKnot/
         # reduceDegree: greedy bounded knot removal (P&T Ch.9.3, increasing-error order)
@@ -1513,6 +1526,12 @@ if(CYBERCAD_BUILD_TESTS)
     # substrate include trees, exactly like the Layer-6/7 gates above.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_offset)
         target_compile_definitions(test_native_nurbs_offset PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+    # The J4 facade wrapper test asserts the numsci-gated offset/thicken paths (the blend
+    # paths are always available), so its TU needs the CYBERCAD_HAS_NUMSCI macro to compile
+    # the numsci-guarded assertions, exactly like the offset/thicken gates.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_cc_nurbs_blend_offset)
+        target_compile_definitions(test_cc_nurbs_blend_offset PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
     # The Layer-5 thicken gate includes bspline_thicken.h (→ bspline_ops.h + tessellate/
     # mesh.h) + bspline_offset.h + numerics.h — all vec.h/std only, no NumPP/SciPP headers —

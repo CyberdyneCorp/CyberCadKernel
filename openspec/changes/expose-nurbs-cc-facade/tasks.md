@@ -45,9 +45,9 @@ delivery; implementation lands as waves J1–J7 (see `design.md` §7).
   G1/G2) → `cc_surface` (or decline). (**host**)
 
 ## 4. J4 — blend + offset/thicken wrappers
-- [ ] 4.1 `cc_nurbs_fillet_freeform_g2`, `_vertex_blend`, `_chamfer_variable`,
+- [x] 4.1 `cc_nurbs_fillet_freeform_g2`, `_vertex_blend`, `_chamfer_variable`,
   `_chamfer_freeform` → `cc_surface` (or decline). (**host**)
-- [ ] 4.2 `cc_nurbs_offset_rational`, `_offset_trimmed`, `_thicken_trimmed`,
+- [x] 4.2 `cc_nurbs_offset_rational`, `_offset_trimmed`, `_thicken_trimmed`,
   `_shell_trimmed`. Thicken/shell trimmed results carry the self-intersection-free
   guarantee already proven natively; never emit a self-intersecting result. (**host**)
 

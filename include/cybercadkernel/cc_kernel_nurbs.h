@@ -252,6 +252,108 @@ int cc_nurbs_trim_region_boolean(const cc_curve* regionA, int nLoopsA,
                                  const cc_curve* regionB, int nLoopsB, CCTrimBoolOp op,
                                  CCTrimLoop** outLoops, double* area);
 void cc_nurbs_trim_loops_free(CCTrimLoop* loops, int count);
+/* --- J4: blend + offset/thicken --- (APPEND-ONLY; do not reorder above) ─────────
+ * Wave-J track J4 wrappers over the OCCT-free native blend + offset/thicken/shell
+ * modules (src/native/blend, src/native/math/bspline_offset|thicken|shell). Every
+ * wrapper is a thin, guarded delegation that validates its raw-C input, drives the
+ * native representation, and honest-DECLINES on any genuine geometric failure — a
+ * SURFACE-producing wrapper returns a 0 (invalid) cc_surface + cc_last_error, a
+ * SOLID-producing wrapper returns 0 (and zeroes *out) + cc_last_error. The
+ * self-intersection-free / over-radius-fillet / fully-folding-thicken cases DECLINE;
+ * a self-intersecting or folded result is NEVER emitted (design.md §3, tasks.md §4).
+ * The Offset/thicken/shell wrappers compose the numsci-gated Layer-5 fit; when the
+ * kernel is built WITHOUT CYBERCAD_HAS_NUMSCI they honest-decline (0 / *out zeroed +
+ * cc_last_error "…requires the numsci substrate"). The blend wrappers are always
+ * available (their native modules are header-only over math + vec).
+ * SURFACE-producing wrappers register their result as a cc_surface: a bilinear/
+ * de-tensored tensor-product NURBS surface that reproduces the native band/patch grid
+ * exactly (a ruled bevel is degree-1×1; a freeform-fillet skin / vertex-blend corner
+ * is the sampled station×section rim grid as a degree-1×1 net). This is the DISPLAY
+ * geometry crossing the boundary — the same single-surface, non-watertight caveat as
+ * cc_surface_tessellate applies. SOLID-producing wrappers fill a CCMesh (owned by the
+ * caller; free with cc_mesh_free) carrying the native watertight closed shell.
+ */
+/* FREEFORM G2 (curvature-continuous) rolling-ball fillet between two freeform cc_surface
+ * faces at radius `r`, seeded by a rolling-ball centre guess + a spine-run direction.
+ * `center0` / `spineDir` are 3 doubles each (x,y,z). `sA`/`sB` (±1) pick which side of
+ * each face the ball centre lies on; `stepLen` is the centre advance per station;
+ * `nStations` (≥2) is the number of spine stations; `nSectionSamples` (≥1) is the
+ * cross-section sampling. Returns a cc_surface (the skinned fillet band, sampled to a
+ * tensor grid), or a 0-handle + cc_last_error on decline (ball won't fit / over-radius /
+ * section fold / too few stations). NEVER emits a self-intersecting fillet. */
+cc_surface cc_nurbs_fillet_freeform_g2(cc_surface faceA, cc_surface faceB, double r,
+                                       const double* center0, const double* spineDir,
+                                       double sA, double sB, double stepLen, int nStations,
+                                       int nSectionSamples);
+/* SETBACK VERTEX BLEND: fill the N-sided corner where `nFillets` (N ≥ 3) incident fillet
+ * cc_surfaces meet at a shared vertex. `fillets` is an array of N cc_surface handles;
+ * `sides` is N ints (0=U0,1=U1,2=V0,3=V1 — which iso-edge of each fillet faces the gap);
+ * `setbacks` is N doubles ∈ [0,1) (trim each fillet back before taking the gap curve);
+ * `reverses` is N ints (0/1 — reverse the extracted gap curve for loop ordering); `mode`
+ * is 1 for G1, 2 for G2. Writes the N produced corner sub-patches into `outPatches`
+ * (capacity `cap` cc_surface handles) and returns the patch count, or < 0 on decline
+ * (N<3, rational/malformed fillet, non-closed gap loop, G1/G2-infeasible corner, or the
+ * measured blend↔fillet normal residual exceeds the G1 gate) with cc_last_error set. On
+ * a too-small `cap` returns < 0 and registers nothing. */
+int cc_nurbs_vertex_blend(const cc_surface* fillets, int nFillets, const int* sides,
+                          const double* setbacks, const int* reverses, int mode,
+                          cc_surface* outPatches, int cap);
+/* VARIABLE-DISTANCE analytic chamfer along an edge shared by two ANALYTIC faces. `edge`
+ * is `nStations` (≥2) stations packed 12 doubles each: (px,py,pz, tx,ty,tz, nAx,nAy,nAz,
+ * nBx,nBy,nBz) = point, unit edge tangent, faceA outward normal, faceB outward normal.
+ * `subA`/`subB` are analytic substrates packed 11 doubles each: (kind, pointX,Y,Z,
+ * normalX,Y,Z, axisX,Y,Z is packed as normal for a plane; radius; halfAngle) — see the
+ * .cpp packing note; `kind` is 0=Plane,1=Cylinder,2=Cone. The symmetric setback tapers
+ * LINEARLY from `d0` (edge start) to `d1` (edge end). Returns the ruled bevel band as a
+ * cc_surface (degree-1×1 tensor), or a 0-handle + cc_last_error on decline (over-large
+ * setback / degenerate dihedral / unsupported freeform substrate). */
+cc_surface cc_nurbs_chamfer_variable(const double* subA, const double* subB,
+                                     const double* edge, int nStations, double d0,
+                                     double d1);
+/* FREEFORM-EDGE chamfer along a crease shared by two FREEFORM cc_surface faces, setback
+ * `d` measured ALONG each face's surface (first-fundamental-form march). `edge` is
+ * `nStations` (≥2) stations packed 12 doubles each: (px,py,pz, tx,ty,tz, materialHintX,Y,Z,
+ * uA0,vA0, uB0,vB0 ...) — see the .cpp packing note (point, unit tangent, material hint,
+ * per-face footpoint warm-starts). Returns the ruled bevel band as a cc_surface, or a
+ * 0-handle + cc_last_error on decline (footpoint diverged / left domain / self-lap). NEVER
+ * emits a self-intersecting bevel. */
+cc_surface cc_nurbs_chamfer_freeform(cc_surface faceA, cc_surface faceB, const double* edge,
+                                     int nStations, double d);
+/* RATIONAL OFFSET of a cc_surface at signed distance `dist`: fits a rational approximant
+ * so an exact conic (cylinder r±d, sphere R±d) offsets to the exact offset conic. `tol`
+ * is the target fit deviation from the true offset locus (<=0 ⇒ default 1e-4). Returns a
+ * cc_surface, or a 0-handle + cc_last_error on decline (degenerate normal, self-intersection
+ * past the curvature radius, fit failure, or the numsci substrate is absent). */
+cc_surface cc_nurbs_offset_rational(cc_surface h, double dist, double tol);
+/* FOLD-TRIMMED OFFSET of a cc_surface at `dist`: when the offset would self-intersect over
+ * PART of the domain, trims to the maximal fold-free rectangle and returns a valid offset
+ * there. Registers the trimmed offset as a cc_surface (the returned handle) and, when
+ * `kept` is non-null, writes the kept parameter rectangle as 4 doubles (u0,u1,v0,v1) in
+ * the INPUT surface's (u,v) coords and `*trimmed` (non-null) to 0/1. Returns a 0-handle +
+ * cc_last_error when no fold-free region of meaningful area remains. */
+cc_surface cc_nurbs_offset_trimmed(cc_surface h, double dist, double tol, double* kept,
+                                   int* trimmed);
+/* SELF-INTERSECTION-TRIMMED THICKEN of a cc_surface into a CLOSED watertight solid at
+ * signed thickness `dist`: when the inward offset would interpenetrate over PART of the
+ * domain, trims the folded portion and builds the closed solid over the fold-free region.
+ * Fills `out` (a CCMesh owned by the caller; free with cc_mesh_free) with the native
+ * watertight closed shell. Returns 1 on success (out carries a closed, positive-volume
+ * mesh), or 0 (out zeroed) + cc_last_error on decline (fully folding, degenerate, zero
+ * thickness, non-closed, or numsci substrate absent). NEVER emits a self-intersecting
+ * solid. When `kept`/`trimmed` are non-null they receive the kept rectangle / trim flag. */
+int cc_nurbs_thicken_trimmed(cc_surface h, double dist, double tol, CCMesh* out, double* kept,
+                             int* trimmed);
+/* SLAB-OVERLAP-TRIMMED MULTI-FACE SHELL: thicken `nFaces` edge-adjacent cc_surface faces
+ * by `dist` into ONE closed watertight solid, trimming any overlapping mitre at a sharp
+ * dihedral seam to a clean self-intersection-free corner. `faces` is `nFaces` cc_surface
+ * handles; `adjacency` is `nEdges` shared-edge records packed 5 ints each: (faceA, faceB,
+ * edgeA, edgeB, reversed) with edge ids 0=U0,1=U1,2=V0,3=V1. Fills `out` (a CCMesh owned
+ * by the caller; free with cc_mesh_free) with the native watertight closed shell. Returns
+ * 1 on success (out carries a closed, self-intersection-free, positive-volume mesh), or 0
+ * (out zeroed) + cc_last_error on decline (fold, adjacency mismatch, non-manifold seam,
+ * un-trimmable overlap, non-closed, or numsci substrate absent). */
+int cc_nurbs_shell_trimmed(const cc_surface* faces, int nFaces, const int* adjacency,
+                           int nEdges, double dist, double tol, CCMesh* out);
 
 #endif /* CC_KERNEL_NO_PROTOTYPES */
 

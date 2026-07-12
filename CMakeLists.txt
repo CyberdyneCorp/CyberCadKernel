@@ -307,6 +307,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_nurbs_ops
         test_native_nurbs_ops_fuzz
         test_native_trimmed_nurbs
+        test_native_trimmed_nurbs_seam
         test_native_trim_boolean
         test_native_split_healing
         test_native_topology
@@ -1203,6 +1204,17 @@ if(CYBERCAD_BUILD_TESTS)
     # NumPP/SciPP substrate include tree — it calls only always-visible topology decls).
     set(test_native_trimmed_nurbs_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_trimmed_nurbs.cpp")
+    # L8-SEAM — seam-crossing trimmed-NURBS healing (src/native/topology/trimmed_nurbs
+    # seam verbs: surfacePeriod / loopCrossesSeam / healSeamLoop / classifySeam). A trim
+    # loop that wraps a PERIODIC surface's u-seam (a cylinder cross-section band) is
+    # unwrapped into ONE closed seam-crossing loop and classified with the seam
+    # identification (u=0 ≡ u=2π). Always-on (math + topology only, no numsci link).
+    # Airtight oracles: full-wrap band (winding ±1, whole u-band In), half-wrap finite
+    # straddling region (winding 0, exact region), non-crossing + non-periodic NO-OP
+    # (classifySeam == classify byte-for-byte), seam-tangent unbalanced crossing HONEST-
+    # DECLINE (ambiguous / Unknown, never a fabricated wrap).
+    set(test_native_trimmed_nurbs_seam_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_trimmed_nurbs_seam.cpp")
     # Wave-I track I5 — parameter-space trimmed-region boolean (Union / Intersect /
     # Difference) on 2-D trim loops sharing a surface (u,v) domain
     # (src/native/topology/trim_boolean.{h,cpp}). Pure planar computational geometry

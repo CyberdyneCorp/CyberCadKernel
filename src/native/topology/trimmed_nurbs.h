@@ -67,9 +67,13 @@
 //     PLUS GENERAL N-way / crossing pinch splitting (splitAtPinches: a vertex where 3+
 //     strands meet, or two pinch points that cross, is decomposed by CCW-adjacency into
 //     the union of its simple sub-loops, iterated to a fixpoint — region- and area-
-//     preserving). Healing across surface seams and re-parametrizing a badly-drifting
-//     pcurve remain documented residuals; a pinch whose strands do not alternate around
-//     the vertex (a genuinely non-manifold touch) is still declined honestly (ambiguous).
+//     preserving) PLUS SEAM-CROSSING HEALING (surfacePeriod / healSeamLoop / classifySeam:
+//     a trim loop that wraps a PERIODIC surface's u-seam — a cylinder/cone/sphere/torus — is
+//     unwrapped into ONE closed seam-crossing loop with u=0 ≡ u=uPeriod identified, and
+//     classified on the seamed domain; a full wrap encloses the whole u-band). A seam-tangent
+//     graze, a non-simple wrap, and a CLOSED FREE-FORM surface's (unmodelled) seam are declined
+//     honestly. Re-parametrizing a badly-drifting pcurve remains a documented residual; a pinch
+//     whose strands do not alternate around the vertex (a non-manifold touch) is still declined.
 //   * constructPcurve builds a RATIONAL pcurve when the 3-D edge is rational (a circle /
 //     ellipse / rational NURBS): the edge is lifted to homogeneous form, its feet are
 //     projected into (u,v), and a WEIGHTED interpolation (interpolateRationalCurve) fits an
@@ -362,6 +366,109 @@ MultiSplitReport splitAtPinches(const std::vector<ParamPoint>& poly, const HealO
 /// gap, degeneracy, or unresolvable pinch declines (`ok=false`).
 MultiSplitReport splitTrimLoopAtPinches(const TrimLoop& loop, const HealOptions& opts = {},
                                         int flatten = 48);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEAM-CROSSING HEALING — a trim loop that wraps a PERIODIC surface's parametric seam.
+//
+// On a periodic / closed surface (a full cylinder, cone, sphere — u ∈ [0, 2π) with
+// u=0 ≡ u=2π the same physical curve; a torus — periodic in BOTH u and v) a trim loop
+// such as a full cross-section circle CROSSES the u-seam: its (u,v) polyline leaves the
+// u=uPeriod boundary and re-enters at u=0 (or the reverse). The always-on classify /
+// heal above treat the seam as a HARD boundary, so a wrapped circle is mis-handled —
+// split into two open arcs, or classified wrong because a full wrap should enclose the
+// WHOLE u-band, not a thin slab.
+//
+// This slice adds SEAM-AWARE healing, purely additive (the existing entry points are
+// byte-unchanged; every seam verb is a NEW function and every seam option DEFAULTS OFF):
+//   1. DETECT the surface is periodic (surfacePeriod) and that a loop crosses the seam
+//      (loopCrossesSeam — a u-jump of ~one full period between consecutive polyline
+//      vertices, or a loop whose unwrapped u-extent is ≥ one full period ⇒ a full wrap).
+//   2. STITCH across the seam (healSeamLoop): UNWRAP the loop's u so u=0 and u=1·period
+//      are identified — a wrapped circle becomes ONE continuous monotone polyline in
+//      unwrapped-u space, i.e. ONE closed seam-crossing loop, not two arcs. The net
+//      winding (Δu / period, rounded) records how many times the loop wraps.
+//   3. CLASSIFY on the seamed domain (classifySeam): a point's u is reduced modulo the
+//      period and the raycast is done against the unwrapped loop — a full wrap encloses
+//      the whole u-band (every u classifies In within the v-band); a half-wrap encloses
+//      exactly its u-arc.
+//   4. HONEST-DECLINE genuinely-ambiguous seam topology: a NON-periodic surface (a plane
+//      / open freeform) is a NO-OP (seam=false, byte-identical to the non-seam path); a
+//      loop that only TOUCHES the seam tangentially (grazes u=0 without truly crossing)
+//      is DECLINED (ambiguous) rather than mis-wrapped into a fabricated full band.
+//
+// SCALE-RELATIVE and REGION-PRESERVING: the unwrap only ADDS ±period to a u already at
+// the seam (an exact identity on the periodic surface — u and u+period are the SAME
+// physical point), so no interior/exterior verdict on the cylinder is flipped; a
+// non-crossing loop is left byte-identical. A tolerance is NEVER widened.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Periodicity of a FaceSurface's parameter domain. For the analytic quadrics the
+/// u-direction is the angular sweep (period 2π): Cylinder / Cone / Sphere are periodic
+/// in u; a Torus is periodic in BOTH u and v. Plane and (this slice) free-form BSpline /
+/// Bezier are reported non-periodic — a closed free-form surface's seam is an honest
+/// residual, declined rather than guessed.
+struct SurfacePeriod {
+  bool periodicU = false;   ///< true ⇔ u=0 ≡ u=uPeriod is the same physical curve (a seam)
+  bool periodicV = false;   ///< true ⇔ v=0 ≡ v=vPeriod is the same physical curve (a seam)
+  double uPeriod = 0.0;     ///< the u-period (2π for the analytic angular sweep); 0 if not periodic
+  double vPeriod = 0.0;     ///< the v-period (2π for a torus minor sweep); 0 if not periodic
+};
+
+/// Report the parametric periodicity of `surface`. A NON-periodic surface returns
+/// periodicU=periodicV=false (the seam-healing path is then a NO-OP — honest decline).
+SurfacePeriod surfacePeriod(const FaceSurface& surface) noexcept;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SeamHealReport — the diagnosis + result of unwrapping a seam-crossing loop.
+// ─────────────────────────────────────────────────────────────────────────────
+struct SeamHealReport {
+  bool healed = false;      ///< true ⇔ the loop was successfully unwrapped into one seam-crossing loop
+  bool crossesSeam = false; ///< true ⇔ the loop was DETECTED to cross the periodic seam
+  bool ambiguous = false;   ///< true ⇔ a seam-tangent / undecidable crossing → honest decline
+  bool fullWrap = false;    ///< true ⇔ the loop wraps the FULL u-period (|winding| ≥ 1)
+  int winding = 0;          ///< net wraps of the loop around the seam (Δu / period, rounded)
+  double period = 0.0;      ///< the u-period applied
+  double uSpan = 0.0;       ///< unwrapped u-extent of the loop (max−min of the unwrapped u)
+  int seamCrossings = 0;    ///< number of consecutive vertices that jumped ~one full period
+  double tolerance = 0.0;   ///< the scale-relative seam-jump tolerance actually applied
+  std::vector<ParamPoint> loop;  ///< the UNWRAPPED loop polyline (valid to ray-cast iff healed)
+};
+
+/// Does `loop` (already flattened to a UV polyline) cross the u-seam of a period-`period`
+/// surface? Detects a consecutive u-jump of ~`period` (a seam crossing) OR an unwrapped
+/// u-extent ≥ one full period (a full wrap). Returns false for a loop that stays inside
+/// one period (no seam involvement — the plain classify path is correct and used).
+bool loopCrossesSeam(const std::vector<ParamPoint>& loop, double period) noexcept;
+
+/// Unwrap a seam-crossing loop into ONE continuous polyline. Walks the flattened polyline
+/// and, whenever consecutive u jump by ~±period (a seam crossing), ADDS ∓period to keep u
+/// continuous — so a wrapped circle becomes a single monotone-in-u closed loop. Returns a
+/// SeamHealReport: `healed` with the unwrapped `loop` on success; `crossesSeam=false` (NO-OP,
+/// the input echoed) when the loop does not touch the seam; `ambiguous` (honest decline) for
+/// a seam-tangent loop that grazes u=0 without a clean crossing. Region-preserving: the
+/// unwrap only ADDS an exact multiple of the period (u and u+period are the same physical
+/// point on the periodic surface). `period` must be > 0 (a non-periodic surface never calls this).
+SeamHealReport healSeamLoop(const std::vector<ParamPoint>& loop, double period);
+
+/// Flatten `loop` and heal it across the seam of `surface` (if periodic). A non-periodic
+/// surface, or a loop that does not cross the seam, is a NO-OP (`crossesSeam=false`, the
+/// plain flattened loop echoed) — byte-identical to the non-seam path. `flatten` is the
+/// per-segment sample count. Uses the u-period (analytic angular sweep) as the seam period.
+SeamHealReport healTrimLoopSeam(const FaceSurface& surface, const TrimLoop& loop, int flatten = 48);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// classifySeam — point-in-trimmed-region WITH seam identification.
+//
+// Identical to classify() for a NON-periodic surface or a loop that does not cross the
+// seam (byte-for-byte the same verdict — the seam path is a strict superset that no-ops
+// on the common case). For a periodic surface whose outer loop CROSSES the seam, the
+// loop is first unwrapped (healSeamLoop); the query point's u is reduced modulo the
+// period into the loop's unwrapped u-window before the raycast, so a full wrap correctly
+// classifies EVERY u inside the v-band as In (the whole u-band is enclosed), and a
+// half-wrap encloses exactly its u-arc. A seam-tangent (ambiguous) loop declines Unknown.
+// ─────────────────────────────────────────────────────────────────────────────
+Containment classifySeam(const TrimmedNurbsFace& face, const ParamPoint& p,
+                         const ClassifyOptions& opts = {});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pcurve fidelity guard — the load-bearing robustness property.

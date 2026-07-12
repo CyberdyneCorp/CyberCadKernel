@@ -758,6 +758,298 @@ MultiSplitReport splitTrimLoopAtPinches(const TrimLoop& loop, const HealOptions&
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SEAM-CROSSING HEALING — unwrap a trim loop that wraps a periodic surface's seam.
+//
+// REGION-PRESERVATION. On a periodic surface u and u+period are the SAME physical point,
+// so ADDING an exact multiple of the period to a u never moves the boundary in 3-D — it
+// only re-expresses the same loop in a continuous (unwrapped) u so the polyline is ONE
+// closed curve instead of two arcs split at the hard u=0/u=period edge. A non-crossing
+// loop is echoed byte-identically (the seam path is a strict superset). Tolerances are
+// scale-relative to the period and NEVER widened.
+// ─────────────────────────────────────────────────────────────────────────────
+
+SurfacePeriod surfacePeriod(const FaceSurface& surface) noexcept {
+  using K = FaceSurface::Kind;
+  SurfacePeriod sp;
+  switch (surface.kind) {
+    case K::Cylinder:
+    case K::Cone:
+    case K::Sphere:
+      sp.periodicU = true;
+      sp.uPeriod = 2.0 * M_PI;  // the angular sweep u ∈ [0, 2π)
+      return sp;
+    case K::Torus:
+      sp.periodicU = true;
+      sp.uPeriod = 2.0 * M_PI;  // major sweep
+      sp.periodicV = true;
+      sp.vPeriod = 2.0 * M_PI;  // minor sweep
+      return sp;
+    case K::Plane:
+    case K::BSpline:
+    case K::Bezier:
+    default:
+      // A closed free-form surface's seam is an honest residual — not guessed here.
+      return sp;  // non-periodic → seam-healing is a NO-OP
+  }
+}
+
+namespace {
+
+// A consecutive u-jump is a SEAM CROSSING iff it is within `jumpTol` of ±one full period
+// (the polyline left one seam boundary and re-entered at the other). A tangent graze at
+// u=0 is a small jump, NOT ~period, so it is not counted here (it is caught as ambiguous).
+bool isSeamJump(double du, double period, double jumpTol) noexcept {
+  return std::fabs(std::fabs(du) - period) <= jumpTol;
+}
+
+// Distance of a u-value to the NEAREST seam line (u≡0 ≡ period), reduced into [0, period/2].
+double distToSeam(double u, double period) noexcept {
+  double r = std::fmod(u, period);
+  if (r < 0.0) r += period;                 // r ∈ [0, period)
+  return std::min(r, period - r);           // distance to the nearer of u=0 / u=period
+}
+
+// SEAM-TANGENT graze: the polyline TOUCHES the seam line (a vertex within `seamTol` of u≡0)
+// while its two neighbours lie on the SAME side of the seam (it bounces off the seam rather
+// than crossing it). This is genuinely ambiguous — you cannot tell an interior touch from an
+// exterior touch — and is declined honestly rather than mis-wrapped. Requires the loop to have
+// NO true ±period crossing (a real crossing is handled by the unwrap; a touch-without-crossing
+// on a loop that also crosses elsewhere is not the degenerate tangent case).
+bool loopTangentToSeam(const std::vector<ParamPoint>& loop, double period, double seamTol) noexcept {
+  const std::size_t n = loop.size();
+  if (n < 3) return false;
+  const double jumpTol = 0.25 * period;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (distToSeam(loop[i].u, period) > seamTol) continue;  // not on the seam line
+    const ParamPoint& prev = loop[(i + n - 1) % n];
+    const ParamPoint& next = loop[(i + 1) % n];
+    // If either incident edge is a genuine ±period crossing, this vertex is a true crossing,
+    // not a tangent touch — skip it.
+    if (isSeamJump(loop[i].u - prev.u, period, jumpTol) ||
+        isSeamJump(next.u - loop[i].u, period, jumpTol))
+      continue;
+    // Signed offset of each neighbour from THIS vertex's seam (which side they sit on). If both
+    // neighbours are on the same side (both > or both <), the loop bounced off the seam → tangent.
+    const double du0 = prev.u - loop[i].u;
+    const double du1 = next.u - loop[i].u;
+    if (std::fabs(du0) > 1e-12 && std::fabs(du1) > 1e-12 && (du0 > 0.0) == (du1 > 0.0))
+      return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+bool loopCrossesSeam(const std::vector<ParamPoint>& loop, double period) noexcept {
+  const std::size_t n = loop.size();
+  if (n < 3 || period <= 0.0) return false;
+  const double jumpTol = 0.25 * period;  // a seam jump is ~period; a mid-domain step is ≪ period
+  // Any consecutive step (including the closing edge) that jumps ~one full period is a crossing.
+  for (std::size_t i = 0, j = n - 1; i < n; j = i++)
+    if (isSeamJump(loop[i].u - loop[j].u, period, jumpTol)) return true;
+  return false;
+}
+
+SeamHealReport healSeamLoop(const std::vector<ParamPoint>& loop, double period) {
+  SeamHealReport rep;
+  rep.period = period;
+  const std::size_t n = loop.size();
+  if (n < 3 || period <= 0.0) return rep;  // degenerate / non-periodic → NO-OP decline
+
+  const double jumpTol = 0.25 * period;
+  rep.tolerance = jumpTol;
+
+  // SEAM-TANGENT graze — a loop that TOUCHES the seam line without crossing it is genuinely
+  // ambiguous (an interior touch is indistinguishable from an exterior one). Decline honestly
+  // rather than treat it as either a wrap or a plain interior loop. The seam-touch band is a
+  // small fraction of the period (scale-relative, never widened).
+  const double seamTol = 1e-6 * period;
+  if (loopTangentToSeam(loop, period, seamTol)) {
+    rep.crossesSeam = true;
+    rep.ambiguous = true;
+    return rep;
+  }
+
+  if (!loopCrossesSeam(loop, period)) {
+    // No seam involvement: echo the input verbatim (byte-identical to the non-seam path).
+    rep.loop = loop;
+    rep.healed = n >= 3;
+    return rep;
+  }
+  rep.crossesSeam = true;
+
+  // UNWRAP: walk the polyline, accumulating ∓period at each seam jump so u stays continuous.
+  std::vector<ParamPoint> un;
+  un.reserve(n);
+  double offset = 0.0;
+  un.push_back(ParamPoint{loop[0].u, loop[0].v});
+  int crossings = 0;
+  for (std::size_t i = 1; i < n; ++i) {
+    const double du = loop[i].u - loop[i - 1].u;
+    if (isSeamJump(du, period, jumpTol)) {
+      // Subtract the jump's sign × period to cancel the wrap-around discontinuity.
+      offset -= (du > 0.0 ? period : -period);
+      ++crossings;
+    }
+    un.push_back(ParamPoint{loop[i].u + offset, loop[i].v});
+  }
+  // The CLOSING edge (last unwrapped → first) carries the loop's NET winding: after unwrapping,
+  // the loop should return to its start EXCEPT for whole-period wraps. The closing step in
+  // unwrapped u is (un.front().u − un.back().u); its magnitude in periods is the net winding.
+  const double closeDu = un.front().u - un.back().u;
+  const double closeInPeriods = closeDu / period;
+  const long closeWraps = std::llround(closeInPeriods);
+  // A well-formed seam loop closes to an EXACT multiple of the period in unwrapped u (the closing
+  // edge is either a normal short step — 0 wraps, a finite straddling region — or exactly ±period
+  // — a full wrap). A non-integer closing residual means the seam jumps did not balance: an
+  // AMBIGUOUS topology (a tangent graze or a mis-drawn seam loop) → honest decline.
+  if (std::fabs(closeInPeriods - static_cast<double>(closeWraps)) > 0.25) {
+    rep.ambiguous = true;
+    return rep;
+  }
+  if (isSeamJump(loop[0].u - loop[n - 1].u, period, jumpTol)) ++crossings;
+  rep.seamCrossings = crossings;
+  rep.winding = static_cast<int>(closeWraps);
+
+  // Unwrapped u-extent.
+  double uMin = un[0].u, uMax = un[0].u;
+  for (const ParamPoint& p : un) { uMin = std::min(uMin, p.u); uMax = std::max(uMax, p.u); }
+  rep.uSpan = uMax - uMin;
+
+  // FULL WRAP vs FINITE STRADDLING region — decided by the unwrapped u-SPAN, not the winding:
+  //   * FULL WRAP  — the unwrapped u-span reaches (≈) a full period: the loop's u-boundary sweeps
+  //     the ENTIRE ring (a band bounded by two cross-section circles, or a single cross-section
+  //     circle winding once). Every physical u is enclosed → classify by the v-band. This holds
+  //     whether the loop's net winding is ±1 (a single circle) or 0 (a two-circle band that
+  //     crosses the seam and returns).
+  //   * STRADDLING — a FINITE region whose u-arc is a proper sub-arc that merely straddles the
+  //     seam (u-span < a full period): the unwrapped polyline is a simple closed loop in a shifted
+  //     u-window; classify by the ordinary raycast in that window.
+  // A finite (non-full-wrap) region MUST be a simple (non-self-touching) loop after unwrapping;
+  // if it is not, the unwrap did not produce a clean region → AMBIGUOUS, honest decline.
+  rep.fullWrap = rep.uSpan >= 0.75 * period;
+  if (!rep.fullWrap) {
+    if (!loopWellFormed(un)) { rep.ambiguous = true; return rep; }
+  }
+
+  rep.loop = std::move(un);
+  rep.healed = true;
+  return rep;
+}
+
+SeamHealReport healTrimLoopSeam(const FaceSurface& surface, const TrimLoop& loop, int flatten) {
+  const SurfacePeriod sp = surfacePeriod(surface);
+  std::vector<ParamPoint> poly = flattenLoop(loop, flatten);
+  if (!sp.periodicU || sp.uPeriod <= 0.0) {
+    // NON-periodic surface → NO-OP: echo the flattened loop (byte-identical to non-seam path).
+    SeamHealReport rep;
+    rep.loop = std::move(poly);
+    rep.healed = rep.loop.size() >= 3;
+    return rep;
+  }
+  return healSeamLoop(poly, sp.uPeriod);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// classifySeam — point-in-trimmed-region with seam identification.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+
+// Reduce a query u into the unwrapped loop's u-window [uMin, uMax] by adding period multiples,
+// so the raycast tests the point against the unwrapped (continuous) loop at the SAME physical u.
+// A full-wrap loop spans ≥ one full period, so every physical u maps into its window.
+double reduceIntoWindow(double u, double uMin, double uMax, double period) noexcept {
+  if (period <= 0.0) return u;
+  // Shift u by whole periods until it lands in (or nearest) [uMin, uMax].
+  double x = u;
+  while (x < uMin - 1e-12) x += period;
+  while (x > uMax + 1e-12) x -= period;
+  return x;
+}
+
+// Classify a query point against an unwrapped seam loop.
+//
+// FULL WRAP (`fullWrap`): the loop wraps the ENTIRE u-period, so it encloses the whole u-band
+// between its extreme v-values — a point is In iff its v lies strictly inside [vMin, vMax]
+// (every u is enclosed), OnBoundary within tol of vMin/vMax. This is the closed-form cylinder
+// band verdict; a plain even-odd raycast of the period-spanning polyline is unreliable (its
+// closing edge snaps back a full period), so the band test is used directly.
+//
+// STRADDLING (finite region, winding 0): the unwrapped polyline is a simple closed loop in a
+// shifted u-window; the query u is reduced into that window and the ordinary even-odd raycast
+// applies (this correctly encloses exactly the loop's u-arc, seam-continuous).
+Containment classifyAgainstSeamLoop(const std::vector<ParamPoint>& poly, const ParamPoint& p,
+                                    double period, double onEdgeTol, bool fullWrap) {
+  double uMin = poly[0].u, uMax = poly[0].u, vMin = poly[0].v, vMax = poly[0].v;
+  for (const ParamPoint& q : poly) {
+    uMin = std::min(uMin, q.u); uMax = std::max(uMax, q.u);
+    vMin = std::min(vMin, q.v); vMax = std::max(vMax, q.v);
+  }
+  const double extent = std::max(polyExtent(poly), 1e-300);
+  const double tol = onEdgeTol * std::max(extent, 1.0);
+
+  if (fullWrap) {
+    // Whole u-band between vMin and vMax; a degenerate band (vMin==vMax) is a bare cross-section
+    // circle with no interior → In nowhere, OnBoundary on the circle's v.
+    if (std::fabs(p.v - vMin) <= tol || std::fabs(p.v - vMax) <= tol) return Containment::OnBoundary;
+    return (p.v > vMin && p.v < vMax) ? Containment::In : Containment::Out;
+  }
+
+  ParamPoint pr{reduceIntoWindow(p.u, uMin, uMax, period), p.v};
+  switch (raycast(poly, pr, tol)) {
+    case 2: return Containment::OnBoundary;
+    case 3: return Containment::Unknown;
+    case 1: return Containment::In;
+    default: return Containment::Out;
+  }
+}
+
+}  // namespace
+
+Containment classifySeam(const TrimmedNurbsFace& face, const ParamPoint& p,
+                         const ClassifyOptions& opts) {
+  if (!face.hasOuter()) return Containment::Unknown;
+
+  const SurfacePeriod sp = surfacePeriod(face.surface);
+  // Non-periodic surface → the seam path is a strict NO-OP: defer to plain classify (byte-identical).
+  if (!sp.periodicU || sp.uPeriod <= 0.0) return classify(face, p, opts);
+
+  std::vector<ParamPoint> outer = flattenLoop(face.outer, opts.flattenSegments);
+  const SeamHealReport sr = healSeamLoop(outer, sp.uPeriod);
+  // Not seam-involved (no crossing, no tangent touch) → strict NO-OP: defer to plain classify.
+  if (!sr.crossesSeam) return classify(face, p, opts);
+  if (sr.ambiguous) return Containment::Unknown;  // seam-tangent / non-simple wrap → honest decline
+  if (!sr.healed) return Containment::Unknown;
+
+  const Containment outerVerdict =
+      classifyAgainstSeamLoop(sr.loop, p, sp.uPeriod, opts.onEdgeTol, sr.fullWrap);
+  if (outerVerdict != Containment::In) return outerVerdict;
+
+  // Inside the seam-crossing outer band: subtract holes (each classified with seam identification
+  // too, since a hole on a periodic surface may itself cross the seam).
+  for (const TrimLoop& hole : face.holes) {
+    std::vector<ParamPoint> hpoly = flattenLoop(hole, opts.flattenSegments);
+    Containment h;
+    if (loopCrossesSeam(hpoly, sp.uPeriod)) {
+      const SeamHealReport hr = healSeamLoop(hpoly, sp.uPeriod);
+      if (hr.ambiguous || !hr.healed) return Containment::Unknown;
+      h = classifyAgainstSeamLoop(hr.loop, p, sp.uPeriod, opts.onEdgeTol, hr.fullWrap);
+    } else {
+      if (!loopWellFormed(hpoly)) return Containment::Unknown;
+      const double hext = std::max(polyExtent(hpoly), 1e-300);
+      const double htol = opts.onEdgeTol * std::max(hext, 1.0);
+      const int r = raycast(hpoly, p, htol);
+      h = r == 2 ? Containment::OnBoundary
+                 : (r == 3 ? Containment::Unknown : (r == 1 ? Containment::In : Containment::Out));
+    }
+    if (h == Containment::OnBoundary) return Containment::OnBoundary;
+    if (h == Containment::Unknown) return Containment::Unknown;
+    if (h == Containment::In) return Containment::Out;  // inside a hole → removed
+  }
+  return Containment::In;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // makeTrimmedFace — build from an existing topology face Shape.
 // ─────────────────────────────────────────────────────────────────────────────
 std::optional<TrimmedNurbsFace> makeTrimmedFace(const Shape& face) {

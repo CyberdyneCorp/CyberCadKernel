@@ -1199,4 +1199,117 @@ CC_TEST(cone_sphere_two_circle_declines_single_and_tangent) {
   CC_CHECK(std::fabs(vSingle - 5.255829) <= 1e-2 * 5.255829);  // the S5-f single-crossing volume
 }
 
+// ── (10) TWO-CIRCLE coaxial CYLINDER∩SPHERE COMMON / FUSE / CUT: REAL native watertight
+// passes (S5-i) ──────────────────────────────────────────────────────────────────────────
+// The tanα==0 special case of the S5-h cone∩sphere two-circle family. A cylinder Rc=1.0 about
+// world +Y over y∈[-3,3] and a sphere Rs=1.6 centred at the origin (ON the cylinder axis) meet
+// along TWO analytic circle seams — the sphere pokes THROUGH the cylinder wall at TWO latitudes:
+//   Rc = √(Rs²−(y−sc)²)  ⇒  y = sc ± √(Rs²−Rc²) = ±√(1.56) ≈ ±1.24900, radius ρ = Rc = 1.0.
+// Between the seams the SPHERE is the wider operand (bulges outside the cylinder); each polar cap
+// (poles at y=±1.6, both inside the cylinder) sits inside the cylinder. The whole S5-h/S5-c
+// machinery is reused (appendRevolvedBand exact on the cylinder wall, appendSphereCap, the shared
+// appendSphereZone bulge). Both circles are S1-analytic; the S3 tracer returns ONE of the two
+// co-resident loops, so the S5-i prologue computes BOTH circles itself and CROSS-CHECKS.
+//   COMMON = sphere lower cap [poleM,y*lo] + cylinder segment [y*lo,y*hi] + sphere upper cap
+//            [y*hi,poleP]. V = V_sph-seg + π·Rc²·(y*hi−y*lo) + V_sph-seg.
+//   FUSE   = cylinder walls (ends→seams) + sphere ZONE bulge (mid-band) + cylinder terminal discs.
+//            V = V(cyl)+V(sphere)−V(COMMON) (GROW).
+//   CUT    = cyl − sphere: the sphere fully engulfs the cylinder mid-band, so the result PINCHES
+//            into TWO disconnected components (a lower cyl-end piece + an upper piece, each
+//            spherically scooped). V = V(cyl)−V(COMMON) (SHRINK).
+// Every volume matches the closed form within the engine's curved-parity bar (1% relative).
+// COMMON is symmetric; CUT is order-sensitive (sphere−cyl → OCCT).
+CC_TEST(cyl_sphere_two_circle_common_fuse_cut_watertight_matches_analytic) {
+  const double Rc = 1.0, Rs = 1.6, sc = 0.0, cLo = -3.0, cHi = 3.0;
+  const ntopo::Shape cyl = makeCyl(/*Y*/ 1, Rc, cLo, cHi);
+  const ntopo::Shape sph = makeSphere(0.0, Rs);  // centre origin, polar axis +Y (coaxial)
+  CC_CHECK(!cyl.isNull() && !sph.isNull());
+
+  const auto csCyl = sd::recogniseCurvedSolid(cyl);
+  const auto csSph = sd::recogniseCurvedSolid(sph);
+  CC_CHECK(csCyl && csSph);
+  if (csCyl && csSph) {
+    CC_CHECK(csCyl->kind == sd::CurvedKind::Cylinder);
+    CC_CHECK(csSph->kind == sd::CurvedKind::Sphere);
+    const ssi::TraceSet tr = ssi::trace_intersection(csCyl->adapter(), csSph->adapter());
+    CC_CHECK(tr.nearTangentGaps == 0);   // fully transversal circles
+    CC_CHECK(tr.curveCount() >= 1);      // at least one of the two co-resident circles traced
+  }
+
+  // Closed-form ground truth (cylinder segment + two spherical segments).
+  const double h = std::sqrt(Rs * Rs - Rc * Rc);      // ≈ 1.24900
+  const double sLo = sc - h, sHi = sc + h;
+  const double poleM = sc - Rs, poleP = sc + Rs;
+  auto sphSeg = [&](double a, double b) {  // π∫[a,b](Rs²−(y−sc)²)dy
+    auto F = [&](double y) { return Rs * Rs * (y - sc) - (y - sc) * (y - sc) * (y - sc) / 3.0; };
+    return sd::kSsiPi * (F(b) - F(a));
+  };
+  const double vCylFull = cylinderVolume(Rc, cLo, cHi);            // whole cylinder
+  const double vSph = 4.0 / 3.0 * sd::kSsiPi * Rs * Rs * Rs;       // sphere volume
+  const double vCommonTrue =
+      sphSeg(poleM, sLo) + sd::kSsiPi * Rc * Rc * (sHi - sLo) + sphSeg(sHi, poleP);
+  const double vFuseTrue = vCylFull + vSph - vCommonTrue;
+  const double vCutTrue = vCylFull - vCommonTrue;
+  CC_CHECK(vCommonTrue > 0.0 && vCommonTrue < vSph);
+
+  // ── COMMON: watertight native candidate whose volume matches the closed form. ──
+  const ntopo::Shape common = nb::ssi_boolean_solid(cyl, sph, nb::Op::Common);
+  CC_CHECK(!common.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  CC_CHECK(vCommon > 0.0);                                          // watertight → engine accepts
+  CC_CHECK(std::fabs(vCommon - vCommonTrue) <= 1e-2 * vCommonTrue);
+  CC_CHECK(vCommon <= std::min(vCylFull, vSph) + 1e-9);            // common ≤ min(A,B)
+  CC_CHECK(!nb::boolean_solid(cyl, sph, nb::Op::Common).isNull());
+  // COMMON is symmetric — reversing the operand order builds the same watertight solid.
+  const ntopo::Shape swapped = nb::ssi_boolean_solid(sph, cyl, nb::Op::Common);
+  CC_CHECK(!swapped.isNull());
+  const double vSwapped = watertightMeshVolume(swapped);
+  CC_CHECK(vSwapped > 0.0);
+  CC_CHECK(std::fabs(vSwapped - vCommonTrue) <= 1e-2 * vCommonTrue);
+
+  // ── FUSE = A ∪ B: cylinder walls + sphere zone bulge + cylinder discs. A GROW. ──
+  const ntopo::Shape fuse = nb::ssi_boolean_solid(cyl, sph, nb::Op::Fuse);
+  CC_CHECK(!fuse.isNull());
+  const double vFuse = watertightMeshVolume(fuse);
+  CC_CHECK(vFuse > 0.0);
+  CC_CHECK(std::fabs(vFuse - vFuseTrue) <= 1e-2 * vFuseTrue);
+  CC_CHECK(vFuse >= std::max(vCylFull, vSph) - 1e-9);             // FUSE grows past either operand
+  CC_CHECK(!nb::boolean_solid(cyl, sph, nb::Op::Fuse).isNull());
+
+  // ── CUT = A − B (cylinder minuend): two disconnected spherically-scooped pieces. A SHRINK. ──
+  const ntopo::Shape cut = nb::ssi_boolean_solid(cyl, sph, nb::Op::Cut);
+  CC_CHECK(!cut.isNull());
+  const double vCut = watertightMeshVolume(cut);
+  CC_CHECK(vCut > 0.0);
+  CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
+  CC_CHECK(vCut <= vCylFull + 1e-9);                             // CUT shrinks below the minuend
+  CC_CHECK(!nb::boolean_solid(cyl, sph, nb::Op::Cut).isNull());
+  // CUT is order-sensitive: sphere − cylinder is a DIFFERENT topology; the S5-i CUT builder only
+  // handles the cylinder minuend, so sphere − cyl declines here → OCCT.
+  CC_CHECK(nb::ssi_boolean_solid(sph, cyl, nb::Op::Cut).isNull());
+}
+
+// ── (11) TWO-CIRCLE cyl∩sphere HONEST DECLINES: tangent + pole-outside + off-axis → OCCT. ──
+// The S5-i assembler is the strict two-interior-root poke-through only. A sphere with Rs ≤ Rc
+// (no proper two-circle crossing — internally tangent/nested), a sphere whose pole falls outside
+// the cylinder's axial extent (a single-crossing end dent), and a sphere whose centre is off the
+// cylinder axis (a transversal quartic) all decline → NULL → OCCT (honest, never faked).
+CC_TEST(cyl_sphere_two_circle_declines_tangent_pole_and_offaxis) {
+  const double Rc = 1.0, cLo = -3.0, cHi = 3.0;
+  const ntopo::Shape cyl = makeCyl(/*Y*/ 1, Rc, cLo, cHi);
+
+  // (a) Rs < Rc: the sphere fits INSIDE the cylinder cross-section — no two-circle wall crossing.
+  CC_CHECK(nb::ssi_boolean_solid(cyl, makeSphere(0.0, 0.8), nb::Op::Common).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(cyl, makeSphere(0.0, 0.8), nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(cyl, makeSphere(0.0, 0.8), nb::Op::Cut).isNull());
+
+  // (b) Pole outside the cylinder extent: a tall cylinder end near a seam → single-crossing dent.
+  //     Sphere Rs=1.6 centred at y=2.6: upper pole y=4.2 > cHi=3.0 → one seam interior, one not.
+  const ntopo::Shape shortCyl = makeCyl(/*Y*/ 1, Rc, cLo, cHi);
+  CC_CHECK(nb::ssi_boolean_solid(shortCyl, makeSphereY(2.6, 1.6), nb::Op::Common).isNull());
+
+  // (c) Off-axis sphere (centre not on the cylinder axis) → transversal quartic → OCCT.
+  CC_CHECK(nb::ssi_boolean_solid(cyl, makeSphere(0.7, 1.6), nb::Op::Common).isNull());
+}
+
 int main() { return cctest::run_all(); }

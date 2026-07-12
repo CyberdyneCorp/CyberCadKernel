@@ -567,6 +567,29 @@ int main() {
     runPair(pc);
   }
 
+  // ── (9) TWO-CIRCLE coaxial CYLINDER ∩ sphere COMMON / FUSE / CUT (S5-i) — 3 NATIVE
+  // passes ────────────────────────────────────────────────────────────────────────────
+  // The tanα==0 special case of the S5-h cone∩sphere family. A cylinder Rc=1.0 about world +Y
+  // over y∈[-3,3] and a sphere Rs=1.6 centred at the origin (ON the cylinder axis) — the sphere
+  // pokes THROUGH the cylinder wall at TWO latitudes (y*=±√1.56≈±1.24900, radius 1.0) with both
+  // poles (y=±1.6) inside the cylinder. The S5-i assembler reuses the S5-h/S5-c machinery with a
+  // constant cylinder radius (appendRevolvedBand is exact on a cylinder wall).
+  //   COMMON = sphere lower cap + cylinder segment band + sphere upper cap
+  //   FUSE   = cylinder walls + sphere ZONE bulge (mid-band) + cylinder discs   (GROW)
+  //   CUT    = cyl − sphere: TWO disconnected spherically-scooped end pieces     (SHRINK)
+  // All three match BRepAlgoAPI_{Common,Fuse,Cut} on volume/area/watertight → NATIVE passes.
+  {
+    PairCase pc;
+    pc.pairName = "cyl=sphere(coax-2circle)";
+    pc.nativeA = makeCyl(1, 0, 0, 1.0, -3.0, 3.0);   // Y axis, Rc=1.0
+    pc.nativeB = makeSphere(1.6, 0.0);               // radius 1.6, centre origin on the cyl axis
+    pc.occtA = occtCyl(1, 0, 0, 1.0, -3.0, 3.0);
+    pc.occtB = occtSphere(1.6, 0.0);
+    pc.relTol = 2e-2;
+    probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
+    runPair(pc);
+  }
+
   std::printf("== %d passed, %d failed, %d fell-back (native-pass=%d) ==\n",
               g_passed, g_failed, g_fellBack, g_nativePass);
   std::fflush(stdout);

@@ -43,6 +43,7 @@ inline int run_all() {
             std::printf("  [threw] %s: unknown exception\n", c.name.c_str());
         }
         std::printf("[%s] %s\n", ok ? "PASS" : "FAIL", c.name.c_str());
+        std::fflush(stdout);
         if (!ok) {
             ++failed;
         }

@@ -2243,25 +2243,29 @@ ConeSphere2Setup coneSphere2Setup(const CurvedSolid& A, const CurvedSolid& B,
 // exact on the sphere, robust at the parametric pole). Outward radial normal (the FUSE bulge's
 // outward boundary). All rows share the pool through the ring builder so the zone welds to the
 // neighbouring cone bands along both seam rings.
-void appendSphereZone(const ConeSphere2Setup& s, double sLo, double sHi,
+// Primitive form: takes the sphere centre + radius directly so BOTH the S5-h cone∩sphere and
+// the S5-i cylinder∩sphere two-circle assemblers share ONE zone builder (a cylinder is the
+// tanα==0 special case; the zone geometry is identical — a revolved band of the sphere between
+// two seam-latitude rings). Outward radial normal.
+void appendSphereZone(const math::Point3& sphCentre, double Rs,
                       const std::vector<math::Point3>& ringLo,
                       const std::vector<math::Point3>& ringHi, VertexPool& pool,
                       std::vector<topo::Shape>& faces) {
   const int n = static_cast<int>(ringLo.size());
   if (n < 3 || static_cast<int>(ringHi.size()) != n) return;
   // Rows from the polar half-angle spanned by the zone at the sphere centre + kCapSagitta.
-  const math::Vec3 dLo{ringLo[0].x - s.C.x, ringLo[0].y - s.C.y, ringLo[0].z - s.C.z};
-  const math::Vec3 dHi{ringHi[0].x - s.C.x, ringHi[0].y - s.C.y, ringHi[0].z - s.C.z};
+  const math::Vec3 dLo{ringLo[0].x - sphCentre.x, ringLo[0].y - sphCentre.y, ringLo[0].z - sphCentre.z};
+  const math::Vec3 dHi{ringHi[0].x - sphCentre.x, ringHi[0].y - sphCentre.y, ringHi[0].z - sphCentre.z};
   const double denom = std::max(math::norm(dLo) * math::norm(dHi), 1e-12);
   const double theta = std::acos(std::clamp(math::dot(dLo, dHi) / denom, -1.0, 1.0));
   const int rows = std::clamp(
-      static_cast<int>(std::ceil(std::max(theta, 1e-6) * std::sqrt(s.Rs / (2.0 * kCapSagitta)))), 2,
+      static_cast<int>(std::ceil(std::max(theta, 1e-6) * std::sqrt(Rs / (2.0 * kCapSagitta)))), 2,
       48);
   // Per-meridian unit radials at the two seam rings; interior rows slerp between them.
   std::vector<math::Vec3> dirLo(n), dirHi(n);
   for (int i = 0; i < n; ++i) {
-    const math::Vec3 a{ringLo[i].x - s.C.x, ringLo[i].y - s.C.y, ringLo[i].z - s.C.z};
-    const math::Vec3 b{ringHi[i].x - s.C.x, ringHi[i].y - s.C.y, ringHi[i].z - s.C.z};
+    const math::Vec3 a{ringLo[i].x - sphCentre.x, ringLo[i].y - sphCentre.y, ringLo[i].z - sphCentre.z};
+    const math::Vec3 b{ringHi[i].x - sphCentre.x, ringHi[i].y - sphCentre.y, ringHi[i].z - sphCentre.z};
     const double la = std::max(math::norm(a), 1e-12), lb = std::max(math::norm(b), 1e-12);
     dirLo[i] = math::Vec3{a.x / la, a.y / la, a.z / la};
     dirHi[i] = math::Vec3{b.x / lb, b.y / lb, b.z / lb};
@@ -2270,7 +2274,7 @@ void appendSphereZone(const ConeSphere2Setup& s, double sLo, double sHi,
     if (r == 0) return ringLo[i];
     if (r == rows) return ringHi[i];
     const math::Vec3 dir = slerpDir(dirLo[i], dirHi[i], static_cast<double>(r) / rows);
-    return math::Point3{s.C.x + dir.x * s.Rs, s.C.y + dir.y * s.Rs, s.C.z + dir.z * s.Rs};
+    return math::Point3{sphCentre.x + dir.x * Rs, sphCentre.y + dir.y * Rs, sphCentre.z + dir.z * Rs};
   };
   for (int r = 0; r < rows; ++r)
     for (int i = 0; i < n; ++i) {
@@ -2279,10 +2283,18 @@ void appendSphereZone(const ConeSphere2Setup& s, double sLo, double sHi,
       const math::Point3 c = rowPt(r + 1, j), dd = rowPt(r + 1, i);
       const math::Point3 ctr{(a.x + b.x + c.x + dd.x) / 4, (a.y + b.y + c.y + dd.y) / 4,
                              (a.z + b.z + c.z + dd.z) / 4};
-      const math::Vec3 ref{ctr.x - s.C.x, ctr.y - s.C.y, ctr.z - s.C.z};  // outward radial
+      const math::Vec3 ref{ctr.x - sphCentre.x, ctr.y - sphCentre.y, ctr.z - sphCentre.z};  // outward radial
       pushPlanarTri(a, b, c, ref, pool, faces);
       pushPlanarTri(a, c, dd, ref, pool, faces);
     }
+}
+
+// S5-h wrapper: delegates to the primitive with the setup's sphere centre + radius (byte-identical).
+void appendSphereZone(const ConeSphere2Setup& s, double /*sLo*/, double /*sHi*/,
+                      const std::vector<math::Point3>& ringLo,
+                      const std::vector<math::Point3>& ringHi, VertexPool& pool,
+                      std::vector<topo::Shape>& faces) {
+  appendSphereZone(s.C, s.Rs, ringLo, ringHi, pool, faces);
 }
 
 // buildConeSphere2Common(A,B) = COMMON of the two-circle coaxial cone∩sphere: sphere lower cap +
@@ -2389,6 +2401,250 @@ topo::Shape buildConeSphere2Cut(const CurvedSolid& A, const CurvedSolid& B,
                   /*outer=*/false, /*reversed=*/true);
   appendRevolvedBand(ringHi, ring1, s.O, s.zc, pool, faces);
   appendDiskCap(*s.cone, s.coneS1, ring1, s.zc, pool, faces);
+  if (faces.size() < 8) return {};  // two components → ≥8 faces
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// ── S5-i: TWO-CIRCLE coaxial CYLINDER∩SPHERE COMMON / FUSE / CUT. A cylinder (radius Rc, axis
+// = z) coaxial with a sphere (radius Rs > Rc, centre C ON the cylinder axis) whose wall crosses
+// the sphere at TWO latitudes — the "sphere pokes THROUGH the cylinder wall" pose, the
+// tanα==0 special case of the S5-h cone∩sphere family. The seam equation is exact and clean:
+//   r_cyl == r_sph(s)  ⇒  Rc = √(Rs²−(s−sc)²)  ⇒  s = sc ± √(Rs²−Rc²)  = sc ± h,
+// two analytic circles of the SAME radius Rc at stations sLo = sc−h, sHi = sc+h. On the mid-band
+// the sphere is wider (bulges outside the cylinder); each polar cap is inside the cylinder. All
+// the S5-h/S5-c machinery is REUSED verbatim — appendRevolvedBand (a straight ruling is EXACT on
+// a cylinder wall), appendDiskCap, appendSphereCap (inner/outer + reversed), and appendSphereZone
+// (the FUSE mid-band bulge). No new builder is needed.
+//
+// DUAL ORACLE. Closed-form: COMMON = V_sph-cap(lower) + π·Rc²·(sHi−sLo) + V_sph-cap(upper), each
+// cap of height (Rs−h): V_cap = π·hcap²·(3Rs−hcap)/3. FUSE = V(cyl)+V(sph)−V(COMMON) (GROW),
+// CUT (cyl−sph) = V(cyl)−V(COMMON) (SHRINK, two disconnected end pieces). Plus OCCT parity.
+//
+// HONEST SCOPE. Coaxial only, sphere centre ON the cylinder axis, BOTH poles strictly inside the
+// cylinder's axial extent, Rs > Rc (a strict two-circle poke-through). A single-crossing sphere
+// (sphere pole outside the cylinder — the sphere just dents ONE end face), a tangent sphere
+// (Rs==Rc → double root), a sphere fully containing / contained by the cylinder segment, and a
+// non-coaxial (transversal) pair all decline → OCCT. A sphere-minuend CUT (sphere−cyl) declines.
+struct CylSphere2Setup {
+  bool ok = false;
+  const CurvedSolid* cyl = nullptr;
+  const CurvedSolid* sph = nullptr;
+  math::Point3 O;          ///< cylinder frame origin (the s=0 station)
+  math::Vec3 X, Y, zc;     ///< cylinder frame (azimuth + axis)
+  math::Point3 C;          ///< sphere centre (on the cylinder axis)
+  double Rc = 0.0, Rs = 0.0;
+  double sc = 0.0;         ///< sphere-centre axial coord in the cylinder's s-frame
+  double cylS0 = 0.0, cylS1 = 0.0;  ///< cylinder's own axial extent [vLo,vHi]
+  double sLo = 0.0, sHi = 0.0;      ///< the TWO analytic crossings sc±h (sLo < sHi)
+  double poleM = 0.0, poleP = 0.0;  ///< sphere axial poles (sc−Rs, sc+Rs)
+  int N = 0;                        ///< azimuth sample count (seam-chord bounded)
+  double rSph(double s) const {
+    const double d = Rs * Rs - (s - sc) * (s - sc);
+    return d > 0.0 ? std::sqrt(d) : 0.0;
+  }
+  std::vector<math::Point3> ring(double r, double s) const {
+    std::vector<math::Point3> out(N);
+    for (int i = 0; i < N; ++i) {
+      const double u = kSsiTwoPi * i / N;
+      const double cx = r * std::cos(u), cy = r * std::sin(u);
+      out[i] = math::Point3{O.x + X.x * cx + Y.x * cy + zc.x * s,
+                            O.y + X.y * cx + Y.y * cy + zc.y * s,
+                            O.z + X.z * cx + Y.z * cy + zc.z * s};
+    }
+    return out;
+  }
+  math::Point3 wallPoint(double r, double s) const {
+    return math::Point3{O.x + X.x * r + zc.x * s, O.y + X.y * r + zc.y * s,
+                        O.z + X.z * r + zc.z * s};
+  }
+  math::Point3 axisPtM() const {
+    return math::Point3{C.x + zc.x * (poleM - sc), C.y + zc.y * (poleM - sc),
+                        C.z + zc.z * (poleM - sc)};
+  }
+  math::Point3 axisPtP() const {
+    return math::Point3{C.x + zc.x * (poleP - sc), C.y + zc.y * (poleP - sc),
+                        C.z + zc.z * (poleP - sc)};
+  }
+  Seam seamRing(double rho, double s) const {
+    Seam out;
+    out.closed = true;
+    out.pts = ring(rho, s);
+    return out;
+  }
+};
+
+CylSphere2Setup cylSphere2Setup(const CurvedSolid& A, const CurvedSolid& B,
+                                const std::vector<Seam>& seams) {
+  CylSphere2Setup st;
+  if (seams.empty()) return st;  // need ≥1 traced seam to cross-check
+
+  const CurvedSolid* cylPtr = nullptr;
+  const CurvedSolid* sphPtr = nullptr;
+  for (const CurvedSolid* s : {&A, &B}) {
+    if (s->kind == CurvedKind::Cylinder) cylPtr = s;
+    else if (s->kind == CurvedKind::Sphere) sphPtr = s;
+  }
+  if (!cylPtr || !sphPtr) return st;
+  const CurvedSolid& cyl = *cylPtr;
+  const CurvedSolid& sph = *sphPtr;
+
+  const math::Vec3 zc = cyl.frame.z.vec();
+  const math::Point3 O = cyl.frame.origin;
+  const math::Point3 C = sph.frame.origin;
+  const math::Vec3 d{C.x - O.x, C.y - O.y, C.z - O.z};
+  const double sc = math::dot(d, zc);
+  if (math::norm(d - zc * sc) > 1e-6) return st;  // sphere centre off the cylinder axis → OCCT
+  const double Rc = cyl.radius, Rs = sph.radius;
+  if (!(Rc > 1e-9) || !(Rs > 1e-9)) return st;
+  if (!(Rs > Rc + 1e-6)) return st;  // Rs ≤ Rc → no proper two-circle poke-through (tangent/nested) → OCCT
+
+  const double h = std::sqrt(Rs * Rs - Rc * Rc);  // half axial gap between the two seam planes
+  const double sLo = sc - h, sHi = sc + h;
+  const double cylS0 = cyl.vLo, cylS1 = cyl.vHi;
+  if (!(sLo > cylS0 + 1e-6) || !(sHi < cylS1 - 1e-6)) return st;  // seams not both interior → OCCT
+  if (!(sHi - sLo > 1e-4)) return st;                             // roots too close → near-tangent → OCCT
+
+  const double poleM = sc - Rs, poleP = sc + Rs;
+  // Both poles must sit strictly inside the cylinder axial extent (both caps close inside the
+  // cylinder and the CUT pinches into two clean end pieces).
+  if (!(poleM > cylS0 + 1e-6) || !(poleP < cylS1 - 1e-6)) return st;
+
+  // Cross-check EVERY traced seam against ONE of the two analytic circles (height sc±h, radius Rc).
+  auto sOf = [&](const math::Point3& p) {
+    return math::dot(math::Vec3{p.x - O.x, p.y - O.y, p.z - O.z}, zc);
+  };
+  for (const Seam& seam : seams) {
+    if (!seam.closed || seam.pts.size() < 8) return st;
+    math::Point3 c{0, 0, 0};
+    for (const auto& p : seam.pts) { c.x += p.x; c.y += p.y; c.z += p.z; }
+    const double ns = static_cast<double>(seam.pts.size());
+    c.x /= ns; c.y /= ns; c.z /= ns;
+    double rhoTr = 0.0;
+    for (const auto& p : seam.pts) {
+      const math::Vec3 w{p.x - c.x, p.y - c.y, p.z - c.z};
+      rhoTr += math::norm(w - zc * math::dot(w, zc));
+    }
+    rhoTr /= ns;
+    const double sTr = sOf(c);
+    const bool matchLo = std::fabs(sTr - sLo) < 1e-3 && std::fabs(rhoTr - Rc) < 1e-3;
+    const bool matchHi = std::fabs(sTr - sHi) < 1e-3 && std::fabs(rhoTr - Rc) < 1e-3;
+    if (!matchLo && !matchHi) return st;  // traced seam matches neither analytic circle → OCCT
+  }
+
+  const double chord = std::sqrt(std::max(8.0 * kCapSagitta * Rc, 1e-12));
+  st.N = std::clamp(static_cast<int>(std::ceil(kSsiTwoPi * Rc / chord)), 24, 180);
+  st.cyl = cylPtr;
+  st.sph = sphPtr;
+  st.O = O;
+  st.X = cyl.frame.x.vec();
+  st.Y = cyl.frame.y.vec();
+  st.zc = zc;
+  st.C = C;
+  st.Rc = Rc;
+  st.Rs = Rs;
+  st.sc = sc;
+  st.cylS0 = cylS0;
+  st.cylS1 = cylS1;
+  st.sLo = sLo;
+  st.sHi = sHi;
+  st.poleM = poleM;
+  st.poleP = poleP;
+  st.ok = true;
+  return st;
+}
+
+// Cap ring-count from a cap's polar half-angle + kCapSagitta (shared by the S5-i builders).
+int cylSphereCapRings(const CylSphere2Setup& s, const std::vector<math::Point3>& ring,
+                      const math::Point3& apex) {
+  const math::Vec3 aDir{apex.x - s.C.x, apex.y - s.C.y, apex.z - s.C.z};
+  double theta = 0.0;
+  for (const auto& p : ring) {
+    const math::Vec3 sDir{p.x - s.C.x, p.y - s.C.y, p.z - s.C.z};
+    const double den = std::max(math::norm(aDir) * math::norm(sDir), 1e-12);
+    theta = std::max(theta, std::acos(std::clamp(math::dot(aDir, sDir) / den, -1.0, 1.0)));
+  }
+  return std::clamp(
+      static_cast<int>(std::ceil(std::max(theta, 1e-6) * std::sqrt(s.Rs / (2.0 * kCapSagitta)))), 4,
+      48);
+}
+
+// buildCylSphere2Common(A,B) = COMMON of the two-circle coaxial cylinder∩sphere: sphere lower cap
+// + cylinder segment band + sphere upper cap, welded along the two analytic seam rings (both of
+// radius Rc). The min-radius profile of revolution.
+topo::Shape buildCylSphere2Common(const CurvedSolid& A, const CurvedSolid& B,
+                                  const std::vector<Seam>& seams) {
+  const CylSphere2Setup s = cylSphere2Setup(A, B, seams);
+  if (!s.ok) return {};
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const Seam seamLo = s.seamRing(s.Rc, s.sLo);
+  const Seam seamHi = s.seamRing(s.Rc, s.sHi);
+  const std::vector<math::Point3> ringLo = seamLo.pts;
+  const std::vector<math::Point3> ringHi = seamHi.pts;
+  appendSphereCap(*s.sph, s.axisPtM(), seamLo, cylSphereCapRings(s, ringLo, s.axisPtM()), pool,
+                  faces, /*outer=*/false, /*reversed=*/false);
+  appendRevolvedBand(ringLo, ringHi, s.O, s.zc, pool, faces);  // cylinder segment (straight ruling)
+  appendSphereCap(*s.sph, s.axisPtP(), seamHi, cylSphereCapRings(s, ringHi, s.axisPtP()), pool,
+                  faces, /*outer=*/false, /*reversed=*/false);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildCylSphere2Fuse(A,B) = A ∪ B: cylinder wall (cylEnd→seamLo) + sphere ZONE bulge (seamLo→
+// seamHi, the mid-band where the sphere is wider) + cylinder wall (seamHi→cylEnd) + two cylinder
+// terminal discs. A GROW. V = V(cyl)+V(sph)−V(COMMON).
+topo::Shape buildCylSphere2Fuse(const CurvedSolid& A, const CurvedSolid& B,
+                                const std::vector<Seam>& seams) {
+  const CylSphere2Setup s = cylSphere2Setup(A, B, seams);
+  if (!s.ok) return {};
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const std::vector<math::Point3> ring0 = s.ring(s.Rc, s.cylS0);
+  const std::vector<math::Point3> ringLo = s.ring(s.Rc, s.sLo);
+  const std::vector<math::Point3> ringHi = s.ring(s.Rc, s.sHi);
+  const std::vector<math::Point3> ring1 = s.ring(s.Rc, s.cylS1);
+  appendDiskCap(*s.cyl, s.cylS0, ring0, math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool, faces);
+  appendRevolvedBand(ring0, ringLo, s.O, s.zc, pool, faces);      // cylinder wall below seamLo
+  appendSphereZone(s.C, s.Rs, ringLo, ringHi, pool, faces);       // sphere bulge (mid-band)
+  appendRevolvedBand(ringHi, ring1, s.O, s.zc, pool, faces);      // cylinder wall above seamHi
+  appendDiskCap(*s.cyl, s.cylS1, ring1, s.zc, pool, faces);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildCylSphere2Cut(A,B) = A − B (cylinder MINUEND). The sphere fully engulfs the cylinder
+// cross-section on the mid-band, so the result PINCHES into TWO disconnected components welded
+// into one shell: a lower cylinder-end piece (cylNear→seamLo, its top scooped by the sphere lower
+// cap reversed) + an upper piece (seamHi→cylFar, scooped by the sphere upper cap reversed). A
+// SHRINK. V = V(cyl)−V(COMMON). A sphere-minuend (sphere−cyl) declines → OCCT.
+topo::Shape buildCylSphere2Cut(const CurvedSolid& A, const CurvedSolid& B,
+                               const std::vector<Seam>& seams) {
+  const CylSphere2Setup s = cylSphere2Setup(A, B, seams);
+  if (!s.ok) return {};
+  if (&A != s.cyl) return {};  // A must be the cylinder minuend; sphere−cyl → OCCT
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const Seam seamLo = s.seamRing(s.Rc, s.sLo);
+  const Seam seamHi = s.seamRing(s.Rc, s.sHi);
+  const std::vector<math::Point3> ringLo = seamLo.pts;
+  const std::vector<math::Point3> ringHi = seamHi.pts;
+  const std::vector<math::Point3> ring0 = s.ring(s.Rc, s.cylS0);
+  const std::vector<math::Point3> ring1 = s.ring(s.Rc, s.cylS1);
+  // Lower component: cylinder terminal disc + cylinder wall (cylNear→seamLo) + sphere lower cap
+  // REVERSED (the dimple scooping from above, apex = poleM).
+  appendDiskCap(*s.cyl, s.cylS0, ring0, math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool, faces);
+  appendRevolvedBand(ring0, ringLo, s.O, s.zc, pool, faces);
+  appendSphereCap(*s.sph, s.axisPtM(), seamLo, cylSphereCapRings(s, ringLo, s.axisPtM()), pool,
+                  faces, /*outer=*/false, /*reversed=*/true);
+  // Upper component: sphere upper cap REVERSED (dimple, apex = poleP) + cylinder wall (seamHi→
+  // cylFar) + cylinder terminal disc.
+  appendSphereCap(*s.sph, s.axisPtP(), seamHi, cylSphereCapRings(s, ringHi, s.axisPtP()), pool,
+                  faces, /*outer=*/false, /*reversed=*/true);
+  appendRevolvedBand(ringHi, ring1, s.O, s.zc, pool, faces);
+  appendDiskCap(*s.cyl, s.cylS1, ring1, s.zc, pool, faces);
   if (faces.size() < 8) return {};  // two components → ≥8 faces
   const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
   return topo::ShapeBuilder::makeSolid({shell});
@@ -3037,6 +3293,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-h: TWO-CIRCLE coaxial cone∩sphere COMMON (sphere lower cap + cone band + sphere upper cap).
       const topo::Shape coneSph2 = buildConeSphere2Common(*csA, *csB, seams);
       if (!coneSph2.isNull()) return coneSph2;
+      // S5-i: TWO-CIRCLE coaxial cylinder∩sphere COMMON (sphere lower cap + cyl band + sphere upper cap).
+      const topo::Shape cylSph2 = buildCylSphere2Common(*csA, *csB, seams);
+      if (!cylSph2.isNull()) return cylSph2;
       // S5-g: coaxial cone(frustum)∩cone(frustum) COMMON (min-radius profile of revolution).
       return buildConeConeCommon(*csA, *csB, seams);
     }
@@ -3056,6 +3315,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-h: TWO-CIRCLE coaxial cone∩sphere FUSE (cone walls + sphere zone bulge + discs).
       const topo::Shape coneSph2 = buildConeSphere2Fuse(*csA, *csB, seams);
       if (!coneSph2.isNull()) return coneSph2;
+      // S5-i: TWO-CIRCLE coaxial cylinder∩sphere FUSE (cyl walls + sphere zone bulge + discs).
+      const topo::Shape cylSph2 = buildCylSphere2Fuse(*csA, *csB, seams);
+      if (!cylSph2.isNull()) return cylSph2;
       // S5-g: coaxial cone(frustum)∩cone(frustum) FUSE (max-radius profile of revolution).
       return buildConeConeFuse(*csA, *csB, seams);
     }
@@ -3075,6 +3337,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-h: TWO-CIRCLE coaxial cone∩sphere CUT (two disconnected cone-tip/end dimpled pieces).
       const topo::Shape coneSph2 = buildConeSphere2Cut(*csA, *csB, seams);
       if (!coneSph2.isNull()) return coneSph2;
+      // S5-i: TWO-CIRCLE coaxial cylinder∩sphere CUT (two disconnected cyl-end dimpled pieces).
+      const topo::Shape cylSph2 = buildCylSphere2Cut(*csA, *csB, seams);
+      if (!cylSph2.isNull()) return cylSph2;
       // S5-g: coaxial cone(frustum)∩cone(frustum) CUT (A washer + reversed B wall + A-only slice).
       return buildConeConeCut(*csA, *csB, seams);
     }

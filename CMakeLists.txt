@@ -552,6 +552,22 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_nsided_g2)
         set(test_native_nurbs_nsided_g2_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_nsided_g2.cpp")
+        # NURBS roadmap Layer 6 — surface G1/G2 CONTINUITY JOIN (src/native/math/bspline_join).
+        # NOT a surface builder: a POST-hoc continuity operator that takes two ALREADY-BUILT
+        # adjacent tensor-product NURBS patches sharing a boundary edge (C0) and repositions the
+        # near-boundary control rows so they meet G1 (tangent-plane) or G2 (curvature) across the
+        # edge with MINIMAL movement, the shared boundary curve frozen. makeCompatibleAlongEdge
+        # knot-merges + degree-matches along the edge (reusing Layer-1 ops, exact); joinG1 places
+        # B's second row on the collinear shared ribbon B1off=-s·A1off (s = closed-form minimal-
+        # movement scalar) so the unit normal is continuous; joinG2 additionally places B's third
+        # row so the cross-boundary 2nd derivative matches (normal curvature continuous), G1
+        # preserved. Airtight oracles: coplanar no-op (movement 0), G1-enforced normal continuity
+        # (≤1e-7 rad) with boundary frozen (≤1e-12), G2-enforced curvature continuity (rel ≤1e-5)
+        # with G1 held, cylinder-halves-split no-op, and honest over-cap / incompatible-edge /
+        # non-coincident-boundary declines (never a widened tolerance). Additive to all builders.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_join)
+        set(test_native_nurbs_join_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_join.cpp")
         # NURBS roadmap Layer 6 — RATIONAL N-SIDED boundary-filled surface (additive to
         # src/native/math/bspline_nsided, fillNSidedRational). The exact-rational analogue of
         # the C0 fillNSided: the whole midpoint subdivision + per-corner Coons boolean-sum runs
@@ -1369,6 +1385,13 @@ if(CYBERCAD_BUILD_TESTS)
     # family uniformity).
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_nsided_g2)
         target_compile_definitions(test_native_nurbs_nsided_g2 PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+    # The Layer-6 surface G1/G2 continuity-join gate includes bspline_join.h (which under
+    # CYBERCAD_HAS_NUMSCI pulls bspline_ops.h + bspline.h — no substrate header, no numerics
+    # solve), so its TU needs the macro but NOT the substrate include trees, exactly like the
+    # Layer-6 N-sided gates above (the module is numsci-gated for family uniformity).
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_join)
+        target_compile_definitions(test_native_nurbs_join PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
     # The Layer-6 RATIONAL N-sided fill gate includes bspline_nsided.h (which under
     # CYBERCAD_HAS_NUMSCI pulls bspline_coons.h + bspline_ops.h — no substrate header, no

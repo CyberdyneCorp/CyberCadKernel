@@ -1043,6 +1043,21 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_chamfer_edge_variable_freeform)
         set(test_native_chamfer_edge_variable_freeform_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_chamfer_edge_variable_freeform.cpp")
+        # NURBS cc_* facade — J2 fitting / reverse-engineering + analytic conversion
+        # (src/facade/cc_nurbs_fit.cpp). Wraps the numsci-gated native modules
+        # bspline_fit / bspline_fair / bspline_simplify / primitive_fit / analytic_nurbs
+        # behind the cc_nurbs_* handle boundary (reads/registers via J1's PUBLIC
+        # cc_curve/cc_surface accessors + constructors — no reach into J1's registry).
+        # The wrappers delegate to numsci-gated routines, so the host suite builds only
+        # under CYBERCAD_HAS_NUMSCI. Airtight REAL-geometry oracles: a fit through sampled
+        # points reproduces them (endpoints exact); cc_nurbs_circle eval lands on the TRUE
+        # circle <=1e-12; recognize(circle_to_nurbs) == Circle with correct params; a
+        # freeform surface -> detect_primitive = Freeform (no spurious primitive) while a
+        # sampled cylinder cloud -> Cylinder with the right radius; an over-constrained fit
+        # HONEST-DECLINES (0 handle + cc_last_error).
+        list(APPEND CYBERCAD_TESTS test_cc_nurbs_fit)
+        set(test_cc_nurbs_fit_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cc_nurbs_fit.cpp")
     endif()
 
     # The tet-mesher test drives the real TetGen backend, so it is added ONLY when

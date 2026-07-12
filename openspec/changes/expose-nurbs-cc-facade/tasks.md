@@ -31,12 +31,12 @@ delivery; implementation lands as waves J1–J7 (see `design.md` §7).
   of the header (as `add-python-binding` §8.2). (**abi**)
 
 ## 2. J2 — fitting / reverse-engineering + analytic conversion wrappers
-- [ ] 2.1 `cc_nurbs_fit_curve`/`_surface`, `_interp_curve`, `_estimate_weights_*`,
+- [x] 2.1 `cc_nurbs_fit_curve`/`_surface`, `_interp_curve`, `_estimate_weights_*`,
   `_fit_curve_constrained`/`_fit_surface_constrained`, `_fair_curve`/`_surface`,
   `_simplify_curve` → `cc_curve`/`cc_surface` (or honest decline). (**host**)
-- [ ] 2.2 `cc_nurbs_detect_primitive`, `_recognize_curve`/`_surface` — return the
+- [x] 2.2 `cc_nurbs_detect_primitive`, `_recognize_curve`/`_surface` — return the
   recognized primitive type + params, else "general". (**host**)
-- [ ] 2.3 `cc_nurbs_circle`/`_arc`/`_ellipse`/`_plane`/`_cylinder`/`_cone`/`_sphere`/
+- [x] 2.3 `cc_nurbs_circle`/`_arc`/`_ellipse`/`_plane`/`_cylinder`/`_cone`/`_sphere`/
   `_torus` — exact rational NURBS from analytic params. (**host**)
 
 ## 3. J3 — surfacing wrappers

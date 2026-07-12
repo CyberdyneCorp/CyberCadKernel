@@ -357,6 +357,297 @@ int cc_nurbs_shell_trimmed(const cc_surface* faces, int nFaces, const int* adjac
 
 #endif /* CC_KERNEL_NO_PROTOTYPES */
 
+/* --- J2: fitting / reverse-engineering / analytic conversion --------------- */
+/*
+ * Additive wrappers over the OCCT-FREE native modules bspline_fit / bspline_fair /
+ * bspline_simplify / primitive_fit / analytic_nurbs (bridging lives in
+ * src/facade/cc_nurbs_fit.cpp). Every constructor returns a valid cc_curve /
+ * cc_surface handle, or the honest decline (id 0 + cc_last_error) — never a
+ * plausible-but-wrong handle, never a widened tolerance. The recognition /
+ * detection calls fill a small POD result (type enum + params + RMS) and return 1
+ * on success, 0 on an unknown handle / null out (cc_last_error set).
+ *
+ * Point / grid inputs cross as PLAIN packed double arrays (Euclidean x,y,z):
+ *   - a point sequence is `pointsXYZ` of 3*n_points doubles;
+ *   - a point grid is `gridXYZ` of 3*n_u*n_v doubles, ROW-MAJOR with U outer
+ *     (point(i,j) at 3*(i*n_v + j), i over U, j over V) — the same layout as the
+ *     surface pole net;
+ *   - a per-point / per-grid weight array is `weights` of n_points (or n_u*n_v)
+ *     doubles, every weight strictly positive.
+ * `param_method` selects the parametrization: 0 = uniform, 1 = chord-length
+ * (default), 2 = centripetal; any other value is treated as chord-length.
+ */
+
+#ifndef CC_KERNEL_NO_PROTOTYPES
+
+/* ── Fitting / approximation (points -> cc_curve / cc_surface) ─────────────── */
+
+/* Least-squares curve APPROXIMATION: fit a degree-`degree` B-spline with exactly
+ * `n_ctrl` control points (degree+1 <= n_ctrl < n_points), endpoints pinned to the
+ * first/last data point. `pointsXYZ` is 3*n_points doubles. Honest decline (id 0)
+ * on a bad degree / control-point count, too few points, or a degenerate (all-
+ * coincident) input. */
+cc_curve cc_nurbs_fit_curve(const double* pointsXYZ, int n_points, int degree,
+                            int n_ctrl, int param_method);
+
+/* Global curve INTERPOLATION: build a degree-`degree` B-spline through EVERY input
+ * point (n_points >= degree+1). Honest decline (id 0) on a bad degree, too few
+ * points, or a degenerate input. */
+cc_curve cc_nurbs_interp_curve(const double* pointsXYZ, int n_points, int degree,
+                               int param_method);
+
+/* Least-squares tensor-product surface APPROXIMATION over an (n_u x n_v) grid
+ * (`gridXYZ` row-major, U outer) with an (n_ctrl_u x n_ctrl_v) control net,
+ * degrees (degree_u, degree_v). Requires degree+1 <= n_ctrl <= n in each direction.
+ * Honest decline (id 0) on bad dimensions / degenerate grid. */
+cc_surface cc_nurbs_fit_surface(const double* gridXYZ, int n_u, int n_v, int degree_u,
+                                int degree_v, int n_ctrl_u, int n_ctrl_v,
+                                int param_method);
+
+/* ── Rational weight ESTIMATION (Ma–Kruth: recover poles AND weights) ─────── */
+
+/* Estimate BOTH the `n_ctrl` control points AND their weights of a degree-`degree`
+ * RATIONAL B-spline fitting the data — the weights are UNKNOWN and recovered, not
+ * prescribed. Over-determined: needs 3*n_points > 4*n_ctrl and degree+1 <= n_ctrl.
+ * Returns a rational cc_curve on success; honest decline (id 0) when the system is
+ * under-determined, rank-deficient (no stable weights), or the recovered weights
+ * do not all share one sign (an invalid NURBS). A polynomial (all ≈1 weights) fit
+ * is still returned (as a non-rational curve). */
+cc_curve cc_nurbs_estimate_weights_curve(const double* pointsXYZ, int n_points,
+                                         int degree, int n_ctrl, int param_method);
+
+/* Surface analogue: estimate the (n_ctrl_u x n_ctrl_v) control net AND its weights
+ * of a degree-(degree_u,degree_v) rational surface over the (n_u x n_v) grid.
+ * Needs 3*n_u*n_v > 4*n_ctrl_u*n_ctrl_v and degree+1 <= n_ctrl <= n each way.
+ * Same honest-decline contract as the curve estimator. */
+cc_surface cc_nurbs_estimate_weights_surface(const double* gridXYZ, int n_u, int n_v,
+                                             int degree_u, int degree_v, int n_ctrl_u,
+                                             int n_ctrl_v, int param_method);
+
+/* ── Equality-CONSTRAINED least-squares fitting ───────────────────────────── */
+
+/* One curve end constraint for cc_nurbs_fit_curve_constrained: the `order`-th
+ * derivative at `end` (end 0 = start/u=0, 1 = end/u=1) equals `value` (3 doubles).
+ * order 0 = position, 1 = tangent, 2 = curvature. */
+typedef struct {
+    int32_t end;   /* 0 = start (u=0), 1 = end (u=1) */
+    int32_t order; /* 0 = position, 1 = 1st deriv, 2 = 2nd deriv */
+    double value[3];
+} CCCurveEndConstraint;
+
+/* Equality-CONSTRAINED least-squares curve fit: fit a degree-`degree`, `n_ctrl`-
+ * control-point B-spline minimizing the squared distance to `pointsXYZ` SUBJECT TO
+ * every constraint in `constraints` (`n_constraints` of them) holding EXACTLY.
+ * Endpoints are NOT auto-pinned — pin them with explicit order-0 constraints.
+ * Honest decline (id 0) on a bad degree / count, an OVER-CONSTRAINED system
+ * (n_constraints >= n_ctrl), an order > 2 or order > degree constraint, or a
+ * rank-deficient / inconsistent (singular-KKT) constraint set. */
+cc_curve cc_nurbs_fit_curve_constrained(const double* pointsXYZ, int n_points,
+                                        const CCCurveEndConstraint* constraints,
+                                        int n_constraints, int degree, int n_ctrl,
+                                        int param_method);
+
+/* One surface pole constraint for cc_nurbs_fit_surface_constrained: the fitted net
+ * pole at (i,j) (row-major, U outer) equals `value` (3 doubles). Fix a whole
+ * boundary row to interpolate an edge curve; add the adjacent row for a G1 stitch;
+ * fix a corner pole to pin a corner. */
+typedef struct {
+    int32_t i; /* U pole index (0..n_ctrl_u-1) */
+    int32_t j; /* V pole index (0..n_ctrl_v-1) */
+    double value[3];
+} CCSurfacePoleConstraint;
+
+/* Equality-CONSTRAINED least-squares tensor-product surface fit over the (n_u x
+ * n_v) grid with an (n_ctrl_u x n_ctrl_v) net, degrees (degree_u,degree_v),
+ * SUBJECT TO every pole constraint holding EXACTLY. With no constraints this
+ * reduces to cc_nurbs_fit_surface. Honest decline (id 0) on bad dimensions, an
+ * out-of-net constraint index, or an over-constrained / singular-KKT set. */
+cc_surface cc_nurbs_fit_surface_constrained(const double* gridXYZ, int n_u, int n_v,
+                                            const CCSurfacePoleConstraint* constraints,
+                                            int n_constraints, int degree_u,
+                                            int degree_v, int n_ctrl_u, int n_ctrl_v,
+                                            int param_method);
+
+/* ── Fairing (minimal-energy smoothing, hard deviation bound) ─────────────── */
+
+/* Fair a B-spline curve: minimize the discrete bending energy over the interior
+ * poles subject to the faired curve staying within `tol` of the input everywhere.
+ * `keep_ends` != 0 preserves position AND end tangent (two poles per end); == 0
+ * preserves only endpoint positions. Returns a NEW faired cc_curve on success.
+ * Honest decline (id 0) when `tol` is too tight to reduce energy, the input is
+ * rational, or the curve is too small / malformed (no faked smoothing). */
+cc_curve cc_nurbs_fair_curve(cc_curve in, double tol, int keep_ends);
+
+/* Fair a tensor-product B-spline surface: minimize the discrete thin-plate energy
+ * subject to staying within `tol` of the input everywhere. `keep_boundary` != 0
+ * fixes the whole boundary ring; == 0 fixes only the four corners. Returns a NEW
+ * faired cc_surface, or the honest decline (id 0) on the same conditions. */
+cc_surface cc_nurbs_fair_surface(cc_surface in, double tol, int keep_boundary);
+
+/* ── Simplification (tolerance-bounded knot removal) ──────────────────────── */
+
+/* Bounded knot removal: greedily discard interior knots while the TRUE deviation
+ * of the simplified curve from the input stays <= `tol` (measured densely).
+ * Returns a NEW cc_curve (== the input geometry when nothing could be removed).
+ * Honest decline (id 0) only on an unknown handle / non-finite tol. */
+cc_curve cc_nurbs_simplify_curve(cc_curve in, double tol);
+
+/* ── Reverse-engineering: primitive detection / recognition ───────────────── */
+
+/* Detected analytic primitive type (mirrors native PrimitiveType). */
+typedef enum {
+    CC_PRIM_FREEFORM = 0,
+    CC_PRIM_PLANE = 1,
+    CC_PRIM_SPHERE = 2,
+    CC_PRIM_CYLINDER = 3,
+    CC_PRIM_CONE = 4
+} CCPrimitiveType;
+
+/* Result of cc_nurbs_detect_primitive on a raw point cloud. Only the fields the
+ * `type` selects are meaningful; the rest are 0. `rms` is the achieved RMS of the
+ * winning fit (0 for FREEFORM); `rel_error` is rms / cloud-extent. */
+typedef struct {
+    int32_t type;        /* CCPrimitiveType */
+    double rms;
+    double rel_error;
+    double plane_normal[3];
+    double plane_offset; /* n·x = offset */
+    double center[3];    /* sphere / cylinder-axis-point / cone-apex */
+    double axis[3];      /* cylinder / cone unit axis */
+    double radius;       /* sphere / cylinder radius */
+    double half_angle;   /* cone half-angle (radians) */
+} CCPrimitiveDetection;
+
+/* Try plane / sphere / cylinder / cone against the point cloud `pointsXYZ`
+ * (3*n_points doubles) and report the best fit whose RELATIVE RMS is <= `rel_tol`
+ * (pass <= 0 for the built-in 1e-6). If none qualifies, `type` is CC_PRIM_FREEFORM
+ * (never a spurious primitive). Fills *out and returns 1 on success; returns 0 on
+ * a null out / too-few points (cc_last_error set; *out zeroed). */
+int cc_nurbs_detect_primitive(const double* pointsXYZ, int n_points, double rel_tol,
+                              CCPrimitiveDetection* out);
+
+/* Recognized analytic CURVE kind (mirrors native CurveKind). */
+typedef enum {
+    CC_CURVE_GENERAL = 0,
+    CC_CURVE_LINE = 1,
+    CC_CURVE_CIRCLE = 2,
+    CC_CURVE_ARC = 3,
+    CC_CURVE_ELLIPSE = 4
+} CCCurveKind;
+
+/* Result of cc_nurbs_recognize_curve. Only the fields the `kind` selects are
+ * meaningful. `residual` is the max control-point algebraic residual verified
+ * (<= tol ⇒ exact). For LINE, line_start/line_end are the two endpoints. For
+ * CIRCLE/ARC/ELLIPSE, center/normal/x_axis describe the plane frame; radius is the
+ * circle radius (or ellipse major); minor_radius is the ellipse semi-minor;
+ * start_angle/sweep_angle (radians) describe the arc. */
+typedef struct {
+    int32_t kind;   /* CCCurveKind */
+    double residual;
+    double line_start[3];
+    double line_end[3];
+    double center[3];
+    double normal[3];
+    double x_axis[3];
+    double radius;       /* circle radius / ellipse major radius */
+    double minor_radius; /* ellipse semi-minor */
+    double start_angle;  /* arc, radians */
+    double sweep_angle;  /* arc, radians */
+} CCCurveRecognition;
+
+/* Recognize whether the curve `h` is EXACTLY a line / circle / arc / ellipse. The
+ * fit is a candidate generator; acceptance requires the control net to satisfy the
+ * primitive's implicit equation to <= `tol` (pass <= 0 for the built-in 1e-12),
+ * else CC_CURVE_GENERAL. Fills *out, returns 1 on success; 0 on unknown handle /
+ * null out (cc_last_error set). */
+int cc_nurbs_recognize_curve(cc_curve h, double tol, CCCurveRecognition* out);
+
+/* Recognized analytic SURFACE kind (mirrors native SurfaceKind). */
+typedef enum {
+    CC_SURF_GENERAL = 0,
+    CC_SURF_PLANE = 1,
+    CC_SURF_CYLINDER = 2,
+    CC_SURF_CONE = 3,
+    CC_SURF_SPHERE = 4
+} CCSurfaceKind;
+
+/* Result of cc_nurbs_recognize_surface. Only the fields the `kind` selects are
+ * meaningful. `origin`/`axis`/`x_axis` give the primitive frame; `radius` is the
+ * cylinder / sphere / cone-reference radius; `half_angle` the cone half-angle. */
+typedef struct {
+    int32_t kind;   /* CCSurfaceKind */
+    double residual;
+    double origin[3];
+    double axis[3];
+    double x_axis[3];
+    double radius;
+    double half_angle; /* cone, radians */
+} CCSurfaceRecognition;
+
+/* Recognize whether the surface `h` is EXACTLY a plane / cylinder / cone / sphere,
+ * with the same control-net algebraic-exactness certificate (<= `tol`, <= 0 ⇒
+ * 1e-12). Fills *out, returns 1 on success; 0 on unknown handle / null out. */
+int cc_nurbs_recognize_surface(cc_surface h, double tol, CCSurfaceRecognition* out);
+
+/* ── Analytic -> exact rational NURBS ─────────────────────────────────────── */
+
+/* A full circle: center (3), plane unit normal (3), in-plane unit X axis (3),
+ * radius. Built as a piecewise rational-quadratic B-spline (4 quarter segments,
+ * 9 poles). Honest decline (id 0) on a non-positive radius or a degenerate
+ * normal / x_axis. */
+cc_curve cc_nurbs_circle(const double* center, const double* normal,
+                         const double* x_axis, double radius);
+
+/* A circular arc: same frame as cc_nurbs_circle plus a start angle and sweep
+ * (radians, sweep in (0, 2π]). Honest decline (id 0) on a bad radius / frame or a
+ * non-positive / out-of-range sweep. */
+cc_curve cc_nurbs_arc(const double* center, const double* normal, const double* x_axis,
+                      double radius, double start_angle, double sweep_angle);
+
+/* A full ellipse: center (3), normal (3), major-axis (X) direction (3), and the
+ * two semi-axes (major_radius along X, minor_radius). Honest decline (id 0) on a
+ * non-positive semi-axis or a degenerate frame. */
+cc_curve cc_nurbs_ellipse(const double* center, const double* normal,
+                          const double* x_axis, double major_radius,
+                          double minor_radius);
+
+/* A finite window [u0,u1] x [v0,v1] of a plane (origin (3), unit normal (3),
+ * in-plane X axis (3)) as a bilinear 2x2 patch. Honest decline (id 0) on a
+ * degenerate frame or an empty window (u1<=u0 or v1<=v0). */
+cc_surface cc_nurbs_plane(const double* origin, const double* normal,
+                          const double* x_axis, double u0, double u1, double v0,
+                          double v1);
+
+/* A finite-height cylinder [v0,v1] (frame origin (3), axis (3), in-plane X (3),
+ * radius) as an exact rational surface of revolution. Honest decline (id 0) on a
+ * non-positive radius, a degenerate frame, or an empty height. */
+cc_surface cc_nurbs_cylinder(const double* origin, const double* axis,
+                             const double* x_axis, double radius, double v0,
+                             double v1);
+
+/* A finite-height cone [v0,v1] (frame origin (3), axis (3), in-plane X (3),
+ * reference radius at v=0, half-angle `semi_angle` in radians) as an exact
+ * rational surface of revolution. Honest decline (id 0) on a degenerate frame or
+ * an empty height. */
+cc_surface cc_nurbs_cone(const double* origin, const double* axis,
+                         const double* x_axis, double radius, double semi_angle,
+                         double v0, double v1);
+
+/* A full sphere (center (3), axis (3), in-plane X (3), radius) as an exact
+ * rational surface of revolution. Honest decline (id 0) on a non-positive radius
+ * or a degenerate frame. */
+cc_surface cc_nurbs_sphere(const double* center, const double* axis,
+                           const double* x_axis, double radius);
+
+/* A full torus (center (3), axis (3), in-plane X (3), major_radius R, minor_radius
+ * r) as an exact rational surface of revolution. Honest decline (id 0) on a non-
+ * positive minor radius, a spindle torus (R < r), or a degenerate frame. */
+cc_surface cc_nurbs_torus(const double* center, const double* axis,
+                          const double* x_axis, double major_radius,
+                          double minor_radius);
+
+#endif /* CC_KERNEL_NO_PROTOTYPES */
+
 #ifdef __cplusplus
 }
 #endif

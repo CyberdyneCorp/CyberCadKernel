@@ -990,6 +990,26 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_solid_boolean)
         set(test_native_nurbs_solid_boolean_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_solid_boolean.cpp")
+        # BOOL-FEATURE / LAYER 3 → CAD OPS — host GATE (a), the OCCT-free closed-form proof
+        # of the CAD feature operations POCKET / BOSS (feature_ops.h): the natural CAD
+        # composition on top of the general two-freeform-solid NURBS boolean — sweep a
+        # closed profile into a TOOL solid (Layer-6 sweepTranslational), then boolean it
+        # against the BASE (Pocket ⇒ Cut, Boss ⇒ Fuse). Re-implements NEITHER the boolean
+        # NOR the sweep; it COMPOSES the landed nurbsSolidBoolean + bspline_sweep. On the
+        # tractable single-transversal-seam bowl-cup pose POCKET welds watertight (χ=2,
+        # be=0, coherent) at V(base)−lens and BOSS at V(base)+V(tool)−lens, both within the
+        # tessellation band (DISAGREED=0) and convergent; the swept-tool WALL reproduces the
+        # exact translational extrusion of the profile (Layer-6 exactness, so the tool is a
+        # genuine SWEPT profile); a null base HONEST-DECLINES NullBase before the boolean,
+        # and a BOSS over a genuine MULTI-SEAM pose HONEST-DECLINES BooleanDeclined carrying
+        # the boolean's MultiSeamDeclined residual — NEVER a leaky solid. Its seams are the
+        # real S3 trace + the swept wall composes the numsci-guarded Layer-6 sweep, so this
+        # host suite builds only under CYBERCAD_HAS_NUMSCI. Additive header-only composition
+        # (feature_ops.h; nurbs_solid_boolean.h + bspline_sweep.h byte-unchanged); no lib
+        # change, no cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_feature_ops)
+        set(test_native_feature_ops_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_feature_ops.cpp")
         # NURBS roadmap LAYER 3, SLICE 3 (L3-S3) — host GATE (a), the OCCT-free closed-
         # form proof of the THIRD (deepest) exact-NURBS B-rep boolean: a genuine NURBS
         # (Kind::BSpline) face SPLIT BY ANOTHER FREEFORM NURBS face, welded watertight —

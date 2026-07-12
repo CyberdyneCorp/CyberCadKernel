@@ -1,0 +1,34 @@
+{
+  "api_calls": [
+    "Surface.create",
+    "nurbs.fillet_freeform_g2",
+    "Surface.tessellate"
+  ],
+  "artifacts": {
+    "png": "out/n3_filleted_freeform_boss/n3_filleted_freeform_boss.png"
+  },
+  "bbox_max": [
+    4.0,
+    3.0,
+    3.0
+  ],
+  "bbox_min": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "bbox_size": [
+    4.0,
+    3.0,
+    3.0
+  ],
+  "description": "A G2 rolling-ball fillet blends a freeform floor into a freeform wall across their concave dihedral. Shown as a face-set of floor + wall + fillet band; each is exact geometry, the ball radius is 0.3.",
+  "feature": "cc_nurbs_fillet_freeform_g2 (freeform G2 fillet)",
+  "is_single_surface": false,
+  "name": "n3_filleted_freeform_boss",
+  "render_backend": "matplotlib",
+  "surface_count": 3,
+  "title": "Filleted freeform boss (G2 rolling-ball fillet)",
+  "triangle_count": 3910,
+  "vertex_count": 2112
+}

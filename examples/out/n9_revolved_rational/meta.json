@@ -1,0 +1,34 @@
+{
+  "api_calls": [
+    "nurbs.circle",
+    "nurbs.revolve",
+    "Surface.tessellate"
+  ],
+  "artifacts": {
+    "png": "out/n9_revolved_rational/n9_revolved_rational.png"
+  },
+  "bbox_max": [
+    16.0,
+    15.969,
+    3.997
+  ],
+  "bbox_min": [
+    -15.873,
+    -15.969,
+    -3.997
+  ],
+  "bbox_size": [
+    31.873,
+    31.938,
+    7.995
+  ],
+  "description": "An off-axis circle revolved a full turn about the z-axis by nurbs.revolve, yielding an EXACT rational surface of revolution (a torus-like ring). rational=True; a full-turn revolve of a closed profile tessellates watertight \u2014 the single-surface case that IS a sewn solid.",
+  "feature": "cc_nurbs_revolve (exact rational surface of revolution)",
+  "is_single_surface": true,
+  "name": "n9_revolved_rational",
+  "render_backend": "matplotlib",
+  "surface_count": 1,
+  "title": "Revolved rational ring",
+  "triangle_count": 1794,
+  "vertex_count": 960
+}

@@ -1,0 +1,36 @@
+{
+  "api_calls": [
+    "nurbs.circle",
+    "nurbs.interp_curve",
+    "nurbs.sweep_variable",
+    "nurbs.sweep_two_rail",
+    "Surface.tessellate"
+  ],
+  "artifacts": {
+    "png": "out/n7_variable_swept_handle/n7_variable_swept_handle.png"
+  },
+  "bbox_max": [
+    9.704,
+    12.0,
+    42.498
+  ],
+  "bbox_min": [
+    -3.4,
+    -3.743,
+    -0.851
+  ],
+  "bbox_size": [
+    13.104,
+    15.743,
+    43.349
+  ],
+  "description": "A round grip swept along a bowed path with a per-station scale (bulging mid-grip, necking at the ends) and twist, plus a two-rail-swept spine bar whose section rides two rail curves. Both sweep flavours in one piece.",
+  "feature": "cc_nurbs_sweep_variable + cc_nurbs_sweep_two_rail",
+  "is_single_surface": false,
+  "name": "n7_variable_swept_handle",
+  "render_backend": "matplotlib",
+  "surface_count": 2,
+  "title": "Variable-section swept handle",
+  "triangle_count": 3588,
+  "vertex_count": 1920
+}

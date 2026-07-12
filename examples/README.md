@@ -2,6 +2,8 @@
 
 Parametric mechanical CAD pieces built through the CyberCadKernel Python binding (`python/cybercadkernel`), on the real OCCT-backed engine. Every piece is a genuine B-rep solid: the volumes and bounding boxes below come from the kernel's exact mass-property query, not the mesh.
 
+> **Two galleries here.** This page is the B-rep (`Kernel` / `Shape`) gallery. There is a companion **exact-NURBS gallery** — [`GALLERY.md`](GALLERY.md) — that drives the `cybercadkernel.nurbs` layer (the `Curve` / `Surface` handles over the `cc_nurbs_*` C facade): a skinned bracket, a G2 N-sided boss cap, a freeform-G2-filleted boss, a chamfered + vertex-blended corner, a reverse-engineered cylinder, a faired scan patch, a variable-section swept handle, a trim-boolean pocket, and a revolved rational ring. Build those nine with `python3 examples/run_all_nurbs.py` (or any `examples/n*_*.py` directly).
+
 ## How to build
 
 ```sh

@@ -1,0 +1,34 @@
+{
+  "api_calls": [
+    "nurbs.interp_curve",
+    "nurbs.skin",
+    "Surface.tessellate"
+  ],
+  "artifacts": {
+    "png": "out/n1_lofted_bracket/n1_lofted_bracket.png"
+  },
+  "bbox_max": [
+    20.0,
+    11.998,
+    30.0
+  ],
+  "bbox_min": [
+    -19.992,
+    -11.998,
+    0.0
+  ],
+  "bbox_size": [
+    39.992,
+    23.997,
+    30.0
+  ],
+  "description": "A skinned transition bracket: a wide rounded-rectangle mouth lofted through intermediate sections up to a small round spout \u2014 one tensor-product surface containing every section as an iso-curve.",
+  "feature": "cc_nurbs_skin (loft over section curves; gordon sibling)",
+  "is_single_surface": true,
+  "name": "n1_lofted_bracket",
+  "render_backend": "matplotlib",
+  "surface_count": 1,
+  "title": "Lofted bracket transition",
+  "triangle_count": 1794,
+  "vertex_count": 960
+}

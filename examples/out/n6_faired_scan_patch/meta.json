@@ -1,0 +1,34 @@
+{
+  "api_calls": [
+    "nurbs.fit_surface",
+    "nurbs.fair_surface",
+    "Surface.tessellate"
+  ],
+  "artifacts": {
+    "png": "out/n6_faired_scan_patch/n6_faired_scan_patch.png"
+  },
+  "bbox_max": [
+    46.0,
+    20.0,
+    3.199
+  ],
+  "bbox_min": [
+    0.0,
+    0.0,
+    -2.772
+  ],
+  "bbox_size": [
+    46.0,
+    20.0,
+    5.972
+  ],
+  "description": "A noisy scan grid is fitted to a NURBS surface (left, raw) then smoothed by a minimal-energy thin-plate fairing within tolerance (right, faired). The two single-surface patches are shown side by side to make the noise damping visible.",
+  "feature": "cc_nurbs_fair_surface (over cc_nurbs_fit_surface)",
+  "is_single_surface": false,
+  "name": "n6_faired_scan_patch",
+  "render_backend": "matplotlib",
+  "surface_count": 2,
+  "title": "Faired scan patch (before / after)",
+  "triangle_count": 2116,
+  "vertex_count": 1152
+}

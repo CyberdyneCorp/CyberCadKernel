@@ -1,0 +1,35 @@
+{
+  "api_calls": [
+    "Curve.create",
+    "nurbs.trim_region_boolean",
+    "nurbs.plane",
+    "Surface.eval"
+  ],
+  "artifacts": {
+    "png": "out/n8_trim_boolean_pocket/n8_trim_boolean_pocket.png"
+  },
+  "bbox_max": [
+    4.0,
+    4.0,
+    0.0
+  ],
+  "bbox_min": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "bbox_size": [
+    4.0,
+    4.0,
+    0.0
+  ],
+  "description": "A rectangular face with a diamond pocket cut by a parameter-space trim boolean: DIFFERENCE (area 12.6) subtracts the pocket, INTERSECTION reports area 3.4. The result region \u2014 outer loop minus the hole loop \u2014 is mapped onto the host plane and shown as the trimmed result face.",
+  "feature": "cc_nurbs_trim_region_boolean (DIFFERENCE / INTERSECT)",
+  "is_single_surface": true,
+  "name": "n8_trim_boolean_pocket",
+  "render_backend": "matplotlib",
+  "surface_count": 1,
+  "title": "Trim-boolean pocket",
+  "triangle_count": 128,
+  "vertex_count": 128
+}

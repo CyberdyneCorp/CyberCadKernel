@@ -1,0 +1,34 @@
+{
+  "api_calls": [
+    "Curve.create",
+    "nurbs.nsided_fill",
+    "Surface.tessellate"
+  ],
+  "artifacts": {
+    "png": "out/n2_nsided_boss/n2_nsided_boss.png"
+  },
+  "bbox_max": [
+    13.2,
+    12.787,
+    5.316
+  ],
+  "bbox_min": [
+    -12.623,
+    -12.787,
+    -5.316
+  ],
+  "bbox_size": [
+    25.823,
+    25.573,
+    10.631
+  ],
+  "description": "A 5-sided boss cap filled by an N-sided fill in G2 mode: five domed boundary curves close a pentagonal rim, and the fill returns a fan of 5 curvature-continuous patches meeting at a central star point.",
+  "feature": "cc_nurbs_nsided_fill (mode G2, pentagon boundary)",
+  "is_single_surface": false,
+  "name": "n2_nsided_boss",
+  "render_backend": "matplotlib",
+  "surface_count": 5,
+  "title": "N-sided boss cap (G2)",
+  "triangle_count": 5290,
+  "vertex_count": 2880
+}

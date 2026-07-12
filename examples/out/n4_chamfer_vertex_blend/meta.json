@@ -1,0 +1,35 @@
+{
+  "api_calls": [
+    "nurbs.chamfer_variable",
+    "Surface.create",
+    "nurbs.vertex_blend",
+    "Surface.tessellate"
+  ],
+  "artifacts": {
+    "png": "out/n4_chamfer_vertex_blend/n4_chamfer_vertex_blend.png"
+  },
+  "bbox_max": [
+    6.0,
+    3.81,
+    1.302
+  ],
+  "bbox_min": [
+    -3.661,
+    -3.81,
+    -1.0
+  ],
+  "bbox_size": [
+    9.661,
+    7.621,
+    2.302
+  ],
+  "description": "A variable-distance analytic chamfer along a plane/plane edge (setback tapering 0.4 -> 1.0), plus a setback vertex blend filling the 3-sided corner where three fillet bands meet (3 G1 corner sub-patches). Shown as a face-set; each surface is exact geometry.",
+  "feature": "cc_nurbs_chamfer_variable + cc_nurbs_vertex_blend",
+  "is_single_surface": false,
+  "name": "n4_chamfer_vertex_blend",
+  "render_backend": "matplotlib",
+  "surface_count": 7,
+  "title": "Chamfered edge + vertex-blended corner",
+  "triangle_count": 5658,
+  "vertex_count": 3120
+}

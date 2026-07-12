@@ -1,0 +1,34 @@
+{
+  "api_calls": [
+    "nurbs.detect_primitive",
+    "nurbs.cylinder",
+    "Surface.tessellate"
+  ],
+  "artifacts": {
+    "png": "out/n5_reverse_engineered_primitive/n5_reverse_engineered_primitive.png"
+  },
+  "bbox_max": [
+    7.996,
+    8.0,
+    44.999
+  ],
+  "bbox_min": [
+    -7.989,
+    -7.976,
+    14.997
+  ],
+  "bbox_size": [
+    15.985,
+    15.976,
+    30.002
+  ],
+  "description": "A noisy point cloud sampled off a radius-8 cylinder is run through detect_primitive, which recovers CYLINDER (radius 7.997, RMS 0.0498); the recovered parameters rebuild the EXACT rational cylinder shown here.",
+  "feature": "cc_nurbs_detect_primitive (-> exact cc_nurbs_cylinder)",
+  "is_single_surface": true,
+  "name": "n5_reverse_engineered_primitive",
+  "render_backend": "matplotlib",
+  "surface_count": 1,
+  "title": "Reverse-engineered cylinder (from a point cloud)",
+  "triangle_count": 1794,
+  "vertex_count": 960
+}

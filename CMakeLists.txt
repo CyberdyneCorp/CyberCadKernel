@@ -301,6 +301,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_abi
         test_cc_nurbs
         test_cc_nurbs_topo
+        test_cc_nurbs_surfacing
         test_cross_engine_guard
         test_native_math
         test_native_nurbs_ops
@@ -1384,6 +1385,15 @@ if(CYBERCAD_BUILD_TESTS)
     # headers), so its TU needs the macro but NOT the substrate include trees.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_fit)
         target_compile_definitions(test_native_nurbs_fit PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+
+    # The J3 surfacing-facade host test calls ONLY the public cc_* API (no native
+    # header), so under CYBERCAD_HAS_NUMSCI it needs just the macro to enable its
+    # capability oracles (skin/revolve/nsided-G2/join) — NOT the substrate include
+    # trees. With the macro OFF the wrappers honest-decline and the test asserts
+    # that (the ABI symbols are always linked from the always-built facade TU).
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_cc_nurbs_surfacing)
+        target_compile_definitions(test_cc_nurbs_surfacing PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     # The Layer-7 primitive-fit gate includes primitive_fit.h, which under

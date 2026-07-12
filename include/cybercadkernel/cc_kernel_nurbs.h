@@ -648,6 +648,143 @@ cc_surface cc_nurbs_torus(const double* center, const double* axis,
 
 #endif /* CC_KERNEL_NO_PROTOTYPES */
 
+/* ════════════════════════════════════════════════════════════════════════════
+ * --- J3: surfacing ---  (append-only; J3 owns this delimited section)
+ *
+ * Thin `cc_nurbs_*` wrappers over the OCCT-free native Layer-6 surfacing modules
+ * (bspline_skin / gordon / coons / nsided{,_g1,_g2} / sweep / join). Each reads
+ * its input cc_curve / cc_surface handles through the PUBLIC J1 accessors, drives
+ * the native builder, and REGISTERS results via the public cc_surface_create. No
+ * J1-internal registry is touched. Honest-decline is a 0 (invalid) handle (or a
+ * count < 0) + cc_last_error — NEVER a plausible-but-wrong handle, NEVER a widened
+ * tolerance (a G2-infeasible creased N-gon declines; it is not filled with a
+ * residual crease).
+ *
+ * BUILD GATE: the native surfacing modules compile only under CYBERCAD_HAS_NUMSCI
+ * (they compose the numsci-backed skin/fit solves). With that macro OFF every J3
+ * wrapper honest-declines ("surfacing requires CYBERCAD_HAS_NUMSCI") — the ABI
+ * symbol is always present, only the capability is gated.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+/* N-sided fill continuity mode (see bspline_nsided{,_g1,_g2}.h). RATIONAL is the
+ * exact-rational C0 fill (rational boundary arcs reproduced exactly). */
+typedef enum {
+    CC_NSIDED_C0 = 0,       /* midpoint-subdivision Coons sub-patches (position only) */
+    CC_NSIDED_G1 = 1,       /* Gregory bicubic, tangent-plane continuous across spokes */
+    CC_NSIDED_G2 = 2,       /* Gregory quintic, curvature continuous across spokes     */
+    CC_NSIDED_RATIONAL = 3  /* exact-rational C0 fill (rational arcs exact)            */
+} CCNSidedMode;
+
+/* Surface-join continuity mode (see bspline_join.h). */
+typedef enum {
+    CC_JOIN_G1 = 1,  /* tangent-plane continuity across the shared edge */
+    CC_JOIN_G2 = 2   /* curvature continuity across the shared edge      */
+} CCJoinMode;
+
+/* Which boundary of a surface is the shared edge for cc_nurbs_join (mirrors the
+ * native SurfaceEdge). U0/U1 = u-min/u-max rows; V0/V1 = v-min/v-max columns. */
+typedef enum {
+    CC_EDGE_U0 = 0,
+    CC_EDGE_U1 = 1,
+    CC_EDGE_V0 = 2,
+    CC_EDGE_V1 = 3
+} CCSurfaceEdge;
+
+#ifndef CC_KERNEL_NO_PROTOTYPES
+
+/* SKIN / LOFT — build one tensor-product surface CONTAINING every section cc_curve
+ * as an iso-curve. `sections` is `n` cc_curve handles (>= 2); `degreeV` is the
+ * across-sections degree (clamped to n-1). If every section is rational the exact
+ * RATIONAL skin is used, else the non-rational skin (mixing rational and non-
+ * rational sections declines). Returns the skinned cc_surface, or a 0-handle +
+ * cc_last_error on decline (rational/non-rational mix, coincident sections, a
+ * malformed section, or a native decline). */
+cc_surface cc_nurbs_skin(const cc_curve* sections, int n, int degreeV);
+
+/* GORDON / NETWORK — boolean-sum surface INTERPOLATING a K u-curve + L v-curve
+ * network. `uCurves`/`vCurves` are the two families (K,L >= 2); `vParams` (length
+ * K) is the v-station of each u-curve and `uParams` (length L) the u-station of
+ * each v-curve (the grid stations). Rational-aware: an all-rational network uses
+ * the exact rational Gordon, an all-non-rational network the non-rational one.
+ * Returns the Gordon cc_surface, or a 0-handle + cc_last_error on decline (an
+ * inconsistent grid, a rational/non-rational mix, or a singular interpolation). */
+cc_surface cc_nurbs_gordon(const cc_curve* uCurves, int nU, const cc_curve* vCurves,
+                           int nV, const double* vParams, const double* uParams);
+
+/* COONS PATCH — fill the four boundary cc_curves (c0 = edge v=0, c1 = edge v=1,
+ * d0 = edge u=0, d1 = edge u=1; shared corners must coincide within `tol`) with the
+ * boolean-sum surface INTERPOLATING all four boundaries. `tol <= 0` uses the native
+ * default. Returns the Coons cc_surface, or a 0-handle + cc_last_error on decline
+ * (mismatched corners, a rational/degenerate boundary). NON-RATIONAL boundaries. */
+cc_surface cc_nurbs_coons(cc_curve c0, cc_curve c1, cc_curve d0, cc_curve d1, double tol);
+
+/* N-SIDED FILL — fill the closed loop of `n` boundary cc_curves (>= 3, consecutive
+ * corners meeting within `tol`) with the matching native multi-patch fill selected
+ * by `mode` (CC_NSIDED_C0 / _G1 / _G2 / _RATIONAL). The result is 1..N tensor-
+ * product patches; they are written into the caller array `outPatches` (capacity
+ * `cap` cc_surface handles). RETURNS the number of patches written (>= 1), or:
+ *   < 0  and cc_last_error set  → honest decline (a non-closed loop, a rational
+ *         boundary where the mode forbids it, a G1/G2-INFEASIBLE creased corner —
+ *         NOT filled with a residual crease — or `cap` too small: NOTHING is
+ *         registered/written and no handle leaks). `tol <= 0` uses the native
+ *         default. Registered handles are the caller's to release on success. */
+int cc_nurbs_nsided_fill(const cc_curve* boundary, int n, CCNSidedMode mode,
+                         double tol, cc_surface* outPatches, int cap);
+
+/* VARIABLE-SECTION SWEEP — sweep `profile` along `path`, applying a per-station
+ * `scales[k]` (>0) and `twists[k]` (radians) to the rotation-minimizing-frame–
+ * transported section, then skin the placed sections. `sectionNormalXYZ` (3
+ * doubles) is the profile plane normal; `stations` (>= 2) the sample count;
+ * `degreeV` the across-stations degree. `scales`/`twists` are each `stations` long.
+ * Rational-aware (rational profile → exact rational variable sweep). Returns the
+ * swept cc_surface, or a 0-handle + cc_last_error on decline (< 2 stations, a
+ * non-positive scale, a degenerate path, a rational/non-rational mismatch, a native
+ * decline). */
+cc_surface cc_nurbs_sweep_variable(cc_curve profile, cc_curve path,
+                                   const double* sectionNormalXYZ, const double* scales,
+                                   const double* twists, int stations, int degreeV);
+
+/* TWO-RAIL SWEEP — sweep `profile` between `rail0` and `rail1`: the section pole
+ * indices `anchor0`/`anchor1` (distinct, in range) ride the two rails at every
+ * station. `sectionNormalXYZ` (3 doubles) is the profile plane normal; `stations`
+ * (>= 2); `degreeV` the across-stations degree. Rational-aware (rational profile →
+ * exact rational two-rail sweep; rails are non-rational). Returns the swept
+ * cc_surface, or a 0-handle + cc_last_error on decline (bad anchors, coincident
+ * anchors, a degenerate rail chord, a rational/non-rational mismatch, a native
+ * decline). */
+cc_surface cc_nurbs_sweep_two_rail(cc_curve profile, cc_curve rail0, cc_curve rail1,
+                                   const double* sectionNormalXYZ, int anchor0, int anchor1,
+                                   int stations, int degreeV);
+
+/* REVOLVE — EXACT rational surface of revolution: revolve `profile` about the axis
+ * (`axisPointXYZ`, `axisDirXYZ`, each 3 doubles) through `angle` radians. A straight
+ * offset segment → exact cylinder; a tilted segment → exact cone; a semicircle →
+ * exact sphere (points on the analytic surface to machine precision). Rational-aware
+ * (a rational profile's weights ride through). Returns the revolved cc_surface, or a
+ * 0-handle + cc_last_error on decline (a null/non-unit axis, a ~zero angle, or the
+ * whole profile lying ON the axis). */
+cc_surface cc_nurbs_revolve(cc_curve profile, const double* axisPointXYZ,
+                            const double* axisDirXYZ, double angle);
+
+/* JOIN — reposition the near-boundary control rows of two adjacent cc_surfaces
+ * `a` and `b` (sharing the C0 edge named by `edgeA`/`edgeB`; `reversed` != 0 when
+ * B's along-edge parameter runs opposite to A's) so they meet with continuity
+ * `mode` (CC_JOIN_G1 / _G2) across that edge, with minimal control movement and the
+ * shared boundary curve frozen. `maxMovementCap <= 0` means uncapped. On success the
+ * two repositioned surfaces are registered into `outA`/`outB` (either may be null to
+ * discard) and 1 is returned; the achieved continuity residual (G1: max unit-normal
+ * mismatch in rad; G2: max relative normal-curvature mismatch) is written to
+ * `*residual` when non-null. RETURNS 0 + cc_last_error on decline (a non-coincident
+ * edge, an irreconcilable degree/knot mismatch, a rational mismatch, or a required
+ * movement beyond `maxMovementCap`) — NOTHING is registered on decline. */
+int cc_nurbs_join(cc_surface a, cc_surface b, CCSurfaceEdge edgeA, CCSurfaceEdge edgeB,
+                  int reversed, CCJoinMode mode, double maxMovementCap, double* residual,
+                  cc_surface* outA, cc_surface* outB);
+
+#endif /* CC_KERNEL_NO_PROTOTYPES */
+
+/* ═══════════════════ end --- J3: surfacing --- ════════════════════════════════ */
+
 #ifdef __cplusplus
 }
 #endif

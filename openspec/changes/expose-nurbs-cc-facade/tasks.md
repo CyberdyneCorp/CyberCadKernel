@@ -40,7 +40,7 @@ delivery; implementation lands as waves J1–J7 (see `design.md` §7).
   `_torus` — exact rational NURBS from analytic params. (**host**)
 
 ## 3. J3 — surfacing wrappers
-- [ ] 3.1 `cc_nurbs_skin`, `_gordon`, `_coons`, `_nsided_fill` (mode C0/G1/G2/
+- [x] 3.1 `cc_nurbs_skin`, `_gordon`, `_coons`, `_nsided_fill` (mode C0/G1/G2/
   rational), `_sweep_variable`, `_sweep_two_rail`, `_revolve`, `_join` (mode
   G1/G2) → `cc_surface` (or decline). (**host**)
 

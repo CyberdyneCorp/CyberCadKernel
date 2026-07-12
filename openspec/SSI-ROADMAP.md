@@ -288,6 +288,43 @@ corrector/step outside the band is unchanged). Deeper near-coincident bands, gen
 are now crossed — see S4-e below) and self-intersection (S4-f) remain the tail: anything not
 robustly crossable is still an honest `NearTangent` gap deferred to OCCT.
 
+**S4-c deep-graze residual — RE-MEASURED, HONEST-DECLINE (freeform fuzzer, 3 seeds, N=48,
+`0x5515D1FF0F0F`+2).** A pass targeting the "deeper near-tangent graze band the S4-c corrector
+truncates" was investigated and DECLINED because the target does not exist in the current
+measured build. Freeform fuzzer aggregate: **AGREED 124/144 (86.1%), HONESTLY-DECLINED 20/144
+(13.9%), DISAGREED 0**. The decline reason histogram is **near-tangent 0, multi-branch 14,
+small-loop 6** — the near-tangent MARCHING family is EMPTY. Per-decline anatomy (a diagnostic
+probe over the marcher's `TraceSet`):
+- **Every multi-branch decline is `seeded == traced`, `dedupedRetraces == 0`** — the recurring
+  signature is `seeded=1 traced=1 deduped=0 occtComp=2`: S2 handed the marcher ONE seed, the
+  marcher traced it perfectly (`BoundaryExit`, every node on both surfaces ≤ `onSurfTol`, node-on-
+  OCCT-locus ≈ 5e-8), and OCCT found a SECOND distinct co-resident locus (`worstMissLen ≈ 2–5`,
+  `genuineOcctOnNat ≈ 1.0–2.0`) the marcher was **never seeded for**. `deduped=0` proves the
+  marcher did NOT drop a distinct loop — there was no second seed to drop. This is a pure **S2
+  seeding-recall gap** (the subdivision seeder emits one seed for a twice-piercing pose), NOT a
+  marching truncation. The completeness critic (finer subdivision + targeted uncovered-cell
+  re-seed, loop-until-dry) recovers **zero** here (`criticRecoveredLoops == 0` at the finest
+  floor) — the missed loci are co-resident in a way the AABB prune cannot separate, a seeding
+  frontier, not a marcher lever.
+- **Every small-loop decline is a fully-traced `Closed`/`BoundaryExit` with `nearTangentCrossed
+  == 0`** whose native arc length matches the OCCT locus length (e.g. `arc=3.99` vs
+  `occtTotLen=3.94`; `arc=0.203` vs `0.203`; `arc=5.67` vs `5.59`) with node-on-locus ≈ 5e-8.
+  The 1.5e-3–4.6e-3 reverse-coverage miss (just over the fixed 1e-3 `onCurve` gate) is a
+  **fitted-B-spline discretization bow** on a high-curvature loop — a fit-density artifact the
+  harness already documents (`onCurve` comment: "a fitted-B-spline bow between nodes rides
+  ~1e-4"), NOT a near-tangency the marcher truncated (`ntCross=0` confirms no crossing band was
+  ever entered). S3 already traces these near-tangent loops fully and transversally.
+
+**Conclusion / precise wall:** the S4 marching residual on the freeform fuzzer is **not a
+near-tangent graze the marcher truncates** — the near-tangent marching family measures **0**.
+The genuine ~14% decline is (a) **S2 seeding-recall of distinct co-resident loci** (dominant,
+out of the marching scope and unrecovered by the completeness critic), and (b) a sub-`onCurve`
+**fitted-spline coverage bow** on tight loops that ARE fully traced. No marching change to
+`marching.{h,cpp}` can lower this decline without fabricating a curve across a locus that has no
+seed, or re-baselining the `onCurve` fit gate — both refused. `DISAGREED == 0` holds; the
+marcher's emitted geometry is correct on every node. The moat's next honest frontier is
+**S2 seeding recall for co-resident branches**, not deeper S4-c graze marching.
+
 #### S4-d — Branch points · ◐ TWO HONEST SLICES DONE AT THE BAR (analytic Steinmetz self-crossing + FIRST FREEFORM branch point: a B-spline saddle ∩ plane OPEN-ARM X-crossing; general multi-line/cusp/saddle∩saddle branches remain)
 The hardest SSI piece: where the intersection **locus itself crosses** (multiple curve arms
 meet at one point), LOCALIZE the branch point, ENUMERATE the outgoing arms from the local

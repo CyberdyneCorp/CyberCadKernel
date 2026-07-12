@@ -167,6 +167,69 @@ static BsplineSurfaceData tightDome(double R) {
   return s;
 }
 
+// A RATIONAL NURBS SPHERE BAND of radius R: revolve a meridian arc (equator up to 60°
+// latitude) through 90° of azimuth about the z-axis — the exact tensor product of two
+// rational Bézier arcs, bounded AWAY from the poles so the normal is defined everywhere (a
+// full octant would collapse to a pole singularity with a null normal). U is the 90° azimuth
+// arc (weights 1, cos45°, 1); V is the 60° meridian arc (weights 1, cos30°, 1). Every point
+// lies exactly on the sphere of radius R (verified in the test).
+static BsplineSurfaceData nurbsSphereBand(double R) {
+  BsplineSurfaceData s;
+  s.degreeU = 2;
+  s.degreeV = 2;
+  s.nPolesU = 3;
+  s.nPolesV = 3;
+  s.knotsU = {0, 0, 0, 1, 1, 1};  // single 90° azimuth Bézier arc
+  s.knotsV = {0, 0, 0, 1, 1, 1};  // single 60° meridian Bézier arc
+  const double c45 = std::cos(M_PI / 4.0);
+  const double c30 = std::cos(M_PI / 6.0);
+  // Meridian arc in the xz-plane (azimuth 0): equator (R,0,0) up to 60° latitude
+  // (R·cos60, 0, R·sin60). Rational quarter-arc middle control on the 30° bisector at
+  // radius R/cos30, weight cos30 (standard rational-arc construction).
+  const double mer[3][3] = {
+      {R, 0.0, 0.0},
+      {(R / c30) * std::cos(M_PI / 6.0), 0.0, (R / c30) * std::sin(M_PI / 6.0)},
+      {R * std::cos(M_PI / 3.0), 0.0, R * std::sin(M_PI / 3.0)}};
+  const double wv[3] = {1.0, c30, 1.0};
+  const double wu[3] = {1.0, c45, 1.0};
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) {
+      const double rho = mer[j][0];  // meridian radius in the xy-plane (my == 0)
+      const double mz = mer[j][2];
+      double px = 0.0, py = 0.0;  // revolve the meridian point through the 90° azimuth arc
+      if (i == 0) { px = rho; py = 0.0; }
+      else if (i == 1) { px = rho; py = rho; }
+      else { px = 0.0; py = rho; }
+      s.poles.push_back({px, py, mz});
+      s.weights.push_back(wu[i] * wv[j]);
+    }
+  return s;
+}
+
+// A partial-fold bump: a bicubic patch that is nearly flat over most of the domain but has a
+// sharply-curved dimple in ONE corner, so an offset by a modest |d| folds ONLY over that
+// corner — the rest is fold-free. Used to exercise fold TRIMMING (keep the fold-free bulk).
+static BsplineSurfaceData partialFoldBump() {
+  BsplineSurfaceData s;
+  s.degreeU = 3;
+  s.degreeV = 3;
+  s.nPolesU = 7;
+  s.nPolesV = 7;
+  s.knotsU = {0, 0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1, 1};  // 7+3+1=11
+  s.knotsV = {0, 0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1, 1};
+  for (int i = 0; i < 7; ++i)
+    for (int j = 0; j < 7; ++j) {
+      const double x = i * 0.35;
+      const double y = j * 0.35;
+      // A tall, tight Gaussian dimple centred at the (i=1,j=1) corner region — high curvature
+      // there, flat elsewhere. Amplitude/width tuned so a modest offset folds only locally.
+      const double dx = i - 1.0, dy = j - 1.0;
+      const double z = 0.9 * std::exp(-1.4 * (dx * dx + dy * dy));
+      s.poles.push_back({x, y, z});
+    }
+  return s;
+}
+
 // A degenerate patch: a control net that collapses to a line along U (all V-columns
 // identical points) — the ∂S/∂v tangent is null, so the normal is undefined.
 static BsplineSurfaceData degenerateNormalPatch() {
@@ -355,6 +418,211 @@ int main() {
     expectTrue(degRes.status == OffsetStatus::DegenerateNormal ||
                    degRes.status == OffsetStatus::DegenerateInput,
                "degenerate patch reports a degeneracy status");
+  }
+
+  // ═══ 5. RATIONAL OFFSET — analytic exactness (sphere / cylinder / plane) ═════════
+  {
+    // 5a. Sphere: the RATIONAL offset of a NURBS sphere octant of radius R by d lies on the
+    // concentric sphere of radius R±d, to a TIGHT bound (≤ 1e-6), and is itself rational.
+    const double R = 2.0;
+    const BsplineSurfaceData sph = nurbsSphereBand(R);
+    // Sanity: the input band is a true sphere (every point at radius R).
+    {
+      double worst0 = 0.0;
+      for (int i = 0; i <= 6; ++i)
+        for (int j = 0; j <= 6; ++j) {
+          const Point3 p = evalSurf(sph, i / 6.0, j / 6.0);
+          worst0 = std::max(worst0, std::fabs(std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z) - R));
+        }
+      expectLE(worst0, 1e-9, "rational sphere octant input lies on radius R");
+    }
+    for (double d : {0.5, -0.3}) {
+      const OffsetResult res = offsetSurfaceRational(sph, d, 1e-6);
+      expectTrue(res.ok, "rational sphere offset ok");
+      if (!res.ok) continue;
+      expectTrue(!res.surface.weights.empty(), "rational sphere offset is RATIONAL (weights)");
+      const BsplineSurfaceData& O = res.surface;
+      const double u0 = domLo(O.knotsU, O.degreeU), u1 = domHi(O.knotsU, O.degreeU);
+      const double v0 = domLo(O.knotsV, O.degreeV), v1 = domHi(O.knotsV, O.degreeV);
+      const double want = R + d;
+      double worst = 0.0;
+      const int N = 11;
+      for (int i = 0; i < N; ++i)
+        for (int j = 0; j < N; ++j) {
+          const double u = u0 + (u1 - u0) * (i / (double)(N - 1));
+          const double v = v0 + (v1 - v0) * (j / (double)(N - 1));
+          const Point3 p = evalSurf(O, u, v);
+          worst = std::max(worst, std::fabs(std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z) - want));
+        }
+      expectLE(worst, 1e-6, "rational sphere offset on radius R+d (tight)");
+    }
+
+    // 5b. Cylinder: the rational offset of a NURBS cylinder of radius r lies on radius r±d,
+    // to ≤ 1e-6, and is rational.
+    const double r = 2.0, h = 3.0;
+    const BsplineSurfaceData cyl = nurbsQuarterCylinder(r, h);
+    for (double d : {0.5, -0.4}) {
+      const OffsetResult res = offsetSurfaceRational(cyl, d, 1e-6);
+      expectTrue(res.ok, "rational cylinder offset ok");
+      if (!res.ok) continue;
+      expectTrue(!res.surface.weights.empty(), "rational cylinder offset is RATIONAL");
+      const BsplineSurfaceData& O = res.surface;
+      const double u0 = domLo(O.knotsU, O.degreeU), u1 = domHi(O.knotsU, O.degreeU);
+      const double v0 = domLo(O.knotsV, O.degreeV), v1 = domHi(O.knotsV, O.degreeV);
+      const double want = r + d;
+      double worst = 0.0;
+      const int N = 11;
+      for (int i = 0; i < N; ++i)
+        for (int j = 0; j < N; ++j) {
+          const double u = u0 + (u1 - u0) * (i / (double)(N - 1));
+          const double v = v0 + (v1 - v0) * (j / (double)(N - 1));
+          const Point3 p = evalSurf(O, u, v);
+          worst = std::max(worst, std::fabs(std::sqrt(p.x * p.x + p.y * p.y) - want));
+        }
+      expectLE(worst, 1e-6, "rational cylinder offset on radius r+d (tight)");
+    }
+
+    // 5c. Plane: rational path on a non-rational plane falls back and offsets exactly.
+    const BsplineSurfaceData plane = planarPatch();
+    const OffsetResult pres = offsetSurfaceRational(plane, 0.75, 1e-6);
+    expectTrue(pres.ok, "rational-path plane offset ok");
+    if (pres.ok) {
+      const BsplineSurfaceData& O = pres.surface;
+      const double u0 = domLo(O.knotsU, O.degreeU), u1 = domHi(O.knotsU, O.degreeU);
+      const double v0 = domLo(O.knotsV, O.degreeV), v1 = domHi(O.knotsV, O.degreeV);
+      double worst = 0.0;
+      for (int i = 0; i < 9; ++i)
+        for (int j = 0; j < 9; ++j) {
+          const Point3 p =
+              evalSurf(O, u0 + (u1 - u0) * (i / 8.0), v0 + (v1 - v0) * (j / 8.0));
+          worst = std::max(worst, std::fabs(p.z - 2.75));
+        }
+      expectLE(worst, 1e-9, "rational-path plane offsets to exact parallel plane");
+    }
+  }
+
+  // ═══ 6. RATIONAL ROUND-TRIP — offset by d then −d recovers S ═════════════════════
+  {
+    const double r = 2.0, h = 3.0;
+    const BsplineSurfaceData cyl = nurbsQuarterCylinder(r, h);
+    const double d = 0.5;
+    const OffsetResult fwd = offsetSurfaceRational(cyl, d, 1e-6);
+    expectTrue(fwd.ok, "round-trip forward offset ok");
+    if (fwd.ok) {
+      const OffsetResult back = offsetSurfaceRational(fwd.surface, -d, 1e-6);
+      expectTrue(back.ok, "round-trip return offset ok");
+      if (back.ok) {
+        // Compare the twice-offset surface to the original cylinder by radius: it must be back
+        // on radius r everywhere (parametrization-independent geometric recovery).
+        const BsplineSurfaceData& O = back.surface;
+        const double u0 = domLo(O.knotsU, O.degreeU), u1 = domHi(O.knotsU, O.degreeU);
+        const double v0 = domLo(O.knotsV, O.degreeV), v1 = domHi(O.knotsV, O.degreeV);
+        double worst = 0.0;
+        const int N = 11;
+        for (int i = 0; i < N; ++i)
+          for (int j = 0; j < N; ++j) {
+            const double u = u0 + (u1 - u0) * (i / (double)(N - 1));
+            const double v = v0 + (v1 - v0) * (j / (double)(N - 1));
+            const Point3 p = evalSurf(O, u, v);
+            worst = std::max(worst, std::fabs(std::sqrt(p.x * p.x + p.y * p.y) - r));
+          }
+        expectLE(worst, 1e-5, "rational offset round-trips to original cylinder radius");
+      }
+    }
+  }
+
+  // ═══ 7. FOLD TRIMMING — keep the maximal fold-free region ════════════════════════
+  {
+    // A patch that folds only in one corner. Trimming must return a VALID offset over the
+    // fold-free bulk (trimmed=true, strict sub-rectangle), constant-sign Jacobian over the
+    // kept region, every kept point at distance |d| from S.
+    const BsplineSurfaceData S = partialFoldBump();
+    const double d = 0.8;  // toward the dimple's centre of curvature → fold over ONE corner
+
+    // Baseline: the plain offset DECLINES this as a self-intersection (fold somewhere).
+    const OffsetResult plain = offsetSurface(S, d, 1e-3);
+    expectTrue(plain.status == OffsetStatus::SelfIntersection,
+               "partial-fold patch: plain offset declines as self-intersection");
+
+    // Trimmed: recovers a valid offset over the fold-free region.
+    const OffsetResult tr = offsetSurfaceTrimmed(S, d, 1e-3);
+    expectTrue(tr.ok, "fold-trim recovers a valid offset over the fold-free region");
+    if (tr.ok) {
+      expectTrue(tr.trimmed, "fold-trim reports the domain was trimmed");
+      const double su0 = domLo(S.knotsU, S.degreeU), su1 = domHi(S.knotsU, S.degreeU);
+      const double sv0 = domLo(S.knotsV, S.degreeV), sv1 = domHi(S.knotsV, S.degreeV);
+      // Kept region is a STRICT sub-rectangle of the full domain (something was trimmed off).
+      const bool strictSub = (tr.keptU0 > su0 + 1e-9) || (tr.keptU1 < su1 - 1e-9) ||
+                             (tr.keptV0 > sv0 + 1e-9) || (tr.keptV1 < sv1 - 1e-9);
+      expectTrue(strictSub, "kept region is a strict sub-rectangle (fold corner removed)");
+      expectTrue(tr.keptU1 > tr.keptU0 && tr.keptV1 > tr.keptV0, "kept rectangle is non-empty");
+
+      // FOLD-FREE over the kept region: sample the input's principal curvatures on a dense
+      // grid across [keptU0,keptU1]×[keptV0,keptV1] and require (1 + d·κ) to keep CONSTANT
+      // positive sign — the offset Jacobian never degenerates there.
+      SurfaceGrid sg{std::span<const Point3>(S.poles), S.nPolesU, S.nPolesV};
+      double worstFactor = std::numeric_limits<double>::infinity();
+      const int N = 15;
+      for (int i = 0; i < N; ++i)
+        for (int j = 0; j < N; ++j) {
+          const double u = tr.keptU0 + (tr.keptU1 - tr.keptU0) * (i / (double)(N - 1));
+          const double v = tr.keptV0 + (tr.keptV1 - tr.keptV0) * (j / (double)(N - 1));
+          // Principal curvatures via the second fundamental form (mirrors the module).
+          Vec3 dbuf[9];
+          surfaceDerivs(S.degreeU, S.degreeV, sg, S.knotsU, S.knotsV, u, v, 2,
+                        std::span<Vec3>(dbuf, 9));
+          const Vec3 Su = dbuf[3], Sv = dbuf[1], Suu = dbuf[6], Suv = dbuf[4], Svv = dbuf[2];
+          const Vec3 nRaw = cross(Su, Sv);
+          const double nLen = norm(nRaw);
+          if (nLen < 1e-12) continue;
+          const Vec3 nn = nRaw / nLen;
+          const double E = dot(Su, Su), F = dot(Su, Sv), G = dot(Sv, Sv);
+          const double det1 = E * G - F * F;
+          if (det1 < 1e-14) continue;
+          const double L = dot(Suu, nn), M = dot(Suv, nn), Nn = dot(Svv, nn);
+          const double K = (L * Nn - M * M) / det1;
+          const double H = (E * Nn - 2.0 * F * M + G * L) / (2.0 * det1);
+          double disc = H * H - K;
+          if (disc < 0.0) disc = 0.0;
+          const double root = std::sqrt(disc);
+          for (double k : {H + root, H - root})
+            worstFactor = std::min(worstFactor, 1.0 + d * k);
+        }
+      expectTrue(worstFactor > 0.0, "kept region is fold-free (Jacobian factor stays positive)");
+
+      // Every kept offset point is at distance |d| from S (offset-locus property). Project onto
+      // S restricted to the KEPT sub-domain so the nearest foot is the radial offset foot, not a
+      // patch-boundary point (a bounded-patch artifact if we projected over the full domain).
+      const BsplineSurfaceData& O = tr.surface;
+      const double u0 = domLo(O.knotsU, O.degreeU), u1 = domHi(O.knotsU, O.degreeU);
+      const double v0 = domLo(O.knotsV, O.degreeV), v1 = domHi(O.knotsV, O.degreeV);
+      auto Seval = [&](double u, double v) { return evalSurf(S, u, v); };
+      double worstDist = 0.0;
+      const int M = 7;
+      for (int i = 1; i < M - 1; ++i)  // interior cells only (avoid the kept-edge feet)
+        for (int j = 1; j < M - 1; ++j) {
+          const Point3 p = evalSurf(O, u0 + (u1 - u0) * (i / (double)(M - 1)),
+                                    v0 + (v1 - v0) * (j / (double)(M - 1)));
+          const num::SurfaceProjection pr = num::closest_point_on_surface(
+              Seval, tr.keptU0, tr.keptU1, tr.keptV0, tr.keptV1, p, 32, 32);
+          if (pr.success) worstDist = std::max(worstDist, std::fabs(pr.distance - std::fabs(d)));
+        }
+      expectLE(worstDist, 5e-3, "kept offset points lie at distance |d| from S");
+    }
+
+    // A fold-free trimmed offset (small |d|) reports trimmed=false + full kept domain.
+    const OffsetResult noTrim = offsetSurfaceTrimmed(S, 0.05, 1e-3);
+    expectTrue(noTrim.ok, "small offset via trimmed path succeeds");
+    if (noTrim.ok) expectTrue(!noTrim.trimmed, "fold-free offset reports trimmed=false");
+
+    // A tight dome folds over essentially the WHOLE domain on its CONCAVE (+normal) side (the
+    // paraboloid cap curves toward +N everywhere): the trimmed path finds no fold-free region
+    // of meaningful area and still honest-declines with SelfIntersection.
+    const BsplineSurfaceData dome = tightDome(0.5);
+    const OffsetResult allFold = offsetSurfaceTrimmed(dome, 1.5 * 0.5, 1e-3);
+    expectTrue(!allFold.ok && allFold.status == OffsetStatus::SelfIntersection,
+               "fully-folding offset still declines (no meaningful fold-free region)");
+    expectTrue(allFold.surface.poles.empty(), "fully-folding decline returns no surface");
   }
 
   std::printf("nurbs_offset: %d checks, %d failures\n", g_checks, g_failures);

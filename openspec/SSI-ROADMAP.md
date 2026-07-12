@@ -576,7 +576,7 @@ S4-f DETECTS + REPORTS + traces-through, it does not repair topology.
 
 Archived change `openspec/changes/archive/2026-07-05-add-native-ssi-s4f-completeness`.
 
-### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f landed (CONE surface family opened — coaxial cone∩cylinder AND coaxial cone∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; ~months for full coverage)
+### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g landed (CONE surface family opened — coaxial cone∩cylinder, cone∩sphere AND cone∩cone op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; ~months for full coverage)
 Use SSI curves to **split** the curved faces of two solids, **classify**
 fragments inside/outside (reuse the BSP-CSG classifier + a curved point-in-solid
 test), **assemble** the surviving shell watertight (curved-seam weld from the
@@ -703,19 +703,53 @@ fixture; 6 honest fallbacks):
   The reversed `sphere − cone` CUT declines → NULL → OCCT; a TWO-circle crossing (sphere passes
   fully through the cone / spans the apex), an apex-crossing / apex-in-extent frustum, and a
   TRANSVERSAL (non-coaxial) cone∩sphere (a quartic space curve) all decline → NULL → OCCT.
+- **S5-g — coaxial CONE(frustum)∩CONE(frustum) COMMON / FUSE / CUT** (the CONE∩CONE family; op-set
+  now COMPLETE 3/3 native). Two COAXIAL cone frustums whose walls `r_A(s)=R0_A+s·tanα_A` and
+  `r_B(s)=R0_B+s·tanα_B` (s = axial projection onto the SHARED axis) meet where `r_A(s)=r_B(s)` — a
+  SINGLE LINEAR equation → EXACTLY ONE analytic circle seam at `s*=(R0_B−R0_A)/(tanα_A−tanα_B)`,
+  radius `r*=r_A(s*)`. This is the natural GENERALISATION of the S5-e cone∩cylinder pair (a cylinder
+  is the `tanα_B==0` special case): the S5-g `coneConeSetup` prologue re-expresses cone B's wall in
+  cone A's s-frame (handling an antiparallel axis) and the constant cylinder radius `Rc` becomes the
+  linear `r_B(s)`. All the S5-e revolved-band + disc-cap + annulus-cap machinery
+  (`appendRevolvedBand` / `appendDiskCap` / `appendAnnulusCap`) is REUSED verbatim; the difference is
+  only WHICH radius profile the second operand contributes. `nearTangentGaps==0`, `curveCount==1`,
+  seam cross-checked (height s* + radius r*) against the S3 trace, single STRICTLY-INTERIOR crossing.
+  - **COMMON** — `buildConeConeCommon` welds the min-radius profile solid of revolution
+    `r ≤ min(r_A(s), r_B(s))` over the shared axial span: the narrower-wall band below s* + the seam
+    ring + the narrower-wall band above s* + two disc caps. `V = V_frustum(below) + V_frustum(above)`.
+  - **FUSE (A∪B)** — `buildConeConeFuse` walks the max-radius outer profile over the union span as a
+    corner list, emitting a revolved wall band per different-s pair (the wider operand, kept iff its
+    mid classifies OUTSIDE the other) + a flat annulus cap per radial STEP + two terminal discs.
+    `V = V(A)+V(B)−V(A∩B)` (a GROW).
+  - **CUT (A−B, cone-A minuend, order-sensitive)** — `buildConeConeCut` keeps A's WIDER (r_A>r_B)
+    side of the seam: a conical WASHER (A wall outward + B wall emitted REVERSED inward, pinching to
+    the seam, closed by a flat annulus cap at A's end) + any A-only slice where B is absent (a
+    possibly-detached component). `V = V(A)−V(A∩B)` (a SHRINK).
+  Verified vs a **DUAL oracle** — the analytic frustum inclusion-exclusion closed form
+  (`V_frustum(ra,rb,Δh)=(π Δh/3)(ra²+ra·rb+rb²)`, the intersection circle radius/height closed-form
+  from the two cone equations) **AND** OCCT `BRepAlgoAPI_{Common,Fuse,Cut}` (sim), all
+  watertight/closed/valid, inside the 1% curved-parity bar, no tolerance weakened. Host fixture
+  (cone A `r=0.5+0.5y` widening up, cone B `r=3.0−0.5y` narrowing up, both y∈[0,4], seam y*=2.5,
+  r*=1.75): COMMON volN≈20.093 (analytic 20.093103), FUSE≈66.824 (66.824294, GROW), CUT (A−B)≈12.370
+  (12.370021, SHRINK). CUT is order-sensitive — B−A is the OTHER single-sided washer
+  (`V(B)−V(A∩B)`), a genuinely different watertight solid, confirming the minuend gate. A
+  parallel-wall pair (equal half-angle → no proper transversal circle), an apex-crossing /
+  apex-in-extent seam, and a TRANSVERSAL (non-coaxial) cone∩cone (a quartic space curve) all decline
+  → NULL → OCCT.
 
 Honest scope still declining → OCCT (measured NULL fallbacks, never faked):
-- **oblique / multi-tube cyl∩cyl**, and other curved-curved families (cyl∩sphere, cone∩cone,
-  sphere∩box, freeform), the TRANSVERSAL (non-coaxial) cone∩cylinder / cone∩sphere quartic space
-  curve, apex-crossing / apex-in-extent frustums, the two-circle coaxial cone∩sphere crossing (the
-  sphere passing fully through the cone / spanning the apex), and the sphere-minuend `sphere − cone`
-  CUT → decline; plus any branched pair that is NOT equal-R orthogonal Steinmetz (unequal-R /
-  non-orthogonal / ≠ 2 branch points / ≠ 4 arms). A disjoint Steinmetz pair (no seam) also declines
-  for all three ops. (sphere∩sphere, Steinmetz, the coaxial cone∩cylinder, AND the coaxial
-  cone∩sphere single-crossing FUSE/CUT/COMMON op-sets are now COMPLETE 3/3 NATIVE — see
-  S5-c/S5-d/S5-e/S5-f above.)
+- **oblique / multi-tube cyl∩cyl**, and other curved-curved families (cyl∩sphere,
+  sphere∩box, freeform), the TRANSVERSAL (non-coaxial) cone∩cylinder / cone∩sphere / cone∩cone
+  quartic space curve, apex-crossing / apex-in-extent frustums, parallel-wall (equal-half-angle)
+  coaxial cone∩cone, the two-circle coaxial cone∩sphere crossing (the sphere passing fully through
+  the cone / spanning the apex), and the sphere-minuend `sphere − cone` CUT → decline; plus any
+  branched pair that is NOT equal-R orthogonal Steinmetz (unequal-R / non-orthogonal / ≠ 2 branch
+  points / ≠ 4 arms). A disjoint Steinmetz pair (no seam) also declines for all three ops.
+  (sphere∩sphere, Steinmetz, the coaxial cone∩cylinder, cone∩sphere, AND the coaxial cone∩cone
+  single-crossing FUSE/CUT/COMMON op-sets are now COMPLETE 3/3 NATIVE — see S5-c/S5-d/S5-e/S5-f/S5-g
+  above.)
 Remaining S5 work: general (non-Steinmetz) branched pairs, transversal/apex cone
-pairs, cone∩cone, the two-circle / apex-crossing / transversal cone∩sphere crossings, and more
+pairs, the two-circle / apex-crossing / transversal cone∩sphere crossings, and more
 curved-curved families.
 
 ## NURBS Layer 2 — general-freeform measurement pass (empirical decline map) · ✅ MEASURED 2026-07-10 · ⛔ POST-HOC RECALL CAMPAIGN DECLINED 2026-07-11 · ✅ SCALE-ADAPTIVE INITIAL SEEDING LANDED 2026-07-11 (decline 28.5%→18.8%, DISAGREED==0) · ✅ LOCUS-COVERAGE ORACLE AUDIT + FREEFORM-PAIR SEEDING EXTENSION LANDED 2026-07-11 (true decline 18.8%; audit → 0 over-counts, residual 100% genuine; extension → 18.8%→16.7%/17.4% combined, DISAGREED==0) · ✅ SEED-CLUSTER DISTINCT-BRANCH SPLIT LANDED 2026-07-11 (decline 16.7%→13.9%, multi-branch declines 19→14, DISAGREED==0)

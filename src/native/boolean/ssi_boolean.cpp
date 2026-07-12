@@ -1379,6 +1379,293 @@ topo::Shape buildConeCylCut(const CurvedSolid& A, const CurvedSolid& B,
   return topo::ShapeBuilder::makeSolid({shell});
 }
 
+// ── S5-g — coaxial CONE(frustum)∩CONE(frustum) COMMON / FUSE / CUT ─────────────
+// Two COAXIAL cone frustums (same axis) whose walls r_A(s)=R0_A+s·tanα_A and
+// r_B(s)=R0_B+s·tanα_B (s = axial projection onto the SHARED axis from cone A's origin)
+// meet along ONE analytic circle where r_A(s)=r_B(s) — a SINGLE LINEAR equation, so exactly
+// one crossing s* (unless the walls are parallel, tanα_A==tanα_B → no proper transversal
+// circle → decline). This is the natural generalisation of the S5-e cone∩cylinder pair
+// (cylinder = the tanα_B==0 special case): the constant cylinder radius Rc becomes the
+// linear r_B(s). All the S5-e revolved-band + disc-cap + annulus-cap + washer machinery is
+// REUSED verbatim (appendRevolvedBand / appendDiskCap / appendAnnulusCap); only the radius
+// profile of the second operand changes from a constant to a line. COMMON/FUSE/CUT are the
+// min-profile / max-profile / minuend-outer-with-reversed-inner solids of revolution.
+//
+// HONEST SCOPE. Coaxial only (parallel colinear axes). A transversal (non-coaxial) cone∩cone
+// pair is a quartic space curve — out of scope → decline → OCCT. An apex-through-apex or
+// apex-in-extent pair (the seam passing through either cone's apex, r→0), a tangent/parallel-
+// wall pair, and a seam not strictly interior to BOTH frustum extents all decline → OCCT.
+struct ConeConeSetup {
+  bool ok = false;
+  const CurvedSolid* coneA = nullptr;  ///< the A operand (minuend for CUT)
+  const CurvedSolid* coneB = nullptr;
+  math::Point3 O;                      ///< cone-A origin (the shared s=0 station)
+  math::Vec3 X, Y, zc;                 ///< cone-A frame (azimuth + axis)
+  double tanA = 0.0, R0A = 0.0;        ///< r_A(s)=R0A + s·tanA
+  double tanB = 0.0, R0B = 0.0;        ///< r_B(s)=R0B + s·tanB (both in cone-A's s-frame)
+  double aS0 = 0.0, aS1 = 0.0;         ///< cone A s-extent [vLo,vHi]
+  double bS0 = 0.0, bS1 = 0.0;         ///< cone B extent in cone-A's s-coordinate
+  double sLo = 0.0, sHi = 0.0;         ///< axial overlap
+  double sStar = 0.0;                  ///< single interior crossing r_A(s*)=r_B(s*)
+  double rStar = 0.0;                  ///< seam radius r_A(s*)
+  int N = 0;                           ///< azimuth sample count (seam-chord bounded)
+  double rA(double s) const { return R0A + s * tanA; }
+  double rB(double s) const { return R0B + s * tanB; }
+  std::vector<math::Point3> ring(double r, double s) const {
+    std::vector<math::Point3> out(N);
+    for (int i = 0; i < N; ++i) {
+      const double u = kSsiTwoPi * i / N;
+      const double cx = r * std::cos(u), cy = r * std::sin(u);
+      out[i] = math::Point3{O.x + X.x * cx + Y.x * cy + zc.x * s,
+                            O.y + X.y * cx + Y.y * cy + zc.y * s,
+                            O.z + X.z * cx + Y.z * cy + zc.z * s};
+    }
+    return out;
+  }
+  math::Point3 wallPoint(double r, double s) const {
+    return math::Point3{O.x + X.x * r + zc.x * s, O.y + X.y * r + zc.y * s,
+                        O.z + X.z * r + zc.z * s};
+  }
+};
+
+ConeConeSetup coneConeSetup(const CurvedSolid& A, const CurvedSolid& B,
+                            const std::vector<Seam>& seams) {
+  ConeConeSetup st;
+  if (seams.size() != 1) return st;
+  const Seam& seam = seams[0];
+  if (!seam.closed || seam.pts.size() < 8) return st;
+  if (A.kind != CurvedKind::Cone || B.kind != CurvedKind::Cone) return st;
+  if (!ssidetail::sameAxis(A.frame, B.frame, 1e-6)) return st;  // must be coaxial
+
+  const math::Vec3 zc = A.frame.z.vec();
+  const double tanA = std::tan(A.semiAngle);
+  const math::Point3 O = A.frame.origin;
+  // Cone B's wall expressed in cone-A's s-coordinate (axes may be antiparallel):
+  //   s_B = sign·(s − base),  r_B(s) = R0B_native + s_B·tan(α_B)
+  //        = (R0B_native − sign·base·tanB_native) + s·(sign·tanB_native).
+  const double baseB = math::dot(B.frame.origin - O, zc);
+  const double signB = math::dot(B.frame.z.vec(), zc) >= 0.0 ? 1.0 : -1.0;
+  const double tanBn = std::tan(B.semiAngle);
+  const double tanB = signB * tanBn;
+  const double R0B = B.radius - signB * baseB * tanBn;
+  const double R0A = A.radius;
+  if (std::fabs(tanA - tanB) < 1e-9) return st;  // parallel walls → no proper crossing → decline
+
+  // Cone B axial extent in cone-A's s-coordinate.
+  double bSLo = baseB + signB * B.vLo, bSHi = baseB + signB * B.vHi;
+  if (bSLo > bSHi) std::swap(bSLo, bSHi);
+  const double sLo = std::max(A.vLo, bSLo);
+  const double sHi = std::min(A.vHi, bSHi);
+  if (!(sHi - sLo > 1e-6)) return st;  // no axial overlap
+
+  // Single interior crossing r_A(s*) = r_B(s*)  ⇒  s* = (R0B − R0A)/(tanA − tanB).
+  const double sStar = (R0B - R0A) / (tanA - tanB);
+  if (!(sStar - sLo > 1e-6) || !(sHi - sStar > 1e-6)) return st;  // apex/edge crossing → decline
+  const double rStar = R0A + sStar * tanA;
+  if (!(rStar > 1e-9)) return st;  // apex-touching seam → decline
+
+  // Cross-check the analytic seam against the S3-traced seam (height s* + radius r*).
+  auto sOf = [&](const math::Point3& p) {
+    return math::dot(math::Vec3{p.x - O.x, p.y - O.y, p.z - O.z}, zc);
+  };
+  math::Point3 c{0, 0, 0};
+  for (const auto& p : seam.pts) { c.x += p.x; c.y += p.y; c.z += p.z; }
+  const double ns = static_cast<double>(seam.pts.size());
+  c.x /= ns; c.y /= ns; c.z /= ns;
+  if (std::fabs(sOf(c) - sStar) > 1e-4) return st;  // seam not at the analytic height
+  double rho = 0.0;
+  for (const auto& p : seam.pts) {
+    const math::Vec3 w{p.x - c.x, p.y - c.y, p.z - c.z};
+    rho += math::norm(w - zc * math::dot(w, zc));
+  }
+  rho /= ns;
+  if (std::fabs(rho - rStar) > 1e-3) return st;  // seam radius ≠ r*
+
+  const double chord = std::sqrt(std::max(8.0 * kCapSagitta * rStar, 1e-12));
+  st.N = std::clamp(static_cast<int>(std::ceil(kSsiTwoPi * rStar / chord)), 24, 180);
+  st.coneA = &A;
+  st.coneB = &B;
+  st.O = O;
+  st.X = A.frame.x.vec();
+  st.Y = A.frame.y.vec();
+  st.zc = zc;
+  st.tanA = tanA;
+  st.R0A = R0A;
+  st.tanB = tanB;
+  st.R0B = R0B;
+  st.aS0 = A.vLo;
+  st.aS1 = A.vHi;
+  st.bS0 = bSLo;
+  st.bS1 = bSHi;
+  st.sLo = sLo;
+  st.sHi = sHi;
+  st.sStar = sStar;
+  st.rStar = rStar;
+  st.ok = true;
+  return st;
+}
+
+// buildConeConeCommon(A,B) = the COMMON of two COAXIAL cone frustums: the min-radius profile
+// solid of revolution r ≤ min(r_A(s), r_B(s)) over the shared axial span [sLo,sHi]. The two
+// walls cross EXACTLY ONCE at the single analytic circle s* (radius r*), so the shell is:
+// bottom disc @ sLo, the inner-wall band below s* (whichever wall is narrower there), the
+// shared SEAM ring @ s*, the inner-wall band above s*, top disc @ sHi. Both bands + caps
+// share the seam/rim rings through one VertexPool → watertight. Coaxial single-crossing only.
+topo::Shape buildConeConeCommon(const CurvedSolid& A, const CurvedSolid& B,
+                                const std::vector<Seam>& seams) {
+  const ConeConeSetup s = coneConeSetup(A, B, seams);
+  if (!s.ok) return {};
+  const double rBot = std::min(s.rA(s.sLo), s.rB(s.sLo));
+  const double rTop = std::min(s.rA(s.sHi), s.rB(s.sHi));
+  if (!(rBot > 1e-9) || !(rTop > 1e-9)) return {};  // apex-touching rim → decline
+  // Survival gate: the min-wall below the seam is inside the OTHER cone (a proper overlap).
+  const double midLo = 0.5 * (s.sLo + s.sStar);
+  const bool aIsMinLo = s.rA(midLo) <= s.rB(midLo);
+  const CurvedSolid& otherLo = aIsMinLo ? *s.coneB : *s.coneA;
+  const double rMinLo = std::min(s.rA(midLo), s.rB(midLo));
+  if (classifyPoint(otherLo, s.wallPoint(rMinLo, midLo), kSsiTol) != 1) return {};
+
+  const std::vector<math::Point3> ringBot = s.ring(rBot, s.sLo);
+  const std::vector<math::Point3> ringSeam = s.ring(s.rStar, s.sStar);
+  const std::vector<math::Point3> ringTop = s.ring(rTop, s.sHi);
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  appendRevolvedBand(ringBot, ringSeam, s.O, s.zc, pool, faces);   // inner wall below s*
+  appendRevolvedBand(ringSeam, ringTop, s.O, s.zc, pool, faces);   // inner wall above s*
+  appendDiskCap(*s.coneA, s.sLo, ringBot, math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool, faces);
+  appendDiskCap(*s.coneA, s.sHi, ringTop, math::Vec3{s.zc.x, s.zc.y, s.zc.z}, pool, faces);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildConeConeFuse(A,B) = A ∪ B of the coaxial cone∩cone pair — the OUTER (max-radius) wall
+// profile over the union span [sMin,sMax], welded at the seam circle. We walk the outer
+// profile bottom→top as corners (s,r): a different-s pair is a revolved wall band (the wider
+// operand's wall, kept iff its mid classifies OUTSIDE the other operand); a same-s pair is a
+// radial STEP where one operand begins/ends → a flat annulus cap. Two terminal disc caps
+// close the ends. All rings shared through one pool → watertight. V = V(A)+V(B)−V(A∩B).
+topo::Shape buildConeConeFuse(const CurvedSolid& A, const CurvedSolid& B,
+                              const std::vector<Seam>& seams) {
+  const ConeConeSetup s = coneConeSetup(A, B, seams);
+  if (!s.ok) return {};
+  const double sMin = std::min(s.aS0, s.bS0);
+  const double sMax = std::max(s.aS1, s.bS1);
+  const double span = sMax - sMin;
+  if (!(span > 1e-9)) return {};
+  const double eps = 1e-6 * std::max(span, 1.0);
+  auto aR = [&](double t) { return (t > s.aS0 - eps && t < s.aS1 + eps) ? s.rA(t) : -1e300; };
+  auto bR = [&](double t) { return (t > s.bS0 - eps && t < s.bS1 + eps) ? s.rB(t) : -1e300; };
+  auto Rmax = [&](double t) { return std::max(aR(t), bR(t)); };
+
+  std::vector<double> stn = {s.aS0, s.aS1, s.bS0, s.bS1, s.sStar};
+  std::sort(stn.begin(), stn.end());
+  stn.erase(std::unique(stn.begin(), stn.end(),
+                        [&](double a2, double b2) { return std::fabs(a2 - b2) < eps; }),
+            stn.end());
+
+  std::vector<std::pair<double, double>> corners;
+  corners.push_back({sMin, Rmax(sMin + eps)});
+  for (double sc : stn) {
+    if (sc <= sMin + eps || sc >= sMax - eps) continue;  // interior stations only
+    const double rBelow = Rmax(sc - eps), rAbove = Rmax(sc + eps);
+    corners.push_back({sc, rBelow});
+    if (std::fabs(rAbove - rBelow) > eps) corners.push_back({sc, rAbove});  // radial step
+  }
+  corners.push_back({sMax, Rmax(sMax - eps)});
+  if (!(corners.front().second > 1e-9) || !(corners.back().second > 1e-9)) return {};  // apex terminal
+
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  std::vector<math::Point3> prevRing = s.ring(corners.front().second, corners.front().first);
+  appendDiskCap(*s.coneA, corners.front().first, prevRing,
+                math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool, faces);  // bottom terminal disc
+  for (std::size_t k = 1; k < corners.size(); ++k) {
+    const double sp = corners[k - 1].first, rp = corners[k - 1].second;
+    const double sc = corners[k].first, rc = corners[k].second;
+    std::vector<math::Point3> curRing = s.ring(rc, sc);
+    if (std::fabs(sc - sp) < eps) {
+      const math::Vec3 axial = (rc > rp) ? math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z} : s.zc;
+      appendAnnulusCap(prevRing, curRing, axial, pool, faces);
+    } else {
+      const double midS = 0.5 * (sp + sc);
+      const bool bandIsA = aR(midS) >= bR(midS);
+      const double rMid = std::max(aR(midS), bR(midS));
+      const CurvedSolid& other = bandIsA ? *s.coneB : *s.coneA;
+      if (classifyPoint(other, s.wallPoint(rMid, midS), kSsiTol) != -1) return {};  // tangent → OCCT
+      appendRevolvedBand(prevRing, curRing, s.O, s.zc, pool, faces);
+    }
+    prevRing = std::move(curRing);
+  }
+  appendDiskCap(*s.coneA, corners.back().first, prevRing, s.zc, pool, faces);  // top terminal disc
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildConeConeCut(A,B) = A − B of the coaxial cone∩cone pair (A = cone MINUEND; order-
+// sensitive, matching BRepAlgoAPI_Cut(a,b)). A keeps its OUTER (r_A > r_B) side of the seam
+// — a conical WASHER whose outer boundary is A's wall (outward) and inner boundary is B's
+// wall REVERSED (inward — the wall of the carved cavity), pinching to the shared seam ring at
+// s* and closed at A's end station(s) by flat annulus caps, PLUS any A-only slice where B is
+// absent (a full frustum slice, a possibly-detached component). V = V(A)−V(A∩B) (a SHRINK).
+// Only the clean single-sided crossing where A is the wider wall on exactly ONE side of the
+// seam is built; anything merged/tangent → {} → OCCT (never faked).
+topo::Shape buildConeConeCut(const CurvedSolid& A, const CurvedSolid& B,
+                             const std::vector<Seam>& seams) {
+  const ConeConeSetup s = coneConeSetup(A, B, seams);
+  if (!s.ok) return {};
+  if (&A != s.coneA) return {};  // A must be the first operand (the minuend)
+  const double eps = 1e-6 * std::max(s.aS1 - s.aS0, 1.0);
+  const bool growsAbove = s.rA(s.sHi) > s.rB(s.sHi) + eps;  // A wider ABOVE the seam
+  const bool growsBelow = s.rA(s.sLo) > s.rB(s.sLo) + eps;  // A wider BELOW the seam
+  if (growsAbove == growsBelow) return {};                  // not a clean single-sided crossing → OCCT
+
+  // The kept washer runs from the seam to A's terminal end on the r_A>r_B side; B must
+  // extend past that end on the kept side (so the cavity terminates at an A cap, not a merge).
+  const double capS = growsAbove ? s.aS1 : s.aS0;               // A's end on the kept side
+  const math::Vec3 capN = growsAbove ? s.zc : math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z};
+  // The OTHER A end (on the removed side) — if it protrudes past B, it is an A-only slice.
+  const double slabS = growsAbove ? s.aS0 : s.aS1;
+  const bool otherEndInsideB =
+      growsAbove ? (s.aS0 > s.bS0 - eps) : (s.aS1 < s.bS1 + eps);
+  if (growsAbove) { if (s.aS1 > s.bS1 + eps) return {}; }      // A outlives B on the kept side → merged → OCCT
+  else { if (s.aS0 < s.bS0 - eps) return {}; }
+
+  // Washer: A wall (outward) + B wall reversed (inward), pinching to the seam, capped at capS.
+  const double midW = 0.5 * (s.sStar + capS);
+  if (classifyPoint(*s.coneB, s.wallPoint(s.rA(midW), midW), kSsiTol) != -1) return {};  // A wall outside B
+  if (classifyPoint(*s.coneA, s.wallPoint(s.rB(midW), midW), kSsiTol) != 1) return {};   // B wall inside A
+  const double rACap = s.rA(capS), rBCap = s.rB(capS);
+  if (!(rACap > 1e-9) || !(rBCap > 1e-9)) return {};
+
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const std::vector<math::Point3> ringSeam = s.ring(s.rStar, s.sStar);
+  const std::vector<math::Point3> ringACap = s.ring(rACap, capS);
+  const std::vector<math::Point3> ringBCap = s.ring(rBCap, capS);
+  appendRevolvedBand(ringSeam, ringACap, s.O, s.zc, pool, faces, 1.0);   // outer A wall
+  appendRevolvedBand(ringSeam, ringBCap, s.O, s.zc, pool, faces, -1.0);  // reversed inner B wall
+  appendAnnulusCap(ringBCap, ringACap, capN, pool, faces);               // A-end annulus cap
+
+  // A-only slice (a detached frustum component) where A protrudes past B on the removed side.
+  if (!otherEndInsideB) {
+    const double sCut = growsAbove ? s.bS0 : s.bS1;   // interface with the carved region
+    const math::Vec3 termN = growsAbove ? math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z} : s.zc;
+    const double midSlice = 0.5 * (slabS + sCut);
+    if (classifyPoint(*s.coneB, s.wallPoint(s.rA(midSlice), midSlice), kSsiTol) != -1) return {};
+    if (!(s.rA(slabS) > 1e-9) || !(s.rA(sCut) > 1e-9)) return {};
+    const std::vector<math::Point3> ringTerm = s.ring(s.rA(slabS), slabS);
+    const std::vector<math::Point3> ringCut = s.ring(s.rA(sCut), sCut);
+    appendDiskCap(*s.coneA, slabS, ringTerm, termN, pool, faces);
+    appendRevolvedBand(ringTerm, ringCut, s.O, s.zc, pool, faces);
+    appendDiskCap(*s.coneA, sCut, ringCut, math::Vec3{-termN.x, -termN.y, -termN.z}, pool, faces);
+  }
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
 // Shared prologue for the three single-seam sphere∩sphere lens assemblers: validate the
 // trace/kinds, compute the two candidate apices (inner near-apex of each sphere and each
 // far pole), the decimated shared seam, and the per-cap ring-count functor. Factored out so
@@ -2386,7 +2673,10 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       const topo::Shape coneCyl = buildConeCylCommon(*csA, *csB, seams);
       if (!coneCyl.isNull()) return coneCyl;
       // S5-f: coaxial cone(frustum)∩sphere COMMON (cone band + sphere inner cap).
-      return buildConeSphereCommon(*csA, *csB, seams);
+      const topo::Shape coneSph = buildConeSphereCommon(*csA, *csB, seams);
+      if (!coneSph.isNull()) return coneSph;
+      // S5-g: coaxial cone(frustum)∩cone(frustum) COMMON (min-radius profile of revolution).
+      return buildConeConeCommon(*csA, *csB, seams);
     }
     case Op::Fuse: {
       // Through-drill (two rim seams) → buildFuse; single-seam sphere∩sphere lens (S5-c
@@ -2399,7 +2689,10 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       const topo::Shape coneCyl = buildConeCylFuse(*csA, *csB, seams);
       if (!coneCyl.isNull()) return coneCyl;
       // S5-f: coaxial cone(frustum)∩sphere FUSE (sphere outer cap + cone outer wall + disc).
-      return buildConeSphereFuse(*csA, *csB, seams);
+      const topo::Shape coneSph = buildConeSphereFuse(*csA, *csB, seams);
+      if (!coneSph.isNull()) return coneSph;
+      // S5-g: coaxial cone(frustum)∩cone(frustum) FUSE (max-radius profile of revolution).
+      return buildConeConeFuse(*csA, *csB, seams);
     }
     case Op::Cut: {
       // Through-drill → buildCut; single-seam sphere∩sphere lens (S5-c cut) → buildLensCut
@@ -2412,7 +2705,10 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       const topo::Shape coneCyl = buildConeCylCut(*csA, *csB, seams);
       if (!coneCyl.isNull()) return coneCyl;
       // S5-f: coaxial cone(frustum)∩sphere CUT (cone outer wall + disc + reversed sphere dimple).
-      return buildConeSphereCut(*csA, *csB, seams);
+      const topo::Shape coneSph = buildConeSphereCut(*csA, *csB, seams);
+      if (!coneSph.isNull()) return coneSph;
+      // S5-g: coaxial cone(frustum)∩cone(frustum) CUT (A washer + reversed B wall + A-only slice).
+      return buildConeConeCut(*csA, *csB, seams);
     }
   }
   return {};

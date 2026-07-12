@@ -920,6 +920,111 @@ CC_TEST(cone_sphere_coaxial_common_fuse_cut_watertight_matches_analytic) {
   CC_CHECK(nb::ssi_boolean_solid(sph, cone, nb::Op::Cut).isNull());
 }
 
+// ── (6) COAXIAL cone(frustum)∩cone(frustum) COMMON / FUSE / CUT: REAL native watertight
+// passes (S5-g) ────────────────────────────────────────────────────────────────────────
+// The next cone-family pair after cone∩cylinder and cone∩sphere. Two COAXIAL cone frustums
+// about world +Y — cone A r_A(y)=0.5+0.5y (widens upward) and cone B r_B(y)=3.0−0.5y (narrows
+// upward), both over y∈[0,4] — cross where r_A=r_B, a SINGLE LINEAR equation → EXACTLY ONE
+// analytic circle seam at y*=2.5 (radius r*=1.75). (cone∩cylinder is the tanα_B==0 special
+// case of this pair; the S5-g assembler reuses the S5-e revolved-band/disc-cap machinery with
+// the constant cylinder radius replaced by the linear r_B(y).) The trace is ONE closed seam
+// (nearTangentGaps==0). Below y* cone A is the narrower (inner) wall, above y* cone B is:
+//   COMMON = min-radius profile: A wall (0.5→1.75 over [0,2.5]) + B wall (1.75→1.0 over
+//            [2.5,4]) + two disc caps. V = frustum(0.5,1.75,2.5)+frustum(1.75,1.0,1.5).
+//   FUSE   = max-radius profile of revolution over the union span. V = V(A)+V(B)−V(COMMON).
+//   CUT    = A−B (cone-A minuend): A keeps its wider (above-seam) side — a conical WASHER
+//            (A wall outward + B wall reversed inward, pinching to the seam, capped at y=4).
+//            V = V(A)−V(COMMON). Connected (A is inside B below the seam, so no detached slice).
+// Every volume matches the closed form to within the engine's curved-parity bar (1% relative,
+// a tessellation-deflection bound — NOT a relaxed tolerance). COMMON is symmetric; CUT is
+// order-sensitive (B−A is a different single-sided crossing, the other washer). A non-coaxial
+// (transversal) or apex-crossing or parallel-wall cone∩cone pair declines → OCCT (honest NULL).
+CC_TEST(cone_cone_coaxial_common_fuse_cut_watertight_matches_analytic) {
+  const ntopo::Shape coneA = makeCone(0.5, 0.0, 2.5, 4.0);  // r_A(y)=0.5+0.5y, y∈[0,4], axis +Y
+  const ntopo::Shape coneB = makeCone(3.0, 0.0, 1.0, 4.0);  // r_B(y)=3.0−0.5y, y∈[0,4], coaxial
+  CC_CHECK(!coneA.isNull() && !coneB.isNull());
+
+  // Both operands are recognised as Cones and the coaxial pair traces ONE clean seam circle.
+  const auto csA = sd::recogniseCurvedSolid(coneA);
+  const auto csB = sd::recogniseCurvedSolid(coneB);
+  CC_CHECK(csA && csB);
+  if (csA && csB) {
+    CC_CHECK(csA->kind == sd::CurvedKind::Cone);
+    CC_CHECK(csB->kind == sd::CurvedKind::Cone);
+    const ssi::TraceSet tr = ssi::trace_intersection(csA->adapter(), csB->adapter());
+    CC_CHECK(tr.nearTangentGaps == 0);  // fully transversal single analytic circle
+    CC_CHECK(tr.curveCount() == 1);     // ONE closed seam circle at y*=2.5
+  }
+
+  // Closed-form ground truth (frustum inclusion–exclusion).
+  const double yStar = 2.5, rStar = 1.75;
+  const double vA = frustumVolume(0.5, 2.5, 4.0);   // whole cone A
+  const double vB = frustumVolume(3.0, 1.0, 4.0);   // whole cone B
+  // COMMON = min profile: A wall below y* (0.5→1.75 over Δh=2.5) + B wall above y* (1.75→1.0
+  // over Δh=1.5).
+  const double vCommonTrue = frustumVolume(0.5, rStar, yStar) + frustumVolume(rStar, 1.0, 4.0 - yStar);
+  const double vFuseTrue = vA + vB - vCommonTrue;
+  const double vCutTrue = vA - vCommonTrue;
+  CC_CHECK(std::fabs(vCommonTrue - 20.093103) < 1e-5);  // pin the analytic values
+  CC_CHECK(std::fabs(vFuseTrue - 66.824294) < 1e-4);
+  CC_CHECK(std::fabs(vCutTrue - 12.370021) < 1e-4);
+
+  // ── COMMON: watertight native candidate whose volume matches the closed form. ──
+  const ntopo::Shape common = nb::ssi_boolean_solid(coneA, coneB, nb::Op::Common);
+  CC_CHECK(!common.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  CC_CHECK(vCommon > 0.0);                                        // watertight → engine accepts
+  CC_CHECK(std::fabs(vCommon - vCommonTrue) <= 1e-2 * vCommonTrue);
+  CC_CHECK(vCommon <= std::min(vA, vB) + 1e-9);                   // common ≤ min(A,B)
+  CC_CHECK(!nb::boolean_solid(coneA, coneB, nb::Op::Common).isNull());
+  // COMMON is symmetric — reversing the operand order builds the same watertight solid.
+  const ntopo::Shape swapped = nb::ssi_boolean_solid(coneB, coneA, nb::Op::Common);
+  CC_CHECK(!swapped.isNull());
+  const double vSwapped = watertightMeshVolume(swapped);
+  CC_CHECK(vSwapped > 0.0);
+  CC_CHECK(std::fabs(vSwapped - vCommonTrue) <= 1e-2 * vCommonTrue);
+
+  // ── FUSE = A ∪ B: max-radius profile of revolution. A GROW. ──
+  const ntopo::Shape fuse = nb::ssi_boolean_solid(coneA, coneB, nb::Op::Fuse);
+  CC_CHECK(!fuse.isNull());
+  const double vFuse = watertightMeshVolume(fuse);
+  CC_CHECK(vFuse > 0.0);
+  CC_CHECK(std::fabs(vFuse - vFuseTrue) <= 1e-2 * vFuseTrue);
+  CC_CHECK(vFuse >= std::max(vA, vB) - 1e-9);                     // FUSE grows past either operand
+  CC_CHECK(!nb::boolean_solid(coneA, coneB, nb::Op::Fuse).isNull());
+
+  // ── CUT = A − B (cone-A minuend): the conical washer A keeps above the seam. A SHRINK. ──
+  const ntopo::Shape cut = nb::ssi_boolean_solid(coneA, coneB, nb::Op::Cut);
+  CC_CHECK(!cut.isNull());
+  const double vCut = watertightMeshVolume(cut);
+  CC_CHECK(vCut > 0.0);
+  CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
+  CC_CHECK(vCut <= vA + 1e-9);                                    // CUT shrinks below the minuend
+  CC_CHECK(!nb::boolean_solid(coneA, coneB, nb::Op::Cut).isNull());
+  // CUT is order-sensitive: B − A is a DIFFERENT single-sided crossing (the other washer).
+  // It is ALSO a clean single-sided crossing here (B wider below the seam), so it builds a
+  // DIFFERENT watertight solid with V(B)−V(COMMON) — confirming the minuend gate routes on A.
+  const ntopo::Shape cutBA = nb::ssi_boolean_solid(coneB, coneA, nb::Op::Cut);
+  CC_CHECK(!cutBA.isNull());
+  const double vCutBA = watertightMeshVolume(cutBA);
+  CC_CHECK(vCutBA > 0.0);
+  CC_CHECK(std::fabs(vCutBA - (vB - vCommonTrue)) <= 1e-2 * (vB - vCommonTrue));
+  CC_CHECK(std::fabs(vCutBA - vCut) > 1e-3);  // the two washers are genuinely different solids
+}
+
+// ── (7) COAXIAL cone∩cone HONEST DECLINES: parallel-wall + non-coaxial → OCCT. ─────────
+// The S5-g assembler is coaxial-single-crossing only. Two cones with PARALLEL walls (equal
+// half-angle → no proper transversal circle) and a NON-COAXIAL (transversal) cone∩cone pair
+// (a quartic space curve, not one analytic circle) both decline → NULL (engine → OCCT).
+CC_TEST(cone_cone_parallel_and_transversal_decline) {
+  // Parallel walls: same tanα (both widen at 0.5/unit), nested → no single-circle crossing.
+  const ntopo::Shape par1 = makeCone(0.5, 0.0, 2.5, 4.0);  // r=0.5+0.5y
+  const ntopo::Shape par2 = makeCone(1.5, 0.0, 3.5, 4.0);  // r=1.5+0.5y (parallel wall, offset)
+  CC_CHECK(nb::ssi_boolean_solid(par1, par2, nb::Op::Common).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(par1, par2, nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(par1, par2, nb::Op::Cut).isNull());
+}
+
 // ── (11) FREEFORM (B-spline-face) operand: the honest S5 DECLINE, pinned. ──────────
 // The deepest S5 slice would be a native B-SPLINE-FACE solid ∩/− an analytic solid,
 // split along the S3-traced WLine seam and welded. It is NOT reachable in one pass, and

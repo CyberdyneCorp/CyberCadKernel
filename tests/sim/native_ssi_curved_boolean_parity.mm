@@ -520,6 +520,30 @@ int main() {
     runPair(pc);
   }
 
+  // ── (7) coaxial cone(frustum) ∩ cone(frustum) COMMON / FUSE / CUT (S5-g) — 3 NATIVE
+  // passes ────────────────────────────────────────────────────────────────────────────
+  // Two COAXIAL frustums about world +Y: cone A r_A(y)=0.5+0.5y (widens up) and cone B
+  // r_B(y)=3.0−0.5y (narrows up), both over y∈[0,4]. The walls cross where r_A=r_B — a single
+  // LINEAR equation → EXACTLY ONE analytic circle seam at y*=2.5 (radius 1.75), the natural
+  // generalisation of the cone∩cylinder pair (cylinder = tanα_B==0). The S5-g assembler reuses
+  // the S5-e revolved-band/disc-cap machinery with the constant cylinder radius replaced by the
+  // linear r_B(y):
+  //   COMMON = min-radius profile (A wall below y* + B wall above y* + 2 discs)  (V≈20.09310)
+  //   FUSE   = max-radius profile of revolution over the union span              (V≈66.82429, GROW)
+  //   CUT    = A−B conical washer (A wall outward + B wall reversed inward)       (V≈12.37002, SHRINK)
+  // All three match BRepAlgoAPI_{Common,Fuse,Cut} on volume/area/watertight → NATIVE passes.
+  {
+    PairCase pc;
+    pc.pairName = "cone=cone(coax)";
+    pc.nativeA = makeCone(0.5, 0.0, 2.5, 4.0);   // r_A(y)=0.5+0.5y
+    pc.nativeB = makeCone(3.0, 0.0, 1.0, 4.0);   // r_B(y)=3.0−0.5y, coaxial (about +Y)
+    pc.occtA = occtCone(0.5, 0.0, 2.5, 4.0);
+    pc.occtB = occtCone(3.0, 0.0, 1.0, 4.0);
+    pc.relTol = 2e-2;
+    probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
+    runPair(pc);
+  }
+
   std::printf("== %d passed, %d failed, %d fell-back (native-pass=%d) ==\n",
               g_passed, g_failed, g_fellBack, g_nativePass);
   std::fflush(stdout);

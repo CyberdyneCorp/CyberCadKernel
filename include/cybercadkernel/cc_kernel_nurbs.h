@@ -81,6 +81,53 @@ typedef struct {
     int32_t n_v;
 } CCTessOptions;
 
+/* --- J5: intersection + trim boolean --------------------------------------- */
+/* (Append-only additive section — see openspec/changes/expose-nurbs-cc-facade,
+ * design.md §5 "Intersection" + "Trimmed B-rep" rows, §3 honest-decline error
+ * model. All symbols below are NEW; nothing above this line changes. These wrap
+ * the OCCT-free native intersectors (src/native/math/bspline_intersect.h) and the
+ * parameter-space region boolean (src/native/topology/trim_boolean.h).) */
+
+/* One curve<->curve intersection point. `xyz` is the 3-D meeting point; `tA` /
+ * `tB` are the parameters on curve A / B; `tangential` is 0 for a TRANSVERSAL
+ * (clean) crossing and 1 for a TANGENTIAL contact (parallel tangents). */
+typedef struct {
+    double xyz[3];
+    double tA;
+    double tB;
+    int32_t tangential;
+} CCCurveHit;
+
+/* One curve<->surface intersection (pierce) point. `xyz` is the 3-D point; `t` is
+ * the curve parameter; `u` / `v` are the surface parameters; `tangential` is 0 for
+ * a transversal pierce, 1 when the curve is tangent to the surface at the hit. */
+typedef struct {
+    double xyz[3];
+    double t;
+    double u;
+    double v;
+    int32_t tangential;
+} CCCurveSurfaceHit;
+
+/* The 2-D region boolean operator (mirrors the native TrimBoolOp). */
+typedef enum {
+    CC_TRIM_UNION = 0,      /* A ∪ B */
+    CC_TRIM_INTERSECT = 1,  /* A ∩ B */
+    CC_TRIM_DIFFERENCE = 2  /* A ∖ B */
+} CCTrimBoolOp;
+
+/* One result loop of a trim-region boolean, as a closed UV polyline. `uv` is
+ * `pointCount` (u, v) PAIRS (length 2*pointCount doubles, owned). Orientation is
+ * encoded in `outer` (1 = CCW outer boundary, 0 = CW hole) and in the sign of
+ * `signedArea` (> 0 CCW, < 0 CW). Free the whole array with
+ * cc_nurbs_trim_loops_free. */
+typedef struct {
+    double* uv;
+    int32_t pointCount;
+    int32_t outer;
+    double signedArea;
+} CCTrimLoop;
+
 #ifndef CC_KERNEL_NO_PROTOTYPES
 
 /* ── Construction (registry-backed; honest-decline -> id 0 + cc_last_error) ──── */
@@ -167,6 +214,44 @@ int cc_surface_tessellate(cc_surface h, const CCTessOptions* opt, CCMesh* out);
  * ARRAY). Returns 1 on success, 0 on an unknown handle / null out (cc_last_error
  * set; *out zeroed). */
 int cc_curve_polyline(cc_curve h, int n_samples, CCEdgePolyline* out);
+
+/* --- J5: intersection + trim boolean --------------------------------------- */
+
+/* Intersect two NURBS curves. On success returns the number of isolated hit
+ * points (>= 0) and, when `outHits` is non-null AND there is >= 1 hit, allocates a
+ * C-owned CCCurveHit array into *outHits (free with cc_nurbs_hits_cc_free). On an
+ * HONEST DECLINE — an unknown handle, or COINCIDENT / OVERLAPPING curves (an
+ * infinite intersection set, never faked as points) — returns < 0, sets
+ * cc_last_error, and writes *outHits = NULL. `tol` <= 0 selects the native
+ * default. A count of 0 means the curves are disjoint (valid, not an error). */
+int cc_nurbs_intersect_cc(cc_curve a, cc_curve b, double tol, CCCurveHit** outHits);
+void cc_nurbs_hits_cc_free(CCCurveHit* hits);
+
+/* Intersect a NURBS curve with a NURBS surface (every pierce point). Same contract
+ * as cc_nurbs_intersect_cc: returns the hit count (>= 0) filling *outHits (owned;
+ * free with cc_nurbs_hits_cs_free); a curve lying ON the surface over a sub-arc is
+ * HONEST-DECLINED (returns < 0, *outHits = NULL, cc_last_error set). */
+int cc_nurbs_intersect_cs(cc_curve c, cc_surface s, double tol,
+                          CCCurveSurfaceHit** outHits);
+void cc_nurbs_hits_cs_free(CCCurveSurfaceHit* hits);
+
+/* Parameter-space trim-region boolean (design.md §5 "Trimmed B-rep"). Each region
+ * is an array of loop cc_curves LIVING IN THE SAME SURFACE (u,v) DOMAIN — the
+ * curve's (x, y) are read as (u, v). Loop index 0 is the OUTER loop; indices
+ * 1..n-1 are HOLE loops. `op` selects Union / Intersect / Difference.
+ *
+ * On success returns the number of result loops (>= 0), allocates a C-owned
+ * CCTrimLoop array into *outLoops (when non-null and there is >= 1 loop; free with
+ * cc_nurbs_trim_loops_free), and writes the region's total signed area into *area
+ * (may be null). A count of 0 with area 0 is a valid EMPTY region (e.g. Intersect
+ * of disjoint inputs). On an HONEST DECLINE — an unknown handle, a malformed loop,
+ * or a COINCIDENT-BOUNDARY / TANGENTIAL-only overlap (ambiguous for a region
+ * boolean, never resolved into a fabricated region) — returns < 0, sets
+ * cc_last_error, writes *outLoops = NULL and *area = 0. */
+int cc_nurbs_trim_region_boolean(const cc_curve* regionA, int nLoopsA,
+                                 const cc_curve* regionB, int nLoopsB, CCTrimBoolOp op,
+                                 CCTrimLoop** outLoops, double* area);
+void cc_nurbs_trim_loops_free(CCTrimLoop* loops, int count);
 
 #endif /* CC_KERNEL_NO_PROTOTYPES */
 

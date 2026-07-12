@@ -52,9 +52,9 @@ delivery; implementation lands as waves J1–J7 (see `design.md` §7).
   guarantee already proven natively; never emit a self-intersecting result. (**host**)
 
 ## 5. J5 — intersection + trim boolean wrappers
-- [ ] 5.1 `cc_nurbs_intersect_cc` / `_intersect_cs` — hit points + params,
+- [x] 5.1 `cc_nurbs_intersect_cc` / `_intersect_cs` — hit points + params,
   transversal/tangential flag, coincident → decline. (**host**)
-- [ ] 5.2 `cc_nurbs_trim_region_boolean` (∪/∩/∖) on trim regions — the trimmed-face
+- [x] 5.2 `cc_nurbs_trim_region_boolean` (∪/∩/∖) on trim regions — the trimmed-face
   assembly stage; areas machine-exact, coincident → decline. (**host**)
 
 ## 6. J6 — Python object model

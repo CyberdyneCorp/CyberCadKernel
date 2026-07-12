@@ -300,6 +300,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_parallel_toggle
         test_abi
         test_cc_nurbs
+        test_cc_nurbs_topo
         test_cross_engine_guard
         test_native_math
         test_native_nurbs_ops
@@ -1317,6 +1318,25 @@ if(CYBERCAD_BUILD_TESTS)
             PROPERTIES LANGUAGE C)
         target_sources(test_cc_nurbs PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cc_nurbs_sizeof.c")
+    endif()
+
+    # The J5 NURBS-topology host test (intersection + trim boolean) carries its own
+    # C-compiled sizeof cross-check TU (test_cc_nurbs_topo_sizeof.c) for the new J5
+    # POD structs (CCCurveHit / CCCurveSurfaceHit / CCTrimLoop). The intersection
+    # wrappers are numsci-gated (bspline_intersect.cpp), so the test TU is built with
+    # CYBERCAD_HAS_NUMSCI when the option is on, exercising the real intersection path
+    # (with the guard off the wrappers honest-decline and the intersection asserts are
+    # skipped by the test's own guard).
+    if(TARGET test_cc_nurbs_topo)
+        enable_language(C)  # only the sizeof cross-check TU is C
+        set_source_files_properties(
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cc_nurbs_topo_sizeof.c"
+            PROPERTIES LANGUAGE C)
+        target_sources(test_cc_nurbs_topo PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cc_nurbs_topo_sizeof.c")
+        if(CYBERCAD_HAS_NUMSCI)
+            target_compile_definitions(test_cc_nurbs_topo PRIVATE CYBERCAD_HAS_NUMSCI=1)
+        endif()
     endif()
 
     # The SSI Stage S5-a boolean test reaches into the substrate-gated ssidetail::

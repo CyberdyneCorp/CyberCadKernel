@@ -40,6 +40,7 @@
 #include <algorithm>
 #include <cmath>
 #include <span>
+#include <cstdint>
 #include <vector>
 
 using namespace cybercad::native::math;
@@ -171,6 +172,84 @@ static BsplineSurfaceData degenerateNormalPatch() {
     for (int j = 0; j < 3; ++j)
       s.poles.push_back({i * 1.0, 0.0, 0.0});
   return s;
+}
+
+// A patch that folds its offset over only PART of the domain: a tight-curvature bump
+// occupying the u∈[0,~0.5] strip, flat elsewhere. An inward/large offset self-intersects on
+// the tight strip but is fold-free on the flat remainder — so thickenSurface DECLINES the
+// whole request while thickenTrimmed keeps the fold-free region.
+static BsplineSurfaceData partialFoldPatch(double bumpHeight) {
+  BsplineSurfaceData s;
+  s.degreeU = 3;
+  s.degreeV = 3;
+  s.nPolesU = 6;
+  s.nPolesV = 6;
+  s.knotsU = {0, 0, 0, 0, 0.3, 0.6, 1, 1, 1, 1};
+  s.knotsV = {0, 0, 0, 0, 0.333333333333, 0.666666666667, 1, 1, 1, 1};
+  for (int i = 0; i < 6; ++i)
+    for (int j = 0; j < 6; ++j) {
+      const double x = i * 0.5;
+      const double y = j * 0.5;
+      // A sharp isolated bump on the i∈[1,3] columns → tight curvature there only.
+      const double z = (i >= 1 && i <= 3) ? bumpHeight * std::exp(-(i - 2.0) * (i - 2.0)) : 0.0;
+      s.poles.push_back({x, y, z});
+    }
+  return s;
+}
+
+// ── Robust triangle-pair PIERCING self-intersection oracle (edge-vs-triangle) ──────
+// True iff any two NON-adjacent triangles of the solid properly cross (an edge of one pierces
+// the interior of the other). Ignores coplanar skin contact (scale-relative det skip) so a
+// clean welded shell reads self-intersection-FREE. The airtight check for the trim oracle.
+static bool segPierce(const Point3& p, const Point3& q, const Point3& t0, const Point3& t1,
+                      const Point3& t2, double ep) {
+  const Vec3 e1 = t1 - t0, e2 = t2 - t0, dir = q - p, pv = cross(dir, e2);
+  const double det = dot(e1, pv);
+  const double sv = norm(dir) * norm(cross(e1, e2));
+  if (std::fabs(det) < 1e-9 * sv || sv < 1e-30) return false;
+  const double inv = 1.0 / det;
+  const Vec3 tv = p - t0;
+  const double bu = dot(tv, pv) * inv;
+  if (bu <= ep || bu >= 1.0 - ep) return false;
+  const Vec3 qv = cross(tv, e1);
+  const double bv = dot(dir, qv) * inv;
+  if (bv <= ep || bu + bv >= 1.0 - ep) return false;
+  const double t = dot(e2, qv) * inv;
+  return t > ep && t < 1.0 - ep;
+}
+static bool selfIntersects(const tess::Mesh& m, double ep) {
+  for (std::size_t i = 0; i < m.triangles.size(); ++i)
+    for (std::size_t j = i + 1; j < m.triangles.size(); ++j) {
+      const tess::Triangle& ti = m.triangles[i];
+      const tess::Triangle& tj = m.triangles[j];
+      const std::uint32_t vs[3] = {ti.a, ti.b, ti.c}, ws[3] = {tj.a, tj.b, tj.c};
+      bool sh = false;
+      for (int x = 0; x < 3 && !sh; ++x)
+        for (int y = 0; y < 3; ++y) if (vs[x] == ws[y]) { sh = true; break; }
+      if (sh) continue;
+      const Point3 A[3] = {m.vertices[ti.a], m.vertices[ti.b], m.vertices[ti.c]};
+      const Point3 B[3] = {m.vertices[tj.a], m.vertices[tj.b], m.vertices[tj.c]};
+      for (int k = 0; k < 3; ++k) {
+        if (segPierce(A[k], A[(k + 1) % 3], B[0], B[1], B[2], ep)) return true;
+        if (segPierce(B[k], B[(k + 1) % 3], A[0], A[1], A[2], ep)) return true;
+      }
+    }
+  return false;
+}
+
+// Byte-identical mesh comparison (same vertex positions, same triangle indices, same order).
+static bool meshBitEqual(const tess::Mesh& a, const tess::Mesh& b) {
+  if (a.vertices.size() != b.vertices.size() || a.triangles.size() != b.triangles.size())
+    return false;
+  for (std::size_t i = 0; i < a.vertices.size(); ++i)
+    if (a.vertices[i].x != b.vertices[i].x || a.vertices[i].y != b.vertices[i].y ||
+        a.vertices[i].z != b.vertices[i].z)
+      return false;
+  for (std::size_t i = 0; i < a.triangles.size(); ++i)
+    if (a.triangles[i].a != b.triangles[i].a || a.triangles[i].b != b.triangles[i].b ||
+        a.triangles[i].c != b.triangles[i].c)
+      return false;
+  return true;
 }
 
 // Assert all closure invariants of a solid (used by several tests).
@@ -345,6 +424,66 @@ int main() {
     const ThickenResult zero = thickenSurface(flatRect(1.0, 1.0), 0.0, 1e-6);
     expectTrue(!zero.ok && zero.status == ThickenStatus::ZeroThickness,
                "zero thickness declines (ZeroThickness)");
+  }
+
+  // ═══ 5. SELF-INTERSECTION TRIM — thickenTrimmed (G4) ═════════════════════════════
+  {
+    // 5a. NO-INTERPENETRATION PASSTHROUGH — a gently curved / flat face thickened by a safe
+    //     |d| is BYTE-IDENTICAL to thickenSurface (the trim path is a no-op).
+    for (int c = 0; c < 2; ++c) {
+      const BsplineSurfaceData S = c ? bicubicBump() : flatRect(2.0, 1.5);
+      const double d = c ? 0.15 : 0.3;
+      const int gu = c ? 20 : 12, gv = c ? 20 : 10;
+      const ThickenResult base = thickenSurface(S, d, 1e-4, gu, gv);
+      const ThickenResult trim = thickenTrimmed(S, d, 1e-4, gu, gv);
+      expectTrue(base.ok && trim.ok, c ? "passthrough bump ok" : "passthrough flat ok");
+      expectTrue(!trim.trimmed, "passthrough: nothing interpenetrated (trimmed == false)");
+      expectTrue(meshBitEqual(base.solid, trim.solid),
+                 "passthrough: thickenTrimmed byte-identical to thickenSurface");
+      expectNear(trim.enclosedVolume, base.enclosedVolume, 1e-12,
+                 "passthrough: identical enclosed volume");
+    }
+
+    // 5b. INTERPENETRATION TRIMMED — a face whose offset folds over PART of the domain:
+    //     thickenSurface DECLINES (SelfIntersection); thickenTrimmed cuts the folded strip
+    //     and returns a WATERTIGHT, self-intersection-FREE solid over the fold-free region.
+    {
+      const BsplineSurfaceData S = partialFoldPatch(2.0);
+      const double d = 0.8;  // large outward offset: folds on the tight-curvature strip only
+      const ThickenResult base = thickenSurface(S, d, 1e-3, 16, 16);
+      expectTrue(!base.ok && base.status == ThickenStatus::SelfIntersection,
+                 "partial-fold: thickenSurface declines (SelfIntersection)");
+      const ThickenResult trim = thickenTrimmed(S, d, 1e-3, 16, 16);
+      expectTrue(trim.ok, "partial-fold: thickenTrimmed produces a valid solid");
+      if (trim.ok) {
+        expectTrue(trim.trimmed, "partial-fold: reported trimmed == true");
+        expectTrue(trim.watertight && tess::isWatertight(trim.solid),
+                   "partial-fold trimmed solid is watertight");
+        expectTrue(trim.consistentlyOriented && tess::isConsistentlyOriented(trim.solid),
+                   "partial-fold trimmed solid consistently oriented");
+        expectTrue(trim.eulerCharacteristic == 2, "partial-fold trimmed χ == 2");
+        expectTrue(trim.boundaryEdges == 0, "partial-fold trimmed zero boundary edges");
+        expectTrue(trim.enclosedVolume > 0.0, "partial-fold trimmed positive volume");
+        // The airtight oracle: NO two non-adjacent triangles cross (self-intersection-free).
+        expectTrue(!selfIntersects(trim.solid, 1e-6),
+                   "partial-fold trimmed solid is self-intersection-free");
+        // The kept region is a strict interior sub-rectangle (the folded strip was cut away).
+        expectTrue(trim.keptU1 > trim.keptU0 && trim.keptV1 > trim.keptV0,
+                   "partial-fold kept rectangle is non-degenerate");
+        expectTrue(trim.keptU0 > 0.0 || trim.keptU1 < 1.0,
+                   "partial-fold trimmed the fold strip in u (kept ⊊ full domain)");
+      }
+    }
+
+    // 5c. FULLY DEGENERATE — a dome that folds over its WHOLE domain has no valid fold-free
+    //     region: thickenTrimmed HONEST-DECLINES (empty solid, never a self-intersecting one).
+    {
+      const double R = 0.5;
+      const ThickenResult trim = thickenTrimmed(tightDome(R), -1.5 * R, 1e-3, 16, 16);
+      expectTrue(!trim.ok, "fully-degenerate dome: thickenTrimmed declines");
+      expectTrue(trim.solid.triangles.empty(),
+                 "fully-degenerate decline returns no (self-intersecting) solid");
+    }
   }
 
   std::printf("nurbs_thicken: %d checks, %d failures\n", g_checks, g_failures);

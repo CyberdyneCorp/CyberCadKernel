@@ -109,6 +109,16 @@ struct ThickenResult {
   double minCurvatureRadius = 0.0;          ///< smallest principal radius of curvature on the
                                             ///< offsetting side (the self-intersection bound; 0 flat).
   int gridU = 0, gridV = 0;                 ///< tessellation resolution per direction on each panel.
+
+  // ── Additive fields (default-valued; the non-trim thickenSurface path never sets
+  //    them, so existing callers see the historical struct values) ──
+  bool trimmed = false;        ///< true ⇔ the interpenetrating region was TRIMMED away and the
+                               ///< solid built over just the fold-free sub-domain (thickenTrimmed
+                               ///< only). false ⇒ the full domain was used (no interpenetration).
+  double keptU0 = 0.0, keptU1 = 0.0;  ///< the kept (fold-free) parameter rectangle in the INPUT
+  double keptV0 = 0.0, keptV1 = 0.0;  ///< surface's (u,v) coords; equals the full domain when
+                                      ///< `trimmed == false`. The complement is the interpenetrating
+                                      ///< region cut away so the solid is self-intersection-free.
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,6 +158,43 @@ struct ThickenResult {
 /// boundary resolution). Declines (ok=false, empty solid) rather than ever
 /// returning a non-closed or self-intersecting solid.
 ThickenResult thickenSurface(const BsplineSurfaceData& surface, double d,
+                             double tol = 1e-4, int gridU = 24, int gridV = 24);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SELF-INTERSECTION-TRIMMED thicken (additive; existing thickenSurface byte-unchanged).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// THICKEN `surface` by signed distance `d`, but when the inward offset would
+/// INTERPENETRATE (the offset panel O = S + d·N folds back through S over PART of the
+/// domain, producing a self-intersecting / non-manifold solid) TRIM the interpenetrating
+/// portion away and return the CLOSED, watertight, self-intersection-FREE solid over the
+/// valid (fold-free) region — rather than declining the whole request as thickenSurface
+/// does.
+///
+/// The interpenetration is the SAME fold-locus the offset layer detects: the offset map's
+/// principal Jacobian factors (1 + d·κᵢ) go non-positive where the offset crosses a centre
+/// of curvature. thickenTrimmed reuses that machinery (offsetSurfaceTrimmed) to find the
+/// maximal fold-free axis-aligned parameter rectangle, then assembles the closed six-panel
+/// (2 caps + 4 walls) shell over JUST that sub-domain, re-closing the shell so it is
+/// watertight and non-self-intersecting. The reported `enclosedVolume` is the TRUE trimmed
+/// volume of the kept region, not the naive full-domain value.
+///
+/// Behaviour contract:
+///   * NO INTERPENETRATION — when the offset is fold-free over the WHOLE domain (a gently
+///     curved face thickened by a safe |d|), the kept rectangle IS the full domain and the
+///     result is BYTE-IDENTICAL to thickenSurface(surface, d, tol, gridU, gridV): the trim
+///     path is a no-op (`trimmed == false`, keptU0..keptV1 == full domain).
+///   * PARTIAL INTERPENETRATION — the folded sub-region is cut at the self-intersection
+///     locus; the solid is rebuilt over the fold-free rectangle, closed and watertight, and
+///     `trimmed == true` with the kept rectangle reported. A self-intersecting solid is
+///     NEVER returned as valid.
+///   * FULLY DEGENERATE — when no fold-free region of meaningful area remains (the whole
+///     face interpenetrates), HONEST-DECLINE (SelfIntersection, ok=false, empty solid).
+///
+/// Same guards as thickenSurface for degenerate input / degenerate normal / zero thickness.
+/// `tol`, `gridU`, `gridV` have the same meaning. Declines (ok=false, empty solid) rather
+/// than ever returning a non-closed or self-intersecting solid.
+ThickenResult thickenTrimmed(const BsplineSurfaceData& surface, double d,
                              double tol = 1e-4, int gridU = 24, int gridV = 24);
 
 }  // namespace cybercad::native::math

@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 using namespace cybercad::native::math;
@@ -155,6 +156,83 @@ static BsplineSurfaceData degenerateNormalPatch() {
   for (int i = 0; i < 3; ++i)
     for (int j = 0; j < 3; ++j)
       s.poles.push_back({i * 1.0, 0.0, 0.0});
+  return s;
+}
+
+// A flat wall in the y=0 plane spanning x∈[0,Lx], z∈[0,Lz], but with its NORMAL and V-edge
+// oriented to share the base's V0 edge for the L-shape (identical to flatWallXZ; kept separate
+// for readability in the trim tests).
+
+// ── Robust triangle-pair PIERCING self-intersection oracle (edge-vs-triangle) ──────
+// True iff any two NON-adjacent triangles properly cross (an edge pierces the interior of the
+// other). Scale-relative coplanar skip ignores skin contact, so a clean welded shell reads
+// self-intersection-FREE. This is the airtight oracle for the slab-overlap trim.
+static bool segPierce(const Point3& p, const Point3& q, const Point3& t0, const Point3& t1,
+                      const Point3& t2, double ep) {
+  const Vec3 e1 = t1 - t0, e2 = t2 - t0, dir = q - p, pv = cross(dir, e2);
+  const double det = dot(e1, pv);
+  const double sv = norm(dir) * norm(cross(e1, e2));
+  if (std::fabs(det) < 1e-9 * sv || sv < 1e-30) return false;
+  const double inv = 1.0 / det;
+  const Vec3 tv = p - t0;
+  const double bu = dot(tv, pv) * inv;
+  if (bu <= ep || bu >= 1.0 - ep) return false;
+  const Vec3 qv = cross(tv, e1);
+  const double bv = dot(dir, qv) * inv;
+  if (bv <= ep || bu + bv >= 1.0 - ep) return false;
+  const double t = dot(e2, qv) * inv;
+  return t > ep && t < 1.0 - ep;
+}
+static bool selfIntersects(const tess::Mesh& m, double ep) {
+  for (std::size_t i = 0; i < m.triangles.size(); ++i)
+    for (std::size_t j = i + 1; j < m.triangles.size(); ++j) {
+      const tess::Triangle& ti = m.triangles[i];
+      const tess::Triangle& tj = m.triangles[j];
+      const std::uint32_t vs[3] = {ti.a, ti.b, ti.c}, ws[3] = {tj.a, tj.b, tj.c};
+      bool sh = false;
+      for (int x = 0; x < 3 && !sh; ++x)
+        for (int y = 0; y < 3; ++y) if (vs[x] == ws[y]) { sh = true; break; }
+      if (sh) continue;
+      const Point3 A[3] = {m.vertices[ti.a], m.vertices[ti.b], m.vertices[ti.c]};
+      const Point3 B[3] = {m.vertices[tj.a], m.vertices[tj.b], m.vertices[tj.c]};
+      for (int k = 0; k < 3; ++k) {
+        if (segPierce(A[k], A[(k + 1) % 3], B[0], B[1], B[2], ep)) return true;
+        if (segPierce(B[k], B[(k + 1) % 3], A[0], A[1], A[2], ep)) return true;
+      }
+    }
+  return false;
+}
+
+static bool meshBitEqual(const tess::Mesh& a, const tess::Mesh& b) {
+  if (a.vertices.size() != b.vertices.size() || a.triangles.size() != b.triangles.size())
+    return false;
+  for (std::size_t i = 0; i < a.vertices.size(); ++i)
+    if (a.vertices[i].x != b.vertices[i].x || a.vertices[i].y != b.vertices[i].y ||
+        a.vertices[i].z != b.vertices[i].z)
+      return false;
+  for (std::size_t i = 0; i < a.triangles.size(); ++i)
+    if (a.triangles[i].a != b.triangles[i].a || a.triangles[i].b != b.triangles[i].b ||
+        a.triangles[i].c != b.triangles[i].c)
+      return false;
+  return true;
+}
+
+// Two flat faces meeting at a SHARP dihedral seam along the y-axis, each of width W from the
+// seam, at half-angle `halfDeg` (interior angle = 2·halfDeg). Sharp (small halfDeg) → the two
+// thickened slabs deeply interpenetrate near the crease.
+static BsplineSurfaceData wedgeFace(double dirx, double dirz, double W, double Ly) {
+  BsplineSurfaceData s;
+  s.degreeU = 1;
+  s.degreeV = 1;
+  s.nPolesU = 2;
+  s.nPolesV = 2;
+  s.knotsU = {0, 0, 1, 1};
+  s.knotsV = {0, 0, 1, 1};
+  for (int i = 0; i < 2; ++i)
+    for (int j = 0; j < 2; ++j) {
+      const double t = i * W, y = j * Ly;
+      s.poles.push_back({t * dirx, y, t * dirz});
+    }
   return s;
 }
 
@@ -359,6 +437,82 @@ int main() {
                "zero thickness declines (ZeroThickness)");
 
     (void)domePair;
+  }
+
+  // ═══ 5. SLAB-OVERLAP TRIM — shellTrimmed (G4) ════════════════════════════════════
+  {
+    // 5a. NO-OVERLAP PASSTHROUGH — a coplanar pair and an L-shape whose mitres already close
+    //     cleanly are BYTE-IDENTICAL to thickenPatches (the trim path is a no-op).
+    {
+      const double Lx = 2.0, Ly = 1.5;
+      std::vector<BsplineSurfaceData> faces = {flatRectAt(0, 0, Lx, Ly),
+                                               flatRectAt(Lx, 0, Lx, Ly)};
+      std::vector<SharedEdge> adj = {{0, 1, PatchEdge::U1, PatchEdge::U0, false}};
+      const ShellResult base = thickenPatches(faces, adj, 0.3, 1e-6, 6, 5, 1e-7);
+      const ShellResult trim = shellTrimmed(faces, adj, 0.3, 1e-6, 6, 5, 1e-7);
+      expectTrue(base.ok && trim.ok, "passthrough coplanar ok");
+      expectTrue(!trim.trimmed && trim.trimmedSeams == 0,
+                 "passthrough coplanar: no seam overlapped (trimmed == false)");
+      expectTrue(meshBitEqual(base.solid, trim.solid),
+                 "passthrough coplanar: shellTrimmed byte-identical to thickenPatches");
+    }
+    {
+      // A right-angle L-shape with a SAFE (small) thickness mitres cleanly → passthrough.
+      std::vector<BsplineSurfaceData> faces = {flatRectAt(0, 0, 1.0, 1.0),
+                                               flatWallXZ(0, 0, 1.0, 1.0)};
+      std::vector<SharedEdge> adj = {{0, 1, PatchEdge::V0, PatchEdge::V0, false}};
+      const ShellResult base = thickenPatches(faces, adj, 0.2, 1e-6, 4, 4, 1e-7);
+      const ShellResult trim = shellTrimmed(faces, adj, 0.2, 1e-6, 4, 4, 1e-7);
+      expectTrue(base.ok && trim.ok, "passthrough L-shape ok");
+      expectTrue(!trim.trimmed, "passthrough L-shape: no overlap (trimmed == false)");
+      expectTrue(meshBitEqual(base.solid, trim.solid),
+                 "passthrough L-shape: shellTrimmed byte-identical to thickenPatches");
+    }
+
+    // 5b. ADJACENT-SLAB OVERLAP TRIMMED — an L-shape thickened so the mitre would spike past
+    //     the faces' own extent: shellTrimmed re-closes the overlapping seam as a CLEAN
+    //     bisector mitre → watertight, χ=2, and SELF-INTERSECTION-FREE. Volume is positive
+    //     and finite (the true trimmed volume, not the naive spiked one).
+    {
+      std::vector<BsplineSurfaceData> faces = {flatRectAt(0, 0, 1.0, 1.0),
+                                               flatWallXZ(0, 0, 1.0, 1.0)};
+      std::vector<SharedEdge> adj = {{0, 1, PatchEdge::V0, PatchEdge::V0, false}};
+      const double d = 0.9;  // large: the extend-to-meet mitre apex overshoots the face extent
+      const ShellResult trim = shellTrimmed(faces, adj, d, 1e-6, 4, 4, 1e-7);
+      expectTrue(trim.ok, "slab-overlap: shellTrimmed produces a valid solid");
+      if (trim.ok) {
+        expectTrue(trim.trimmed && trim.trimmedSeams >= 1,
+                   "slab-overlap: reported trimmed (>=1 seam re-closed)");
+        expectTrue(trim.watertight && tess::isWatertight(trim.solid),
+                   "slab-overlap trimmed solid is watertight");
+        expectTrue(trim.consistentlyOriented && tess::isConsistentlyOriented(trim.solid),
+                   "slab-overlap trimmed solid consistently oriented");
+        expectTrue(trim.eulerCharacteristic == 2, "slab-overlap trimmed χ == 2");
+        expectTrue(trim.boundaryEdges == 0, "slab-overlap trimmed zero boundary edges");
+        expectTrue(trim.selfIntersectionFree, "slab-overlap: reported self-intersection-free");
+        expectTrue(!selfIntersects(trim.solid, 1e-6),
+                   "slab-overlap trimmed solid is self-intersection-free (verified)");
+        expectTrue(trim.enclosedVolume > 0.0 && std::isfinite(trim.enclosedVolume),
+                   "slab-overlap trimmed positive finite volume");
+      }
+    }
+
+    // 5c. DEEP INTERPENETRATION — a SHARP concave wedge whose two thickened slabs deeply
+    //     interpenetrate (cap-through-cap) cannot be re-closed to a clean solid by re-mitring:
+    //     shellTrimmed HONEST-DECLINES (SelfIntersecting, empty solid) — never a
+    //     self-intersecting valid solid.
+    {
+      const double h = 20.0 * M_PI / 180.0;  // half-angle 20° → interior 40° (sharp)
+      std::vector<BsplineSurfaceData> faces = {
+          wedgeFace(std::sin(h), std::cos(h), 1.0, 1.0),
+          wedgeFace(-std::sin(h), std::cos(h), 1.0, 1.0)};
+      std::vector<SharedEdge> adj = {{0, 1, PatchEdge::U0, PatchEdge::U0, false}};
+      const ShellResult trim = shellTrimmed(faces, adj, 0.3, 1e-6, 4, 3, 1e-7);
+      expectTrue(!trim.ok && trim.status == ShellStatus::SelfIntersecting,
+                 "deep slab overlap: shellTrimmed honest-declines (SelfIntersecting)");
+      expectTrue(trim.solid.triangles.empty(),
+                 "deep-overlap decline returns no (self-intersecting) solid");
+    }
   }
 
   std::printf("nurbs_shell: %d checks, %d failures\n", g_checks, g_failures);

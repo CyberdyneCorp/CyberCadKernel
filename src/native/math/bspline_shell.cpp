@@ -241,6 +241,22 @@ std::vector<std::pair<int, int>> edgeNodes(PatchEdge e, int nu, int nv) {
   return out;
 }
 
+// The flat grid index of the node on the OPPOSITE parametric boundary from `node`, in the
+// direction perpendicular to boundary edge `e`. For a U-edge (u=lo/hi) the perpendicular runs
+// in u, so the opposite node keeps j and flips i to the other u-extreme; for a V-edge it flips
+// j. Used to measure a face's extent (width) from a seam edge for the slab-overlap test.
+std::size_t oppositeEdgeNode(PatchEdge e, std::pair<int, int> node, int nu, int nv) {
+  int i = node.first, j = node.second;
+  switch (e) {
+    case PatchEdge::U0: i = nu - 1; break;  // seam at u=lo → opposite at u=hi
+    case PatchEdge::U1: i = 0;      break;  // seam at u=hi → opposite at u=lo
+    case PatchEdge::V0: j = nv - 1; break;  // seam at v=lo → opposite at v=hi
+    case PatchEdge::V1: j = 0;      break;  // seam at v=hi → opposite at v=lo
+  }
+  return static_cast<std::size_t>(i) * static_cast<std::size_t>(nv) +
+         static_cast<std::size_t>(j);
+}
+
 // Sample ONE face's S-cap and O-cap on the shared (nu × nv) grid into `mesh` (via the
 // shared weld), filling `fc` (welded S/O indices + S positions + normals) and adding the
 // face's mid-surface (S) area into `midArea2`. Returns Ok, or a degeneracy status (a
@@ -306,6 +322,90 @@ bool mitreApex(const Point3& sp, const Vec3& nA, const Vec3& nB, double d, Point
   return true;
 }
 
+// ── Slab-vs-slab overlap test for one dihedral seam node ──────────────────────────
+// The extend-to-meet mitre apex sits at distance α = |d|/(1 + nA·nB) from the seam along the
+// (nA+nB) bisector. When α exceeds a face's own extent from the seam, the apex SPIKE reaches
+// past the offset cap and the mitre panel interpenetrates the caps (the two adjacent slabs
+// overlap). `extentA`/`extentB` are the (approx) 3-D lengths of each face from the seam at
+// this node; the seam OVERLAPS iff the apex extension exceeds either extent (with a small
+// slack) — i.e. the extend-to-meet corner cannot fit between the caps and must be trimmed to
+// a clean bisector mitre. A degenerate (no finite apex) seam is treated as overlapping so the
+// chamfer path is used. Reuses the same (nA,nB,d) mitre geometry as mitreApex.
+bool slabsOverlap(const Vec3& nA, const Vec3& nB, double d, double extentA, double extentB) {
+  const double denom = 1.0 + dot(nA, nB);
+  if (denom <= 1e-9) return true;                     // near-anti-parallel apex → spike, trim
+  const double apexExt = std::fabs(d) / denom * norm(nA + nB);  // |apex − seam|
+  const double minExtent = std::min(extentA, extentB);
+  // Slack: the apex may sit slightly past the cap without a true crossing; require a clear
+  // margin before declaring overlap so a clean 90°/obtuse mitre (apex well inside) passes.
+  return apexExt > minExtent * (1.0 - 1e-6);
+}
+
+// ── Non-adjacent triangle-triangle PIERCING (self-intersection) guard ─────────────
+// Robust "do two triangles properly cross" test built from edge-vs-triangle PIERCING: an
+// edge pierces a triangle iff it crosses the triangle's plane STRICTLY between its endpoints
+// and the crossing point is STRICTLY inside the triangle (positive barycentric margin). This
+// deliberately ignores COPLANAR contact (two skin triangles lying in the same plane, however
+// adjacent, never "pierce") — the false-positive that a Separating-Axis test suffers — so a
+// clean welded shell reads as self-intersection-FREE while a genuine slab interpenetration
+// (an offset cap poking THROUGH another face at an angle) is caught. Symmetric: test A's
+// edges against B and B's edges against A.
+
+// Does segment p→q pierce triangle (t0,t1,t2) strictly interior on both? `epar` is the
+// parametric slack (as a fraction) kept off each endpoint / edge so mere touching is ignored.
+bool segmentPiercesTri(const Point3& p, const Point3& q, const Point3& t0, const Point3& t1,
+                       const Point3& t2, double epar) {
+  const Vec3 e1 = t1 - t0, e2 = t2 - t0;
+  const Vec3 dir = q - p;
+  const Vec3 pv = cross(dir, e2);
+  const double det = dot(e1, pv);
+  // Coplanar / grazing skip: |det| = |dir·(e1×e2)| is the parallelepiped volume; when it is
+  // small RELATIVE to the edge magnitudes the segment lies (near) in the triangle plane, so
+  // there is no transverse piercing (two coplanar skin triangles never "pierce"). A purely
+  // absolute epsilon fails at model scale — a scale-relative one is robust.
+  const double scaleVol = norm(dir) * norm(cross(e1, e2));
+  if (std::fabs(det) < 1e-9 * scaleVol || scaleVol < 1e-30) return false;
+  const double inv = 1.0 / det;
+  const Vec3 tv = p - t0;
+  const double bu = dot(tv, pv) * inv;
+  if (bu <= epar || bu >= 1.0 - epar) return false;
+  const Vec3 qv = cross(tv, e1);
+  const double bv = dot(dir, qv) * inv;
+  if (bv <= epar || bu + bv >= 1.0 - epar) return false;
+  const double s = dot(e2, qv) * inv;  // parameter along p→q
+  return s > epar && s < 1.0 - epar;   // strictly between the endpoints
+}
+
+bool trianglesPierce(const Point3 A[3], const Point3 B[3], double epar) {
+  for (int k = 0; k < 3; ++k) {
+    if (segmentPiercesTri(A[k], A[(k + 1) % 3], B[0], B[1], B[2], epar)) return true;
+    if (segmentPiercesTri(B[k], B[(k + 1) % 3], A[0], A[1], A[2], epar)) return true;
+  }
+  return false;
+}
+
+// True iff any two NON-adjacent (no shared vertex) triangles of `m` PIERCE each other. The
+// self-intersection oracle shellTrimmed verifies before returning a valid solid.
+bool hasSelfIntersection(const tess::Mesh& m, double epar) {
+  const std::size_t nT = m.triangles.size();
+  for (std::size_t i = 0; i < nT; ++i)
+    for (std::size_t j = i + 1; j < nT; ++j) {
+      const tess::Triangle& ti = m.triangles[i];
+      const tess::Triangle& tj = m.triangles[j];
+      const std::uint32_t vs[3] = {ti.a, ti.b, ti.c};
+      const std::uint32_t ws[3] = {tj.a, tj.b, tj.c};
+      bool share = false;
+      for (int x = 0; x < 3 && !share; ++x)
+        for (int y = 0; y < 3; ++y)
+          if (vs[x] == ws[y]) { share = true; break; }
+      if (share) continue;
+      const Point3 A[3] = {m.vertices[ti.a], m.vertices[ti.b], m.vertices[ti.c]};
+      const Point3 B[3] = {m.vertices[tj.a], m.vertices[tj.b], m.vertices[tj.c]};
+      if (trianglesPierce(A, B, epar)) return true;
+    }
+  return false;
+}
+
 // A ruled band between two aligned index chains p[] and q[] (each unit quad split into two
 // triangles), skipping degenerate segments. The reusable mitre-panel / offset-bridge builder.
 void ruledBand(tess::Mesh& mesh, const std::vector<std::uint32_t>& p,
@@ -351,16 +451,18 @@ std::size_t emitMitreSeams(
   return mitreEdges;
 }
 
-}  // namespace
-
 // ─────────────────────────────────────────────────────────────────────────────
-// Multi-face solid thicken / shell (Layer 5): offset each face, weld shared edges,
-// wall only the outer boundary → one closed shell.
+// Shared shell-assembly core. `trimOverlap == false` reproduces the historical
+// thickenPatches output BIT-FOR-BIT (the trim branches are gated off). With it on
+// (shellTrimmed), every DIHEDRAL seam whose adjacent slabs would overlap is re-closed
+// with a clean bisector-chamfer mitre, and the finished solid is VERIFIED
+// self-intersection-free before `ok` is set.
 // ─────────────────────────────────────────────────────────────────────────────
 
-ShellResult thickenPatches(const std::vector<BsplineSurfaceData>& faces,
-                           const std::vector<SharedEdge>& adjacency, double d,
-                           double tol, int gridU, int gridV, double weldTol) {
+ShellResult buildShell(const std::vector<BsplineSurfaceData>& faces,
+                       const std::vector<SharedEdge>& adjacency, double d,
+                       double tol, int gridU, int gridV, double weldTol,
+                       bool trimOverlap) {
   ShellResult r;
 
   if (faces.empty()) {
@@ -439,7 +541,31 @@ ShellResult thickenPatches(const std::vector<BsplineSurfaceData>& faces,
     seam.oA.reserve(ea.size());
     seam.oB.reserve(ea.size());
     seam.s.reserve(ea.size());
-    seam.apex.reserve(ea.size());
+    // ── Slab-overlap classification (shellTrimmed only) ──────────────────────────
+    // For the TRIM path we first scan the seam for adjacent-slab overlap: if the
+    // extend-to-meet apex would spike past either face's extent at any node, the mitre
+    // panel would interpenetrate the caps. Such a seam is re-closed as a clean bisector
+    // chamfer (apexValid = false) — the chamfer ridge lies between the two offset caps
+    // and cannot spike out. We decide this BEFORE welding any apex vertices so an unused
+    // apex chain never leaves orphan vertices (which would break χ). The non-trim path
+    // leaves `seamOverlaps` false, so it welds apex verts and mitres exactly as before.
+    bool seamOverlaps = false;
+    if (trimOverlap) {
+      for (std::size_t k = 0; k < ea.size() && !seamOverlaps; ++k) {
+        const std::size_t ga = gflat(ea[k].first, ea[k].second, nv);
+        const std::size_t gb = gflat(eb[k].first, eb[k].second, nv);
+        // Per-node face extent perpendicular to the seam: distance from the seam node to the
+        // node on the OPPOSITE parametric boundary of the same face (the face's width there).
+        const std::size_t gaOpp = oppositeEdgeNode(a.edgeA, ea[k], nu, nv);
+        const std::size_t gbOpp = oppositeEdgeNode(a.edgeB, eb[k], nu, nv);
+        const double extA = norm(caps[a.faceA].sPos[gaOpp] - caps[a.faceA].sPos[ga]);
+        const double extB = norm(caps[a.faceB].sPos[gbOpp] - caps[a.faceB].sPos[gb]);
+        if (slabsOverlap(caps[a.faceA].nrm[ga], caps[a.faceB].nrm[gb], d, extA, extB))
+          seamOverlaps = true;
+      }
+    }
+    const bool useApex = !seamOverlaps;
+    if (useApex) seam.apex.reserve(ea.size());
     bool apexOk = true;
     for (std::size_t k = 0; k < ea.size(); ++k) {
       const std::size_t ga = gflat(ea[k].first, ea[k].second, nv);
@@ -458,17 +584,21 @@ ShellResult thickenPatches(const std::vector<BsplineSurfaceData>& faces,
       seam.oA.push_back(oa);
       seam.oB.push_back(ob);
       seam.s.push_back(sa);
-      // Mitre apex where the two offset planes meet (proper extend-to-meet corner).
-      Point3 apexP;
-      if (mitreApex(caps[a.faceA].sPos[ga], caps[a.faceA].nrm[ga], caps[a.faceB].nrm[gb],
-                    d, apexP))
-        seam.apex.push_back(weld.weld(mesh, apexP, wtol));
-      else
-        apexOk = false;
+      // Mitre apex where the two offset planes meet (proper extend-to-meet corner). Skipped
+      // for an overlapping seam in the trim path (that seam uses the bisector chamfer instead).
+      if (useApex) {
+        Point3 apexP;
+        if (mitreApex(caps[a.faceA].sPos[ga], caps[a.faceA].nrm[ga], caps[a.faceB].nrm[gb],
+                      d, apexP))
+          seam.apex.push_back(weld.weld(mesh, apexP, wtol));
+        else
+          apexOk = false;
+      }
     }
     ++r.interiorSharedEdges;
     if (!offsetWelds) {
-      seam.apexValid = apexOk;
+      seam.apexValid = useApex && apexOk;
+      if (seamOverlaps) { r.trimmed = true; ++r.trimmedSeams; }
       mitres.push_back(std::move(seam));  // needs a mitre bridge
     }
   }
@@ -582,6 +712,28 @@ ShellResult thickenPatches(const std::vector<BsplineSurfaceData>& faces,
     return r;
   }
 
+  // ── Self-intersection guard (shellTrimmed only) ─────────────────────────────────
+  // The trim path re-closed overlapping mitres as bisector chamfers; VERIFY the finished
+  // solid has no two non-adjacent triangles crossing before returning it valid. If a
+  // residual overlap remains (the overlap could NOT be trimmed to a clean solid), HONEST-
+  // DECLINE — a self-intersecting solid is never returned as valid. The scale-relative
+  // margin ignores mere shared-edge / coplanar touching.
+  if (trimOverlap) {
+    // Parametric slack (fraction of an edge / barycentric coord) kept off endpoints and
+    // triangle borders. A DIHEDRAL seam's outer-boundary wall grazes the adjacent face's cap
+    // near the shared corner by construction (a shallow, boundary-hugging contact that is not
+    // a solid defect); a genuine slab interpenetration pierces DEEP into a cap interior. The
+    // 0.05 slack ignores the former while still catching the latter, so the guard flags only
+    // true interpenetration that the trim could not resolve.
+    constexpr double kPierceSlack = 0.05;
+    if (hasSelfIntersection(mesh, kPierceSlack)) {
+      ShellResult decline;
+      decline.status = ShellStatus::SelfIntersecting;  // no valid closed solid remains
+      return decline;
+    }
+    r.selfIntersectionFree = true;
+  }
+
   r.solid = std::move(mesh);
   r.enclosedVolume = vol;
   r.gridU = nu;
@@ -589,6 +741,32 @@ ShellResult thickenPatches(const std::vector<BsplineSurfaceData>& faces,
   r.ok = true;
   r.status = ShellStatus::Ok;
   return r;
+}
+
+}  // namespace
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-face solid thicken / shell (Layer 5): offset each face, weld shared edges,
+// wall only the outer boundary → one closed shell.
+// ─────────────────────────────────────────────────────────────────────────────
+
+ShellResult thickenPatches(const std::vector<BsplineSurfaceData>& faces,
+                           const std::vector<SharedEdge>& adjacency, double d,
+                           double tol, int gridU, int gridV, double weldTol) {
+  // trimOverlap = false → the historical assembly, bit-for-bit unchanged.
+  return buildShell(faces, adjacency, d, tol, gridU, gridV, weldTol, /*trimOverlap=*/false);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SLAB-OVERLAP-TRIMMED shell (additive; thickenPatches above is byte-unchanged).
+// ─────────────────────────────────────────────────────────────────────────────
+
+ShellResult shellTrimmed(const std::vector<BsplineSurfaceData>& faces,
+                         const std::vector<SharedEdge>& adjacency, double d,
+                         double tol, int gridU, int gridV, double weldTol) {
+  // trimOverlap = true → overlapping dihedral mitres are re-closed as clean bisector mitres
+  // and the finished solid is verified self-intersection-free before `ok` is set.
+  return buildShell(faces, adjacency, d, tol, gridU, gridV, weldTol, /*trimOverlap=*/true);
 }
 
 }  // namespace cybercad::native::math

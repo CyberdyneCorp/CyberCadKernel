@@ -190,52 +190,19 @@ bool orientCoherently(tess::Mesh& m) {
   return true;
 }
 
-}  // namespace
+// A rectangular sub-domain of the parameter space to thicken over.
+struct Domain { double u0, u1, v0, v1; };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Solid thicken / shell (Layer 5): offset panel + ruled walls → closed shell.
-// ─────────────────────────────────────────────────────────────────────────────
-
-ThickenResult thickenSurface(const BsplineSurfaceData& surface, double d, double tol,
-                             int gridU, int gridV) {
-  ThickenResult r;
-
-  if (!wellFormed(surface)) {
-    r.status = ThickenStatus::DegenerateInput;
-    return r;
-  }
-  if (std::fabs(d) <= kLinearTolerance) {
-    r.status = ThickenStatus::ZeroThickness;  // no solid to build from a zero offset
-    return r;
-  }
-  const int nu = std::max(2, gridU);
-  const int nv = std::max(2, gridV);
-
-  // ── Offset panel via the Layer-5 offset (carries the fold + degenerate guards) ──
-  // A thicken past a principal radius of curvature FOLDS its offset panel — the offset
-  // layer detects this from the 2nd fundamental form and declines; we propagate that
-  // decline honestly (never build a folded solid). We fit at `tol` for the error report;
-  // the geometric offset cap itself is sampled from the true locus S + d·N below so the
-  // caps and walls share EXACT vertices (watertight by construction).
-  const OffsetResult off = offsetSurface(surface, d, tol);
-  r.offsetError = off.maxError;
-  r.minCurvatureRadius = off.minCurvatureRadius;
-  if (!off.ok) {
-    r.status = fromOffset(off.status);
-    return r;  // decline: degenerate normal / self-intersection / fit failure
-  }
-
-  // ── Sample S and its offset locus O = S + d·N on a shared (nu × nv) grid ─────────
-  const SurfaceGrid grid{std::span<const Point3>(surface.poles), surface.nPolesU,
-                         surface.nPolesV};
-  const double u0 = knotLo(surface.knotsU, surface.degreeU);
-  const double u1 = knotHi(surface.knotsU, surface.degreeU);
-  const double v0 = knotLo(surface.knotsV, surface.degreeV);
-  const double v1 = knotHi(surface.knotsV, surface.degreeV);
-  if (!(u1 > u0) || !(v1 > v0)) {
-    r.status = ThickenStatus::DegenerateInput;
-    return r;
-  }
+// ── Shared shell assembly over ONE parameter rectangle ───────────────────────────
+// Samples S and its offset locus O = S + d·N on a (nu × nv) grid over `dom`, assembles the
+// closed six-panel (2 caps + 4 walls) shell, orients it coherently + outward, verifies
+// closure, and writes the geometry fields into `r`. `off` is the ALREADY-COMPUTED offset
+// result over the same region (its maxError/minCurvatureRadius are reported). This is the
+// common core of thickenSurface (full domain) and thickenTrimmed (fold-free sub-rectangle);
+// factoring it keeps both paths bit-for-bit identical when the domain is the same.
+void assembleShell(const BsplineSurfaceData& surface, const SurfaceGrid& grid, double d,
+                   const Domain& dom, int nu, int nv, ThickenResult& r) {
+  const double u0 = dom.u0, u1 = dom.u1, v0 = dom.v0, v1 = dom.v1;
 
   std::vector<Point3> sPts(static_cast<std::size_t>(nu) * nv);
   std::vector<Point3> oPts(static_cast<std::size_t>(nu) * nv);
@@ -248,7 +215,7 @@ ThickenResult thickenSurface(const BsplineSurfaceData& surface, double d, double
       const Dir3 n = evalN(surface, grid, u, v);
       if (!n.valid()) {  // belt-and-braces: offset guard already covers this
         r.status = ThickenStatus::DegenerateNormal;
-        return r;
+        return;
       }
       sPts[static_cast<std::size_t>(i) * nv + j] = p;
       oPts[static_cast<std::size_t>(i) * nv + j] = p + n.vec() * d;
@@ -313,7 +280,7 @@ ThickenResult thickenSurface(const BsplineSurfaceData& surface, double d, double
   // negative, reverse every triangle (preserves watertight + coherence, flips to outward).
   if (!orientCoherently(mesh)) {
     r.status = ThickenStatus::NotClosed;  // non-manifold seam — never returned as valid
-    return r;
+    return;
   }
   double vol = tess::enclosedVolume(mesh);
   if (vol < 0.0) {
@@ -329,7 +296,7 @@ ThickenResult thickenSurface(const BsplineSurfaceData& surface, double d, double
   if (!r.watertight || !r.consistentlyOriented || r.boundaryEdges != 0 ||
       r.eulerCharacteristic != 2) {
     r.status = ThickenStatus::NotClosed;  // never return a non-closed solid as valid
-    return r;
+    return;
   }
 
   // S-panel (mid-surface) area for the thin-slab volume oracle.
@@ -350,6 +317,130 @@ ThickenResult thickenSurface(const BsplineSurfaceData& surface, double d, double
   r.gridV = nv;
   r.ok = true;
   r.status = ThickenStatus::Ok;
+}
+
+}  // namespace
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Solid thicken / shell (Layer 5): offset panel + ruled walls → closed shell.
+// ─────────────────────────────────────────────────────────────────────────────
+
+ThickenResult thickenSurface(const BsplineSurfaceData& surface, double d, double tol,
+                             int gridU, int gridV) {
+  ThickenResult r;
+
+  if (!wellFormed(surface)) {
+    r.status = ThickenStatus::DegenerateInput;
+    return r;
+  }
+  if (std::fabs(d) <= kLinearTolerance) {
+    r.status = ThickenStatus::ZeroThickness;  // no solid to build from a zero offset
+    return r;
+  }
+  const int nu = std::max(2, gridU);
+  const int nv = std::max(2, gridV);
+
+  // ── Offset panel via the Layer-5 offset (carries the fold + degenerate guards) ──
+  // A thicken past a principal radius of curvature FOLDS its offset panel — the offset
+  // layer detects this from the 2nd fundamental form and declines; we propagate that
+  // decline honestly (never build a folded solid). We fit at `tol` for the error report;
+  // the geometric offset cap itself is sampled from the true locus S + d·N below so the
+  // caps and walls share EXACT vertices (watertight by construction).
+  const OffsetResult off = offsetSurface(surface, d, tol);
+  r.offsetError = off.maxError;
+  r.minCurvatureRadius = off.minCurvatureRadius;
+  if (!off.ok) {
+    r.status = fromOffset(off.status);
+    return r;  // decline: degenerate normal / self-intersection / fit failure
+  }
+
+  const SurfaceGrid grid{std::span<const Point3>(surface.poles), surface.nPolesU,
+                         surface.nPolesV};
+  Domain dom;
+  dom.u0 = knotLo(surface.knotsU, surface.degreeU);
+  dom.u1 = knotHi(surface.knotsU, surface.degreeU);
+  dom.v0 = knotLo(surface.knotsV, surface.degreeV);
+  dom.v1 = knotHi(surface.knotsV, surface.degreeV);
+  if (!(dom.u1 > dom.u0) || !(dom.v1 > dom.v0)) {
+    r.status = ThickenStatus::DegenerateInput;
+    return r;
+  }
+
+  assembleShell(surface, grid, d, dom, nu, nv, r);
+  // Full-domain thicken: kept rectangle IS the full domain, never trimmed.
+  r.keptU0 = dom.u0; r.keptU1 = dom.u1; r.keptV0 = dom.v0; r.keptV1 = dom.v1;
+  return r;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SELF-INTERSECTION-TRIMMED thicken (additive; thickenSurface byte-unchanged above).
+// ─────────────────────────────────────────────────────────────────────────────
+
+ThickenResult thickenTrimmed(const BsplineSurfaceData& surface, double d, double tol,
+                             int gridU, int gridV) {
+  ThickenResult r;
+
+  if (!wellFormed(surface)) {
+    r.status = ThickenStatus::DegenerateInput;
+    return r;
+  }
+  if (std::fabs(d) <= kLinearTolerance) {
+    r.status = ThickenStatus::ZeroThickness;
+    return r;
+  }
+  const int nu = std::max(2, gridU);
+  const int nv = std::max(2, gridV);
+
+  // ── Fold analysis + fold-free rectangle via the offset layer's trim machinery ──
+  // offsetSurfaceTrimmed reuses the offset Jacobian-regularity (1 + d·κᵢ) fold detection:
+  //   * fold-free everywhere  → trimmed == false, kept rectangle == full domain,
+  //   * partial fold          → trimmed == true, kept == maximal fold-free rectangle,
+  //   * degenerate normal     → DegenerateNormal decline,
+  //   * whole domain folds     → SelfIntersection decline (no meaningful fold-free region).
+  // We build the closed shell over the KEPT rectangle only, so the interpenetrating portion
+  // (where the offset would cross back through S) is cut at the self-intersection locus.
+  const OffsetResult off = offsetSurfaceTrimmed(surface, d, tol);
+  r.offsetError = off.maxError;
+  r.minCurvatureRadius = off.minCurvatureRadius;
+  if (!off.ok) {
+    // Degenerate normal / fully-degenerate fold (whole face interpenetrates) → honest-decline.
+    r.status = fromOffset(off.status);
+    return r;
+  }
+
+  const SurfaceGrid grid{std::span<const Point3>(surface.poles), surface.nPolesU,
+                         surface.nPolesV};
+  const double fu0 = knotLo(surface.knotsU, surface.degreeU);
+  const double fu1 = knotHi(surface.knotsU, surface.degreeU);
+  const double fv0 = knotLo(surface.knotsV, surface.degreeV);
+  const double fv1 = knotHi(surface.knotsV, surface.degreeV);
+  if (!(fu1 > fu0) || !(fv1 > fv0)) {
+    r.status = ThickenStatus::DegenerateInput;
+    return r;
+  }
+
+  if (!off.trimmed) {
+    // ── No interpenetration: full-domain thicken. To honour the passthrough oracle
+    //    (BYTE-IDENTICAL to thickenSurface when nothing folds) delegate to thickenSurface
+    //    verbatim — same offset call, same domain, same assembly, same output. ──
+    return thickenSurface(surface, d, tol, gridU, gridV);
+  }
+
+  // ── Interpenetration trimmed: build the closed shell over the kept fold-free rectangle ──
+  Domain kept{off.keptU0, off.keptU1, off.keptV0, off.keptV1};
+  // Clamp defensively to the input domain (the offset layer already returns an interior
+  // rectangle; this only guards against a degenerate report).
+  kept.u0 = std::max(kept.u0, fu0); kept.u1 = std::min(kept.u1, fu1);
+  kept.v0 = std::max(kept.v0, fv0); kept.v1 = std::min(kept.v1, fv1);
+  if (!(kept.u1 > kept.u0) || !(kept.v1 > kept.v0)) {
+    r.status = ThickenStatus::SelfIntersection;  // no valid region — honest-decline
+    return r;
+  }
+
+  assembleShell(surface, grid, d, kept, nu, nv, r);
+  if (!r.ok) return r;  // assembly-side decline (non-manifold / not-closed) propagates
+  r.trimmed = true;
+  r.keptU0 = kept.u0; r.keptU1 = kept.u1; r.keptV0 = kept.v0; r.keptV1 = kept.v1;
   return r;
 }
 

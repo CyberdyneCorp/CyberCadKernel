@@ -129,6 +129,8 @@ enum class ShellStatus {
   AdjacencyMismatch,      ///< a shared-edge record's two edges do not sample to coincident points.
   NonManifold,            ///< a welded seam carries ≥ 3 caps (a model fold, not a 2-face edge).
   NotClosed,              ///< the assembled shell is not watertight (declined, never returned open).
+  SelfIntersecting,       ///< adjacent mitred slabs overlap and the overlap could NOT be trimmed
+                          ///< to a clean, self-intersection-free solid (shellTrimmed decline).
   ZeroThickness,          ///< |d| below the linear tolerance — no solid to build.
 };
 
@@ -158,6 +160,17 @@ struct ShellResult {
                                             ///< NOT weld — the mitre closes the offset-side gap; 0
                                             ///< for a coplanar/tangent seam where the offsets weld).
   int gridU = 0, gridV = 0;                 ///< per-face tessellation resolution per direction.
+
+  // ── Additive fields (default-valued; thickenPatches never sets them, so existing
+  //    callers observe the historical struct) ──
+  bool trimmed = false;                     ///< true ⇔ at least one dihedral seam's adjacent slabs
+                                            ///< would OVERLAP and shellTrimmed cut the overlap to a
+                                            ///< clean (self-intersection-free) mitre. false ⇒ no
+                                            ///< seam overlapped (the result equals thickenPatches).
+  std::size_t trimmedSeams = 0;             ///< count of dihedral seams whose overlapping mitre was
+                                            ///< re-closed as a clean bisector mitre (shellTrimmed).
+  bool selfIntersectionFree = false;        ///< true ⇔ VERIFIED no two non-adjacent triangles cross
+                                            ///< (shellTrimmed runs this before setting ok).
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -210,6 +223,48 @@ ShellResult thickenPatches(const std::vector<BsplineSurfaceData>& faces,
                            const std::vector<SharedEdge>& adjacency, double d,
                            double tol = 1e-4, int gridU = 24, int gridV = 24,
                            double weldTol = 1e-7);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SLAB-OVERLAP-TRIMMED shell (additive; thickenPatches stays byte-unchanged).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// THICKEN a set of edge-adjacent NURBS `faces` by `d` into ONE closed watertight solid,
+/// but when two adjacent mitred slabs at a SHARP dihedral seam would OVERLAP (the
+/// extend-to-meet mitre apex spikes so far past the offset caps that the mitre panel
+/// interpenetrates them — a self-intersecting, non-manifold-in-geometry corner) TRIM the
+/// overlap to a CLEAN mitre and return a watertight, self-intersection-FREE solid — rather
+/// than emitting the overlapping mitre as thickenPatches would.
+///
+/// The overlap is found with a SLAB-vs-SLAB intersection test at each dihedral seam: the
+/// mitre-apex extension α = |d|/(1 + nA·nB) is compared against the two faces' extent from
+/// the seam; when the apex would reach past a face's own far edge (or the two offset caps
+/// cross), the extend-to-meet corner self-intersects. The remedy is a BISECTOR mitre — the
+/// ridge is placed at the midpoint of the two offset edges (a chamfer along the offset-edge
+/// bisector) which, lying strictly between the two offset caps, cannot spike out. After
+/// re-closing, the whole shell is VERIFIED self-intersection-free (no two non-adjacent
+/// triangles cross) before `ok` is set.
+///
+/// Behaviour contract:
+///   * NO OVERLAP — when every dihedral seam mitres cleanly (a right-angle L-shape, a
+///     coplanar pair, any face set thickenPatches already closes without self-intersection)
+///     the result is BYTE-IDENTICAL to thickenPatches(faces, adjacency, d, ...): the trim
+///     path is a no-op (`trimmed == false`, `trimmedSeams == 0`).
+///   * OVERLAP TRIMMED — a sharp concave corner whose mitred slabs would overlap is
+///     re-closed with the clean bisector mitre; the result is watertight AND
+///     self-intersection-free, with `trimmed == true` and `trimmedSeams` counting the
+///     re-closed seams.
+///   * NO VALID SOLID — when the overlap cannot be trimmed to a self-intersection-free
+///     closed solid (e.g. a whole face buried inside another's slab), HONEST-DECLINE
+///     (SelfIntersecting, ok=false, empty solid). A self-intersecting solid is NEVER
+///     returned as valid.
+///
+/// Same fold / degenerate / adjacency / zero-thickness guards and parameters as
+/// thickenPatches. Declines (ok=false, empty solid) rather than ever returning a non-closed
+/// or self-intersecting solid.
+ShellResult shellTrimmed(const std::vector<BsplineSurfaceData>& faces,
+                         const std::vector<SharedEdge>& adjacency, double d,
+                         double tol = 1e-4, int gridU = 24, int gridV = 24,
+                         double weldTol = 1e-7);
 
 }  // namespace cybercad::native::math
 

@@ -630,6 +630,25 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_offset)
         set(test_native_nurbs_offset_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_offset.cpp")
+        # NURBS roadmap Layer 1 — tolerance-BOUNDED simplification (src/native/math/
+        # bspline_simplify). The CAD complement to the EXACT bspline_ops removeKnot/
+        # reduceDegree: greedy bounded knot removal (P&T Ch.9.3, increasing-error order)
+        # + bounded degree reduction, hard-capped at a user deviation tol. The module is
+        # header-only over math (drives the PUBLIC bspline_ops A5.8/A5.11 cores + bspline
+        # evaluators — no numsci link, no substrate include, calls only always-visible
+        # declarations), but its gate is wired into the CYBERCAD_HAS_NUMSCI block for
+        # Layer-family uniformity; no compile-def needed. Airtight closed-form oracles:
+        # OVER-REFINED reduces EXACTLY (knot-insert many times then removeKnotsBounded
+        # (tol=1e-10) recovers the original minimal knot vector, deviation ~epsilon; same
+        # for a rational arc, still on the unit circle), LOSSY-WITHIN-BOUND (a wiggly
+        # curve at tol=1e-3 sheds knots while the TRUE densely-measured deviation never
+        # exceeds 1e-3 — the bound is HARD, never widened), DEGREE-REDUCTION (a degree-
+        # elevated curve reduceDegreeBounded back to its original degree exactly; a
+        # genuinely-wiggly curve keeps its degree honestly), and NO-OP (tol=0 removes
+        # nothing, geometry byte-unchanged). Surface analogue (per-direction sweep).
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_simplify)
+        set(test_native_nurbs_simplify_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_simplify.cpp")
         # NURBS roadmap Layer 5 — SOLID THICKEN / SHELL (src/native/math/bspline_thicken).
         # Composes the Layer-5 offset (bspline_offset → lin_solve fit + its 2nd-fundamental-
         # form fold guard) into a CLOSED, watertight triangle shell (tessellate::Mesh): the

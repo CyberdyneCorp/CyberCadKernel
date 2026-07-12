@@ -11,6 +11,11 @@
 //   * bspline_ops.h— exact-NURBS geometry kernel (NURBS-SCOPE Layer 1): knot
 //                    insert/refine/remove, degree elevate/reduce, split, Bézier
 //                    decompose, reparam — curves & tensor surfaces, rational-aware.
+//   * bspline_simplify.h—tolerance-BOUNDED NURBS simplification (NURBS-SCOPE Layer 1):
+//                    greedy knot removal in increasing-error order + bounded degree
+//                    reduction, hard-capped at a user deviation tol (P&T Ch.9). The
+//                    CAD complement to bspline_ops' exact ops — turns a heavy/over-
+//                    refined NURBS into a light one. Rational-aware; honest no-op.
 //   * bspline_fit.h— NURBS fitting / approximation (NURBS-SCOPE Layer 7): points →
 //                    B-spline curve/surface interpolation + least-squares approx.
 //                    (numsci-gated; the solve-bearing routines need CYBERCAD_HAS_NUMSCI.)
@@ -75,6 +80,7 @@
 #include "transform.h"
 #include "bspline.h"
 #include "bspline_ops.h"
+#include "bspline_simplify.h"
 #include "bspline_fit.h"
 #include "bspline_skin.h"
 #include "bspline_sweep.h"

@@ -63,14 +63,20 @@
 // SCOPE / RESIDUALS. This is a data-model + robustness slice, not a heavy algorithm:
 //   * Healing covers the common near-valid cases above (small gaps, near-coincident
 //     vertices, pinch detection) PLUS clean 2-way pinch SPLITTING (splitAtPinch: a
-//     figure-eight self-touching at one vertex becomes two region-preserving sub-loops).
-//     GENERAL non-manifold repair — resolving a 3+-way / crossing pinch, healing across
-//     surface seams, re-parametrizing a badly-drifting pcurve — remains a documented
-//     residual: those cases are declined honestly (Unknown / ambiguous reported), not
-//     silently repaired.
-//   * constructPcurve is non-rational (bspline_fit is non-rational); a genuinely
-//     rational edge is fitted as a non-rational approximation and its true fidelity
-//     deviation is reported (never a widened/faked tolerance) — the rational-residual.
+//     figure-eight self-touching at one vertex becomes two region-preserving sub-loops)
+//     PLUS GENERAL N-way / crossing pinch splitting (splitAtPinches: a vertex where 3+
+//     strands meet, or two pinch points that cross, is decomposed by CCW-adjacency into
+//     the union of its simple sub-loops, iterated to a fixpoint — region- and area-
+//     preserving). Healing across surface seams and re-parametrizing a badly-drifting
+//     pcurve remain documented residuals; a pinch whose strands do not alternate around
+//     the vertex (a genuinely non-manifold touch) is still declined honestly (ambiguous).
+//   * constructPcurve builds a RATIONAL pcurve when the 3-D edge is rational (a circle /
+//     ellipse / rational NURBS): the edge is lifted to homogeneous form, its feet are
+//     projected into (u,v), and a WEIGHTED interpolation (interpolateRationalCurve) fits an
+//     EXACT rational pcurve — so a circular trim edge's pcurve reproduces the 3-D curve to
+//     ~1e-9, where the old polynomial fit had a measurable sag. A non-rational edge still
+//     fits non-rationally (the fit is exact there); the residual narrows to weight-unknown
+//     rational edges recovered only approximately (Ma–Kruth), reported never faked.
 //
 // OCCT-FREE. Uses ONLY src/native/math + src/native/topology + (guarded)
 // src/native/numerics. clang++ -std=c++20. fp64, deterministic.
@@ -172,8 +178,14 @@ struct ClassifyOptions {
   bool splitPinch = false;   ///< OPT-IN: split a clean 2-way pinch (figure-eight) into two
                              ///< sub-loops and classify the union (see splitAtPinch). Default
                              ///< OFF preserves the honest pinch→Unknown decline; when ON a
-                             ///< cleanly-splittable pinch classifies (region-preserving), while
-                             ///< a 3+-way / crossing pinch still declines Unknown.
+                             ///< cleanly-splittable pinch classifies (region-preserving). With
+                             ///< splitNWay OFF a 3+-way / crossing pinch still declines Unknown.
+  bool splitNWay = false;    ///< OPT-IN (requires splitPinch): when the 2-way split declines,
+                             ///< fall back to the GENERAL N-way / crossing-pinch resolver
+                             ///< (splitAtPinches) — a vertex where 3+ strands meet, or two
+                             ///< pinch points that cross, is decomposed into the union of its
+                             ///< simple sub-loops (region-preserving). Default OFF: byte-
+                             ///< unchanged; a genuinely-ambiguous pinch still declines Unknown.
 };
 
 /// Classify (u,v) against the trimmed region. Robust even-odd ray-cast in UV with
@@ -294,6 +306,56 @@ SplitReport splitTrimLoopAtPinch(const TrimLoop& loop, const HealOptions& opts =
                                  int flatten = 48);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// N-WAY / CROSSING PINCH SPLITTING — the general figure-eight-of-figure-eights.
+//
+// splitAtPinch handles a CLEAN 2-way pinch. splitAtPinches GENERALIZES it to a loop that
+// self-touches at ANY number of vertices, and at a vertex where N≥3 loop strands meet:
+//
+//   * At each pinch vertex P the loop arrives along several strands and departs along the
+//     same number. The correct region-preserving decomposition pairs each INCOMING strand
+//     with an OUTGOING strand by ANGULAR (CCW) adjacency around P — the planar-subdivision
+//     "next edge in the rotational order" rule. This un-crosses the vertex into locally
+//     non-crossing strands and re-routes the loop's successor links so that tracing them
+//     yields a set of SIMPLE sub-loops that share only pinch points.
+//   * Two pinch points that CROSS (a figure-8-of-figure-8) are resolved by ITERATING the
+//     single-vertex resolution to a FIXPOINT: each pass resolves one pinch cluster and the
+//     resulting sub-loops are re-fed until none self-touches.
+//
+// REGION-PRESERVING by the same even-odd argument as splitAtPinch: the CCW-adjacency
+// pairing preserves the parity of boundary crossings for every query point, so the UNION of
+// the resulting simple sub-loops classifies every interior/exterior point IDENTICALLY to the
+// original self-touching loop. Total signed area is preserved (the reconnection only
+// re-partitions the same directed edges into cycles). A genuinely AMBIGUOUS configuration —
+// a vertex whose incoming/outgoing strands do not alternate around P (an odd, non-manifold
+// touch that no CCW pairing resolves into simple loops), or a sub-loop that still self-
+// touches after the fixpoint — is DECLINED honestly (ok=false), never force-split.
+// ─────────────────────────────────────────────────────────────────────────────
+struct MultiSplitReport {
+  bool ok = false;        ///< true ⇔ the loop was split into a set of valid SIMPLE sub-loops
+  bool pinch = false;     ///< true ⇔ any self-touching pinch was detected
+  bool ambiguous = false; ///< true ⇔ a pinch was detected but is NOT cleanly resolvable (declined)
+  int pinchVertices = 0;  ///< number of DISTINCT pinch locations resolved (clusters)
+  int maxWays = 0;        ///< largest strand-count N at any single resolved pinch vertex
+  int iterations = 0;     ///< fixpoint passes taken (>1 ⇔ crossing pinches were present)
+  double tolerance = 0.0; ///< the scale-relative pinch tolerance actually applied
+  std::vector<std::vector<ParamPoint>> loops;  ///< the simple sub-loops (valid iff `ok`)
+};
+
+/// Split a WELDED polyline that self-touches at any number of vertices (each N≥2-way) into a
+/// set of SIMPLE sub-loops by CCW-adjacency re-routing, iterated to a fixpoint for crossing
+/// pinches. Returns the sub-loops in `loops` (valid iff `ok`). A loop with NO pinch returns
+/// ok=true with the single input loop; an unresolvable pinch returns ok=false, ambiguous=true
+/// (honest decline). Region- and area-preserving (see above). `opts.gapTol` scales the pinch
+/// tolerance exactly as healLoop's weld tolerance.
+MultiSplitReport splitAtPinches(const std::vector<ParamPoint>& poly, const HealOptions& opts = {});
+
+/// Flatten `loop` (join-gap-aware), weld small gaps, then split at ALL pinch vertices (N-way /
+/// crossing) into simple sub-loops. Returns the MultiSplitReport (valid iff `ok`). A large
+/// gap, degeneracy, or unresolvable pinch declines (`ok=false`).
+MultiSplitReport splitTrimLoopAtPinches(const TrimLoop& loop, const HealOptions& opts = {},
+                                        int flatten = 48);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Pcurve fidelity guard — the load-bearing robustness property.
 //
 // Verify S(p(t)) == C(t) on a dense sample of the shared parameter range: for each
@@ -338,7 +400,8 @@ FidelityReport pcurveFidelity(const FaceSurface& surface, const Location& surfLo
 // ─────────────────────────────────────────────────────────────────────────────
 struct PcurveConstruction {
   bool ok = false;             ///< true ⇔ a pcurve was constructed AND round-trips
-  PCurve pcurve;               ///< the constructed 2-D B-spline pcurve
+  bool rational = false;       ///< true ⇔ the constructed pcurve is RATIONAL (weights non-empty)
+  PCurve pcurve;               ///< the constructed 2-D B-spline / rational pcurve
   double projMaxDistance = 0.0;///< max ‖projected surface point − edge point‖ (edge-on-S residual)
   FidelityReport fidelity;     ///< round-trip S(pcurve(t)) == C(t) verification
 };
@@ -348,6 +411,11 @@ struct ConstructOptions {
   int fitDegree = 3;     ///< degree of the fitted 2-D B-spline (clamped to samples−1)
   int surfSamplesU = 24; ///< closest_point multi-start grid density in U
   int surfSamplesV = 24; ///< closest_point multi-start grid density in V
+  bool rational = true;  ///< when the 3-D edge is RATIONAL (a circle/ellipse/rational NURBS),
+                         ///< build a RATIONAL pcurve (homogeneous projection + weighted
+                         ///< interpolation) so a circular trim edge's pcurve is EXACT, not
+                         ///< polygonal. OFF forces the legacy non-rational fit (the documented
+                         ///< rational-residual). A non-rational edge always fits non-rationally.
   FidelityOptions fidelity{};  ///< round-trip fidelity tolerance
 };
 

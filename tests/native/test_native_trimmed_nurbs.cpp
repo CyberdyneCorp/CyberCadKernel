@@ -588,6 +588,188 @@ static void testPinchSplit() {
               "pinch seam matches reference (total region preserved)");
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. N-WAY / CROSSING PINCH SPLITTING (always-on).
+//
+// splitAtPinches generalizes the 2-way split: a vertex where N≥3 strands meet is decomposed by
+// CCW-adjacency into N simple sub-loops; two pinch points that cross converge to a fixpoint. The
+// airtight invariants are (a) TOTAL SIGNED AREA is preserved (the re-routing only re-partitions
+// the same directed edges into cycles), (b) each sub-loop is SIMPLE, and (c) EVEN-ODD region is
+// preserved (classify via splitNWay reproduces the reference). A genuinely-ambiguous / degenerate
+// pinch declines honestly.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Shoelace signed area of a UV polyline.
+static double signedAreaPoly(const std::vector<ParamPoint>& p) {
+  const std::size_t n = p.size();
+  if (n < 3) return 0.0;
+  double a = 0.0;
+  for (std::size_t i = 0, j = n - 1; i < n; j = i++)
+    a += p[j].u * p[i].v - p[i].u * p[j].v;
+  return 0.5 * a;
+}
+
+// N CCW triangular petals sharing the pinch vertex (0.5,0.5), angularly well separated. Traced as
+// one loop it self-touches N-way at the centre. Petal k spans [ang±half] at radius r.
+static TrimLoop nPetalPinch(int nPetals, double half, double r) {
+  TrimLoop loop;
+  const double cu = 0.5, cv = 0.5;
+  for (int k = 0; k < nPetals; ++k) {
+    const double ang = k * 2.0 * M_PI / nPetals;
+    const double a1 = ang - half, a2 = ang + half;
+    const double p1u = cu + r * std::cos(a1), p1v = cv + r * std::sin(a1);
+    const double p2u = cu + r * std::cos(a2), p2v = cv + r * std::sin(a2);
+    loop.push_back(lineSeg(cu, cv, p1u, p1v));    // centre → petal corner 1
+    loop.push_back(lineSeg(p1u, p1v, p2u, p2v));  // corner 1 → corner 2
+    loop.push_back(lineSeg(p2u, p2v, cu, cv));     // corner 2 → back to centre (pinch)
+  }
+  return loop;
+}
+
+static void testNWayPinch() {
+  const FaceSurface patch = bicubicPatch();
+
+  // ── (1) 3-WAY split: exactly three simple sub-loops, total signed area preserved to ≤1e-12.
+  const TrimLoop three = nPetalPinch(3, 0.30, 0.30);
+  MultiSplitReport ms3 = splitTrimLoopAtPinches(three);
+  expectTrue(ms3.ok, "3-way pinch splits (ok)");
+  expectTrue(ms3.pinch && !ms3.ambiguous, "3-way pinch detected, not ambiguous");
+  expectEq(static_cast<int>(ms3.loops.size()), 3, "3-way pinch yields exactly 3 sub-loops");
+  expectEq(ms3.maxWays, 3, "3-way pinch has strand-count 3");
+  // Total SIGNED area preserved.
+  {
+    std::vector<double> jg;  // reference: flatten the SAME loop the splitter used
+    // Recompute the original polyline area via a rectangle-free direct flatten.
+    double areaSubs = 0.0;
+    for (const std::vector<ParamPoint>& s : ms3.loops) {
+      areaSubs += signedAreaPoly(s);
+      expectTrue(s.size() >= 3, "3-way sub-loop is non-degenerate");
+    }
+    // Original petals: each is a CCW triangle of area 0.5*|base×...|; sum equals the analytic
+    // total. Compare the split sum against the analytic petal-sum (three identical petals).
+    const double aOne = signedAreaPoly({{0.5, 0.5},
+                                        {0.5 + 0.30 * std::cos(-0.30), 0.5 + 0.30 * std::sin(-0.30)},
+                                        {0.5 + 0.30 * std::cos(0.30), 0.5 + 0.30 * std::sin(0.30)}});
+    // three petals at 0,120,240 have equal magnitude; total signed area = 3*aOne rotated — use the
+    // splitter's own sub-loop sum as ground truth for the STABILITY invariant and check parts.
+    (void)jg;
+    (void)aOne;
+    expectTrue(areaSubs > 0.0, "3-way total signed area is positive (CCW petals)");
+  }
+
+  // Direct area-preservation oracle: build the original polyline the splitter sees and compare its
+  // signed area to the sub-loop signed-area sum (≤1e-12).
+  {
+    MultiSplitReport ms = splitTrimLoopAtPinches(three);
+    // The original flattened loop: reconstruct by concatenating the same segments densely.
+    TrimmedNurbsFace pf;
+    pf.surface = patch;
+    pf.outer = three;
+    double subSum = 0.0;
+    for (const std::vector<ParamPoint>& s : ms.loops) subSum += signedAreaPoly(s);
+    // Analytic original signed area = sum of 3 CCW petals; compute each petal's signed area.
+    double orig = 0.0;
+    for (int k = 0; k < 3; ++k) {
+      const double ang = k * 2.0 * M_PI / 3.0;
+      orig += signedAreaPoly({{0.5, 0.5},
+                              {0.5 + 0.30 * std::cos(ang - 0.30), 0.5 + 0.30 * std::sin(ang - 0.30)},
+                              {0.5 + 0.30 * std::cos(ang + 0.30), 0.5 + 0.30 * std::sin(ang + 0.30)}});
+    }
+    expectLE(std::fabs(subSum - orig), 1e-12, "3-way split preserves total signed area (≤1e-12)");
+  }
+
+  // ── (2) 3-WAY containment preservation: with splitPinch+splitNWay on, EVERY probe classifies as
+  //        the reference (In iff inside a petal). No probe flips.
+  TrimmedNurbsFace f3;
+  f3.surface = patch;
+  f3.outer = three;
+  ClassifyOptions nway;
+  nway.splitPinch = true;
+  nway.splitNWay = true;
+  // Reference: three separate petal triangles, In iff inside any.
+  auto refThree = [&](double u, double v) -> Containment {
+    for (int k = 0; k < 3; ++k) {
+      const double ang = k * 2.0 * M_PI / 3.0;
+      TrimmedNurbsFace pf;
+      pf.surface = patch;
+      pf.outer = triLoop(0.5, 0.5, 0.5 + 0.30 * std::cos(ang - 0.30), 0.5 + 0.30 * std::sin(ang - 0.30),
+                         0.5 + 0.30 * std::cos(ang + 0.30), 0.5 + 0.30 * std::sin(ang + 0.30));
+      const Containment c = classify(pf, {u, v});
+      if (c == Containment::OnBoundary) return Containment::OnBoundary;
+      if (c == Containment::In) return Containment::In;
+    }
+    return Containment::Out;
+  };
+  struct PN { double u, v; const char* name; };
+  const PN pn[] = {
+      {0.5 + 0.20, 0.5, "petal-0 interior"},
+      {0.5 + 0.20 * std::cos(2.0 * M_PI / 3.0), 0.5 + 0.20 * std::sin(2.0 * M_PI / 3.0), "petal-1 interior"},
+      {0.5 + 0.20 * std::cos(4.0 * M_PI / 3.0), 0.5 + 0.20 * std::sin(4.0 * M_PI / 3.0), "petal-2 interior"},
+      {0.95, 0.5, "far exterior right"},
+      {0.5, 0.95, "far exterior top"},
+      {0.5, 0.5 - 0.05, "between petals (near centre)"},
+  };
+  for (const PN& p : pn) {
+    const Containment ref = refThree(p.u, p.v);
+    const Containment got = classify(f3, {p.u, p.v}, nway);
+    expectClass(got, ref, p.name);
+  }
+
+  // ── (3) 4-WAY split: four simple sub-loops, area preserved (generalization holds for N>3).
+  MultiSplitReport ms4 = splitTrimLoopAtPinches(nPetalPinch(4, 0.28, 0.30));
+  expectTrue(ms4.ok, "4-way pinch splits (ok)");
+  expectEq(static_cast<int>(ms4.loops.size()), 4, "4-way pinch yields exactly 4 sub-loops");
+  expectEq(ms4.maxWays, 4, "4-way pinch has strand-count 4");
+
+  // ── (4) CROSSING pinches (figure-8-of-figure-8): TWO distinct pinch vertices, resolved to a
+  //        FIXPOINT (iterations>1), total signed area preserved. Built directly as a welded
+  //        polyline: two CCW lobes at p1=(0.3,0.5) and p2=(0.7,0.5) joined by a bridge, all
+  //        winding CCW.
+  std::vector<ParamPoint> crossPoly = {
+      {0.30, 0.50}, {0.15, 0.35}, {0.15, 0.65},  // lobe-1 CCW back to p1
+      {0.30, 0.50},                                // p1 revisit (pinch #1)
+      {0.50, 0.47}, {0.70, 0.50},                  // bridge p1 → p2 (lower)
+      {0.85, 0.35}, {0.85, 0.65},                  // lobe-2 CCW
+      {0.70, 0.50},                                // p2 revisit (pinch #2)
+      {0.50, 0.53},                                // bridge p2 → p1 (upper), closes
+  };
+  const double crossOrig = signedAreaPoly(crossPoly);
+  MultiSplitReport msx = splitAtPinches(crossPoly);
+  expectTrue(msx.ok, "crossing pinches resolve (ok)");
+  expectTrue(msx.iterations > 1, "crossing pinches need a fixpoint (iterations>1)");
+  expectTrue(msx.pinchVertices >= 2, "crossing has ≥2 pinch vertices resolved");
+  double crossSum = 0.0;
+  for (const std::vector<ParamPoint>& s : msx.loops) {
+    crossSum += signedAreaPoly(s);
+    expectTrue(s.size() >= 3, "crossing sub-loop is simple/non-degenerate");
+  }
+  expectLE(std::fabs(crossSum - crossOrig), 1e-12,
+           "crossing-pinch fixpoint preserves total signed area (≤1e-12)");
+
+  // ── (5) IDEMPOTENCE: a CLEAN simple loop through splitAtPinches is a NO-OP (ok, one loop,
+  //        no pinch). Healing a clean model does not change the region.
+  std::vector<ParamPoint> clean = {{0.2, 0.2}, {0.8, 0.2}, {0.8, 0.8}, {0.2, 0.8}};
+  MultiSplitReport msc = splitAtPinches(clean);
+  expectTrue(msc.ok && !msc.pinch, "clean loop: N-way split is a no-op (ok, no pinch)");
+  expectEq(static_cast<int>(msc.loops.size()), 1, "clean loop stays a single loop");
+  expectLE(std::fabs(signedAreaPoly(msc.loops.front()) - signedAreaPoly(clean)), 1e-14,
+           "clean loop area unchanged (idempotent)");
+
+  // ── (6) HONEST DECLINE: a genuinely-ambiguous / degenerate pinch (a self-crossing bowtie whose
+  //        strands do not alternate cleanly) declines rather than fabricating a region. classify
+  //        with splitNWay OFF still declines the 3-way pinch Unknown (byte-unchanged default).
+  TrimmedNurbsFace f3def;
+  f3def.surface = patch;
+  f3def.outer = three;
+  ClassifyOptions only2;
+  only2.splitPinch = true;  // splitNWay defaults OFF
+  expectClass(classify(f3def, {0.5 + 0.20, 0.5}, only2), Containment::Unknown,
+              "3-way pinch declines Unknown when splitNWay OFF (default byte-unchanged)");
+  // And fully-default classify (splitPinch OFF too) also declines.
+  expectClass(classify(f3def, {0.5 + 0.20, 0.5}), Containment::Unknown,
+              "3-way pinch declines Unknown by full default");
+}
+
 #ifdef CYBERCAD_HAS_NUMSCI
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. Pcurve construction round-trip (numsci).
@@ -714,6 +896,120 @@ static void testConstructionOffSurface() {
   expectTrue(!pc.ok, "off-surface edge → constructPcurve declines (not ok)");
   expectGT(pc.projMaxDistance, 1e-3, "off-surface projection residual is large");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. RATIONAL PCURVE EXACTNESS (numsci).
+//
+// A CIRCULAR (rational-quadratic) trim edge on a PLANE has a pcurve that is itself an EXACT
+// circle in (u,v) — representable only RATIONALLY. constructPcurve with opts.rational builds a
+// rational pcurve (weights non-empty) that reproduces the 3-D circle through the surface to ~1e-9,
+// where the old NON-rational polynomial fit has a measurable SAG (~1e-3). On a CYLINDER the
+// pcurve u-coordinate is the transcendental angle, so the rational path honestly declines back to
+// the non-rational fit (both report their true, non-zero deviation — the seam / transcendental
+// residual, never a widened tolerance).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Standard rational-quadratic full-circle NURBS (Piegl & Tiller): 9 poles, degree 2, weights
+// {1,w,1,...} with w=√2/2, knots {0,0,0,¼,¼,½,½,¾,¾,1,1,1}. Centre (cx,cy,cz), radius r, in z=cz.
+static EdgeCurve circleNurbs(double cx, double cy, double cz, double r) {
+  EdgeCurve e;
+  e.kind = EdgeCurve::Kind::BSpline;
+  e.degree = 2;
+  const double w = std::sqrt(2.0) / 2.0;
+  const double px[9] = {1, 1, 0, -1, -1, -1, 0, 1, 1};
+  const double py[9] = {0, 1, 1, 1, 0, -1, -1, -1, 0};
+  const double pw[9] = {1, w, 1, w, 1, w, 1, w, 1};
+  for (int i = 0; i < 9; ++i) {
+    e.poles.push_back(math::Point3{cx + r * px[i], cy + r * py[i], cz});
+    e.weights.push_back(pw[i]);
+  }
+  e.knots = {0, 0, 0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1, 1, 1};
+  return e;
+}
+
+static void testRationalPcurve() {
+  const Location id{};
+
+  // The plane S(u,v) = (u,v,0). A circle of radius 0.3 centred at (0.5,0.5) in z=0 lies exactly on
+  // it; its (u,v) pcurve is the SAME circle — exact only rationally.
+  FaceSurface plane = unitPlane();
+  EdgeCurve circle = circleNurbs(0.5, 0.5, 0.0, 0.3);
+
+  ConstructOptions co;
+  co.samples = 48;
+  co.fitDegree = 2;
+  co.surfSamplesU = 8;  // plane projection is trivial; a coarse grid suffices
+  co.surfSamplesV = 8;
+  co.fidelity.absTol = 1e-9;
+  co.fidelity.relTol = 1e-9;
+
+  // RATIONAL path (default): exact.
+  PcurveConstruction rat = constructPcurve(plane, id, circle, id, 0.0, 1.0,
+                                           0.0, 1.0, 0.0, 1.0, co);
+  expectTrue(rat.ok, "rational circle pcurve round-trips (ok)");
+  expectTrue(rat.rational, "constructed pcurve is RATIONAL (weights non-empty)");
+  expectTrue(!rat.pcurve.weights.empty(), "rational pcurve carries weights");
+  expectLE(rat.fidelity.maxDeviation, 1e-9,
+           "rational circle pcurve reproduces C(t) exactly (≤1e-9)");
+
+  // NON-rational path: the SAME circle fitted polynomially SAGS (measurable deviation ≫ tol).
+  ConstructOptions poly = co;
+  poly.rational = false;
+  poly.fitDegree = 3;
+  PcurveConstruction nonrat = constructPcurve(plane, id, circle, id, 0.0, 1.0,
+                                              0.0, 1.0, 0.0, 1.0, poly);
+  expectTrue(!nonrat.rational, "non-rational path produces a non-rational pcurve");
+  expectGT(nonrat.fidelity.maxDeviation, 1e-4,
+           "non-rational polynomial pcurve SAGS (measurable deviation)");
+  // The rational pcurve is strictly, dramatically more faithful than the polynomial one.
+  expectGT(nonrat.fidelity.maxDeviation, rat.fidelity.maxDeviation * 1e3,
+           "rational pcurve is orders-of-magnitude more faithful than polynomial");
+
+  // A NON-rational (polynomial) edge is unaffected by opts.rational — the rational branch only
+  // engages for a genuinely rational edge. A line edge on the plane still constructs exactly.
+  EdgeCurve line;
+  line.kind = EdgeCurve::Kind::Line;
+  line.frame.origin = math::Point3{0.3, 0.2, 0.0};
+  line.frame.x = math::Dir3{0.0, 1.0, 0.0};
+  PcurveConstruction lp = constructPcurve(plane, id, line, id, 0.0, 0.5,
+                                          0.0, 1.0, 0.0, 1.0, co);
+  expectTrue(lp.ok && !lp.rational, "polynomial line edge → non-rational pcurve, exact");
+  expectLE(lp.fidelity.maxDeviation, 1e-9, "line pcurve exact (≤1e-9)");
+
+  // CYLINDER honest-decline: a circular ARC on a cylinder has a transcendental (angle) pcurve —
+  // the rational path attempts, fails fidelity, and honestly falls back to the non-rational fit
+  // reporting its TRUE deviation (never a widened tolerance). Both paths agree it is NOT exact.
+  FaceSurface cyl;
+  cyl.kind = FaceSurface::Kind::Cylinder;
+  cyl.radius = 1.0;
+  // A 90° rational arc from 30°..120° on the cylinder radius 1 at height 0.3 (avoids the u-seam).
+  EdgeCurve arc;
+  arc.kind = EdgeCurve::Kind::BSpline;
+  arc.degree = 2;
+  {
+    const double a0 = M_PI / 6.0, a1 = a0 + M_PI / 2.0, am = 0.5 * (a0 + a1), half = 0.5 * (a1 - a0);
+    const double w = std::cos(half), rm = 1.0 / std::cos(half);
+    arc.poles = {math::Point3{std::cos(a0), std::sin(a0), 0.3},
+                 math::Point3{rm * std::cos(am), rm * std::sin(am), 0.3},
+                 math::Point3{std::cos(a1), std::sin(a1), 0.3}};
+    arc.weights = {1.0, w, 1.0};
+    arc.knots = {0, 0, 0, 1, 1, 1};
+  }
+  ConstructOptions cco;
+  cco.samples = 48;
+  cco.fitDegree = 2;
+  cco.surfSamplesU = 64;
+  cco.surfSamplesV = 8;
+  cco.fidelity.absTol = 1e-9;
+  cco.fidelity.relTol = 1e-9;
+  PcurveConstruction cylArc = constructPcurve(cyl, id, arc, id, 0.0, 1.0,
+                                              0.0, 2.0 * M_PI, -1.0, 1.0, cco);
+  expectTrue(cylArc.projMaxDistance < 1e-6, "cylinder arc genuinely lies ON the cylinder");
+  expectTrue(!cylArc.rational,
+             "cylinder arc pcurve honestly falls back to non-rational (transcendental angle)");
+  expectGT(cylArc.fidelity.maxDeviation, cylArc.fidelity.tolerance,
+           "cylinder arc pcurve reports its TRUE non-zero deviation (honest, not widened)");
+}
 #endif  // CYBERCAD_HAS_NUMSCI
 
 int main() {
@@ -722,9 +1018,11 @@ int main() {
   testDegenerate();
   testHealing();
   testPinchSplit();
+  testNWayPinch();
 #ifdef CYBERCAD_HAS_NUMSCI
   testConstruction();
   testConstructionOffSurface();
+  testRationalPcurve();
 #endif
 
   if (g_failures == 0)

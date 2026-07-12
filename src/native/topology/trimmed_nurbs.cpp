@@ -521,6 +521,237 @@ SplitReport splitTrimLoopAtPinch(const TrimLoop& loop, const HealOptions& opts, 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// splitAtPinches — GENERAL N-way / crossing pinch resolution by CCW-adjacency.
+//
+// A welded polyline V[0..n-1] traces one closed loop with edges V[i]→V[next(i)] (initially
+// next(i)=(i+1) mod n). Where several vertices coincide (within tol) the loop self-touches:
+// that location is a PINCH vertex through which N≥2 strands pass. We resolve ONE pinch cluster
+// per pass by RE-ROUTING the successor links so that each INCOMING strand continues along its
+// CCW-adjacent OUTGOING strand (the planar-subdivision rotational-order rule); tracing the
+// re-routed links then yields simple sub-loops that meet only at pinch points. Crossing
+// pinches (a figure-8-of-figure-8) are handled by iterating the single-cluster resolution over
+// the emitted sub-loops to a FIXPOINT. Region- and area-preserving (see the header proof): the
+// reconnection only re-partitions the SAME directed edges into cycles, so total signed area and
+// even-odd parity are invariant. A pinch whose in/out strands do not alternate around P (a non-
+// manifold touch no CCW pairing resolves) is DECLINED (ambiguous), never force-split.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+
+// Signed area (shoelace) of a closed polyline — used to prove area preservation.
+double signedArea(const std::vector<ParamPoint>& poly) noexcept {
+  const std::size_t n = poly.size();
+  if (n < 3) return 0.0;
+  double a = 0.0;
+  for (std::size_t i = 0, j = n - 1; i < n; j = i++)
+    a += (poly[j].u * poly[i].v) - (poly[i].u * poly[j].v);
+  return 0.5 * a;
+}
+
+// Find the FIRST pinch cluster: the earliest vertex whose location repeats (within tol) at ≥1
+// other NON-adjacent vertex. Returns the sorted index list of the cluster (≥2), or empty if
+// the loop has no pinch. Adjacency across the closing edge (0,n-1) is not a pinch.
+std::vector<std::size_t> firstPinchCluster(const std::vector<ParamPoint>& poly, double tol) {
+  const std::size_t n = poly.size();
+  std::vector<bool> used(n, false);
+  for (std::size_t i = 0; i < n; ++i) {
+    if (used[i]) continue;
+    std::vector<std::size_t> cluster{i};
+    for (std::size_t k = i + 1; k < n; ++k)
+      if (!used[k] && dist2d(poly[i], poly[k]) <= tol) cluster.push_back(k);
+    if (cluster.size() >= 2) {
+      // Exclude a pure closing-edge adjacency (only i=0 & k=n-1, nothing else): not a pinch.
+      bool onlyClosing = cluster.size() == 2 && cluster[0] == 0 && cluster[1] == n - 1;
+      if (!onlyClosing) return cluster;
+    }
+    for (std::size_t c : cluster) used[c] = true;
+  }
+  return {};
+}
+
+// Signed CCW turn (in (−π, π]) from travel direction `inDir` (arriving) to `outDir` (leaving).
+double signedTurn(double inDir, double outDir) noexcept {
+  double t = outDir - inDir;
+  while (t <= -M_PI) t += 2.0 * M_PI;
+  while (t > M_PI) t -= 2.0 * M_PI;
+  return t;
+}
+
+// Re-route `next` at ONE pinch cluster by the LEFTMOST-TURN rule, then trace the resulting
+// cycles. Returns the emitted sub-loops; sets `ok=false` if the pairing is not a bijection.
+//
+// MODEL. Each cluster member c is one VISIT to the pinch point P: the loop ARRIVES via the edge
+// origPrv[c]→c (travel direction INTO P = P − origPrv[c]) and DEPARTS via c→origNxt[c] (travel
+// direction OUT of P = origNxt[c] − P). We keep the ORIGINAL next/prev of the whole loop and
+// only re-wire the departures AT the cluster: each INCOMING strand is paired with the OUTGOING
+// strand that makes the LARGEST signed CCW turn (the "leftmost turn" / smallest right turn). This
+// is the standard orientation-preserving face-tracing rule for a planar subdivision: it keeps the
+// interior consistently on one side, so tracing the re-wired links yields SIMPLE sub-loops whose
+// SIGNED areas sum to the original (region- and area-preserving). Concretely we set a join map
+// depart[c] = origNxt[pairedMember]; every non-cluster vertex keeps origNxt. Tracing that mapping
+// walks each sub-loop; every cluster visit contributes exactly ONE copy of P.
+std::vector<std::vector<ParamPoint>> resolveCluster(const std::vector<ParamPoint>& poly,
+                                                    const std::vector<std::size_t>& cluster,
+                                                    double tol, bool& ok) {
+  ok = true;
+  const std::size_t n = poly.size();
+  std::vector<std::size_t> origNxt(n), origPrv(n);
+  for (std::size_t i = 0; i < n; ++i) { origNxt[i] = (i + 1) % n; origPrv[i] = (i + n - 1) % n; }
+
+  // The shared pinch point (average of the cluster members → they meet EXACTLY at one point).
+  ParamPoint P{0.0, 0.0};
+  for (std::size_t c : cluster) { P.u += poly[c].u; P.v += poly[c].v; }
+  P.u /= static_cast<double>(cluster.size());
+  P.v /= static_cast<double>(cluster.size());
+
+  auto isClusterMember = [&](std::size_t idx) {
+    return std::find(cluster.begin(), cluster.end(), idx) != cluster.end();
+  };
+
+  // Incoming TRAVEL direction (into P) and outgoing TRAVEL direction (out of P) per member.
+  struct HalfEdge { std::size_t member; double dir; };
+  std::vector<HalfEdge> ins, outs;
+  for (std::size_t c : cluster) {
+    const ParamPoint& u = poly[origPrv[c]];
+    const ParamPoint& w = poly[origNxt[c]];
+    ins.push_back({c, std::atan2(P.v - u.v, P.u - u.u)});    // travel INTO P
+    outs.push_back({c, std::atan2(w.v - P.v, w.u - P.u)});   // travel OUT of P
+  }
+
+  // Pair each incoming with the outgoing of LARGEST signed CCW turn (leftmost turn).
+  // depart[c] = the vertex the loop continues to after ARRIVING at cluster member c.
+  std::vector<std::size_t> depart(n);
+  for (std::size_t i = 0; i < n; ++i) depart[i] = origNxt[i];  // default: unchanged
+  std::vector<bool> outTaken(outs.size(), false);
+  for (const HalfEdge& in : ins) {
+    int best = -1;
+    double bestTurn = -1e300;
+    for (std::size_t j = 0; j < outs.size(); ++j) {
+      if (outTaken[j]) continue;
+      const double turn = signedTurn(in.dir, outs[j].dir);
+      if (turn > bestTurn) { bestTurn = turn; best = static_cast<int>(j); }
+    }
+    if (best < 0) { ok = false; return {}; }  // no outgoing left → not a bijection (ambiguous)
+    outTaken[best] = true;
+    // Arriving at incoming member `in.member`, continue to the off-cluster neighbour of the
+    // paired outgoing member (skipping the paired member's own P-visit — c already IS P).
+    depart[in.member] = origNxt[outs[best].member];
+  }
+
+  // Trace cycles over `depart`, starting from every not-yet-visited vertex.
+  std::vector<std::vector<ParamPoint>> loops;
+  std::vector<bool> seen(n, false);
+  for (std::size_t start = 0; start < n; ++start) {
+    if (seen[start]) continue;
+    std::vector<ParamPoint> loop;
+    std::size_t cur = start;
+    std::size_t guard = 0;
+    while (!seen[cur] && guard <= n) {
+      seen[cur] = true;
+      // A cluster member is snapped to the shared pinch point P (region-preserving: the members
+      // are within tol of P). Non-cluster vertices pass through unchanged.
+      loop.push_back(isClusterMember(cur) ? P : poly[cur]);
+      cur = depart[cur];
+      ++guard;
+    }
+    // De-duplicate consecutive coincident points (a re-routed join may repeat P) and drop a
+    // closing duplicate.
+    std::vector<ParamPoint> compact;
+    for (const ParamPoint& p : loop)
+      if (compact.empty() || dist2d(compact.back(), p) > tol) compact.push_back(p);
+    if (compact.size() >= 2 && dist2d(compact.front(), compact.back()) <= tol) compact.pop_back();
+    if (!compact.empty()) loops.push_back(std::move(compact));
+  }
+  return loops;
+}
+
+}  // namespace
+
+MultiSplitReport splitAtPinches(const std::vector<ParamPoint>& poly, const HealOptions& opts) {
+  MultiSplitReport rep;
+  const double extent = std::max(polyExtent(poly), 1e-300);
+  const double tol = opts.gapTol * std::max(extent, 1.0);
+  rep.tolerance = tol;
+  if (poly.size() < 3) return rep;  // degenerate → decline
+
+  // No pinch at all → the loop is already simple; return it verbatim (ok, region unchanged).
+  if (firstPinchCluster(poly, tol).empty()) {
+    rep.ok = true;
+    rep.loops.push_back(poly);
+    return rep;
+  }
+  rep.pinch = true;
+
+  const double areaBefore = signedArea(poly);  // SIGNED — the invariant preserved by re-routing
+
+  // Fixpoint: repeatedly resolve the FIRST pinch cluster in each loop until none self-touches.
+  // A crossing (figure-8-of-figure-8) needs several passes; each pass resolves one cluster per
+  // still-pinched loop and the emitted sub-loops are re-fed until every loop is simple.
+  std::vector<std::vector<ParamPoint>> work{poly};
+  std::vector<std::vector<ParamPoint>> done;
+  const std::size_t kMaxIter = 64;  // bounded; crossing pinches converge quickly
+  std::size_t iter = 0;
+  while (!work.empty() && iter < kMaxIter) {
+    ++iter;
+    std::vector<std::vector<ParamPoint>> nextWork;
+    for (const std::vector<ParamPoint>& loop : work) {
+      if (loop.size() < 3) { rep.ambiguous = true; return rep; }  // collapsed → honest decline
+      const std::vector<std::size_t> cluster = firstPinchCluster(loop, tol);
+      if (cluster.empty()) { done.push_back(loop); continue; }  // already simple
+      rep.maxWays = std::max(rep.maxWays, static_cast<int>(cluster.size()));
+      rep.pinchVertices += 1;
+      bool ok = false;
+      std::vector<std::vector<ParamPoint>> subs = resolveCluster(loop, cluster, tol, ok);
+      if (!ok || subs.empty()) { rep.ambiguous = true; return rep; }  // non-alternating → decline
+      // Non-progress guard: a re-routing that returns the SAME single loop (still self-touching)
+      // means the pinch could not be un-crossed at this vertex → ambiguous, honest decline.
+      if (subs.size() == 1 && subs.front().size() >= loop.size() &&
+          !firstPinchCluster(subs.front(), tol).empty()) {
+        rep.ambiguous = true;
+        return rep;
+      }
+      for (std::vector<ParamPoint>& s : subs) nextWork.push_back(std::move(s));
+    }
+    work.swap(nextWork);
+  }
+  if (!work.empty()) { rep.ambiguous = true; return rep; }  // did not converge → honest decline
+  rep.iterations = static_cast<int>(iter);
+
+  // Every emitted sub-loop must be a valid SIMPLE loop (≥3 distinct, no residual self-touch).
+  double areaAfter = 0.0;
+  for (const std::vector<ParamPoint>& s : done) {
+    if (!subLoopValid(s, tol)) { rep.ambiguous = true; return rep; }
+    areaAfter += signedArea(s);  // SIGNED sum
+  }
+  // SIGNED-area preservation guard: re-routing only re-partitions the same directed edges into
+  // cycles, so the sum of the sub-loops' SIGNED areas equals the original loop's signed area. A
+  // mismatch means the re-routing produced wrong loops → honest decline (never a fabricated
+  // region). |sub-loops| may individually have either winding (a lobe can be a hole).
+  if (std::fabs(areaAfter - areaBefore) > std::max(1e-9, 1e-6 * std::max(std::fabs(areaBefore), 1.0))) {
+    rep.ambiguous = true;
+    return rep;
+  }
+
+  rep.loops = std::move(done);
+  rep.ok = !rep.loops.empty();
+  return rep;
+}
+
+// splitTrimLoopAtPinches — flatten (join-gap-aware) + weld small gaps + N-way pinch split.
+MultiSplitReport splitTrimLoopAtPinches(const TrimLoop& loop, const HealOptions& opts, int flatten) {
+  std::vector<double> joinGaps;
+  std::vector<ParamPoint> poly = flattenLoopForHeal(loop, flatten, joinGaps);
+  MultiSplitReport rep;
+  if (poly.size() < 3) return rep;
+  const double extent = std::max(polyExtent(poly), 1e-300);
+  const double tol = opts.gapTol * std::max(extent, 1.0);
+  HealReport hg;
+  if (healTriageLargeGap(joinGaps, tol, hg)) { rep.tolerance = tol; return rep; }
+  HealReport wr;
+  std::vector<ParamPoint> welded = healWeldGaps(poly, tol, wr);
+  return splitAtPinches(welded, opts);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // makeTrimmedFace — build from an existing topology face Shape.
 // ─────────────────────────────────────────────────────────────────────────────
 std::optional<TrimmedNurbsFace> makeTrimmedFace(const Shape& face) {
@@ -612,15 +843,33 @@ Containment classifyOuter(const TrimLoop& loop, const ParamPoint& p, const Class
 
   const SplitReport sr = splitTrimLoopAtPinch(loop, HealOptions{opts.healGapTol},
                                               opts.flattenSegments);
-  if (!sr.split) return Containment::Unknown;  // not a clean 2-way pinch → honest decline
+  if (sr.split) {
+    const Containment ca = classifyAgainstLoop(sr.loopA, p, opts.onEdgeTol);
+    const Containment cb = classifyAgainstLoop(sr.loopB, p, opts.onEdgeTol);
+    if (ca == Containment::OnBoundary || cb == Containment::OnBoundary)
+      return Containment::OnBoundary;
+    if (ca == Containment::Unknown || cb == Containment::Unknown) return Containment::Unknown;
+    // Region = union of the two disjoint lobes: In iff inside either lobe.
+    return (ca == Containment::In || cb == Containment::In) ? Containment::In : Containment::Out;
+  }
+  if (!opts.splitNWay) return Containment::Unknown;  // 2-way declined, N-way opt-out → decline
 
-  const Containment ca = classifyAgainstLoop(sr.loopA, p, opts.onEdgeTol);
-  const Containment cb = classifyAgainstLoop(sr.loopB, p, opts.onEdgeTol);
-  if (ca == Containment::OnBoundary || cb == Containment::OnBoundary)
-    return Containment::OnBoundary;
-  if (ca == Containment::Unknown || cb == Containment::Unknown) return Containment::Unknown;
-  // Region = union of the two disjoint lobes: In iff inside either lobe.
-  return (ca == Containment::In || cb == Containment::In) ? Containment::In : Containment::Out;
+  // GENERAL N-way / crossing pinch: decompose into a set of simple sub-loops and classify by the
+  // EVEN-ODD parity of the sub-loops (In iff inside an ODD number of them; OnBoundary if on any
+  // seam). Because the sub-loops partition the SAME directed edges as the original loop, the
+  // parity of crossings — hence the even-odd verdict — is IDENTICAL to the original self-touching
+  // loop (region-preserving). For disjoint lobes this reduces to "In iff inside any lobe".
+  const MultiSplitReport ms = splitTrimLoopAtPinches(loop, HealOptions{opts.healGapTol},
+                                                     opts.flattenSegments);
+  if (!ms.ok) return Containment::Unknown;  // unresolvable pinch → honest decline
+  bool parityIn = false;
+  for (const std::vector<ParamPoint>& sub : ms.loops) {
+    const Containment c = classifyAgainstLoop(sub, p, opts.onEdgeTol);
+    if (c == Containment::OnBoundary) return Containment::OnBoundary;
+    if (c == Containment::Unknown) return Containment::Unknown;
+    if (c == Containment::In) parityIn = !parityIn;  // even-odd XOR
+  }
+  return parityIn ? Containment::In : Containment::Out;
 }
 
 }  // namespace
@@ -693,9 +942,26 @@ FidelityReport pcurveFidelity(const FaceSurface& surface, const Location& surfLo
 }
 
 #ifdef CYBERCAD_HAS_NUMSCI
+namespace {
+
+// Is a 3-D edge RATIONAL? A NURBS/Bezier edge with a parallel weight vector is; the analytic
+// Circle/Ellipse are trigonometric (weight ≡ 1 in their own trig parameter — NOT rational in t),
+// so they are treated as non-rational for the PCURVE parametrization contract (pcurve(t)==C(t)
+// at the same t requires the edge to be a genuine rational polynomial in t).
+bool edgeIsRational(const EdgeCurve& c) noexcept {
+  using K = EdgeCurve::Kind;
+  return (c.kind == K::BSpline || c.kind == K::Bezier) && !c.weights.empty() &&
+         c.weights.size() == c.poles.size();
+}
+
+}  // namespace
+
 // ─────────────────────────────────────────────────────────────────────────────
-// constructPcurve (numsci-gated) — project sampled edge points to (u,v) and fit a
-// 2-D B-spline pcurve, then round-trip-verify fidelity.
+// constructPcurve (numsci-gated) — project sampled edge points to (u,v) and fit a 2-D pcurve,
+// then round-trip-verify fidelity. When the 3-D edge is RATIONAL and opts.rational is set, the
+// fit is a WEIGHTED (homogeneous) interpolation: each projected (u,v) foot inherits the edge's
+// rational denominator w(t) at that parameter, so the constructed pcurve is a RATIONAL NURBS
+// that reproduces a rational (e.g. circular) trim curve EXACTLY — no polygonal sag.
 // ─────────────────────────────────────────────────────────────────────────────
 PcurveConstruction constructPcurve(const FaceSurface& surface, const Location& surfLoc,
                                    const EdgeCurve& edgeCurve, const Location& edgeLoc,
@@ -712,7 +978,12 @@ PcurveConstruction constructPcurve(const FaceSurface& surface, const Location& s
     return placePoint(surfLoc, surfaceLocal(surface, u, v));
   };
 
-  // Sample the 3-D edge, project each point to (u,v), collect the UV path.
+  // A rational edge (with opts.rational on) builds a RATIONAL pcurve via homogeneous weighting.
+  const bool wantRational = opts.rational && edgeIsRational(edgeCurve);
+
+  // Sample the 3-D edge, project each point to (u,v), collect the UV path (used for the on-S
+  // residual test and the non-rational fit; the rational path additionally projects the control
+  // net below).
   std::vector<math::Point3> uvPts;   // (u,v,0) for the 2-D fit
   uvPts.reserve(static_cast<std::size_t>(m + 1));
   double projMax = 0.0;
@@ -742,19 +1013,58 @@ PcurveConstruction constructPcurve(const FaceSurface& surface, const Location& s
   const double projTol = 1e-2 * std::max(worldExtent, 1.0);
   if (projMax > projTol) return out;  // edge is not on S → honest decline
 
-  // Fit a 2-D B-spline through the projected UV path (interpolation → passes through
-  // every projected foot). Degree clamped so degree+1 ≤ #points.
-  const int degree = std::clamp(opts.fitDegree, 1, static_cast<int>(uvPts.size()) - 1);
-  const math::CurveFitResult fit =
-      math::interpolateCurve({uvPts.data(), uvPts.size()}, degree,
-                             math::ParamMethod::ChordLength);
-  if (!fit.ok) return out;  // fit failed → honest decline
-
-  // Assemble the PCurve payload from the fitted 2-D curve. The fit parametrizes on
-  // [0,1]; reparametrize the knots onto the edge's [first,last] so pcurve(t) is
-  // evaluated at the SAME parameter as C(t) (the fidelity contract).
   PCurve pc;
   pc.kind = EdgeCurve::Kind::BSpline;
+
+  if (wantRational) {
+    // EXACT rational pcurve. The fidelity contract requires pcurve(t) == C(t) at the SAME t, so
+    // the pcurve must inherit the edge's EXACT parametrization (its degree, knots and weights) —
+    // a fresh chord-length fit would reparametrize and only approximate. For a surface whose
+    // parametrization is affine in (u,v) over the edge's region (a plane exactly; the height
+    // direction of a cylinder), the (u,v) preimage of the rational edge is the SAME rational
+    // curve with each control POLE mapped to its (u,v) foot and the weights/knots unchanged. We
+    // therefore PROJECT the edge's control net to (u,v) and reuse the edge's weights + knots; the
+    // round-trip fidelity below then CONFIRMS exactness (and honestly declines a surface where
+    // this affine assumption does not hold, rather than faking a rational pcurve).
+    const std::size_t np = edgeCurve.poles.size();
+    pc.degree = edgeCurve.degree;
+    pc.weights = edgeCurve.weights;
+    pc.knots = edgeCurve.knots;
+    pc.poles2d.reserve(np);
+    double poleProjMax = 0.0;
+    for (std::size_t i = 0; i < np; ++i) {
+      const math::Point3 worldPole = placePoint(edgeLoc, edgeCurve.poles[i]);
+      const nn::SurfaceProjection pr =
+          nn::closest_point_on_surface(surfEval, u0, u1, v0, v1, worldPole,
+                                       opts.surfSamplesU, opts.surfSamplesV);
+      if (!pr.success) return out;  // a control pole could not be projected → decline
+      poleProjMax = std::max(poleProjMax, pr.distance);
+      pc.poles2d.push_back(math::Point3{pr.u, pr.v, 0.0});
+    }
+    (void)poleProjMax;  // control poles of a rational curve need NOT lie on S; fidelity is the gate
+    if (!pc.poles2d.empty()) { pc.origin2d = pc.poles2d.front(); pc.dir2d = math::Vec3{1, 0, 0}; }
+    out.pcurve = pc;
+    out.rational = !pc.weights.empty();
+    out.fidelity = pcurveFidelity(surface, surfLoc, edgeCurve, edgeLoc, pc, first, last,
+                                  opts.fidelity);
+    if (out.fidelity.ok) { out.ok = true; return out; }
+    // The affine assumption did not hold (curved-in-(u,v) surface): fall through to the general
+    // non-rational fit, which reports its honest (possibly larger) fidelity deviation.
+    pc = PCurve{};
+    pc.kind = EdgeCurve::Kind::BSpline;
+    out.rational = false;
+  }
+
+  // Non-rational (or rational-fallback) 2-D interpolation through the projected UV path
+  // (passes through every projected foot). Degree clamped so degree+1 ≤ #points. The fit
+  // parametrizes on [0,1]; reparametrize the knots onto [first,last] so pcurve(t) is evaluated at
+  // the SAME parameter as C(t). Exact for a polynomial edge; a rational edge fitted here keeps
+  // its honest (non-zero) deviation — never a widened tolerance.
+  const int degree = std::clamp(opts.fitDegree, 1, static_cast<int>(uvPts.size()) - 1);
+  const math::CurveFitResult fit =
+      math::interpolateCurve({uvPts.data(), uvPts.size()}, degree, math::ParamMethod::ChordLength);
+  if (!fit.ok) return out;  // fit failed → honest decline
+
   pc.degree = fit.curve.degree;
   pc.poles2d = fit.curve.poles;                 // (u,v,0) poles
   pc.weights = fit.curve.weights;               // empty ⇒ non-rational
@@ -765,6 +1075,7 @@ PcurveConstruction constructPcurve(const FaceSurface& surface, const Location& s
     pc.dir2d = math::Vec3{1, 0, 0};
   }
   out.pcurve = pc;
+  out.rational = !pc.weights.empty();
 
   // Round-trip fidelity: S(pcurve(t)) must reproduce C(t) over [first,last].
   out.fidelity = pcurveFidelity(surface, surfLoc, edgeCurve, edgeLoc, pc, first, last,

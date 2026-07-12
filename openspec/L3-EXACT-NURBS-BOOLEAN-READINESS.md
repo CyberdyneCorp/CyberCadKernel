@@ -378,6 +378,44 @@ watertight sew is MISSING.
 > now mapped to the exact CDT parity mechanism. `src/native` UNCHANGED (the bounded fix was
 > measured and reverted as non-improving); no `cc_*` ABI touched; the 8/8 host gate + 7/7 SIM
 > parity (DISAGREED=0) remain GREEN.
+
+> **UPDATE (M0-WELD — the shared-seam-strip weld LANDED; the multi-seam annulus↔annulus inner
+> seam now WELDS watertight, track `worktree-agent-aa3785779f27b219f`):** W2's exact root-cause
+> map turned out to name a **bounded** fix, not a mesher rewrite. The failing mechanism was
+> `ConstrainedDelaunay::triangles()`'s **per-triangle centroid-in-hole GEOMETRIC cull**: for a
+> thin near-hole triangle whose centroid sits ~on the shared hole loop, the two annuli bulge
+> opposite ways off the shared flat seam chord, so the centroid lands *inside* the hole for one
+> wall and *outside* for the other — the two per-face CDTs drop a **different** near-boundary
+> triangle and the residual GROWS with refinement (2→22→59→233→769). The fix (in
+> `src/native/tessellate/uv_triangulate.h`, `ConstrainedDelaunay::triangles()` only) replaces
+> that cull with a **TOPOLOGICAL flood fill**: the loop edges are constrained (never flipped) —
+> a hard topological wall — and a triangle is kept iff it is reachable, across NON-constrained
+> edges only, from a triangle incident to the OUTER boundary loop. The decision then depends
+> ONLY on the constrained-edge topology (the **SAME** shared seam loop on both annuli), so the
+> two faces cull the shared hole strip **IDENTICALLY** and it welds 2-manifold; a
+> constrained-fold pass drops the zero-area hole-bridge slivers so each boundary edge borders
+> exactly one ring triangle. **Measured (host, `SolidMesher`):** the multi-seam COMMON survivor
+> set's inner-seam boundaryEdges go **59 → 0** at d=0.0025 (and 0 at d=0.01, 0.005), the residual
+> now **SHRINKS** with refinement, and the meshed COMMON volume converges to the closed-form
+> annular lens (relErr **0.139 → 0.081 → 0.045** over d 0.01→0.005→0.0025); CUT converges
+> likewise (relErr ≤ 0.2% at d=0.005–0.00125). **Impact:** the L3-d multi-seam annulus↔annulus
+> COMMON/CUT sew now **WELDS watertight** (χ correct, coherent, boundaryEdges 0) instead of
+> honest-declining; the single-seam `nurbsFaceFreeformSplit` **CUT leg** (annulus↔disk shared
+> seam-as-hole) now welds too; and the `nurbsSolidBoolean` orchestrator's multi-seam **CUT/COMMON
+> weld** (FUSE, the outer-envelope compose, still honest-declines — not exposed by the sew verb).
+> Two-gate proof: host `test_native_freeform_freeform_multiseam` (welds watertight + monotone
+> convergence) + `test_native_nurbs_solid_boolean` + `test_native_nurbs_freeform_split` (CUT
+> welds) GREEN; SIM `native_freeform_freeform_multiseam_parity.mm` now asserts native-vs-OCCT
+> `BRepAlgoAPI_Common` **agreement** within the tessellation band (**DISAGREED=0 by AGREEMENT**,
+> native answers + OCCT confirms — no longer by abstention). `src/native` stays **OCCT-free**; no
+> `cc_*` ABI; **every existing tessellation/boolean/blend mesh is UNREGRESSED** (the flood fill
+> reaches exactly the ring the centroid test kept for a hole-free or well-behaved holed region;
+> `face_mesher` / `solid_mesher` / `freeform_freeform_cut` / `freeform_freeform_multiseam` /
+> `smooth_trim_split` byte-unchanged). **Residual:** a small non-manifold count reappears at
+> deflections FINER than the working band (d ≤ 0.00125) from hole-bridge sliver interactions in
+> the shared ear-clip base — a distinct, smaller effect than the closed parity gap, out of this
+> bounded slice's scope; the working deflection band [0.0025, 0.01] welds cleanly and converges.
+
 ### The COMPOSED two-freeform-solid NURBS boolean ORCHESTRATOR · **LANDED (BOOL-INT)**
 
 > **UPDATE (BOOL-INT — the general two-freeform-solid boolean ORCHESTRATOR that COMPOSES all
@@ -440,7 +478,7 @@ watertight sew is MISSING.
 | 2 Pcurve construction | **PARTIAL** | `constructPcurve` declines the iso-curve round-trip (parametrisation + non-rational fit); data model + fidelity guard land |
 | 3 Face split | **PARTIAL** | `classify` inside-test WORKS; split = convex-1-chord + closed-interior-seam; **tolerant-topology healing pre-pass LANDED** (`split_healing.h`, L3-HEAL: gap-close + snap + G5 pinch-resolve + area-preservation gate + honest over-gap decline); general multi-crossing / re-entrant split MISSING |
 | 4 Region classification | **PARTIAL** | single-face In/Out + elementary set-algebra land; general NURBS solid membership MISSING |
-| 5 Reassembly / sew | **PARTIAL** | `pcurveFidelity` welds good / rejects drifted seam; single-transversal-seam freeform↔freeform sew WELDS (tracks S3/W, both legs); **multi-seam split+classify RESOLVED (exact tiling + per-region vote), annulus↔annulus sew a frozen-mesher honest-decline** (L3-d, residual = the mesher's holed-curved-seam weld); general freeform↔freeform watertight sew still bounded |
+| 5 Reassembly / sew | **PARTIAL** | `pcurveFidelity` welds good / rejects drifted seam; single-transversal-seam freeform↔freeform sew WELDS (tracks S3/W, both legs); **multi-seam split+classify RESOLVED (exact tiling + per-region vote), and the annulus↔annulus inner seam-as-hole sew now WELDS watertight** (M0-WELD, `uv_triangulate.h`: the CDT hole-cull is a TOPOLOGICAL flood fill so both annuli triangulate the shared strip identically — inner-seam boundaryEdges **59→0**, volume converges to the closed-form lens, DISAGREED=0 by OCCT-agreement); residual = a small non-manifold count only at deflections finer than the working band |
 | **COMPOSED boolean (Fuse/Cut/Common)** | **LANDED (BOOL-INT)** | the general two-freeform-solid orchestrator `nurbsSolidBoolean(A,B,op)` (`nurbs_solid_boolean.h`) COMPOSES all five stages (byte-unchanged); single-transversal-seam **COMMON/CUT/FUSE all weld watertight** at the closed-form volumes, converging, **DISAGREED=0 vs OCCT `BRepAlgoAPI_{Common,Cut,Fuse}`** (SIM 14/14); FUSE is the group-flip outer-envelope compose; op-algebra V(fuse)+V(common)=V(A)+V(B) holds; the multi-seam annulus↔annulus sew honest-declines with the residual map (never leaky). Host 7/7 + SIM 14/14 |
 
 ---

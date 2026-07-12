@@ -590,6 +590,30 @@ int main() {
     runPair(pc);
   }
 
+  // ── (10) coaxial HOURGLASS (apex-to-apex / bowtie) cone ∩ cone COMMON / FUSE / CUT (S5-j) —
+  // 3 NATIVE passes ─────────────────────────────────────────────────────────────────────
+  // The genuinely-different sibling of the S5-g frustum pair: two coaxial cones about world +Y
+  // pointing AT each other (bowtie). Cone A ▽ r_A(y)=2−y over y∈[0,2] (base r=2 at y=0, APEX at
+  // y=2) and cone B △ r_B(y)=y over y∈[0,2] (APEX at y=0, base r=2 at y=2). The walls cross at
+  // ONE analytic circle y*=1 (radius 1), but the COMMON's min-radius profile PINCHES to the AXIS
+  // (a cone apex) at BOTH overlap ends — the pose S5-g's COMMON/CUT apex gates decline, so S5-j
+  // is the apex-terminated assembler (cone-tip revolved band + full disc, no off-axis annulus):
+  //   COMMON = bicone (two full cones apex-to-apex sharing the seam ring)         (V≈2.09440)
+  //   FUSE   = max-radius hourglass profile with a waist at the seam (via S5-g)    (V≈14.66077, GROW)
+  //   CUT    = A−B conical shell (B wall reversed to its apex) + full A-base disc  (V≈6.28319, SHRINK)
+  // All three match BRepAlgoAPI_{Common,Fuse,Cut} on volume/area/watertight → NATIVE passes.
+  {
+    PairCase pc;
+    pc.pairName = "cone=cone(hourglass)";
+    pc.nativeA = makeCone(2.0, 0.0, 0.0, 2.0);   // ▽ r_A(y)=2−y, apex at y=2
+    pc.nativeB = makeCone(0.0, 0.0, 2.0, 2.0);   // △ r_B(y)=y,   apex at y=0, coaxial (about +Y)
+    pc.occtA = occtCone(2.0, 0.0, 0.0, 2.0);
+    pc.occtB = occtCone(0.0, 0.0, 2.0, 2.0);
+    pc.relTol = 2e-2;
+    probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
+    runPair(pc);
+  }
+
   std::printf("== %d passed, %d failed, %d fell-back (native-pass=%d) ==\n",
               g_passed, g_failed, g_fellBack, g_nativePass);
   std::fflush(stdout);

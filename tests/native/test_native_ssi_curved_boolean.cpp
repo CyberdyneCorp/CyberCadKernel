@@ -1012,6 +1012,127 @@ CC_TEST(cone_cone_coaxial_common_fuse_cut_watertight_matches_analytic) {
   CC_CHECK(std::fabs(vCutBA - vCut) > 1e-3);  // the two washers are genuinely different solids
 }
 
+// ── (6b) COAXIAL HOURGLASS (apex-to-apex / bowtie) cone∩cone COMMON / FUSE / CUT: REAL
+// native watertight passes (S5-j) ────────────────────────────────────────────────────────
+// The genuinely-different sibling of the S5-g coaxial cone∩cone frustum pair. Two coaxial
+// cones about world +Y pointing AT each other (bowtie): cone A ▽ r_A(y)=2−y over y∈[0,2]
+// (base r=2 at y=0, APEX at y=2) and cone B △ r_B(y)=y over y∈[0,2] (APEX at y=0, base r=2 at
+// y=2). Their walls cross at the single analytic circle y*=1, r*=1 (still ONE LINEAR equation
+// → ConeConeSetup is reused verbatim). The distinctive feature: the COMMON's min-radius
+// profile PINCHES to the axis (a cone apex, r→0) at BOTH overlap ends, so S5-g's COMMON/CUT
+// apex gates (rBot/rTop/rBCap>0) DECLINE it — S5-j is the apex-terminated assembler.
+//   COMMON = bicone (two full cones apex-to-apex sharing the seam ring): apex-band(y=0→1) +
+//            apex-band(y=1→2). V = V_frustum(0,r*,1) + V_frustum(r*,0,1) = 2·(π/3). Symmetric.
+//   FUSE   = max-radius hourglass profile with a WAIST at the seam — OFF-axis terminal discs,
+//            so S5-g's FUSE builds it directly. V = V(A)+V(B)−V(COMMON) (a GROW).
+//   CUT    = A−B (cone-A minuend): A keeps its wider (below-seam) side — a conical shell whose
+//            inner boundary is B's wall reversed running into B's OWN apex at y=0, closed by a
+//            FULL A-base disc (B absent there). V = V(A)−V(COMMON) (a SHRINK).
+// Every volume matches the closed form to within the engine's curved-parity bar (1% relative,
+// a tessellation-deflection bound — NOT a relaxed tolerance). COMMON is symmetric; CUT is
+// order-sensitive (here symmetric-volume but a genuinely different watertight solid). A
+// non-apex (both-ends-off-axis) frustum pair is left to S5-g (asserted elsewhere).
+CC_TEST(cone_cone_hourglass_bowtie_common_fuse_cut_watertight_matches_analytic) {
+  const ntopo::Shape coneA = makeCone(2.0, 0.0, 0.0, 2.0);  // ▽ r_A(y)=2−y, apex at y=2, axis +Y
+  const ntopo::Shape coneB = makeCone(0.0, 0.0, 2.0, 2.0);  // △ r_B(y)=y,   apex at y=0, coaxial
+  CC_CHECK(!coneA.isNull() && !coneB.isNull());
+
+  // Both operands are recognised as Cones and the coaxial bowtie traces ONE clean seam circle.
+  const auto csA = sd::recogniseCurvedSolid(coneA);
+  const auto csB = sd::recogniseCurvedSolid(coneB);
+  CC_CHECK(csA && csB);
+  if (csA && csB) {
+    CC_CHECK(csA->kind == sd::CurvedKind::Cone);
+    CC_CHECK(csB->kind == sd::CurvedKind::Cone);
+    const ssi::TraceSet tr = ssi::trace_intersection(csA->adapter(), csB->adapter());
+    CC_CHECK(tr.nearTangentGaps == 0);  // fully transversal single analytic circle
+    CC_CHECK(tr.curveCount() == 1);     // ONE closed seam circle at y*=1
+  }
+
+  // Closed-form ground truth (frustum inclusion–exclusion; a full cone is frustum(r,0,Δh)).
+  const double rStar = 1.0;
+  const double vA = frustumVolume(2.0, 0.0, 2.0);   // whole cone A (a full cone)
+  const double vB = frustumVolume(0.0, 2.0, 2.0);   // whole cone B
+  const double vCommonTrue = frustumVolume(0.0, rStar, 1.0) + frustumVolume(rStar, 0.0, 1.0);
+  const double vFuseTrue = vA + vB - vCommonTrue;
+  const double vCutTrue = vA - vCommonTrue;
+  CC_CHECK(std::fabs(vCommonTrue - 2.0 * sd::kSsiPi / 3.0) < 1e-9);  // pin the analytic values
+  CC_CHECK(std::fabs(vFuseTrue - 14.0 * sd::kSsiPi / 3.0) < 1e-9);
+  CC_CHECK(std::fabs(vCutTrue - 6.0 * sd::kSsiPi / 3.0) < 1e-9);
+
+  // ── COMMON: watertight bicone whose volume matches the closed form. ──
+  const ntopo::Shape common = nb::ssi_boolean_solid(coneA, coneB, nb::Op::Common);
+  CC_CHECK(!common.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  CC_CHECK(vCommon > 0.0);                                        // watertight → engine accepts
+  CC_CHECK(std::fabs(vCommon - vCommonTrue) <= 1e-2 * vCommonTrue);
+  CC_CHECK(vCommon <= std::min(vA, vB) + 1e-9);                   // common ≤ min(A,B)
+  CC_CHECK(!nb::boolean_solid(coneA, coneB, nb::Op::Common).isNull());
+  // COMMON is symmetric — reversing the operand order builds the same watertight bicone.
+  const ntopo::Shape swapped = nb::ssi_boolean_solid(coneB, coneA, nb::Op::Common);
+  CC_CHECK(!swapped.isNull());
+  const double vSwapped = watertightMeshVolume(swapped);
+  CC_CHECK(vSwapped > 0.0);
+  CC_CHECK(std::fabs(vSwapped - vCommonTrue) <= 1e-2 * vCommonTrue);
+
+  // ── FUSE = A ∪ B: max-radius hourglass profile (waist at the seam). A GROW (via S5-g). ──
+  const ntopo::Shape fuse = nb::ssi_boolean_solid(coneA, coneB, nb::Op::Fuse);
+  CC_CHECK(!fuse.isNull());
+  const double vFuse = watertightMeshVolume(fuse);
+  CC_CHECK(vFuse > 0.0);
+  CC_CHECK(std::fabs(vFuse - vFuseTrue) <= 1e-2 * vFuseTrue);
+  CC_CHECK(vFuse >= std::max(vA, vB) - 1e-9);                     // FUSE grows past either operand
+  CC_CHECK(!nb::boolean_solid(coneA, coneB, nb::Op::Fuse).isNull());
+
+  // ── CUT = A − B (cone-A minuend): conical shell to a full A-base disc. A SHRINK. ──
+  const ntopo::Shape cut = nb::ssi_boolean_solid(coneA, coneB, nb::Op::Cut);
+  CC_CHECK(!cut.isNull());
+  const double vCut = watertightMeshVolume(cut);
+  CC_CHECK(vCut > 0.0);
+  CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
+  CC_CHECK(vCut <= vA + 1e-9);                                    // CUT shrinks below the minuend
+  CC_CHECK(!nb::boolean_solid(coneA, coneB, nb::Op::Cut).isNull());
+  // CUT is order-sensitive: B − A keeps B's wider side (the OTHER conical shell). The bowtie is
+  // symmetric in volume but the two solids are genuinely different orientations.
+  const ntopo::Shape cutBA = nb::ssi_boolean_solid(coneB, coneA, nb::Op::Cut);
+  CC_CHECK(!cutBA.isNull());
+  const double vCutBA = watertightMeshVolume(cutBA);
+  CC_CHECK(vCutBA > 0.0);
+  CC_CHECK(std::fabs(vCutBA - (vB - vCommonTrue)) <= 1e-2 * (vB - vCommonTrue));
+}
+
+// ── (6c) ONE-APEX hourglass cone∩cone COMMON / CUT: the mixed disc-cap + apex-band case ──
+// A hourglass where only ONE overlap end pinches to the axis: cone A ▽ r_A(y)=2−y over y∈[0,2]
+// (apex at y=2) and cone B △ r_B(y)=0.5+y over y∈[0,2] (base r=0.5 at y=0, NOT an apex). Seam
+// y*=0.75, r*=1.25. COMMON's min profile: rBot=min(2,0.5)=0.5 (OFF-axis → flat disc cap) and
+// rTop=min(0,2.5)=0 (apex → cone-tip band). This exercises S5-j's mixed cap path (one disc,
+// one apex band) — still watertight, still matching the frustum closed form.
+CC_TEST(cone_cone_hourglass_one_apex_common_cut_watertight_matches_analytic) {
+  const ntopo::Shape coneA = makeCone(2.0, 0.0, 0.0, 2.0);  // ▽ r_A(y)=2−y, apex at y=2
+  const ntopo::Shape coneB = makeCone(0.5, 0.0, 2.5, 2.0);  // △ r_B(y)=0.5+y, base r=0.5 at y=0
+  CC_CHECK(!coneA.isNull() && !coneB.isNull());
+
+  const double yStar = 0.75, rStar = 1.25;
+  const double vA = frustumVolume(2.0, 0.0, 2.0);
+  // COMMON = min profile: cone B wall below y* (rBot=0.5 → r* over Δh=0.75) + cone A wall above
+  // y* (r* → apex over Δh=1.25).
+  const double vCommonTrue = frustumVolume(0.5, rStar, yStar) + frustumVolume(rStar, 0.0, 2.0 - yStar);
+  const double vCutTrue = vA - vCommonTrue;
+
+  const ntopo::Shape common = nb::ssi_boolean_solid(coneA, coneB, nb::Op::Common);
+  CC_CHECK(!common.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  CC_CHECK(vCommon > 0.0);
+  CC_CHECK(std::fabs(vCommon - vCommonTrue) <= 1e-2 * vCommonTrue);
+
+  const ntopo::Shape cut = nb::ssi_boolean_solid(coneA, coneB, nb::Op::Cut);
+  CC_CHECK(!cut.isNull());
+  const double vCut = watertightMeshVolume(cut);
+  CC_CHECK(vCut > 0.0);
+  CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
+  CC_CHECK(vCut <= vA + 1e-9);
+}
+
 // ── (7) COAXIAL cone∩cone HONEST DECLINES: parallel-wall + non-coaxial → OCCT. ─────────
 // The S5-g assembler is coaxial-single-crossing only. Two cones with PARALLEL walls (equal
 // half-angle → no proper transversal circle) and a NON-COAXIAL (transversal) cone∩cone pair

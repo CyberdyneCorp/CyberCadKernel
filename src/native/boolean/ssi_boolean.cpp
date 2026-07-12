@@ -1666,6 +1666,117 @@ topo::Shape buildConeConeCut(const CurvedSolid& A, const CurvedSolid& B,
   return topo::ShapeBuilder::makeSolid({shell});
 }
 
+// ── S5-j — coaxial HOURGLASS (apex-to-apex / bowtie) CONE∩CONE COMMON / CUT ─────
+// The genuinely-different sibling of the S5-g coaxial cone∩cone pair. Where S5-g handles
+// the FRUSTUM-band single crossing (both min-profile endpoints STRICTLY off the axis),
+// the HOURGLASS pose is two coaxial cones pointing AT each other (bowtie): cone A ▽ opens
+// downward (r_A shrinks with s to an apex), cone B △ opens upward (r_B grows from an apex).
+// Their walls still cross at ONE analytic circle s* (both linear in s → ConeConeSetup is
+// reused verbatim), but the COMMON's min-radius profile PINCHES to the AXIS (r→0, a cone
+// apex) at one or both overlap ends, so the S5-g COMMON/CUT apex gates (rBot/rTop/rBCap>0)
+// decline it. The ONLY change is the apex-terminated cap: instead of a flat disc / annulus
+// at an off-axis rim, an apex end is closed by a REVOLVED BAND onto a degenerate apex ring
+// (N coincident apex points → appendRevolvedBand emits a proper cone-tip fan, the sliver
+// half of each quad skipped by pushPlanarTri; the apex dedups through the pool → watertight).
+// The seam ring stays the SHARED analytic circle, so COMMON welds byte-clean. FUSE of the
+// bowtie has OFF-AXIS terminal discs (the max profile) so the S5-g FUSE builds it directly
+// (dispatched below S5-g). Coaxial single-crossing only; anything S5-g already owns (both
+// ends off-axis) is left to S5-g. Nothing faked — a non-apex profile returns {} here.
+//
+// V(COMMON) = V_frustum(rBot, r*, s*−sLo) + V_frustum(r*, rTop, sHi−s*), each apex end a full
+// cone (rBot or rTop = 0). V(CUT A−B) = V(A) − V(COMMON) (a SHRINK). Dual-oracle verified.
+
+// A degenerate "ring" of N coincident apex points at station s on the shared axis — the
+// terminal of a cone-tip band. appendRevolvedBand(apexRing, offAxisRing, …) then sweeps a
+// watertight cone fan (each quad's axis-side sliver is dropped by pushPlanarTri).
+std::vector<math::Point3> apexRing(const ConeConeSetup& s, double station, int n) {
+  const math::Point3 apex{s.O.x + s.zc.x * station, s.O.y + s.zc.y * station,
+                          s.O.z + s.zc.z * station};
+  return std::vector<math::Point3>(static_cast<std::size_t>(n), apex);
+}
+
+// buildHourglassConeConeCommon(A,B) = COMMON of the bowtie coaxial cone∩cone: the min-radius
+// profile of revolution over the overlap [sLo,sHi], where AT LEAST ONE end pinches to the
+// axis (a cone apex) — the pose S5-g's COMMON declines. Two bands meet at the shared seam
+// ring; each end is a flat disc (off-axis) or a cone-tip apex band (on-axis). Watertight.
+topo::Shape buildHourglassConeConeCommon(const CurvedSolid& A, const CurvedSolid& B,
+                                         const std::vector<Seam>& seams) {
+  const ConeConeSetup s = coneConeSetup(A, B, seams);
+  if (!s.ok) return {};
+  const double rBot = std::min(s.rA(s.sLo), s.rB(s.sLo));
+  const double rTop = std::min(s.rA(s.sHi), s.rB(s.sHi));
+  if (rBot < -1e-9 || rTop < -1e-9) return {};
+  const bool apexBot = rBot <= 1e-9, apexTop = rTop <= 1e-9;
+  if (!apexBot && !apexTop) return {};  // both ends off-axis → S5-g owns it (not this path)
+  // Survival gate: the min wall just below the seam is inside the OTHER cone (proper overlap).
+  const double midLo = 0.5 * (s.sLo + s.sStar);
+  const bool aIsMinLo = s.rA(midLo) <= s.rB(midLo);
+  const CurvedSolid& otherLo = aIsMinLo ? *s.coneB : *s.coneA;
+  const double rMinLo = std::min(s.rA(midLo), s.rB(midLo));
+  if (classifyPoint(otherLo, s.wallPoint(rMinLo, midLo), kSsiTol) != 1) return {};
+
+  const std::vector<math::Point3> ringSeam = s.ring(s.rStar, s.sStar);
+  const std::vector<math::Point3> ringBot =
+      apexBot ? apexRing(s, s.sLo, s.N) : s.ring(rBot, s.sLo);
+  const std::vector<math::Point3> ringTop =
+      apexTop ? apexRing(s, s.sHi, s.N) : s.ring(rTop, s.sHi);
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  appendRevolvedBand(ringBot, ringSeam, s.O, s.zc, pool, faces);   // inner wall below s* (apex fan if apexBot)
+  appendRevolvedBand(ringSeam, ringTop, s.O, s.zc, pool, faces);   // inner wall above s* (apex fan if apexTop)
+  if (!apexBot)
+    appendDiskCap(*s.coneA, s.sLo, ringBot, math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool, faces);
+  if (!apexTop) appendDiskCap(*s.coneA, s.sHi, ringTop, s.zc, pool, faces);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildHourglassConeConeCut(A,B) = A − B of the bowtie coaxial cone∩cone (A = cone MINUEND;
+// order-sensitive). A keeps its wider (r_A > r_B) side of the seam — a conical shell whose
+// outer boundary is A's wall (outward) and inner boundary is B's wall REVERSED (inward), from
+// the seam ring to A's terminal end on the kept side. The bowtie's distinctive feature: on the
+// kept side B's wall runs into its OWN apex (r_B → 0) before A's end, so the inner boundary is
+// a cone-tip apex band and A's terminal cap is a FULL disc (B absent there). This is the pose
+// S5-g's CUT (annulus-cap, rBCap>0) declines. V = V(A) − V(COMMON) (a SHRINK). Non-apex → {}.
+topo::Shape buildHourglassConeConeCut(const CurvedSolid& A, const CurvedSolid& B,
+                                      const std::vector<Seam>& seams) {
+  const ConeConeSetup s = coneConeSetup(A, B, seams);
+  if (!s.ok) return {};
+  if (&A != s.coneA) return {};  // A must be the minuend (first operand)
+  const double eps = 1e-6 * std::max(s.aS1 - s.aS0, 1.0);
+  const bool growsAbove = s.rA(s.sHi) > s.rB(s.sHi) + eps;  // A wider ABOVE the seam
+  const bool growsBelow = s.rA(s.sLo) > s.rB(s.sLo) + eps;  // A wider BELOW the seam
+  if (growsAbove == growsBelow) return {};                  // not a clean single-sided crossing
+
+  // A's terminal on the kept side, and B's radius there. The bowtie CUT is the case where B's
+  // wall pinches to its apex (r_B ≈ 0) at (or before) A's kept end — S5-g declines that.
+  const double capS = growsAbove ? s.aS1 : s.aS0;
+  const math::Vec3 capN = growsAbove ? s.zc : math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z};
+  const double rACap = s.rA(capS);
+  const double rBCap = s.rB(capS);
+  if (!(rACap > 1e-9)) return {};       // A must still be off-axis at its kept end
+  if (rBCap > 1e-6) return {};          // B off-axis at capS → S5-g's annulus-cap CUT owns it
+  // Kept side must not outlive B beyond its apex: B's apex station on the kept side is where the
+  // reversed inner wall lands on the axis — inside A's extent, exactly at capS for the bowtie.
+  // Washer material check: A wall outside B, B wall inside A, on the kept side.
+  const double midW = 0.5 * (s.sStar + capS);
+  if (classifyPoint(*s.coneB, s.wallPoint(s.rA(midW), midW), kSsiTol) != -1) return {};
+  if (classifyPoint(*s.coneA, s.wallPoint(std::max(s.rB(midW), 1e-6), midW), kSsiTol) != 1) return {};
+
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const std::vector<math::Point3> ringSeam = s.ring(s.rStar, s.sStar);
+  const std::vector<math::Point3> ringACap = s.ring(rACap, capS);
+  const std::vector<math::Point3> ringBApex = apexRing(s, capS, s.N);
+  appendRevolvedBand(ringSeam, ringACap, s.O, s.zc, pool, faces, 1.0);    // outer A wall
+  appendRevolvedBand(ringSeam, ringBApex, s.O, s.zc, pool, faces, -1.0);  // reversed inner B wall (to apex)
+  appendDiskCap(*s.coneA, capS, ringACap, capN, pool, faces);            // full A-end disc (B absent)
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
 // Shared prologue for the three single-seam sphere∩sphere lens assemblers: validate the
 // trace/kinds, compute the two candidate apices (inner near-apex of each sphere and each
 // far pole), the decimated shared seam, and the per-cap ring-count functor. Factored out so
@@ -3296,6 +3407,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-i: TWO-CIRCLE coaxial cylinder∩sphere COMMON (sphere lower cap + cyl band + sphere upper cap).
       const topo::Shape cylSph2 = buildCylSphere2Common(*csA, *csB, seams);
       if (!cylSph2.isNull()) return cylSph2;
+      // S5-j: HOURGLASS (apex-to-apex) coaxial cone∩cone COMMON (bicone; apex-terminated min profile).
+      const topo::Shape hgCommon = buildHourglassConeConeCommon(*csA, *csB, seams);
+      if (!hgCommon.isNull()) return hgCommon;
       // S5-g: coaxial cone(frustum)∩cone(frustum) COMMON (min-radius profile of revolution).
       return buildConeConeCommon(*csA, *csB, seams);
     }
@@ -3340,6 +3454,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-i: TWO-CIRCLE coaxial cylinder∩sphere CUT (two disconnected cyl-end dimpled pieces).
       const topo::Shape cylSph2 = buildCylSphere2Cut(*csA, *csB, seams);
       if (!cylSph2.isNull()) return cylSph2;
+      // S5-j: HOURGLASS (apex-to-apex) coaxial cone∩cone CUT (conical shell to a full A-end disc).
+      const topo::Shape hgCut = buildHourglassConeConeCut(*csA, *csB, seams);
+      if (!hgCut.isNull()) return hgCut;
       // S5-g: coaxial cone(frustum)∩cone(frustum) CUT (A washer + reversed B wall + A-only slice).
       return buildConeConeCut(*csA, *csB, seams);
     }

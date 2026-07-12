@@ -67,6 +67,7 @@
 #include <BRepBuilderAPI_MakeSolid.hxx>
 #include <BRepBuilderAPI_Sewing.hxx>
 #include <BRepAlgoAPI_Common.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
 #include <BRepLib.hxx>
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
@@ -208,6 +209,46 @@ int main() {
     const double relN = std::fabs(vN - vOcct) / std::max(vOcct, 1e-12);
     char buf[96]; std::snprintf(buf, sizeof(buf), "native=%.6f occt=%.6f rel=%.3e", vN, vOcct, relN);
     report("COMMON", "native-vs-occt-vol", relN <= relTol, buf); }
+
+  // ── CUT (F − G) leg parity: DISAGREED must be 0 ─────────────────────────────────
+  // The CUT leg resolves its survivor membership honestly (robust interior-UV winding, not
+  // an apex sample). For THIS centred bowl/dome pose the frozen M0 mesher cannot weld the
+  // holed curved annulus to the curved disk across the seam, so native CUT HONEST-DECLINES
+  // (NotWatertight) with a MEASURED residual map (cutMembershipResolved + weldOpenEdges > 0)
+  // and returns NULL. The DISAGREED=0 contract: native may either (a) return a solid whose
+  // volume MATCHES OCCT BRepAlgoAPI_Cut within relTol, or (b) honest-decline to NULL — but it
+  // must NEVER return a solid that DISAGREES with OCCT. A wrong (leaky/mis-membered) CUT solid
+  // is the only failure; an honest decline is not a disagreement.
+  {
+    BRepAlgoAPI_Cut cut(occtF, occtG); cut.Build();
+    report("CUT", "occt-built", cut.IsDone(), "F − G");
+    const TopoDS_Shape occtCut = cut.Shape();
+    const double vOcctCut = occtVolume(occtCut);
+
+    const bo::NurbsFreeformSplitResult rc = bo::nurbsFaceFreeformSplit(F, G, bo::FfOp::Cut, defl);
+    {
+      char buf[128];
+      std::snprintf(buf, sizeof(buf), "decline=%s membResolved=%d weldOpen=%d",
+                    bo::nurbsFreeformSplitDeclineName(rc.decline), rc.cutMembershipResolved ? 1 : 0,
+                    rc.weldOpenEdges);
+      // The membership must RESOLVE (the fix): the CUT no longer declines at the apex ambiguity.
+      report("CUT", "native-membership", rc.cutMembershipResolved, buf);
+    }
+    if (rc.ok()) {
+      // Native returned a CUT solid — it MUST agree with OCCT (DISAGREED=0).
+      ntess::Mesh mc = ntess::SolidMesher(mp).mesh(rc.solid);
+      const double vN = rc.enclosedVolume;
+      const double relC = std::fabs(vN - vOcctCut) / std::max(vOcctCut, 1e-12);
+      char buf[96]; std::snprintf(buf, sizeof(buf), "native=%.6f occt=%.6f rel=%.3e", vN, vOcctCut, relC);
+      report("CUT", "native-watertight", ntess::isWatertight(mc), "closed 2-manifold");
+      report("CUT", "native-vs-occt-vol", relC <= relTol, buf);  // DISAGREED=0 gate
+    } else {
+      // Native honest-declined to NULL — a valid outcome (never a disagreement), and the
+      // residual map witnesses that the membership was resolved before the weld blocked.
+      char buf[96]; std::snprintf(buf, sizeof(buf), "honest-decline (occt V=%.6f)", vOcctCut);
+      report("CUT", "native-honest-decline", rc.solid.isNull(), buf);
+    }
+  }
 
   std::printf("\n== L3-S3 parity: %d PASS, %d FAIL ==\n", g_pass, g_fail);
   std::fflush(stdout);

@@ -218,6 +218,20 @@ inline topo::Shape buildCup(const std::vector<fmath::Point3>& poles, double lidZ
 inline topo::Shape buildF() { return buildCup(upBowlPoles(), kA * kR * kR); }
 inline topo::Shape buildG() { return buildCup(downDomePoles(), kH - kA * kR * kR); }
 
+// A MULTI-CROSSING pose: the down dome G shifted LATERALLY in x by `dx`, so the shared
+// seam `F.wall ∩ G.wall` is NO LONGER a centred symmetric circle interior to both rims —
+// for a large enough shift it grazes / crosses F's rim boundary (the trim curve enters and
+// exits the face more than once → not a single simple interior loop). The smooth-trim split
+// must then HONEST-DECLINE (a measured SmoothSplitFailed / SeamUnusable), never fabricating
+// a single-loop partition. Exercises the "classify each region / decline multi-crossing"
+// requirement without widening any tolerance.
+inline topo::Shape buildOffsetDome(double dx) {
+  std::vector<fmath::Point3> poles = downDomePoles();
+  for (fmath::Point3& p : poles) p.x += dx;
+  // The lid rides with the dome; its wire is the (shifted) rim, so the cup stays closed.
+  return buildCup(poles, kH - kA * kR * kR);
+}
+
 }  // namespace nurbs_freeform_split_fixture
 
 #endif  // CYBERCAD_TESTS_NATIVE_NURBS_FREEFORM_SPLIT_FIXTURE_H

@@ -67,9 +67,18 @@
 // on-boundary membership, or a non-watertight / orientation-incoherent / non-positive-
 // volume weld. NO tolerance is weakened; the self-verify is the M0 mesh-level watertight
 // + orientation-coherent + volume one (two-sided against the closed form when supplied).
-// The CUT (`F − G`) leg — whose apex-adjacent survivor membership is ambiguous even in the
-// Bézier case (`test_native_freeform_freeform_cut` honest-declines it) — stays DEFERRED,
-// as do multi-crossing / re-entrant splits and closed-loop-seeding-missed seams.
+// The CUT (`F − G`) leg's SURVIVOR MEMBERSHIP — which the pre-fix code (and the Bézier
+// `freeform_freeform_cut.h`) declined at because the annulus's OUTER-loop UV centroid lands
+// on the pole (a fragile apex sample that cannot separate annulus-Out from disk-In) — is now
+// resolved HONESTLY by a robust WINDING/RAY test over points GENUINELY INTERIOR to each
+// sub-region in (u,v) (`nfsdetail::pickRegionRobust`), tie-broken by coherence, with a near-
+// pole/tangent HONEST DECLINE (never a widened tolerance). Its RESIDUAL blocker is the frozen
+// M0 mesher: it does not position-weld a HOLED curved annulus (`faceOutside`, seam-as-hole) to
+// the curved disk (`faceInside`, seam-as-outer) across the shared closed seam — a mesher gap,
+// NOT a membership one. So the CUT leg reports a MEASURED residual (`weldOpenEdges`,
+// `cutMembershipResolved`) and HONEST-DECLINES (`NotWatertight`) rather than emit a leaky
+// solid; it is NOT re-enabled until the frozen mesher welds that pairing. Multi-crossing /
+// re-entrant splits and closed-loop-seeding-missed seams likewise stay DEFERRED.
 //
 // ── CONSUMES (byte-identical, never rewritten) ──────────────────────────────────
 // L3-S1 `npsdetail::makeWallAdapter` (`nurbs_plane_split.h` — the NURBS operand SSI
@@ -100,6 +109,7 @@
 #include "native/tessellate/mesh.h"
 #include "native/tessellate/solid_mesher.h"
 #include "native/tessellate/surface_eval.h"
+#include "native/tessellate/trim.h"                // UVRegion, buildRegion (interior-UV probe)
 #include "native/topology/accessors.h"
 #include "native/topology/native_topology.h"
 
@@ -170,6 +180,16 @@ struct NurbsFreeformSplitResult {
   bool watertight = false;          ///< M0 self-verify: the welded result is a closed 2-manifold
   double enclosedVolume = 0.0;      ///< M0 self-verify: signed-tetra enclosed volume of the keep solid
 
+  // ── CUT-leg residual map (populated when the CUT membership RESOLVES but the weld is
+  // the blocker). The robust interior-UV winding test separates annulus-Out from disk-In
+  // (`cutMembershipResolved`), so the CUT decline — when it happens — is a MEASURED weld
+  // residual (`weldOpenEdges` boundary edges the frozen M0 mesher left unpaired welding a
+  // holed curved annulus to a curved disk across the shared seam), NOT the apex-membership
+  // ambiguity the pre-fix code declined at. This is the residual map the honest CUT decline
+  // reports; COMMON leaves these at their defaults.
+  bool cutMembershipResolved = false;  ///< CUT: annulus/disk sub-regions robustly classified
+  int weldOpenEdges = 0;               ///< CUT: unpaired boundary edges of the attempted weld (0 ⇒ watertight)
+
   bool ok() const noexcept { return decline == NurbsFreeformSplitDecline::Ok && !solid.isNull(); }
 };
 
@@ -223,6 +243,126 @@ inline double seamFidelityOnG(const topo::FaceSurface& fsG, const topo::Location
   return maxFid;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ROBUST REGION MEMBERSHIP (the CUT-leg core). The Bézier/COMMON path samples a
+// sub-face at its OUTER-loop UV CENTROID (`ffcdetail::subFaceCentroid3d`). For the
+// disk that is fine; for the ANNULUS it is a fragile-apex sample — the annulus's
+// outer loop is the (symmetric) rim, whose UV centroid lands AT THE POLE, a point
+// that lies in the annulus's HOLE, not the annulus. Both the disk and the annulus
+// then evaluate at the same pole point and classify identically, so the CUT leg —
+// which needs the annulus OUTSIDE and the disk INSIDE — cannot separate them and
+// HONEST-DECLINES (ClassifyAmbiguous). This block replaces that single fragile
+// sample with a WINDING/RAY test over points GENUINELY INTERIOR to each region in
+// (u,v), tie-broken by unanimity, with a near-pole/tangent HONEST DECLINE (never a
+// widened tolerance): a region whose interior probes all collapse into the seam's
+// ON-band is genuinely ambiguous and is declined, not guessed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Distance in (u,v) from `q` to the closest edge of a closed hole loop.
+inline double uvDistToLoop(const tess::UV& q, const tess::UVPolygon& loop) noexcept {
+  const int n = static_cast<int>(loop.size());
+  if (n < 2) return std::numeric_limits<double>::infinity();
+  double best = std::numeric_limits<double>::infinity();
+  for (int i = 0; i < n; ++i) {
+    const tess::UV& a = loop[i];
+    const tess::UV& b = loop[(i + 1) % n];
+    const double eu = b.u - a.u, ev = b.v - a.v;
+    const double len2 = eu * eu + ev * ev;
+    double t = 0.0;
+    if (len2 > 0.0) t = std::clamp(((q.u - a.u) * eu + (q.v - a.v) * ev) / len2, 0.0, 1.0);
+    const double du = q.u - (a.u + t * eu), dv = q.v - (a.v + t * ev);
+    best = std::min(best, std::hypot(du, dv));
+  }
+  return best;
+}
+
+// A point genuinely interior to a sub-face region (inside the outer loop AND outside
+// every hole loop). Grid-samples the UV bbox; among the interior samples, returns the
+// one FARTHEST (in u,v) from every trim loop (outer + holes) — the most robust probe,
+// as far from any pole-adjacent seam as the region allows. Also reports that clearance
+// (`clearance`) so the caller can apply the near-pole/tangent guard. nullopt if the
+// region has no usable interior sample (a degenerate / collapsed region).
+struct InteriorProbe {
+  tess::UV uv{};
+  double clearance = 0.0;   ///< min (u,v) distance from this probe to any trim loop
+  double uvExtent = 0.0;    ///< region UV bbox diagonal (the clearance scale)
+};
+
+inline std::optional<InteriorProbe> interiorUvProbe(const topo::Shape& subFace, int grid = 24) {
+  const tess::UVRegion reg = tess::buildRegion(subFace, 24);
+  if (!reg.hasOuter()) return std::nullopt;
+  const double du = reg.box.uMax - reg.box.uMin;
+  const double dv = reg.box.vMax - reg.box.vMin;
+  if (!(du > 0.0) || !(dv > 0.0)) return std::nullopt;
+  const double extent = std::hypot(du, dv);
+  auto loopDist = [&](const tess::UV& q) {
+    double d = uvDistToLoop(q, reg.outer);
+    for (const tess::UVPolygon& h : reg.holes) d = std::min(d, uvDistToLoop(q, h));
+    return d;
+  };
+  InteriorProbe best;
+  bool found = false;
+  for (int iu = 1; iu < grid; ++iu)
+    for (int iv = 1; iv < grid; ++iv) {
+      const tess::UV q{reg.box.uMin + du * iu / grid, reg.box.vMin + dv * iv / grid};
+      if (!reg.inside(q)) continue;
+      const double d = loopDist(q);
+      if (!found || d > best.clearance) {
+        best.uv = q;
+        best.clearance = d;
+        found = true;
+      }
+    }
+  if (!found) return std::nullopt;
+  best.uvExtent = extent;
+  return best;
+}
+
+// Classify a sub-face's SIDE (In/Out) in `other`'s mesh by the winding/ray parity of a
+// point GENUINELY INTERIOR to the region in (u,v), with a near-pole/tangent HONEST
+// DECLINE. Returns the membership, or nullopt when the region is genuinely ambiguous:
+//   * no usable interior UV probe (degenerate region), OR
+//   * the best interior probe's UV clearance from the trim loops is below a fraction of
+//     the region's UV extent (the region collapses onto a seam tangent to the pole ray —
+//     the apex ambiguity; declined, NOT widened), OR
+//   * the 3-D probe classifies On/Unknown (within the mesh's own ON-band of the seam).
+inline std::optional<Membership> regionSideRobust(const topo::Shape& subFace,
+                                                  const topo::FaceSurface& fs,
+                                                  const topo::Location& loc,
+                                                  const tess::Mesh& other, const Aabb& otherBox,
+                                                  double deflection) {
+  const auto probe = interiorUvProbe(subFace);
+  if (!probe) return std::nullopt;
+  // Near-pole/tangent guard: an interior sample must sit a real fraction of the region
+  // away from EVERY trim loop, else the region is a pole-tangent sliver (apex ambiguity).
+  constexpr double kMinClearanceFrac = 0.05;
+  if (!(probe->clearance >= kMinClearanceFrac * probe->uvExtent)) return std::nullopt;
+  const tess::SurfaceEvaluator ev(fs, loc);
+  const math::Point3 p3 = ev.value(probe->uv.u, probe->uv.v);
+  const Membership m = classifyPointInMesh(other, otherBox, deflection, p3);
+  if (m == Membership::On || m == Membership::Unknown) return std::nullopt;
+  return m;
+}
+
+// Pick the sub-face of a split whose interior region has the wanted membership in
+// `other`'s mesh, classifying BOTH sub-faces INDEPENDENTLY by the robust interior probe.
+// Requires the two sub-faces to resolve to COMPLEMENTARY sides (one In, one Out) — the
+// coherence tie-break — so a genuinely-ambiguous split (both sides collapse, or agree)
+// HONEST-DECLINES to nullopt rather than guessing. Returns the sub-face matching `want`.
+inline std::optional<topo::Shape> pickRegionRobust(const SmoothFaceSplit& split,
+                                                   const topo::FaceSurface& fs,
+                                                   const topo::Location& loc,
+                                                   const tess::Mesh& other, const Aabb& otherBox,
+                                                   double deflection, Membership want) {
+  const auto sIn = regionSideRobust(split.faceInside, fs, loc, other, otherBox, deflection);
+  const auto sOut = regionSideRobust(split.faceOutside, fs, loc, other, otherBox, deflection);
+  if (!sIn || !sOut) return std::nullopt;              // a region is genuinely ambiguous
+  if (*sIn == *sOut) return std::nullopt;              // both same side ⇒ no clean split
+  if (*sIn == want) return split.faceInside;
+  if (*sOut == want) return split.faceOutside;
+  return std::nullopt;
+}
+
 }  // namespace nfsdetail
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -237,8 +377,11 @@ inline double seamFidelityOnG(const topo::FaceSurface& fsG, const topo::Location
 // operation. When supplied, the self-verify is TWO-SIDED (a too-SMALL wrong volume — the
 // signature of an orientation-collapsed shell — is rejected as VolumeInconsistent).
 //
-// NOTE: only `FfOp::Common` is in the L3-S3 envelope; `FfOp::Cut` HONEST-DECLINES (its
-// apex-adjacent survivor membership is ambiguous, exactly as in the Bézier case).
+// NOTE: `FfOp::Common` welds. `FfOp::Cut` now RESOLVES its survivor membership honestly
+// (robust interior-UV winding, not a fragile apex sample) but HONEST-DECLINES at the weld
+// (`NotWatertight`) — the frozen M0 mesher does not weld a holed curved annulus to a curved
+// disk across the seam — reporting the measured residual (`cutMembershipResolved`,
+// `weldOpenEdges`). Never a leaky/wrong solid; no tolerance widened.
 // ─────────────────────────────────────────────────────────────────────────────
 inline NurbsFreeformSplitResult nurbsFaceFreeformSplit(
     const topo::Shape& F, const topo::Shape& G, FfOp op, double meshDeflection = 0.005,
@@ -321,11 +464,19 @@ inline NurbsFreeformSplitResult nurbsFaceFreeformSplit(
     faces.push_back(*fKeep);
     faces.push_back(*gKeep);
   } else {
-    // F − G (CUT): F's annulus OUTSIDE G + F's lids OUTSIDE G + G's disk INSIDE F. The
-    // apex-adjacent membership is ambiguous (as in the Bézier case) — reached, not faked.
-    const auto fKeep = pickByMembership(*srF.split, meshG, bbG, meshDeflection, Membership::Out);
-    const auto gKeep = pickByMembership(*srG.split, meshF, bbF, meshDeflection, Membership::In);
+    // F − G (CUT): F's annulus OUTSIDE G + F's lids OUTSIDE G + G's disk INSIDE F (the
+    // new curved ceiling of the carved lens). The annulus's OUTER-loop UV centroid lands
+    // on the pole (in its own hole), so the fragile-apex sample of `pickByMembership`
+    // cannot separate annulus-Out from disk-In. `nfsdetail::pickRegionRobust` instead
+    // classifies EACH sub-region by a point GENUINELY INTERIOR to it in (u,v), requires
+    // the two to resolve to COMPLEMENTARY sides (coherence), and HONEST-DECLINES the
+    // pole-tangent / genuinely-ambiguous case (never widening a tolerance).
+    const auto fKeep = nfsdetail::pickRegionRobust(*srF.split, *fsF, wallF->location, meshG, bbG,
+                                                   meshDeflection, Membership::Out);
+    const auto gKeep = nfsdetail::pickRegionRobust(*srG.split, *fsG, wallG->location, meshF, bbF,
+                                                   meshDeflection, Membership::In);
     if (!fKeep || !gKeep) return fail(NurbsFreeformSplitDecline::ClassifyAmbiguous);
+    r.cutMembershipResolved = true;  // robust interior-UV winding separated annulus-Out/disk-In
     faces.push_back(*fKeep);
     faces.push_back(*gKeep);
     collectAnalyticByMembership(*foF, meshG, bbG, meshDeflection, Membership::Out, faces);
@@ -336,7 +487,20 @@ inline NurbsFreeformSplitResult nurbsFaceFreeformSplit(
   //         coherence (the directed-edge invariant — exactly one cap reversed), then the
   //         mandatory M0 watertight + volume self-verify. The two NURBS caps share the
   //         EXACT seam nodes (splitFaceSmoothTrim's bit-identical outer ring on both
-  //         sides), so the M0 mesher position-welds NURBS-disk↔NURBS-disk watertight. ──
+  //         sides), so the M0 mesher position-welds NURBS-disk↔NURBS-disk watertight.
+  //         The CUT leg additionally welds a HOLED curved annulus to the curved disk; the
+  //         frozen M0 mesher does not weld that pairing (a holed curved sub-face's seam-as-
+  //         hole triangulation diverges from the disk's seam-as-outer), so the CUT decline —
+  //         when the membership has already RESOLVED — is a MEASURED weld residual, recorded
+  //         below as `weldOpenEdges` for the honest residual map (never widened to pass). ──
+  {
+    // Measure the raw (unrepaired) weld's unpaired-boundary count for the residual map.
+    const topo::Shape probeShell = topo::ShapeBuilder::makeShell(faces);
+    const topo::Shape probeSolid = topo::ShapeBuilder::makeSolid({probeShell});
+    const tess::Mesh probeMesh = tess::SolidMesher(mp).mesh(probeSolid);
+    for (const auto& [edge, uses] : tess::edgeUseCounts(probeMesh))
+      if (uses != 2) ++r.weldOpenEdges;
+  }
   const auto welded = weldOrientationCoherent(std::move(faces), mp);
   if (!welded) return fail(NurbsFreeformSplitDecline::NotWatertight);
   const topo::Shape result = welded->first;

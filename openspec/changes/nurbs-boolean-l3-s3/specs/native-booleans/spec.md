@@ -92,12 +92,35 @@ type, SHALL add no `cc_*` facade entry point, and SHALL NOT modify
 - WHEN `nurbsFaceFreeformSplit(...)` is invoked
 - THEN it returns a NULL `Shape` with decline `SeamUnusable`, never a fabricated solid
 
-#### Scenario: The apex-ambiguous CUT leg honest-declines to NULL (host)
+#### Scenario: The CUT leg resolves survivor membership robustly, then honest-declines at the weld (host)
 - GIVEN the same two NURBS bowl-cups
-- WHEN `nurbsFaceFreeformSplit(F, G, FfOp::Cut, ...)` is invoked (a leg OUT of the L3-S3
-  envelope — its apex-adjacent survivor membership is ambiguous, as in the Bézier case)
-- THEN it returns a NULL `Shape` with a measured weld/membership decline
-  (`ClassifyAmbiguous` / `NotWatertight` / `VolumeInconsistent`), never a leaky or wrong solid
+- WHEN `nurbsFaceFreeformSplit(F, G, FfOp::Cut, ...)` is invoked
+- THEN the CUT survivor membership RESOLVES via a robust winding/ray test over points
+  GENUINELY INTERIOR to each sub-region in (u,v) — NOT the fragile outer-loop-centroid apex
+  sample the pre-fix code (and the Bézier case) declined at — so `cutMembershipResolved` is
+  true and the CUT no longer declines at `ClassifyAmbiguous`
+- AND for the centred bowl/dome pose the frozen M0 mesher cannot position-weld the HOLED
+  curved annulus (`faceOutside`, seam-as-hole) to the curved disk (`faceInside`, seam-as-
+  outer) across the shared closed seam, so it returns a NULL `Shape` with decline
+  `NotWatertight` and a MEASURED residual map (`weldOpenEdges > 0`) — an honest decline, never
+  a leaky or wrong solid, and NO tolerance is widened to force a weld
+
+#### Scenario: A multi-crossing (offset-seam) pose honest-declines with a measured reason (host)
+- GIVEN F and a down-dome G shifted laterally so the shared seam leaves F's trimmed rim (the
+  trim curve enters/exits the face more than once — the multi-crossing regime)
+- WHEN `nurbsFaceFreeformSplit(F, Goff, op, ...)` is invoked for either `FfOp`
+- THEN it returns a NULL `Shape` with a measured seam/split/membership decline
+  (`SeamUnusable` / `SmoothSplitFailedF` / `SmoothSplitFailedG` / `ClassifyAmbiguous`), never
+  a fabricated single-loop partition or a mis-membered region
+
+#### Scenario: The CUT leg agrees with OCCT BRepAlgoAPI_Cut or honest-declines — DISAGREED=0 (sim)
+- GIVEN the two NURBS bowl-cups reconstructed in OCCT
+- WHEN the native `nurbsFaceFreeformSplit` CUT result is compared, on a booted iOS simulator,
+  against `BRepAlgoAPI_Cut(F, G)`
+- THEN native CUT either returns a watertight solid whose enclosed volume agrees with OCCT
+  within the curved-tessellation band, OR honest-declines to NULL with a measured residual
+  map — but NEVER returns a solid that DISAGREES with OCCT (DISAGREED=0); the robust
+  membership resolution is witnessed (`cutMembershipResolved`)
 
 #### Scenario: Native result matches OCCT BRepAlgoAPI_Common on the same NURBS operands (sim)
 - GIVEN the two NURBS bowl-cups reconstructed in OCCT (each a `Geom_BSplineSurface` degree-2

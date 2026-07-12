@@ -193,18 +193,51 @@ static void gate2_honest_declines() {
                "non-intersecting decline is SeamUnusable");
   }
 
-  // (c) The CUT leg is out of the L3-S3 envelope (apex-ambiguous membership) — it must
-  // HONEST-DECLINE to NULL, never a leaky/wrong solid (mirrors the Bézier case).
+  // (c) The CUT leg's survivor membership now RESOLVES honestly (robust interior-UV winding,
+  // not a fragile apex sample), so the CUT no longer declines at ClassifyAmbiguous — it
+  // advances to the weld and HONEST-DECLINES there (NotWatertight) because the frozen M0
+  // mesher does not weld a holed curved annulus to a curved disk across the shared seam. It
+  // reports a MEASURED residual map (cutMembershipResolved + weldOpenEdges > 0) and stays
+  // NULL — never a leaky/wrong solid, no tolerance widened (the honest CUT residual outcome).
   {
     const bool_::NurbsFreeformSplitResult res =
         bool_::nurbsFaceFreeformSplit(F, G, bool_::FfOp::Cut, 0.005);
-    std::printf("  CUT (out of envelope): decline=%s solid-null=%d\n",
-                bool_::nurbsFreeformSplitDeclineName(res.decline), res.solid.isNull() ? 1 : 0);
+    std::printf("  CUT: decline=%s solid-null=%d membershipResolved=%d weldOpenEdges=%d\n",
+                bool_::nurbsFreeformSplitDeclineName(res.decline), res.solid.isNull() ? 1 : 0,
+                res.cutMembershipResolved ? 1 : 0, res.weldOpenEdges);
     expectTrue(!res.ok() && res.solid.isNull(), "CUT HONEST-DECLINES to NULL (never leaky)");
-    expectTrue(res.decline == bool_::NurbsFreeformSplitDecline::ClassifyAmbiguous ||
-                   res.decline == bool_::NurbsFreeformSplitDecline::NotWatertight ||
-                   res.decline == bool_::NurbsFreeformSplitDecline::VolumeInconsistent,
-               "CUT decline is a measured weld/membership reason (never a wrong solid)");
+    // Regression: the robust winding test separates annulus-Out from disk-In, so the CUT no
+    // longer declines at the apex-membership ambiguity — it resolves and the blocker moves to
+    // the measured weld residual. This asserts the fix (not merely a still-declining CUT).
+    expectTrue(res.cutMembershipResolved, "CUT survivor membership RESOLVES (robust winding, not apex)");
+    expectTrue(res.decline == bool_::NurbsFreeformSplitDecline::NotWatertight,
+               "CUT decline is the measured WELD residual (not ClassifyAmbiguous)");
+    expectTrue(res.weldOpenEdges > 0, "CUT weld residual map records the unpaired boundary edges");
+  }
+}
+
+// Gate 3 — MULTI-CROSSING honest decline: a laterally-offset dome whose shared seam is no
+// longer a single simple interior loop (the trim curve enters/exits F's rim more than once)
+// must HONEST-DECLINE with a MEASURED reason — never fabricate a single-loop partition or a
+// mis-membered region. Exercises the "classify each region independently / decline the
+// multi-crossing" requirement without widening any tolerance.
+static void gate3_multi_crossing_honest_decline() {
+  std::printf("\n== GATE 3: multi-crossing (offset seam) honest decline ==\n");
+  const topo::Shape F = fx::buildF();
+  // dx = 0.45 shifts the dome so far that the seam leaves F's trimmed rim (a boundary-
+  // crossing / re-entrant seam), the multi-crossing regime that is out of the single-loop
+  // smooth-trim envelope.
+  const topo::Shape Goff = fx::buildOffsetDome(0.45);
+  for (bool_::FfOp op : {bool_::FfOp::Common, bool_::FfOp::Cut}) {
+    const bool_::NurbsFreeformSplitResult res = bool_::nurbsFaceFreeformSplit(F, Goff, op, 0.005);
+    std::printf("  multi-crossing op=%s: decline=%s null=%d\n", op == bool_::FfOp::Cut ? "Cut" : "Common",
+                bool_::nurbsFreeformSplitDeclineName(res.decline), res.solid.isNull() ? 1 : 0);
+    expectTrue(!res.ok() && res.solid.isNull(), "multi-crossing HONEST-DECLINES to NULL (never wrong)");
+    expectTrue(res.decline == bool_::NurbsFreeformSplitDecline::SeamUnusable ||
+                   res.decline == bool_::NurbsFreeformSplitDecline::SmoothSplitFailedF ||
+                   res.decline == bool_::NurbsFreeformSplitDecline::SmoothSplitFailedG ||
+                   res.decline == bool_::NurbsFreeformSplitDecline::ClassifyAmbiguous,
+               "multi-crossing decline is a measured seam/split/membership reason");
   }
 }
 #endif  // CYBERCAD_HAS_NUMSCI
@@ -216,6 +249,7 @@ int main() {
   gate0b_closed_form_partition();
   gate1_common_lens_welds_at_closed_form();
   gate2_honest_declines();
+  gate3_multi_crossing_honest_decline();
   std::printf("\n# checks=%d failures=%d\n", g_checks, g_failures);
   if (g_failures == 0) {
     std::printf("# RESULT: L3-S3 exact-NURBS face split by freeform NURBS face — ALL GATES GREEN\n");

@@ -304,6 +304,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_nurbs_ops
         test_native_nurbs_ops_fuzz
         test_native_trimmed_nurbs
+        test_native_trim_boolean
         test_native_topology
         test_native_tessellate
         test_native_display_mesh
@@ -1069,6 +1070,14 @@ if(CYBERCAD_BUILD_TESTS)
     # NumPP/SciPP substrate include tree — it calls only always-visible topology decls).
     set(test_native_trimmed_nurbs_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_trimmed_nurbs.cpp")
+    # Wave-I track I5 — parameter-space trimmed-region boolean (Union / Intersect /
+    # Difference) on 2-D trim loops sharing a surface (u,v) domain
+    # (src/native/topology/trim_boolean.{h,cpp}). Pure planar computational geometry
+    # reusing flattenTrimLoop + the classify even-odd rule; no numsci link. Airtight
+    # oracles: disjoint / overlapping-square areas (≤1e-10), annulus-hole nesting,
+    # circular-lens area (≤1e-8), coincident-edge honest-decline.
+    set(test_native_trim_boolean_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_trim_boolean.cpp")
     set(test_native_tessellate_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_tessellate.cpp")
     # Render-quality DISPLAY mesh (src/native/render) — host GATE (a), the OCCT-free

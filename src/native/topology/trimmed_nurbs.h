@@ -188,6 +188,14 @@ struct ClassifyOptions {
                              ///< unchanged; a genuinely-ambiguous pinch still declines Unknown.
 };
 
+/// Flatten a single trim loop into a closed UV polyline (implicitly closed; consecutive
+/// exact-duplicate join vertices dropped). `segsPerSegment` polyline points sample each
+/// pcurve segment (higher ⇒ tighter on curved / rational loops — a rational circle/ellipse
+/// pcurve flattens with no sag via the homogeneous evaluator). This is the SAME polyline
+/// classify() ray-casts; exposed so the parameter-space region boolean (trim_boolean.h) can
+/// flatten loops with the identical, seam-consistent evaluator instead of re-deriving one.
+std::vector<ParamPoint> flattenTrimLoop(const TrimLoop& loop, int segsPerSegment = 48);
+
 /// Classify (u,v) against the trimmed region. Robust even-odd ray-cast in UV with
 /// honest OnBoundary / Unknown handling (see Containment). With opts.heal (default on)
 /// each loop is run through healLoop() first: small gaps / near-coincident vertices are

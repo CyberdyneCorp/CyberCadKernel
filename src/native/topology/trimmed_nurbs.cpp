@@ -307,6 +307,12 @@ std::vector<ParamPoint> flattenLoopForHeal(const TrimLoop& loop, int segsPerSegm
 
 }  // namespace
 
+// Public thin wrapper over the anonymous flattenLoop so other topology TUs (the
+// parameter-space region boolean) share the exact, seam-consistent pcurve evaluator.
+std::vector<ParamPoint> flattenTrimLoop(const TrimLoop& loop, int segsPerSegment) {
+  return flattenLoop(loop, segsPerSegment);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // healLoop — tolerant-topology healing on a flattened loop polyline.
 //

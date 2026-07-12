@@ -916,6 +916,20 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_chamfer_edge_nurbs)
         set(test_native_chamfer_edge_nurbs_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_chamfer_edge_nurbs.cpp")
+        # NURBS roadmap Layer 4 (fillet/chamfer) — the two additive generalizations of the
+        # Wave-G constant chamfer: VARIABLE-distance (setback tapers linearly / by a sampled
+        # field along the edge) and FREEFORM-edge (both base faces are general freeform NURBS;
+        # the setback marches ALONG each surface a distance measured by the FIRST FUNDAMENTAL
+        # FORM, not the 3-D chord) — blend/chamfer_edge_variable_freeform.h. It reuses the
+        # Wave-G chamfer_edge_nurbs.h helpers and the freeform footpoint / first-fundamental
+        # machinery from fillet_edge_g2_freeform.h (nurbsSurfaceDerivs), so the host gate
+        # builds under CYBERCAD_HAS_NUMSCI. Airtight oracles: variable→constant reduction
+        # (≤1e-12), linear-taper planar setback lines (≤1e-9), freeform→analytic on NURBS
+        # plane/cylinder (≤1e-9/≤1e-7), genuinely-freeform bump rails ON each face (≤1e-7) +
+        # honest-decline on over-large setback. Header-only; no lib change.
+        list(APPEND CYBERCAD_TESTS test_native_chamfer_edge_variable_freeform)
+        set(test_native_chamfer_edge_variable_freeform_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_chamfer_edge_variable_freeform.cpp")
     endif()
 
     # The tet-mesher test drives the real TetGen backend, so it is added ONLY when
@@ -1354,6 +1368,14 @@ if(CYBERCAD_BUILD_TESTS)
     # enable the gated generator) but NOT the substrate include trees.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_chamfer_edge_nurbs)
         target_compile_definitions(test_native_chamfer_edge_nurbs PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+
+    # The Layer-4 variable/freeform chamfer gate includes chamfer_edge_variable_freeform.h
+    # (→ chamfer_edge_nurbs.h + fillet_edge_g2_freeform.h → math/bspline.h + math/vec.h only,
+    # no NumPP/SciPP headers), so its TU needs the CYBERCAD_HAS_NUMSCI macro (to enable the
+    # NURBS-evaluator-backed freeform march) but NOT the substrate include trees.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_chamfer_edge_variable_freeform)
+        target_compile_definitions(test_native_chamfer_edge_variable_freeform PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_ssi_boolean)

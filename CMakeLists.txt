@@ -678,6 +678,25 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_freeform_freeform_cut)
         set(test_native_freeform_freeform_cut_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_freeform_freeform_cut.cpp")
+        # NURBS roadmap LAYER 3, SLICE 3 (L3-S3) — host GATE (a), the OCCT-free closed-
+        # form proof of the THIRD (deepest) exact-NURBS B-rep boolean: a genuine NURBS
+        # (Kind::BSpline) face SPLIT BY ANOTHER FREEFORM NURBS face, welded watertight —
+        # the general freeform↔freeform sew (BOTH operands arbitrary NURBS) the readiness
+        # doc named as the stage-5 deep-tail wall. Two genuine-NURBS-walled bowl-cups (an
+        # UP bowl F + a DOWN dome G) meet in ONE CLOSED CIRCULAR seam on BOTH NURBS walls;
+        # nurbsFaceFreeformSplit composes NURBS-adapter ∩ NURBS-adapter trace[stage 1] →
+        # WLine-(u,v)-read fidelity gate on BOTH F and G[stage 2] → splitFaceSmoothTrim on
+        # BOTH walls[stage 3] → mesh-membership keep[stage 4] → curved-NURBS↔curved-NURBS
+        # orientation-coherent weld[stage 5] → watertight+volume self-verify, into the
+        # COMMON (F ∩ G) lens, the lens volume converging to the closed form π·H²/(4a) as
+        # the mesh refines, watertight χ=2, consistently oriented, DISAGREED=0. A null
+        # operand / non-intersecting pair / the apex-ambiguous CUT leg HONEST-DECLINE to
+        # NULL. Its seam is the real S3 trace, so this host suite builds only under
+        # CYBERCAD_HAS_NUMSCI. Additive header-only verb (nurbs_freeform_split.h); no lib
+        # change, no cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_freeform_split)
+        set(test_native_nurbs_freeform_split_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_freeform_split.cpp")
         # MOAT M2b freeform↔analytic DISJOINT (MULTI-LUMP) CUT — host GATE (a), the
         # OCCT-free proof that freeformSlabDisjointCut composes the landed inter-solid-seam
         # weld into the FIRST native freeform boolean whose result is TWO disconnected
@@ -1077,6 +1096,16 @@ if(CYBERCAD_BUILD_TESTS)
     # — so it needs the macro but NOT the substrate include trees, like the L3-S1 gate.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_curved_split)
         target_compile_definitions(test_native_nurbs_curved_split PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+
+    # The L3-S3 exact-NURBS face-split-by-freeform-NURBS-face gate traces the shared
+    # NURBS-wall ∩ NURBS-wall seam via the numsci-gated ssi::trace_intersection (through
+    # nurbs_freeform_split.h, using the L3 NURBS operand front-end makeBSplineAdapter), so
+    # under CYBERCAD_HAS_NUMSCI its TU gets the macro. It calls only always-visible ssi /
+    # topology / tessellate / boolean declarations (header-only verbs) — no NumPP/SciPP
+    # header — so it needs the macro but NOT the substrate include trees, like L3-S1/S2.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_freeform_split)
+        target_compile_definitions(test_native_nurbs_freeform_split PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     # The Layer-6 skinning gate includes bspline_skin.h (which under CYBERCAD_HAS_NUMSCI

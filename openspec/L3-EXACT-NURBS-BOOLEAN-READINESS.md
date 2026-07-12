@@ -172,6 +172,17 @@ case).
 **Verdict 5: PARTIAL** — the seam-weld invariant lands; the general freeform↔freeform
 watertight sew is MISSING.
 
+> **UPDATE (L3-S3 landed, `nurbs-boolean-l3-s3`):** the general **freeform↔freeform** watertight
+> sew is now **RESOLVED for the tractable COMMON single-transversal-seam pose**.
+> `boolean/freeform_freeform_cut.h`'s two-curved-side closed-seam weld (split BOTH walls,
+> membership select, orientation-coherence repair) — which the `ff_cut_honest_declines_never_leaky`
+> probe above measured as declining for the naive weld — in fact WELDS the **COMMON lens**
+> watertight once orientation coherence is repaired (the directed-edge invariant, exactly one cap
+> reversed): proven for `Kind::Bezier` walls (`test_native_freeform_freeform_cut`) AND now for
+> genuine `Kind::BSpline`/NURBS walls (`nurbs_freeform_split.h` `nurbsFaceFreeformSplit`, §3
+> callout). The residual is the **CUT** leg (apex-ambiguous membership, honest-declined) + the
+> multi-crossing / re-entrant split — NOT the curved↔curved COMMON sew itself.
+
 ### Summary table
 
 | stage | readiness | one-line evidence |
@@ -224,6 +235,43 @@ watertight sew is MISSING.
 > the ANALYTIC curved cutter** — the general **freeform↔freeform** sew (both operands arbitrary
 > NURBS) remains the §4 deep tail, alongside the closed-loop seeding recall and the
 > multi-crossing split.
+>
+> **✅ ALSO LANDED — L3-S3 (OpenSpec change `nurbs-boolean-l3-s3`), the face∩FREEFORM-NURBS-face
+> extension — the general freeform↔freeform sew, BOTH operands arbitrary NURBS.**
+> `src/native/boolean/nurbs_freeform_split.h` (`nurbsFaceFreeformSplit`) removes the last analytic
+> crutch: the cutter G is now a genuine **freeform NURBS** face (`Kind::BSpline`), so the kept-G cap
+> is itself a curved NURBS sub-face (no closed-form fan) and the sew is **NURBS-disk↔NURBS-disk**
+> along the shared curved seam — the **general M0 curved↔curved weld** this doc named as the
+> **stage-5 deep-tail wall** (verdict 5 / the §4 tail row). The tractable slice reached it by
+> COMPOSITION, not a re-implemented sew: `boolean/freeform_freeform_cut.h`
+> (`freeformFreeformClosedSeamCut`) ALREADY performs the freeform↔freeform curved↔curved
+> closed-seam weld (split BOTH walls, membership select, orientation-coherence repair) — proven
+> watertight at the closed-form lens for the **COMMON** leg — but ONLY for `Kind::Bezier` walls.
+> L3-S3 is that SAME weld with both walls left as genuine NURBS, reusing the surface-kind-agnostic
+> `ffcdetail::{rekeyToB, pickByMembership, weldOrientationCoherent}` byte-identically and adding
+> only the NURBS wall gate (`nfsdetail::nurbsWall`, requires `Kind::BSpline`) + the NURBS-adapter
+> trace (`npsdetail::makeWallAdapter` on BOTH walls). It composes: recognise both NURBS operands →
+> NURBS-adapter ∩ NURBS-adapter **trace**[stage 1] → WLine-`(u,v)`-read fidelity on BOTH F and G
+> (`S_F==C` AND `S_G==C`)[stage 2] → `splitFaceSmoothTrim` on BOTH walls (bit-identical shared seam
+> nodes)[stage 3] → **mesh-membership** keep (`classifyPointInMesh`)[stage 4] → **orientation-
+> coherent** curved-NURBS↔curved-NURBS **weld** (the directed-edge invariant)[stage 5] →
+> watertight+volume self-verify, landing the **COMMON (lens)** of two genuine-NURBS bowl-cups.
+> Two-gate proof: host closed-form `tests/native/test_native_nurbs_freeform_split.cpp` (two
+> `Kind::BSpline` paraboloid bowl-cups meeting in ONE closed circular seam; the COMMON lens
+> **CONVERGING** to the closed form `V = π·H²/(4a)` monotonely **12.97%→1.87%** over deflection
+> 0.01→0.00125, with χ=2, consistently oriented, DISAGREED=0 [`S_F`=0, `S_G`~2.8e-14,
+> on-both-surfaces ~2.8e-14], honest NULL declines for a null operand / non-intersecting pair /
+> the apex-ambiguous CUT leg) + sim vs OCCT
+> `tests/sim/native_nurbs_freeform_split_parity.mm` (native vs `BRepAlgoAPI_Common(F, G)` on two
+> reconstructed `Geom_BSplineSurface` cups — volume/watertight/orientation/χ parity within the
+> tessellation band, OCCT cross-checked against the closed form; 9/9). `src/native` stays OCCT-free;
+> no `cc_*` ABI; `nurbs_plane_split.h` / `nurbs_curved_split.h` / `freeform_freeform_cut.h` /
+> `freeform_operand.h` / `freeform_membership.h` / `smooth_trim_split.h` / `ssi_boolean.{h,cpp}` /
+> `assemble.h` / `face_split.h` / `ssi` / `topology` / `math` unmodified (all composed
+> byte-identically). **So stage 5 (the general freeform↔freeform sew) is now resolved for the
+> tractable COMMON single-transversal-seam pose** — the residual deep tail is now the **CUT
+> (`F−G`) leg** (apex-ambiguous membership, honest-declined here too), **multi-crossing /
+> re-entrant / multi-seam** NURBS↔NURBS splits, and the closed-loop seeding recall.
 
 **Slice L3-S1 — a NURBS face SPLIT BY A PLANE, welded exact.** Concretely: **cut a single
 trimmed NURBS solid by a half-space (planar cutter)**, keeping the exact-NURBS wall on the

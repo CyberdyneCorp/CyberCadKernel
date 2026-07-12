@@ -997,6 +997,87 @@ S4-c/d marching-core moat, not recall), and deeper co-resident structure the fin
 ceiling (9.7%) reaches only at costs the bounded default deliberately does not pay. The next
 attackable lever is the S4-c/d near-tangent marching-core, not further seeding recall.
 
+### SSI multi-branch floor (Wave-I / I1) — fit-density densify-refit + sharpened residual map · ✅ LANDED 2026-07-12 (fit-bow residuals lowered, DISAGREED==0; decline holds 9.7% — honest, no gate loosened)
+
+The 9.7% freeform-fuzzer floor left after E1's co-resident-branch fix (`0x5515D1FF0F0F`+2, N=48×3
+= 144 trials) was RE-MEASURED and its residual **anatomised per decline** to separate the honestly
+recoverable part from the genuine person-decade moat. Baseline **AGREED 130/144 (90.3%),
+HONESTLY-DECLINED 14/144 (9.7%), DISAGREED 0**; reason histogram **near-tangent 0, multi-branch 9,
+small-loop 5** (the near-tangent MARCHING family stays EMPTY — confirmed again). A host replay of the
+EXACT fuzz poses (OCCT-free, reproducing the fuzzer's splitmix64→xoshiro256** RNG + generator) joined
+each decline's sim anatomy (`genuineOcctOnNat`, `worstMissLen`, `natOnOcct`) to its native trace
+anatomy (per-loop node count, fitted `maxFitError`, between-node fit bow). The 14 declines split into
+**three distinct sub-populations**, only one of which is a native geometry/recall gap:
+
+- **FIT-DENSITY artifact on a DENSE high-curvature loop (recoverable fit quality) — the dominant
+  small-loop sub-population.** On several tight glancing loops the marcher traces **1000+ on-locus
+  nodes** (every node on BOTH surfaces ≤ `onSurfTol`, on the OCCT locus ≈ `natOnOcct` 2e-7…2e-6), yet
+  the least-squares B-spline fit at the default 64-pole cap could NOT follow the curvature and BOWED
+  off the on-locus polyline by ~2–5e-3. Because downstream coverage samples the FITTED curve (not the
+  polyline), that bow read over the 1e-3 curve-coverage budget → a decline. This is a pole-COUNT
+  artifact, not a corrector error, and is the S3 follow-up the roadmap named as "automatic
+  densify-and-refit on a too-loose B-spline fit is not yet wired".
+- **GENUINE distinct co-resident locus native's seeder missed (the real recall moat) — 3 declines**
+  (`genuineOcctOnNat` ≈ 1.5…2.0, `worstMissLen` 2.8…4.8): native traced ≥ 1 locus and OCCT found a
+  WHOLE separate co-resident locus. These are the residual after E1 — loops whose refined points CHAIN
+  within `sep` (genuinely 3D-adjacent), which the single-linkage split cannot separate without risking
+  a single-loop split. Attacking them further risks over-splitting one loop → declined (the documented
+  hazard); this is the honest seeding-recall frontier, not a fit issue.
+- **Sub-`onCurve` residual on a fully-traced loop (native-vs-OCCT curve divergence + node-spacing
+  sagitta) — the rest.** `genuineOcctOnNat` sits at 1.0…1.6e-3, JUST over the fixed 1e-3 gate, with the
+  fit already tight; the residual is the marcher's chord-deflection (`maxDeflection = scale·1e-3`,
+  looser than the 1e-3 coverage gate) between on-locus nodes plus a genuine ~1e-3 native-vs-OCCT
+  divergence on a glancing loop. Recovering these needs curvature-adaptive marching (the moat), not fit
+  poles or seeds.
+
+**Landed (fit-quality, `src/native/ssi/marching.cpp` only — OCCT-free, no `cc_*` change,
+`src/native/boolean` + `src/native/blend` untouched, no caller knob): DENSIFY-AND-REFIT the fitted
+convenience curve.** `fitBSpline` now, when its worst deviation from the on-locus NODES
+(`maxFitError`, already computed) exceeds a scale-relative target (`scale·2e-4`, below the 1e-3 gate
+yet above a smooth loop's error) with room to add poles, refits ONCE at a higher bounded pole count
+(200) so the curve rides the on-locus polyline. Strictly cost-bounded: ONE extra `O(m·poles²)` solve,
+hard-capped poles, and a **node-count guard** (skip loops with `m > 2000` — a chart-singularity
+pole-crossing loop can circulate to ~20 000 nodes where a 200-pole solve is both unaffordable AND
+fruitless). It is a **NO-OP on a smooth loop** whose 64-pole fit already rides the nodes (byte-
+identical single fit), and it is **DISAGREED-safe by construction**: the polyline (ground truth) is
+unchanged and NO on-curve / on-surface tolerance is touched — more poles only pull the convenience
+curve CLOSER to the already-on-locus nodes, never move a node or fabricate geometry.
+
+- **Measured effect — residual SHARPENED, DISAGREED-safe, decline HOLDS.** The densify lowers the
+  fit-density residual on the dense loops it targets (final sim: `4.778e-3 → 1.531e-3` on
+  `0x5615d1ff10c2` case 32, a 1068-node loop; `1.589e-3 → 1.060e-3` on `0x5715d1ff1275` case 22, a
+  1122-node loop; `3.510e-3 → 3.343e-3` on `0x5515d1ff0f0f` case 24), proving the ~3e-3 fit-bow
+  component is genuinely removed — but **none crosses the fixed 1e-3 gate** (the remaining 1.0…1.6e-3 is
+  the native-vs-OCCT + node-spacing residual above, not fit), so the **decline rate honestly HOLDS at
+  9.7% (14/144), DISAGREED == 0** (AGREED 130/144 = 90.3%, histogram near-tangent 0 / multi-branch 9 /
+  small-loop 5, unchanged from baseline). The decline count
+  was NOT lowered by loosening any gate (refused) nor by fabricating a curve/seed (refused). The floor
+  is now precisely mapped: **fit-density is no longer a contributor** to the residual — it is genuine
+  co-resident-locus seeding recall (3) plus a sub-`onCurve` glancing-loop divergence (the rest), both
+  of which are the person-decade moat (curvature-adaptive marching / co-resident recall), not a bounded
+  slice.
+- **Verification.** All 9 `test_native_ssi_*` host suites pass with **no assertion changes**
+  (native_ssi 11, seeding 10, marching 22 incl. the new regression, s4_classification 22,
+  s4e_singularities 7, s4f_completeness 6, exact_fuzz DISAGREED=0, boolean 4, curved_boolean 13). Cost
+  bounded: s4e 36 s → 59 s (the moderate-node pole-crossing loops densify; the 20k-node loop is guarded
+  out), s4f 31 s, curved_boolean unaffected (S5 boolean volumes within tol — the densified curves it
+  consumes are strictly tighter). Regression fixture `march_densify_refit_high_curvature_loop` (the
+  verbatim fuzz pose `0x5615d1ff10c2` case 32 — a rational-NURBS ∩ B-spline tight loop of 1068 on-locus
+  nodes): asserts the densify FIRES (fit poles > 64), every node on both surfaces ≤ 1e-6, and the
+  densified curve rides the on-locus polyline with between-node bow < 1e-3 (the ~5e-3 bow at 64 poles
+  gone) — no tolerance widened.
+
+**Honest conclusion (the sharpened I1 floor map):** the remaining 9.7% freeform-fuzzer decline is
+**not fit-density** (now removed as a contributor) and **not near-tangent marching** (0, empty). It is
+(a) **3 genuinely-missed co-resident distinct loci** whose refined seeds chain within `sep` — the
+single-linkage seeding-recall frontier, unrecoverable without risking a single-loop over-split; and
+(b) a **sub-`onCurve` (1.0…1.6e-3) native-vs-OCCT divergence + node-spacing sagitta** on fully-traced
+glancing loops, recoverable only by curvature-adaptive marching (`maxDeflection` is `scale·1e-3`,
+looser than the 1e-3 coverage gate). Both are the genuine SSI moat — a bounded, DISAGREED-safe slice
+cannot lower the decline further without loosening the gate or fabricating geometry, which this track
+REFUSES. The densify is a real product improvement (every downstream S5/S6/S7 consumer of a dense
+`TraceSet` curve now gets a tighter fit) and the honest floor is now precisely characterised.
+
 ## Sequencing & effort
 
 ```

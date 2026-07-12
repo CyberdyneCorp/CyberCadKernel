@@ -1111,20 +1111,12 @@ std::vector<double> chordLengthParams(const std::vector<WLinePoint>& pts) {
 // samples for the degree it degrades the degree, and with ≤1 sample returns empty.
 // The polyline stays the ground truth; the fit is a convenience curve. Solves the
 // normal-equations column-by-column (x,y,z independently) via lstsq.
-FittedBSpline fitBSpline(const std::vector<WLinePoint>& pts, int degree, int maxPoles) {
+
+// Single-shot least-squares B-spline fit through the polyline with a FIXED pole count.
+FittedBSpline fitBSplineFixed(const std::vector<WLinePoint>& pts,
+                              const std::vector<double>& tval, int degree, int nPoles) {
   FittedBSpline out;
   const int m = static_cast<int>(pts.size());
-  if (m < 2) return out;
-  degree = std::min(degree, m - 1);
-  if (degree < 1) return out;
-
-  const std::vector<double> tval = chordLengthParams(pts);
-  if (tval.empty()) return out;
-
-  int nPoles = (maxPoles <= 0) ? m : std::min(maxPoles, m);
-  nPoles = std::clamp(nPoles, degree + 1, m);
-  if (nPoles < degree + 1) return out;
-
   std::vector<double> knots = clampedUniformKnots(degree, nPoles);
 
   // basis matrix N (m × nPoles), row i = non-zero basis of t[i] scattered into columns.
@@ -1152,13 +1144,82 @@ FittedBSpline fitBSpline(const std::vector<WLinePoint>& pts, int degree, int max
   out.poles.resize(static_cast<std::size_t>(nPoles));
   for (int j = 0; j < nPoles; ++j) out.poles[j] = {px[j], py[j], pz[j]};
 
-  // report the worst deviation of the polyline from the fitted curve.
+  // report the worst deviation of the polyline from the fitted curve (at the node params).
   double err = 0.0;
   for (int i = 0; i < m; ++i) {
     const Point3 cv = math::curvePoint(out.degree, out.poles, out.knots, tval[i]);
     err = std::max(err, math::distance(cv, pts[i].point));
   }
   out.maxFitError = err;
+  return out;
+}
+
+// ── DENSIFY-AND-REFIT (S3 follow-up: a too-loose fit no longer truncates a curve) ──────
+//
+// The fitted B-spline is a CONVENIENCE curve through the on-both-surfaces polyline — the
+// polyline is the ground truth. At the default pole cap (`fitMaxPoles`, 64) a least-squares
+// fit SMOOTHS the polyline, so when a loop has MORE nodes than the cap the fit cannot ride
+// them all: it deviates from the on-locus nodes by a fit-resolution amount that grows with
+// the loop's curvature (measured up to ~5e-3 on the freeform fuzzer's densest high-curvature
+// loops — 1000+ on-locus nodes squeezed onto 64 poles — just over the 1e-3 curve-coverage
+// budget the fitted spline, not the polyline, is compared at downstream). That deviation is a
+// pole-COUNT artifact, not a corrector error: every node is on both surfaces and on the true
+// locus (≤ onSurfTol); only the under-resolved smoothing curve cuts the corner between them.
+//
+// The fix: when the fit's worst deviation from the on-locus NODES (`maxFitError`, measured at
+// the node params) exceeds the target, refit ONCE at a HIGHER pole count sized to the loop, so
+// the curve rides the nodes it under-fit. This is a pure FIT-QUALITY improvement — the polyline
+// is unchanged and NO on-curve / on-surface tolerance is touched or widened; more poles can
+// only pull the convenience curve CLOSER to the already-on-locus nodes, never fabricate
+// geometry. Cost-bounded to ONE extra solve at a hard-capped pole count (`kDensifyMaxPoles`):
+// a global least-squares B-spline fit is O(m·poles²), so an iterative doubling to interpolation
+// on a many-thousand-node loop would be prohibitively expensive for a mere convenience curve —
+// a single refit at a bounded pole count keeps the extra work affordable. Keying off
+// `maxFitError` (node deviation, already computed) makes it both cheap and correct: it fires
+// ONLY when the pole cap genuinely under-resolves the nodes (a smooth loop whose 64-pole fit
+// already rides the nodes within the target is a NO-OP — byte-identical single fit), never on
+// a loop that does not need it. `fitTarget ≤ 0` disables densification entirely.
+FittedBSpline fitBSpline(const std::vector<WLinePoint>& pts, int degree, int maxPoles,
+                         double fitTarget) {
+  FittedBSpline out;
+  const int m = static_cast<int>(pts.size());
+  if (m < 2) return out;
+  degree = std::min(degree, m - 1);
+  if (degree < 1) return out;
+
+  const std::vector<double> tval = chordLengthParams(pts);
+  if (tval.empty()) return out;
+
+  int nPoles = (maxPoles <= 0) ? m : std::min(maxPoles, m);
+  nPoles = std::clamp(nPoles, degree + 1, m);
+  if (nPoles < degree + 1) return out;
+
+  out = fitBSplineFixed(pts, tval, degree, nPoles);
+  // Densify ONLY if requested, the initial fit is valid, and it genuinely UNDER-RESOLVES the
+  // nodes (maxFitError over the target) with room to add poles. A smooth loop whose 64-pole fit
+  // already rides the nodes skips the refit entirely (byte-identical to the single fit).
+  if (fitTarget <= 0.0 || !out.valid() || out.maxFitError <= fitTarget || nPoles >= m) return out;
+
+  // NODE-COUNT GUARD (cost + no-benefit): the refit is a dense O(m·poles²) least-squares solve,
+  // so on a VERY dense loop (thousands of nodes — e.g. a chart-singularity pole-crossing loop
+  // that circulates many times, or a pathological parametrization) the single 200-pole solve
+  // would be prohibitively expensive AND fruitless (poles ≪ nodes cannot follow such a loop to
+  // the target anyway). Skip densification there — the initial fit stands; the polyline remains
+  // the ground truth and the honest coverage figure is reported unchanged. The fit-density
+  // declines this recovers are moderate-node high-curvature loops (≈ 1e3 nodes), which are well
+  // under this guard; a 20k-node loop is out of scope for a convenience-curve refit.
+  constexpr int kMaxDensifyNodes = 2000;
+  if (m > kMaxDensifyNodes) return out;
+
+  // ONE bounded refit: raise the pole count to a loop-sized target, hard-capped so the single
+  // O(m·poles²) solve stays affordable. Accept the refit only if it is valid AND strictly
+  // tighter than the initial fit (defensive — never a regression).
+  constexpr int kDensifyMaxPoles = 200;
+  const int target = std::min(m, kDensifyMaxPoles);
+  if (target > nPoles) {
+    FittedBSpline cand = fitBSplineFixed(pts, tval, degree, target);
+    if (cand.valid() && cand.maxFitError < out.maxFitError) out = std::move(cand);
+  }
   return out;
 }
 
@@ -1329,7 +1390,19 @@ WLine march_branch_impl(const SurfaceAdapter& A, const SurfaceAdapter& B, const 
   // WLine is byte-identical to S3/S4-c/S4-d/S4-e). Recorded as DATA; the arm is unchanged.
   if (opts.enableSelfIntersection) detectStitchedSelfIntersections(line, t);
 
-  line.curve = fitBSpline(line.points, opts.fitDegree, opts.fitMaxPoles);
+  // DENSIFY-AND-REFIT the convenience curve so it does not deviate from the on-locus polyline
+  // when a high-curvature loop has more nodes than the pole cap (the fit-density decline the
+  // freeform fuzzer sees: every node on both surfaces, but the under-resolved smoothed fit —
+  // which downstream coverage is sampled from, not the polyline — reads over the curve-coverage
+  // budget on a dense tight loop). Target the fit's node deviation at a fraction of model scale
+  // that sits BELOW the downstream ~1e-3 on-curve budget yet ABOVE the fit error a smooth loop
+  // already achieves at the default pole cap — so the (bounded, one-shot) refit fires ONLY on a
+  // genuinely under-resolved high-curvature loop and is a NO-OP on the common smooth loop.
+  // Raising poles only tightens the convenience curve toward the already-on-locus nodes, never
+  // widens a tolerance or moves a node. The polyline stays the ground truth; deterministic; no
+  // caller knob.
+  const double fitTarget = scale * 2e-4;
+  line.curve = fitBSpline(line.points, opts.fitDegree, opts.fitMaxPoles, fitTarget);
   return line;
 }
 

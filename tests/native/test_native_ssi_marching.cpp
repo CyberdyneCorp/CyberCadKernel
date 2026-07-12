@@ -932,4 +932,103 @@ CC_TEST(march_deep_near_tangent_reanchor_honest_decline_s4c) {
   CC_CHECK(tr.nearTangentGaps >= 1);       // the honest S4 gap is reported (deferred → OCCT)
 }
 
+// ── REGRESSION: DENSIFY-AND-REFIT the fitted curve on a DENSE high-curvature loop ──────
+// A general rational-NURBS ∩ B-spline pose lifted VERBATIM from the freeform SSI fuzzer
+// (base seed 0x5615d1ff10c2, case 32) — a MEASURED HONESTLY-DECLINED small-loop case whose
+// decline was a FIT-DENSITY artifact: the tight high-curvature loop is traced as ~1068
+// on-both-surfaces nodes (every node on the true locus), but the least-squares B-spline fit
+// at the default 64-pole cap could not follow the loop's curvature and BOWED off the on-locus
+// polyline by ~5e-3 (the fitted curve, not the polyline, is what downstream coverage samples,
+// so the bow read over the 1e-3 coverage budget). The densify-and-refit follow-up refits at a
+// higher (bounded) pole count when the fit under-resolves the nodes, so the convenience curve
+// rides the on-locus polyline. This is a pure FIT-QUALITY fix — NO tolerance is widened; more
+// poles only pull the fitted curve CLOSER to the already-on-locus nodes, never move a node.
+//
+// The bar is HONEST: (1) the loop is genuinely dense + high-curvature (>1000 nodes); (2) every
+// node is on BOTH surfaces ≤ 1e-6 (the ground truth is untouched); (3) the densify FIRED (the
+// fit uses MORE than the 64-pole cap); (4) the resulting fitted curve, densely sampled, rides
+// the on-locus node polyline within a tight bound WELL under the 1e-3 coverage budget (the bow
+// the fuzzer measured is gone). Nothing here widens the onCurve/onSurf gate.
+CC_TEST(march_densify_refit_high_curvature_loop) {
+  // A: B-spline (degU=3, degV=2, 5×4).
+  const int degAU = 3, degAV = 2, nAU = 5, nAV = 4;
+  const std::vector<Point3> polesA = {{-1.2041762101217437,-1.2184680937050816,1.1043575424220369},{-1.185537638405987,-0.38014494483466554,0.5957822103568271},{-1.18010740187799,0.40304862591832458,0.59794289275867052},{-1.2001853758554639,1.2089550877587136,1.0944192470068874},{-0.61320940137210833,-1.201090273857891,0.67198908710055316},{-0.60296573235115314,-0.39444758167468769,0.19119740485794337},{-0.61525612582606692,0.39579177559647449,0.19643837033673009},{-0.58858284348748191,1.2003734839502829,0.67493057194280515},{-0.015532481442894795,-1.1833990631272882,0.53108097147545963},{-0.011052065516317114,-0.38139500394422737,0.058767269953345844},{-0.018003253448602232,0.38474315085196908,0.06436551179334897},{-0.01130027201167509,1.2039779642645638,0.540755360748576},{0.5976479734312472,-1.2171575196981712,0.69321802217522011},{0.59498581996768596,-0.39054156493423148,0.1871687044241386},{0.59888020552337073,0.3963706399983673,0.20689111550327938},{0.61981768926792535,1.198430899857287,0.689873216250111},{1.1922486078242567,-1.1806082058746046,1.0504128184096606},{1.1905270831263075,-0.41408047029921796,0.5900715752523864},{1.2081841627304695,0.41862559163904162,0.61370067394359673},{1.2107898429362014,1.2173372087080006,1.1225925973954927}};
+  const std::vector<double> kUA = {0,0,0,0,0.5,1,1,1,1};
+  const std::vector<double> kVA = {0,0,0,0.5,1,1,1};
+
+  // B: rational NURBS (degU=3, degV=2, 4×5).
+  const int degBU = 3, degBV = 2, nBU = 4, nBV = 5;
+  const std::vector<Point3> polesB = {{-1.2108843539576502,-1.1825459159635003,1.2353183121429034},{-1.1926297791063274,-0.58601691140773338,0.74317885705966813},{-1.1818818462240854,-0.0040725523736649637,0.55601817223970373},{-1.2148370812043281,0.59069839119198542,0.77182601447384158},{-1.196637527432781,1.1805643100226988,1.233436852101073},{-0.39382855788641807,-1.2033137081981056,0.66277433667156493},{-0.41633919903378852,-0.59772099086379105,0.16305764599715164},{-0.39149965032746059,0.0021328099999205997,-0.030199520478619075},{-0.41992319395443556,0.61572121224555043,0.14991180844948704},{-0.39282568379174854,1.2072399522656994,0.66420443721182809},{0.41911351970726396,-1.1983491283420222,0.66413221634405795},{0.40246548204497207,-0.59927118635405396,0.15197623571470295},{0.40026123188731882,0.012022116371818421,-0.012743547935508741},{0.41178466751676646,0.58029067004019319,0.14337094132897035},{0.38059472732812322,1.1949847843415273,0.62830987178346476},{1.2053120512454614,-1.2036421600088518,1.2701649874793173},{1.2142059292015448,-0.61808050895734234,0.77567835587962464},{1.2015817831720175,-0.019897876840639941,0.57321677463592469},{1.2073334840078604,0.6180949332563288,0.77624985269131419},{1.1980713968063013,1.216310091982348,1.2587362925951868}};
+  const std::vector<double> wtsB = {1.7846924039029641,1.5728765041792359,1.0369128249119424,0.40378889180326355,1.3896097192825165,1.0825362707577295,1.1928789078401725,0.87806398388733031,2.0664276889501463,1.0743668079784259,0.93486293005716237,1.3654385448074935,1.3244880002840893,1.4865953810806807,1.0936465018653696,0.45860089694692535,2.2084261108541203,1.0410340402077738,0.46155052292864407,1.6200227358855492};
+  const std::vector<double> kUB = {0,0,0,0,1,1,1,1};
+  const std::vector<double> kVB = {0,0,0,0.33333333333333331,0.66666666666666663,1,1,1};
+
+  auto A = ssi::makeBSplineAdapter(degAU, degAV, polesA, nAU, nAV, kUA, kVA);
+  auto B = ssi::makeNurbsAdapter(degBU, degBV, polesB, wtsB, nBU, nBV, kUB, kVB);
+
+  ssi::SeedOptions so;
+  so.initialGridU = 6;
+  so.initialGridV = 6;
+  so.minPatchFrac = 1.0 / 32.0;
+  auto tr = ssi::trace_intersection(A, B, so);  // default MarchOptions → densify on
+
+  // One dense, high-curvature traced branch (a tight glancing loop that exits the finite
+  // patch domain, so it is a BoundaryExit rather than a Closed loop — either is a real traced
+  // branch; what matters is that it is DENSE and high-curvature, the fit-density regime).
+  CC_CHECK(tr.tracedBranches >= 1);
+  const ssi::WLine* loop = nullptr;
+  for (const auto& w : tr.lines) {
+    const bool traced = w.status == ssi::TraceStatus::Closed ||
+                        w.status == ssi::TraceStatus::BoundaryExit;
+    if (traced && w.points.size() > 500) { loop = &w; break; }
+  }
+  CC_CHECK(loop != nullptr);
+  if (!loop) return;
+
+  // (1) genuinely DENSE (the fit-density regime: many more nodes than the 64-pole cap).
+  CC_CHECK(loop->points.size() > 500);
+
+  // (2) every node on BOTH surfaces (the ground truth is untouched by the fit change).
+  const nmath::SurfaceGrid gA{polesA, nAU, nAV};
+  const nmath::SurfaceGrid gB{polesB, nBU, nBV};
+  for (const auto& nd : loop->points) {
+    CC_CHECK(nmath::distance(nmath::surfacePoint(degAU, degAV, gA, kUA, kVA, nd.u1, nd.v1), nd.point) < 1e-6);
+    CC_CHECK(nmath::distance(nmath::nurbsSurfacePoint(degBU, degBV, gB, wtsB, kUB, kVB, nd.u2, nd.v2), nd.point) < 1e-6);
+    CC_CHECK(nd.onSurfResidual < 1e-6);
+  }
+
+  // (3) the densify FIRED — the fit uses MORE than the default 64-pole cap.
+  CC_CHECK(loop->curve.valid());
+  CC_CHECK(static_cast<int>(loop->curve.poles.size()) > 64);
+
+  // (4) the densified fitted curve RIDES the on-locus node polyline: sampled densely between
+  //     the nodes, its worst distance to the node chord is WELL under the 1e-3 coverage budget
+  //     (the ~5e-3 bow at 64 poles is gone). NO tolerance widened — this is fit quality only.
+  const auto& c = loop->curve;
+  const double t0 = c.knots.front(), t1 = c.knots.back();
+  const std::size_t nPts = loop->points.size();
+  double worstBow = 0.0;
+  const int nSamp = 4000;
+  for (int i = 0; i <= nSamp; ++i) {
+    const double t = t0 + (t1 - t0) * (double(i) / nSamp);
+    const Point3 p = nmath::curvePoint(c.degree, c.poles, c.knots, t);
+    // nearest node-chord segment.
+    double best = 1e30;
+    for (std::size_t k = 1; k < nPts; ++k) {
+      const Point3& a = loop->points[k - 1].point;
+      const Point3& b = loop->points[k].point;
+      const Vec3 ab{b.x - a.x, b.y - a.y, b.z - a.z};
+      const Vec3 aq{p.x - a.x, p.y - a.y, p.z - a.z};
+      const double den = nmath::dot(ab, ab);
+      double s = den > 0.0 ? nmath::dot(aq, ab) / den : 0.0;
+      s = s < 0.0 ? 0.0 : (s > 1.0 ? 1.0 : s);
+      const Point3 pr{a.x + s * ab.x, a.y + s * ab.y, a.z + s * ab.z};
+      best = std::min(best, nmath::distance(p, pr));
+    }
+    worstBow = std::max(worstBow, best);
+  }
+  CC_CHECK(worstBow < 1e-3);              // densified fit rides the on-locus loop (bow gone)
+  CC_CHECK(loop->curve.maxFitError < 1e-3);
+}
+
 int main() { return cctest::run_all(); }

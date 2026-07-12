@@ -47,6 +47,16 @@ bool wellFormed(const BsplineCurveData& c) {
          static_cast<int>(c.knots.size()) == n + c.degree + 1;
 }
 
+// A well-formed RATIONAL section: well-formed geometry PLUS one strictly-positive weight
+// per pole. (An empty weight vector is non-rational — declined by the rational routines.)
+bool wellFormedRational(const BsplineCurveData& c) {
+  if (!wellFormed(c)) return false;
+  if (c.weights.size() != c.poles.size()) return false;
+  for (double w : c.weights)
+    if (!(w > 0.0)) return false;
+  return true;
+}
+
 // The clamped trajectory domain [a,b] = [first knot, last knot].
 void domainOf(const BsplineCurveData& c, double& a, double& b) {
   a = c.knots.front();
@@ -142,6 +152,68 @@ std::vector<Vec3> rmfNormals(const std::vector<Point3>& x, const std::vector<Dir
   return r;
 }
 
+// Place a copy of `section` at `stations` along the `trajectory` using a rotation-minimizing
+// moving frame. Shared by the non-rational and rational general sweeps: the placement is a
+// RIGID transform (rotate about the section origin, translate to the station point), so the
+// copied section's weights (if any) are preserved EXACTLY. Returns the placed sections, or
+// empty on any station-sampling / degenerate-trajectory failure (the caller declines).
+std::vector<BsplineCurveData> placeSectionsAlongTrajectory(const BsplineCurveData& section,
+                                                           const BsplineCurveData& trajectory,
+                                                           const Dir3& sectionNormal,
+                                                           int stations) {
+  std::vector<BsplineCurveData> placed;
+  if (stations < 2 || !sectionNormal.valid()) return placed;
+
+  double a = 0.0, b = 0.0;
+  domainOf(trajectory, a, b);
+  if (!(b > a)) return placed;  // degenerate domain
+
+  std::vector<Point3> pts;
+  std::vector<Dir3> tans;
+  pts.reserve(stations);
+  tans.reserve(stations);
+  for (int k = 0; k < stations; ++k) {
+    const double t = a + (b - a) * (static_cast<double>(k) / (stations - 1));
+    const PointTangent pt = evalPointTangent(trajectory, t);
+    if (!pt.ok) return {};  // stationary spine point
+    pts.push_back(pt.p);
+    tans.push_back(pt.tangent);
+  }
+
+  // Coincident-trajectory guard: no path to sweep along.
+  double pathLen = 0.0;
+  for (int k = 1; k < stations; ++k) pathLen += distance(pts[k], pts[k - 1]);
+  if (!(pathLen > 1e-12)) return {};
+
+  const std::vector<Vec3> rmf = rmfNormals(pts, tans, sectionNormal.vec());
+
+  // Section reference basis (u0, v0, n0): n0 = the section plane normal.
+  Vec3 u0, v0;
+  orthonormalBasis(sectionNormal, u0, v0);
+  const Vec3 n0 = sectionNormal.vec();
+
+  placed.reserve(stations);
+  for (int k = 0; k < stations; ++k) {
+    const Vec3 wk = tans[k].vec();
+    const Vec3 uk = rmf[k];
+    const Vec3 vk = cross(wk, uk);  // right-handed station basis
+
+    // R_k = [uk vk wk] (columns) · [u0 v0 n0]^T (rows).
+    Mat3 R;
+    for (int rw = 0; rw < 3; ++rw) {
+      R(rw, 0) = uk[rw] * u0.x + vk[rw] * v0.x + wk[rw] * n0.x;
+      R(rw, 1) = uk[rw] * u0.y + vk[rw] * v0.y + wk[rw] * n0.y;
+      R(rw, 2) = uk[rw] * u0.z + vk[rw] * v0.z + wk[rw] * n0.z;
+    }
+    const Transform place(R, pts[k].asVec());
+
+    BsplineCurveData s = section;  // copies degree / knots / WEIGHTS
+    for (Point3& p : s.poles) p = place.applyToPoint(p);
+    placed.push_back(std::move(s));
+  }
+  return placed;
+}
+
 }  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -178,6 +250,42 @@ SweepResult sweepTranslational(const BsplineCurveData& section, const Vec3& swee
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// EXACT rational translational sweep — rational tensor product (section × path).
+// ─────────────────────────────────────────────────────────────────────────────
+
+SweepResult sweepRationalTranslational(const BsplineCurveData& section, const Vec3& sweep) {
+  SweepResult r;
+  if (section.weights.empty()) return r;       // non-rational — use sweepTranslational
+  if (!wellFormedRational(section)) return r;   // malformed / non-positive weight
+  if (isNull(sweep)) return r;                  // null sweep vector — no surface
+
+  const int N = nPolesOf(section);
+
+  // U = the rational section (degree p, section knots, N poles + WEIGHTS). V = degree-1 two
+  // poles {0, sweep} over {0,0,1,1}. The weight is CONSTANT in V (weight(i,0)=weight(i,1)=
+  // section.weights[i]), so the rational iso-curve S(·,v) is EXACTLY the rational section
+  // translated by v·sweep. Row-major, U outer: net[i*2 + j].
+  r.surface.degreeU = section.degree;
+  r.surface.degreeV = 1;
+  r.surface.nPolesU = N;
+  r.surface.nPolesV = 2;
+  r.surface.knotsU = section.knots;
+  r.surface.knotsV = {0.0, 0.0, 1.0, 1.0};
+  r.surface.poles.resize(static_cast<std::size_t>(N) * 2);
+  r.surface.weights.resize(static_cast<std::size_t>(N) * 2);
+  for (int i = 0; i < N; ++i) {
+    const double w = section.weights[i];
+    r.surface.poles[static_cast<std::size_t>(i) * 2 + 0] = section.poles[i];
+    r.surface.poles[static_cast<std::size_t>(i) * 2 + 1] = section.poles[i] + sweep;
+    r.surface.weights[static_cast<std::size_t>(i) * 2 + 0] = w;
+    r.surface.weights[static_cast<std::size_t>(i) * 2 + 1] = w;
+  }
+  r.vParams = {0.0, 1.0};
+  r.ok = true;
+  return r;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // General sweep along a trajectory curve (transform-then-skin, §10.4).
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -191,71 +299,44 @@ SweepResult sweepAlongTrajectory(const BsplineCurveData& section,
   if (!wellFormed(section) || !wellFormed(trajectory)) return r;
   if (!sectionNormal.valid()) return r;                        // no reference normal
 
-  // Sample the trajectory at `stations` params evenly across its clamped domain, taking
-  // each station's point and unit tangent.
-  double a = 0.0, b = 0.0;
-  domainOf(trajectory, a, b);
-  if (!(b > a)) return r;                                      // degenerate domain
-
-  std::vector<Point3> pts;
-  std::vector<Dir3> tans;
-  pts.reserve(stations);
-  tans.reserve(stations);
-  for (int k = 0; k < stations; ++k) {
-    const double t = a + (b - a) * (static_cast<double>(k) / (stations - 1));
-    const PointTangent pt = evalPointTangent(trajectory, t);
-    if (!pt.ok) return r;                                      // stationary spine point
-    pts.push_back(pt.p);
-    tans.push_back(pt.tangent);
-  }
-
-  // Coincident-trajectory guard: if every sampled point equals the first, there is no
-  // path to sweep along (matches skin's coincident-sections decline).
-  double pathLen = 0.0;
-  for (int k = 1; k < stations; ++k) pathLen += distance(pts[k], pts[k - 1]);
-  if (!(pathLen > 1e-12)) return r;
-
-  // Rotation-minimizing normals along the spine, seeded from the section's plane normal.
-  const std::vector<Vec3> rmf = rmfNormals(pts, tans, sectionNormal.vec());
-
-  // Section reference basis (u0, v0, n0): n0 = the section plane normal, (u0,v0) span the
-  // section plane. The placement at station k rotates this basis onto the station basis
-  // (u_k = rmf[k], w_k = t_k, v_k = w_k × u_k), then translates so the section's ORIGIN
-  // maps to the station point. The rotation R_k maps the section basis columns to the
-  // station basis columns: R_k = [u_k v_k w_k] · [u0 v0 n0]^T.
-  Vec3 u0, v0;
-  orthonormalBasis(sectionNormal, u0, v0);
-  const Vec3 n0 = sectionNormal.vec();
-  // Inverse (= transpose) of the section reference basis [u0 v0 n0] (orthonormal).
-  // Rows of B0^T are u0, v0, n0.
-
-  std::vector<BsplineCurveData> placed;
-  placed.reserve(stations);
-  for (int k = 0; k < stations; ++k) {
-    const Vec3 wk = tans[k].vec();
-    const Vec3 uk = rmf[k];
-    const Vec3 vk = cross(wk, uk);  // right-handed station basis
-
-    // R_k = [uk vk wk] (columns) · [u0 v0 n0]^T (rows). Compose column-basis * row-basis.
-    // For a vector p: R_k·p = uk·(u0·p) + vk·(v0·p) + wk·(n0·p).
-    // Build the Mat3 explicitly (m[row][col]).
-    Mat3 R;
-    for (int rw = 0; rw < 3; ++rw) {
-      R(rw, 0) = uk[rw] * u0.x + vk[rw] * v0.x + wk[rw] * n0.x;
-      R(rw, 1) = uk[rw] * u0.y + vk[rw] * v0.y + wk[rw] * n0.y;
-      R(rw, 2) = uk[rw] * u0.z + vk[rw] * v0.z + wk[rw] * n0.z;
-    }
-    // Affine: place the section's ORIGIN at the station point (translate = P_k, rotate
-    // about the section origin). v' = R·v + P_k.
-    const Transform place(R, pts[k].asVec());
-
-    BsplineCurveData s = section;  // copy degree / knots / (empty) weights
-    for (Point3& p : s.poles) p = place.applyToPoint(p);
-    placed.push_back(std::move(s));
-  }
+  // Place the section at K stations along the spine via the rotation-minimizing frame.
+  const std::vector<BsplineCurveData> placed =
+      placeSectionsAlongTrajectory(section, trajectory, sectionNormal, stations);
+  if (static_cast<int>(placed.size()) != stations) return r;   // sampling / degenerate fail
 
   // Skin the K placed sections into one tensor-product surface (Layer 6).
   const SkinResult skin = skinSurface(std::span<const BsplineCurveData>(placed), degreeV);
+  if (!skin.ok) return r;
+
+  r.surface = skin.surface;
+  r.vParams = skin.vParams;
+  r.ok = true;
+  return r;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// General rational sweep (transform-then-rational-skin).
+// ─────────────────────────────────────────────────────────────────────────────
+
+SweepResult sweepRationalAlongTrajectory(const BsplineCurveData& section,
+                                         const BsplineCurveData& trajectory,
+                                         const Dir3& sectionNormal, int stations,
+                                         int degreeV) {
+  SweepResult r;
+  if (stations < 2) return r;                                  // need ≥ 2 stations
+  if (section.weights.empty()) return r;                       // non-rational — decline
+  if (!trajectory.weights.empty()) return r;                   // rational spine — decline
+  if (!wellFormedRational(section) || !wellFormed(trajectory)) return r;
+  if (!sectionNormal.valid()) return r;                        // no reference normal
+
+  // Place the rational section at K stations (rigid transform preserves weights exactly).
+  const std::vector<BsplineCurveData> placed =
+      placeSectionsAlongTrajectory(section, trajectory, sectionNormal, stations);
+  if (static_cast<int>(placed.size()) != stations) return r;   // sampling / degenerate fail
+
+  // Rational-skin the K placed rational sections into one tensor-product NURBS surface.
+  const SkinResult skin =
+      skinRationalSurface(std::span<const BsplineCurveData>(placed), degreeV);
   if (!skin.ok) return r;
 
   r.surface = skin.surface;

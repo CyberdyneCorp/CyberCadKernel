@@ -376,8 +376,13 @@ if(CYBERCAD_BUILD_TESTS)
         # build only under CYBERCAD_HAS_NUMSCI (mirroring test_native_nurbs_fit). Airtight
         # oracles: section containment (surface iso-curve at v_k == section k pointwise
         # ~1e-8), compatibility correctness (compat sections equal originals exactly),
-        # KNOWN-surface round-trip, and honest degenerate/rational guards. Non-rational
-        # scope; rational skinning + general Gordon/network/exact-sweep are residuals.
+        # KNOWN-surface round-trip, and honest degenerate/rational guards. Also RATIONAL
+        # skinning (skinRationalSurface / makeRationalSectionsCompatible): weighted sections
+        # made compatible with the rational-aware Layer-1 elevate/refine (homogeneous), then
+        # interpolated across in homogeneous R⁴ — surface contains every RATIONAL section
+        # pointwise (~1e-9), iso-curves of a swept circle stack are TRUE circles (radius exact),
+        # rational cone/frustum from different-radius circles, non-positive/mismatched-weight
+        # declines. General Gordon-rational + irregular/N-sided networks residual.
         list(APPEND CYBERCAD_TESTS test_native_nurbs_skin)
         set(test_native_nurbs_skin_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_skin.cpp")
@@ -389,8 +394,13 @@ if(CYBERCAD_BUILD_TESTS)
         # gate). Airtight oracles: translational exactness (S(.,v) == section+v*sweep
         # pointwise ~1e-12), station containment (surface contains each transformed section
         # ~1e-8), known ruled/cylinder-like patches vs closed-form, anti-twist frame sanity,
-        # and honest degenerate/rational guards. Non-rational scope; rotational/exact-
-        # BRepFill/variable-section sweeps are residuals.
+        # and honest degenerate/rational guards. Also RATIONAL sweeps: sweepRationalTranslational
+        # is the EXACT rational tensor product (a rational CIRCLE swept along +Z = an EXACT
+        # rational CYLINDER matching the analytic cylinder pointwise ~1e-15 — the strongest
+        # oracle, proves an exact rational surface not a facet), sweepRationalAlongTrajectory
+        # places the rational section by rigid frames (weights preserved) then rational-skins
+        # (station containment ~1e-8); non-positive/mismatched-weight + rational-trajectory
+        # declines. Rotational/exact-BRepFill/variable-section sweeps residual.
         list(APPEND CYBERCAD_TESTS test_native_nurbs_sweep)
         set(test_native_nurbs_sweep_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_sweep.cpp")

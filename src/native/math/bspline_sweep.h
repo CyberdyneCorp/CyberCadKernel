@@ -47,12 +47,17 @@
 // tube sweeps. The section is assumed to lie in a plane with a well-defined normal; that
 // normal is the reference the frame carries.
 //
-// SCOPE — NON-RATIONAL section and trajectory only (all weights = 1). Rational (weighted)
-// sweeps, a ROTATIONAL sweep (a profile revolved — that is exact-rational and a distinct
-// construction), exact GeomFill/BRepFill-class sweeps (an analytically exact swept surface
-// rather than a skinned approximation of stations), and a VARIABLE section (a section that
-// morphs along the spine) are documented residuals for later slices — this module never
-// fakes them. See docs/NURBS-SCOPE.md Layer-6 row.
+// SCOPE — NON-RATIONAL section/trajectory (`sweepTranslational` / `sweepAlongTrajectory`),
+// PLUS the RATIONAL (weighted-section) case: `sweepRationalTranslational` is the EXACT rational
+// tensor product of a rational section (U) with a degree-1 path (V) — the weights are constant
+// in V so every iso-curve is the rational section translated, machine-exact (this is the oracle
+// that turns a rational CIRCLE into an exact rational CYLINDER); `sweepRationalAlongTrajectory`
+// places the rational section at K stations by RIGID transforms (which preserve the weights
+// exactly) and RATIONAL-SKINS them via `skinRationalSurface`. A ROTATIONAL sweep (a profile
+// revolved — a distinct exact-rational construction), exact GeomFill/BRepFill-class sweeps (an
+// analytically exact swept surface rather than a skinned approximation of stations), and a
+// VARIABLE section (a section that morphs along the spine) are documented residuals for later
+// slices — this module never fakes them. See docs/NURBS-SCOPE.md Layer-6 row.
 //
 // GUARD — the general sweep composes skinSurface, which solves linear systems through the
 // numsci facade, so the whole implementation TU is under CYBERCAD_HAS_NUMSCI (exactly like
@@ -133,6 +138,45 @@ SweepResult sweepAlongTrajectory(const BsplineCurveData& section,
                                  const BsplineCurveData& trajectory,
                                  const Dir3& sectionNormal, int stations = 16,
                                  int degreeV = 3);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rational swept surfaces (weighted section).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// EXACT rational translational sweep — the rational analogue of sweepTranslational.
+/// `section` MUST be rational (non-empty, strictly-positive weights, one per pole). Returns
+/// the EXACT rational tensor-product surface: U = the rational section (degree p, the
+/// section's knots/poles/WEIGHTS), V = a degree-1 two-pole line from 0 to `sweep`. The
+/// weight net is constant in V — weight(i,0) = weight(i,1) = section.weights[i] — and the
+/// pole net is pole(i,0) = section.poles[i], pole(i,1) = section.poles[i] + sweep, so the
+/// rational iso-curve S(·, v) is EXACTLY the rational section translated by v·sweep. No
+/// fitting, machine-exact. This is the strongest rational oracle: a rational quadratic
+/// CIRCLE (cos-half-angle middle weights) swept translationally is an EXACT rational
+/// CYLINDER, matching the analytic cylinder pointwise.
+///
+/// vParams = {0, 1}. Declines (`ok=false`, no crash) on a NON-rational section (empty
+/// weights — use sweepTranslational), a non-positive/mismatched weight, an empty/malformed
+/// section, or a null sweep vector.
+SweepResult sweepRationalTranslational(const BsplineCurveData& section, const Vec3& sweep);
+
+/// General rational sweep along a `trajectory` — the rational analogue of
+/// sweepAlongTrajectory. `section` MUST be rational (strictly-positive weights); the
+/// trajectory is NON-rational (it only provides the spine point/tangent for the moving
+/// frame). Places the rational section at `stations` along the trajectory with the SAME
+/// rotation-minimizing moving frame (double-reflection) — a RIGID transform, which
+/// preserves the section's weights EXACTLY — then RATIONAL-SKINS the placed rational
+/// sections via skinRationalSurface.
+///
+/// GUARANTEE (the rational containment oracle, inherited from skinRationalSurface): the
+/// swept rational surface contains each transformed rational section at its station
+/// parameter to skinning tolerance. Declines (`ok=false`) on: fewer than 2 stations; a
+/// NON-rational or non-positive-weight section; a rational trajectory; an empty/malformed
+/// section or trajectory; a degenerate (coincident-station) trajectory; or a downstream
+/// rational-skin failure.
+SweepResult sweepRationalAlongTrajectory(const BsplineCurveData& section,
+                                         const BsplineCurveData& trajectory,
+                                         const Dir3& sectionNormal, int stations = 16,
+                                         int degreeV = 3);
 
 }  // namespace cybercad::native::math
 

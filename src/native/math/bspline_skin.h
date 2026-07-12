@@ -25,10 +25,16 @@
 //   control-point index i interpolate a degree-q B-spline in V through the K control
 //   points {P_i^k}. The interpolated curves' control points form the surface net.
 //
-// SCOPE — NON-RATIONAL sections only (all weights = 1). Rational (weighted) skinning
-// (interpolating the weights too), and general Gordon/network surfacing and exact
-// swept surfaces, are documented residuals for later slices — this module never fakes
-// them. See docs/NURBS-SCOPE.md Layer-6 row.
+// SCOPE — NON-RATIONAL sections (all weights = 1) via `skinSurface`, PLUS the RATIONAL
+// (weighted) case via `skinRationalSurface`: sections carrying prescribed weights are made
+// compatible with the rational-aware Layer-1 `elevateDegreeCurve`/`refineKnotCurve` (already
+// homogeneous — the weights ride through the exact ops), then interpolated ACROSS the
+// sections in HOMOGENEOUS (wx,wy,wz,w) space (the SAME collocation matrix as the non-rational
+// skin, solved for all four homogeneous coordinates), and projected back to a rational
+// `BsplineSurfaceData` (poles + one weight per pole). Because the weight coordinate is
+// interpolated exactly like x/y/z, the surface's iso-curve at v = v_k is EXACTLY the rational
+// section k. General Gordon/network surfacing is a documented residual for later slices —
+// this module never fakes it. See docs/NURBS-SCOPE.md Layer-6 row.
 //
 // GUARD — the solve-bearing routine is compiled only when CYBERCAD_HAS_NUMSCI is
 // defined (the numsci facade is the sole linear-algebra dependency, via the Layer-7
@@ -74,6 +80,17 @@ struct SectionCompatibility {
 /// section, or a degenerate (degree < 1) section also declines.
 SectionCompatibility makeSectionsCompatible(std::span<const BsplineCurveData> sections);
 
+/// RATIONAL analogue of makeSectionsCompatible — make weighted (rational) `sections`
+/// compatible. Every section MUST be rational (non-empty `weights`, one weight per pole,
+/// every weight strictly positive); a non-rational section makes the call decline. The
+/// same two exact Layer-1 ops are used — `elevateDegreeCurve` and `refineKnotCurve` are
+/// rational-aware (they run on the homogeneous R⁴ net so the weights ride through exactly)
+/// — so after compatibilization every returned section shares degree + knots + control
+/// count AND still equals its ORIGINAL rational curve pointwise (weights included).
+/// `r.sections` therefore carry weights; `r.ok=false` on a non-rational, empty, degenerate,
+/// or non-positive-weight section.
+SectionCompatibility makeRationalSectionsCompatible(std::span<const BsplineCurveData> sections);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Skinning / lofting.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -112,6 +129,28 @@ struct SkinResult {
 /// sections, or an all-coincident set of sections (no V length to normalize) — honest
 /// guards, never a crash.
 SkinResult skinSurface(std::span<const BsplineCurveData> sections, int degreeV = 3);
+
+/// RATIONAL SKIN (loft) a tensor-product NURBS surface through weighted `sections` — the
+/// rational analogue of skinSurface. Every input section MUST be rational (non-empty,
+/// strictly-positive weights). Steps mirror the non-rational skin, but in HOMOGENEOUS space:
+///   1. `makeRationalSectionsCompatible(sections)` → every section shares degree p, knots,
+///      and control-point count N, still equal to its original rational curve exactly.
+///   2. Assign section parameters `v_k ∈ [0,1]` by chord length across the sections'
+///      EUCLIDEAN control polygons (the geometry the designer sees), build averaging V-knots.
+///   3. For each control-point index `i`, lift the K section poles to homogeneous R⁴
+///      `(w·P_i^k, w_i^k)` and interpolate a degree-`degreeV` B-spline in V through them (the
+///      SAME collocation matrix as the non-rational skin, solved for all FOUR homogeneous
+///      coordinates — the fourth interpolates the weights). Project each solved control point
+///      back to (pole, weight).
+///   4. Assemble the rational `BsplineSurfaceData` (poles + one weight per pole).
+///
+/// GUARANTEE (the rational containment oracle): the surface's iso-curve at `v = v_k`,
+/// evaluated as a rational NURBS, is EXACTLY the rational compatibilized section `k` (the
+/// surface CONTAINS every input rational section). `degreeV` is clamped to `K−1`. Declines
+/// (`ok=false`) on: fewer than two sections; a NON-rational or non-positive-weight section;
+/// an all-coincident set of sections; or a projected non-positive control weight (a
+/// documented guard — never divide by ≤ 0, never a faked rational surface).
+SkinResult skinRationalSurface(std::span<const BsplineCurveData> sections, int degreeV = 3);
 
 }  // namespace cybercad::native::math
 

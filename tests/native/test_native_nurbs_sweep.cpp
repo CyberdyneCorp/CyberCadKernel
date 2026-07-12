@@ -66,6 +66,45 @@ static Point3 evalSurface(const BsplineSurfaceData& s, double u, double v) {
   SurfaceGrid g{std::span<const Point3>(s.poles), s.nPolesU, s.nPolesV};
   return surfacePoint(s.degreeU, s.degreeV, g, s.knotsU, s.knotsV, u, v);
 }
+static Point3 evalRatCurve(const BsplineCurveData& c, double u) {
+  return nurbsCurvePoint(c.degree, c.poles, c.weights, c.knots, u);
+}
+static Point3 evalRatSurface(const BsplineSurfaceData& s, double u, double v) {
+  SurfaceGrid g{std::span<const Point3>(s.poles), s.nPolesU, s.nPolesV};
+  return nurbsSurfacePoint(s.degreeU, s.degreeV, g, s.weights, s.knotsU, s.knotsV, u, v);
+}
+// Max distance between the RATIONAL surface iso-curve S(·,v) and a RATIONAL curve.
+static double ratIsoVsCurveMaxDev(const BsplineSurfaceData& s, double v,
+                                  const BsplineCurveData& c, int nS = 200) {
+  double worst = 0.0;
+  for (int i = 0; i <= nS; ++i) {
+    const double u = static_cast<double>(i) / nS;
+    worst = std::max(worst, distance(evalRatSurface(s, u, v), evalRatCurve(c, u)));
+  }
+  return worst;
+}
+static BsplineCurveData ratTranslated(const BsplineCurveData& c, const Vec3& d) {
+  BsplineCurveData o = c;  // keeps weights
+  for (Point3& p : o.poles) p = p + d;
+  return o;
+}
+
+// An EXACT rational quadratic FULL circle of `radius` in the XY plane (z=0), θ ∈ [0,2π]:
+// the standard 9-pole NURBS circle (four quarter Bézier arcs). Corner poles on the circle
+// (w=1), between-corner poles at the polygon corners (w=√2/2). Evaluates to a TRUE circle —
+// the airtight rational conic that turns into an exact rational cylinder under a sweep.
+static BsplineCurveData ratFullCircleXY(double radius) {
+  const double s = std::sqrt(2.0) / 2.0;
+  const double R = radius;
+  BsplineCurveData c;
+  c.degree = 2;
+  // 9 poles ⇒ 12 knots; four segments at 0,¼,½,¾,1 each with interior multiplicity 2.
+  c.knots = {0, 0, 0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1, 1, 1};
+  c.poles = {{R, 0, 0},   {R, R, 0},   {0, R, 0},   {-R, R, 0}, {-R, 0, 0},
+             {-R, -R, 0}, {0, -R, 0},  {R, -R, 0},  {R, 0, 0}};
+  c.weights = {1, s, 1, s, 1, s, 1, s, 1};
+  return c;
+}
 
 // Max distance between the surface iso-curve S(·,v) and a curve over a dense u-sample.
 static double isoVsCurveMaxDev(const BsplineSurfaceData& s, double v,
@@ -351,6 +390,147 @@ int main() {
                "translational declines on malformed section");
     expectTrue(!sweepAlongTrajectory(bad, traj, normal, 8, 3).ok,
                "general declines on malformed section");
+  }
+
+  // ═══ 6. RATIONAL TRANSLATIONAL SWEEP — EXACT RATIONAL CYLINDER (strongest oracle) ═══
+  //
+  // Sweep a rational quadratic CIRCLE (radius R, XY plane, exact NURBS) translationally along
+  // +Z by height H. The result MUST be an EXACT rational cylinder: for every (u,v) the point
+  // S(u,v) lies at radius R from the axis AND at height v·H. We compare it BOTH against the
+  // section-translated rational iso-curve AND against the closed-form analytic cylinder point
+  // computed from the circle's own angle — the definitive proof this is an exact rational
+  // surface (not a faceted approximation).
+  {
+    const double R = 2.5, H = 6.0;
+    const BsplineCurveData circ = ratFullCircleXY(R);
+    const Vec3 axis{0, 0, H};
+    SweepResult r = sweepRationalTranslational(circ, axis);
+    expectTrue(r.ok, "sweepRationalTranslational ok (rational circle)");
+    expectTrue(!r.surface.weights.empty(), "rational cylinder IS rational");
+    expectTrue(r.surface.weights.size() == r.surface.poles.size(),
+               "one weight per cylinder pole");
+    expectTrue(r.surface.degreeU == 2 && r.surface.degreeV == 1,
+               "rational cylinder degree (2 × 1)");
+    expectTrue(r.surface.nPolesV == 2, "rational cylinder V has 2 poles");
+
+    // (i) Each height iso == the rational circle translated by v·axis (rational-exact).
+    double worstIso = 0.0;
+    for (int j = 0; j <= 16; ++j) {
+      const double v = static_cast<double>(j) / 16.0;
+      worstIso = std::max(worstIso, ratIsoVsCurveMaxDev(r.surface, v, ratTranslated(circ, axis * v)));
+    }
+    expectLE(worstIso, 1e-12, "rational cylinder: each iso == rational circle + v*axis (exact)");
+
+    // (ii) Against the ANALYTIC cylinder: every surface point at radius R and height v·H, and
+    // matching the exact analytic point derived from the SAME circle's parameter angle. The
+    // circle's own point gives the (x,y) at radius R; the swept point must equal that (x,y) at
+    // height v·H — the closed-form rational cylinder.
+    double worstAna = 0.0, worstRad = 0.0;
+    for (int iu = 0; iu <= 64; ++iu)
+      for (int iv = 0; iv <= 16; ++iv) {
+        const double u = static_cast<double>(iu) / 64.0;
+        const double v = static_cast<double>(iv) / 16.0;
+        const Point3 sp = evalRatSurface(r.surface, u, v);
+        // Analytic reference: the circle profile point (exact rational circle) lifted to z=v*H.
+        const Point3 cp = evalRatCurve(circ, u);
+        const Point3 ana{cp.x, cp.y, v * H};
+        worstAna = std::max(worstAna, distance(sp, ana));
+        worstRad = std::max(worstRad, std::fabs(std::hypot(sp.x, sp.y) - R));
+      }
+    expectLE(worstAna, 1e-12,
+             "EXACT rational cylinder matches analytic (circle profile × v*H) POINTWISE");
+    expectLE(worstRad, 1e-12, "rational cylinder: every point at radius R (true circle, not faceted)");
+    std::printf("INFO exact-rational-cylinder analytic dev = %.3e, radius err = %.3e\n",
+                worstAna, worstRad);
+    expectTrue(r.vParams.size() == 2 && r.vParams[0] == 0.0 && r.vParams[1] == 1.0,
+               "rational cylinder vParams == {0,1}");
+  }
+
+  // ═══ 7. RATIONAL GENERAL SWEEP — station containment ════════════════════════
+  // Sweep a rational circle along a straight +Z spine. The RMF keeps the section fixed, so
+  // the general rational sweep contains each transformed rational section, AND matches the
+  // rational translational cylinder pointwise (anti-twist, rational).
+  {
+    const double R = 1.5;
+    const BsplineCurveData circ = ratFullCircleXY(R);
+    const Vec3 from{0, 0, 0}, to{0, 0, 5};
+    const BsplineCurveData traj = straightTrajectory(from, to);
+    const Dir3 normal(0, 0, 1);
+
+    SweepResult r = sweepRationalAlongTrajectory(circ, traj, normal, 6, 3);
+    expectTrue(r.ok, "sweepRationalAlongTrajectory ok (straight spine)");
+    expectTrue(!r.surface.weights.empty(), "general rational sweep IS rational");
+    expectTrue(r.vParams.size() == 6, "one v-param per rational station");
+
+    // Station containment: each placed rational section is the circle translated by station z.
+    double worst = 0.0;
+    for (int k = 0; k < 6; ++k) {
+      const double t = static_cast<double>(k) / 5.0;
+      const Vec3 stationPt = from + (to - from) * t;
+      worst = std::max(worst, ratIsoVsCurveMaxDev(r.surface, r.vParams[k],
+                                                  ratTranslated(circ, stationPt)));
+    }
+    expectLE(worst, 1e-8, "general rational sweep CONTAINS each transformed rational section");
+    std::printf("INFO general rational-sweep station containment worst dev = %.3e\n", worst);
+
+    // Every surface point still on the true cylinder (radius R) — proves the rational skin
+    // preserved the conic through the transform-then-skin composition.
+    double worstRad = 0.0;
+    for (int iu = 0; iu <= 40; ++iu)
+      for (double vk : r.vParams) {
+        const double u = static_cast<double>(iu) / 40.0;
+        const Point3 p = evalRatSurface(r.surface, u, vk);
+        worstRad = std::max(worstRad, std::fabs(std::hypot(p.x, p.y) - R));
+      }
+    expectLE(worstRad, 1e-8, "general rational sweep iso-circles stay at radius R");
+  }
+
+  // ═══ 8. RATIONAL SWEEP GUARDS ═══════════════════════════════════════════════
+  {
+    const BsplineCurveData circ = ratFullCircleXY(2.0);
+    const BsplineCurveData nonrat = sectionCubicXY();  // no weights
+    const BsplineCurveData traj = straightTrajectory({0, 0, 0}, {0, 0, 5});
+    const Dir3 normal(0, 0, 1);
+
+    // Non-rational section declined by the rational routines (wrong path).
+    expectTrue(!sweepRationalTranslational(nonrat, Vec3{0, 0, 1}).ok,
+               "rational translational declines on NON-rational section");
+    expectTrue(!sweepRationalAlongTrajectory(nonrat, traj, normal, 6, 3).ok,
+               "rational general declines on NON-rational section");
+
+    // Null sweep declines.
+    expectTrue(!sweepRationalTranslational(circ, Vec3{0, 0, 0}).ok,
+               "rational translational declines on null sweep");
+
+    // Non-positive weight declines.
+    BsplineCurveData badW = circ;
+    badW.weights[3] = 0.0;
+    expectTrue(!sweepRationalTranslational(badW, Vec3{0, 0, 1}).ok,
+               "rational translational declines on non-positive weight");
+    expectTrue(!sweepRationalAlongTrajectory(badW, traj, normal, 6, 3).ok,
+               "rational general declines on non-positive weight");
+
+    // Mismatched weight count declines.
+    BsplineCurveData mism = circ;
+    mism.weights.pop_back();
+    expectTrue(!sweepRationalTranslational(mism, Vec3{0, 0, 1}).ok,
+               "rational translational declines on weight/pole mismatch");
+
+    // Rational trajectory declines (spine must be non-rational).
+    BsplineCurveData ratTraj = traj;
+    ratTraj.weights.assign(ratTraj.poles.size(), 1.0);
+    expectTrue(!sweepRationalAlongTrajectory(circ, ratTraj, normal, 6, 3).ok,
+               "rational general declines on rational trajectory");
+
+    // < 2 stations declines.
+    expectTrue(!sweepRationalAlongTrajectory(circ, traj, normal, 1, 3).ok,
+               "rational general declines with <2 stations");
+
+    // Coincident trajectory declines.
+    BsplineCurveData deadTraj = traj;
+    for (Point3& p : deadTraj.poles) p = Point3{1, 1, 1};
+    expectTrue(!sweepRationalAlongTrajectory(circ, deadTraj, normal, 6, 3).ok,
+               "rational general declines on coincident trajectory");
   }
 
   // ── report ──

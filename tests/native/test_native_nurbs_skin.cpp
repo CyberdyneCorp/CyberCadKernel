@@ -63,6 +63,44 @@ static Point3 evalSurface(const BsplineSurfaceData& s, double u, double v) {
   SurfaceGrid g{std::span<const Point3>(s.poles), s.nPolesU, s.nPolesV};
   return surfacePoint(s.degreeU, s.degreeV, g, s.knotsU, s.knotsV, u, v);
 }
+// Rational (NURBS) evaluators — used for the weighted skinning oracles.
+static Point3 evalRatCurve(const BsplineCurveData& c, double u) {
+  return nurbsCurvePoint(c.degree, c.poles, c.weights, c.knots, u);
+}
+static Point3 evalRatSurface(const BsplineSurfaceData& s, double u, double v) {
+  SurfaceGrid g{std::span<const Point3>(s.poles), s.nPolesU, s.nPolesV};
+  return nurbsSurfacePoint(s.degreeU, s.degreeV, g, s.weights, s.knotsU, s.knotsV, u, v);
+}
+// Max distance between the RATIONAL surface iso-curve S(·,v) and a RATIONAL curve.
+static double ratIsoVsCurveMaxDev(const BsplineSurfaceData& s, double v,
+                                  const BsplineCurveData& c, int nS = 200) {
+  double worst = 0.0;
+  for (int i = 0; i <= nS; ++i) {
+    const double u = static_cast<double>(i) / nS;
+    worst = std::max(worst, distance(evalRatSurface(s, u, v), evalRatCurve(c, u)));
+  }
+  return worst;
+}
+
+// An EXACT rational quadratic HALF-circle (semicircle) of `radius` centered at (cx,cy) in the
+// plane z = zPlane, spanning θ ∈ [0, π]. 5 poles, knots {0,0,0,0.5,0.5,1,1,1} (two quarter
+// Bézier arcs joined). Middle-of-each-quarter poles carry weight √2/2; the shared/mid pole is
+// exact. This evaluates as a TRUE circle (the airtight rational conic).
+static BsplineCurveData ratHalfCircle(double radius, double cx, double cy, double zPlane) {
+  const double s = std::sqrt(2.0) / 2.0;  // cos(45°) — quarter-arc middle weight
+  BsplineCurveData c;
+  c.degree = 2;
+  c.knots = {0, 0, 0, 0.5, 0.5, 1, 1, 1};  // 5 poles = 8 knots − 2 − 1
+  // Quarter-arc control polygons (unit circle), θ: 0→90→180. Corner poles on the circle,
+  // between-corner poles at the polygon corners (weight √2/2).
+  c.poles = {{cx + radius, cy + 0, zPlane},          // θ=0    (w=1)
+             {cx + radius, cy + radius, zPlane},      // corner (w=√2/2)
+             {cx + 0, cy + radius, zPlane},           // θ=90   (w=1)
+             {cx - radius, cy + radius, zPlane},      // corner (w=√2/2)
+             {cx - radius, cy + 0, zPlane}};          // θ=180  (w=1)
+  c.weights = {1.0, s, 1.0, s, 1.0};
+  return c;
+}
 
 // Max pointwise distance between two curves over a dense u-sample of [0,1].
 static double curveMaxDev(const BsplineCurveData& a, const BsplineCurveData& b, int nS = 200) {
@@ -347,6 +385,137 @@ int main() {
       for (std::size_t k = 0; k < recover.size(); ++k)
         worst = std::max(worst, isoVsCurveMaxDev(rr.surface, rr.vParams[k], comp.sections[k]));
       expectLE(worst, 1e-8, "recovered pair: sections still contained exactly");
+    }
+  }
+
+  // ═══ 5. RATIONAL SKINNING ═══════════════════════════════════════════════════
+  //
+  // The rational skin lifts every section to homogeneous R⁴, interpolates across the
+  // sections there, and projects back to a rational surface. Its oracles mirror the
+  // non-rational ones, evaluated as rational NURBS.
+
+  // 5a. RATIONAL CONTAINMENT — skin a stack of EXACT rational semicircles of the SAME
+  // radius; the rational surface's iso-curve at v_k reproduces rational section k pointwise.
+  {
+    std::vector<BsplineCurveData> secs = {
+        ratHalfCircle(2.0, 0.0, 0.0, 0.0), ratHalfCircle(2.0, 0.0, 0.0, 1.0),
+        ratHalfCircle(2.0, 0.0, 0.0, 2.0), ratHalfCircle(2.0, 0.0, 0.0, 3.0)};
+    SkinResult r = skinRationalSurface(secs, 3);
+    expectTrue(r.ok, "skinRationalSurface ok (4 rational semicircles)");
+    expectTrue(!r.surface.weights.empty(), "rational skin surface IS rational");
+    expectTrue(r.surface.weights.size() == r.surface.poles.size(),
+               "one weight per surface pole");
+    expectTrue(r.surface.degreeU == 2, "rational skin U degree == section degree (2)");
+    expectTrue(r.vParams.size() == secs.size(), "one v-param per rational section");
+
+    // Compatible rational sections the surface contains exactly.
+    SectionCompatibility comp = makeRationalSectionsCompatible(secs);
+    expectTrue(comp.ok, "rational compat ok");
+    double worst = 0.0;
+    for (std::size_t k = 0; k < secs.size(); ++k)
+      worst = std::max(worst, ratIsoVsCurveMaxDev(r.surface, r.vParams[k], comp.sections[k]));
+    expectLE(worst, 1e-9, "RATIONAL surface iso at v_k == rational section k POINTWISE");
+    std::printf("INFO rational containment worst dev = %.3e over %zu sections\n",
+                worst, secs.size());
+
+    // Contains the ORIGINAL rational sections too (compat == original, rational-exact).
+    double worstOrig = 0.0;
+    for (std::size_t k = 0; k < secs.size(); ++k)
+      worstOrig = std::max(worstOrig, ratIsoVsCurveMaxDev(r.surface, r.vParams[k], secs[k]));
+    expectLE(worstOrig, 1e-9, "rational skin contains the ORIGINAL rational sections too");
+
+    // Each contained iso-curve is a TRUE circle: every point at radius 2 from the axis.
+    double worstRad = 0.0;
+    for (double vk : r.vParams)
+      for (int i = 0; i <= 100; ++i) {
+        const double u = static_cast<double>(i) / 100.0;
+        const Point3 p = evalRatSurface(r.surface, u, vk);
+        worstRad = std::max(worstRad, std::fabs(std::hypot(p.x, p.y) - 2.0));
+      }
+    expectLE(worstRad, 1e-9, "rational skin iso-curves are TRUE circles (radius exact)");
+    std::printf("INFO rational skin circle-radius worst err = %.3e\n", worstRad);
+  }
+
+  // 5b. RATIONAL CONE / FRUSTUM — skin rational circles of DIFFERENT radii (a truncated
+  // cone). The surface contains each rational circle exactly, and each iso is a true circle
+  // of the prescribed radius. This proves rational skinning across a varying-radius family.
+  {
+    std::vector<BsplineCurveData> secs = {ratHalfCircle(1.0, 0.0, 0.0, 0.0),
+                                          ratHalfCircle(2.0, 0.0, 0.0, 2.0),
+                                          ratHalfCircle(3.5, 0.0, 0.0, 4.0)};
+    const double radii[] = {1.0, 2.0, 3.5};
+    SkinResult r = skinRationalSurface(secs, 2);
+    expectTrue(r.ok, "skinRationalSurface ok (rational frustum, 3 radii)");
+    expectTrue(!r.surface.weights.empty(), "frustum surface is rational");
+
+    SectionCompatibility comp = makeRationalSectionsCompatible(secs);
+    double worst = 0.0, worstRad = 0.0;
+    for (std::size_t k = 0; k < secs.size(); ++k) {
+      worst = std::max(worst, ratIsoVsCurveMaxDev(r.surface, r.vParams[k], comp.sections[k]));
+      for (int i = 0; i <= 100; ++i) {
+        const double u = static_cast<double>(i) / 100.0;
+        const Point3 p = evalRatSurface(r.surface, u, r.vParams[k]);
+        worstRad = std::max(worstRad, std::fabs(std::hypot(p.x, p.y) - radii[k]));
+      }
+    }
+    expectLE(worst, 1e-9, "rational frustum contains each rational circle POINTWISE");
+    expectLE(worstRad, 1e-9, "rational frustum: each ring iso is a true circle of its radius");
+    std::printf("INFO rational frustum containment %.3e, radius err %.3e\n", worst, worstRad);
+  }
+
+  // 5c. RATIONAL DEGENERATE / GUARD checks.
+  {
+    // Non-rational sections declined by the rational skin (wrong path).
+    std::vector<BsplineCurveData> nonrat = {sectionCubic(0.0, 0.0), sectionCubic(1.0, 0.0)};
+    expectTrue(!skinRationalSurface(nonrat).ok,
+               "rational skin declines on NON-rational sections");
+    expectTrue(!makeRationalSectionsCompatible(nonrat).ok,
+               "rational compat declines on non-rational sections");
+
+    // Non-positive weight declined honestly.
+    BsplineCurveData badW = ratHalfCircle(2.0, 0.0, 0.0, 0.0);
+    badW.weights[2] = -0.5;  // negative weight
+    std::vector<BsplineCurveData> withBad = {badW, ratHalfCircle(2.0, 0.0, 0.0, 1.0)};
+    expectTrue(!skinRationalSurface(withBad).ok,
+               "rational skin declines on non-positive weight (honest guard)");
+    expectTrue(!makeRationalSectionsCompatible(withBad).ok,
+               "rational compat declines on non-positive weight");
+
+    // Mismatched weight count declined.
+    BsplineCurveData mism = ratHalfCircle(2.0, 0.0, 0.0, 0.0);
+    mism.weights.pop_back();  // one fewer weight than poles
+    std::vector<BsplineCurveData> withMism = {mism, ratHalfCircle(2.0, 0.0, 0.0, 1.0)};
+    expectTrue(!skinRationalSurface(withMism).ok,
+               "rational skin declines on weight/pole count mismatch");
+
+    // < 2 rational sections declines.
+    std::vector<BsplineCurveData> one = {ratHalfCircle(2.0, 0.0, 0.0, 0.0)};
+    expectTrue(!skinRationalSurface(one).ok, "rational skin declines with <2 sections");
+
+    // Coincident rational sections → no V length → decline.
+    std::vector<BsplineCurveData> same = {ratHalfCircle(2.0, 0.0, 0.0, 1.0),
+                                          ratHalfCircle(2.0, 0.0, 0.0, 1.0)};
+    expectTrue(!skinRationalSurface(same).ok,
+               "rational skin declines on coincident rational sections");
+
+    // Mixed-degree RATIONAL sections still compatibilize + skin (rational elevate is exact):
+    // a rational circle (degree 2) + a degree-3 rational curve share a domain [0,1].
+    BsplineCurveData rat3;  // degree-3 rational curve on [0,1]
+    rat3.degree = 3;
+    rat3.knots = {0, 0, 0, 0, 0.5, 1, 1, 1, 1};  // 5 poles
+    rat3.poles = {{3, 0, 5}, {2, 2, 5}, {0, 3, 5}, {-2, 2, 5}, {-3, 0, 5}};
+    rat3.weights = {1.0, 0.8, 1.2, 0.8, 1.0};
+    std::vector<BsplineCurveData> mixed = {ratHalfCircle(3.0, 0.0, 0.0, 0.0), rat3};
+    SkinResult rmix = skinRationalSurface(mixed, 1);
+    expectTrue(rmix.ok, "rational skin ok on mixed-degree rational sections");
+    if (rmix.ok) {
+      SectionCompatibility comp = makeRationalSectionsCompatible(mixed);
+      expectTrue(comp.degree == 3, "mixed rational compat raises to degree 3");
+      double worst = 0.0;
+      for (std::size_t k = 0; k < mixed.size(); ++k)
+        worst = std::max(worst, ratIsoVsCurveMaxDev(rmix.surface, rmix.vParams[k],
+                                                    comp.sections[k]));
+      expectLE(worst, 1e-9, "mixed-degree rational loft contains every rational section");
     }
   }
 

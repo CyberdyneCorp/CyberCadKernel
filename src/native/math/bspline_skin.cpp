@@ -164,6 +164,55 @@ bool interpolateAcrossV(const std::vector<BsplineCurveData>& sec, int N,
   return true;
 }
 
+// ── Rational V-interpolation in homogeneous R⁴ ────────────────────────────────
+// Same collocation matrix A as interpolateAcrossV, but each section pole is lifted to
+// the homogeneous point (w·P, w) and ALL FOUR coordinates are solved (the 4th yields the
+// control weights). The result net is projected back to (pole, weight): a projected
+// non-positive control weight clears `ok` (never divide by ≤ 0). Layout of the outputs:
+// row-major U (i) outer, V (j) inner, [i*K + j].
+bool interpolateAcrossVRational(const std::vector<BsplineCurveData>& sec, int N,
+                                const std::vector<double>& v, const std::vector<double>& V,
+                                int q, std::vector<Point3>& netPoles,
+                                std::vector<double>& netWeights) {
+  const int K = static_cast<int>(sec.size());
+  const int lastPole = K - 1;
+
+  // Collocation matrix A(k,j) = N_{j,q}(v_k), row-major K×K (shared by every index/coord).
+  std::vector<double> A(static_cast<std::size_t>(K) * K, 0.0);
+  std::vector<double> Nb(q + 1);
+  for (int k = 0; k < K; ++k) {
+    const int span = findSpan(lastPole, q, v[k], V);
+    basisFuns(span, v[k], q, V, Nb);
+    for (int j = 0; j <= q; ++j)
+      A[static_cast<std::size_t>(k) * K + (span - q + j)] = Nb[j];
+  }
+
+  netPoles.assign(static_cast<std::size_t>(N) * K, Point3{});
+  netWeights.assign(static_cast<std::size_t>(N) * K, 0.0);
+  std::vector<double> bx(K), by(K), bz(K), bw(K);
+  for (int i = 0; i < N; ++i) {
+    for (int k = 0; k < K; ++k) {
+      const Point3 p = sec[k].poles[i];
+      const double w = sec[k].weights[i];  // rational: one weight per pole (positive)
+      bx[k] = w * p.x; by[k] = w * p.y; bz[k] = w * p.z; bw[k] = w;
+    }
+    const std::vector<double> cx = lin_solve(A, K, bx);
+    const std::vector<double> cy = lin_solve(A, K, by);
+    const std::vector<double> cz = lin_solve(A, K, bz);
+    const std::vector<double> cw = lin_solve(A, K, bw);
+    if (static_cast<int>(cx.size()) != K || static_cast<int>(cy.size()) != K ||
+        static_cast<int>(cz.size()) != K || static_cast<int>(cw.size()) != K)
+      return false;  // singular V-collocation
+    for (int j = 0; j < K; ++j) {
+      if (!(cw[j] > 0.0)) return false;  // projected weight ≤ 0 — documented guard
+      const std::size_t idx = static_cast<std::size_t>(i) * K + j;
+      netPoles[idx] = {cx[j] / cw[j], cy[j] / cw[j], cz[j] / cw[j]};
+      netWeights[idx] = cw[j];
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -218,6 +267,64 @@ SectionCompatibility makeSectionsCompatible(std::span<const BsplineCurveData> se
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Rational section compatibility (§10.3, weighted): the SAME exact Layer-1 ops —
+// elevateDegreeCurve / refineKnotCurve are rational-aware (homogeneous R⁴ core), so the
+// weights ride through both operations exactly. Requires every section rational with
+// strictly-positive weights.
+// ─────────────────────────────────────────────────────────────────────────────
+
+SectionCompatibility makeRationalSectionsCompatible(std::span<const BsplineCurveData> sections) {
+  SectionCompatibility r;
+  const int K = static_cast<int>(sections.size());
+  if (K < 1) return r;
+
+  // Rational scope + basic validity guard (mirror the non-rational path, inverted).
+  int maxDeg = 0;
+  for (const BsplineCurveData& c : sections) {
+    if (c.weights.empty()) return r;  // non-rational section — this is the rational path
+    if (c.degree < 1 || c.poles.empty()) return r;
+    if (c.weights.size() != c.poles.size()) return r;  // one weight per pole
+    for (double w : c.weights)
+      if (!(w > 0.0)) return r;  // non-positive weight — decline honestly
+    if (static_cast<int>(c.knots.size()) != nPolesOf(c) + c.degree + 1 || nPolesOf(c) < 1)
+      return r;  // malformed knot vector
+    maxDeg = std::max(maxDeg, c.degree);
+  }
+
+  // Step 1 — raise every section to the common max degree (exact, rational-aware).
+  std::vector<BsplineCurveData> raised;
+  raised.reserve(K);
+  for (const BsplineCurveData& c : sections)
+    raised.push_back((c.degree == maxDeg) ? c : elevateDegreeCurve(c, maxDeg - c.degree));
+
+  // Step 2 — merge every section onto the UNION knot vector (exact refinement, rational).
+  const std::vector<KnotMult> uni = knotUnion(raised);
+  std::vector<BsplineCurveData> compat;
+  compat.reserve(K);
+  for (const BsplineCurveData& c : raised) {
+    const std::vector<double> ins = knotsToInsert(c, uni);
+    compat.push_back(ins.empty() ? c : refineKnotCurve(c, ins));
+  }
+
+  // Verify the post-condition: identical degree + knots + control count, weights present.
+  const std::vector<double> commonKnots = compat.front().knots;
+  const int N = nPolesOf(compat.front());
+  for (const BsplineCurveData& c : compat) {
+    if (c.degree != maxDeg || nPolesOf(c) != N) return r;
+    if (static_cast<int>(c.weights.size()) != N) return r;  // rational ops must keep weights
+    if (c.knots.size() != commonKnots.size()) return r;
+    for (std::size_t k = 0; k < commonKnots.size(); ++k)
+      if (std::fabs(c.knots[k] - commonKnots[k]) > 1e-7) return r;
+  }
+
+  r.ok = true;
+  r.degree = maxDeg;
+  r.knots = commonKnots;
+  r.sections = std::move(compat);
+  return r;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Skinning / lofting (A10.3).
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -257,6 +364,54 @@ SkinResult skinSurface(std::span<const BsplineCurveData> sections, int degreeV) 
   r.surface.knotsV = V;
   r.surface.poles = std::move(netUouter);
   // weights left empty ⇒ non-rational.
+
+  r.vParams = v;
+  r.ok = true;
+  return r;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rational skinning / lofting (A10.3, weighted): homogeneous V-interpolation.
+// ─────────────────────────────────────────────────────────────────────────────
+
+SkinResult skinRationalSurface(std::span<const BsplineCurveData> sections, int degreeV) {
+  SkinResult r;
+  const int K = static_cast<int>(sections.size());
+  if (K < 2) return r;  // need at least two sections to loft between
+
+  // Step 1 — rational compatibility. Every section now shares degree p, knots, count N,
+  // and carries one strictly-positive weight per pole.
+  const SectionCompatibility comp = makeRationalSectionsCompatible(sections);
+  if (!comp.ok) return r;
+  const int p = comp.degree;
+  const int N = nPolesOf(comp.sections.front());
+
+  // V degree clamped to K−1 (few sections ⇒ lower-degree loft, always ≥ 1).
+  int q = degreeV;
+  if (q > K - 1) q = K - 1;
+  if (q < 1) q = 1;
+
+  // Step 2 — section parameters v_k (chord length across the EUCLIDEAN control polygons —
+  // the geometry the designer sees; the same assignment as the non-rational skin).
+  const std::vector<double> v = sectionParams(comp.sections, N);
+  if (static_cast<int>(v.size()) != K) return r;  // all-coincident sections — decline
+  const std::vector<double> V = avgKnots(v, q);
+
+  // Step 3 — interpolate a V-curve through {(w·P_i^k, w_i^k)} for every control index i in
+  // homogeneous R⁴, project back to (pole, weight).
+  std::vector<Point3> netPoles;
+  std::vector<double> netWeights;
+  if (!interpolateAcrossVRational(comp.sections, N, v, V, q, netPoles, netWeights)) return r;
+
+  // Step 4 — assemble the rational surface (net already row-major U-outer: pole(i,j)=[i*K+j]).
+  r.surface.degreeU = p;
+  r.surface.degreeV = q;
+  r.surface.nPolesU = N;
+  r.surface.nPolesV = K;
+  r.surface.knotsU = comp.knots;
+  r.surface.knotsV = V;
+  r.surface.poles = std::move(netPoles);
+  r.surface.weights = std::move(netWeights);  // non-empty ⇒ rational
 
   r.vParams = v;
   r.ok = true;

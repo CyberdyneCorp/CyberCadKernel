@@ -395,6 +395,24 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_primitive_fit)
         set(test_native_primitive_fit_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_primitive_fit.cpp")
+        # NURBS roadmap Layer 7 reverse-engineering PIPELINE — segment a raw COMPOSITE
+        # point cloud into typed regions and fit each (src/native/math/reverse_engineer).
+        # COMPOSES primitive_fit::detectPrimitive (analytic classification, simplicity-
+        # ordered so a sphere is not mis-typed as a plane) + bspline_fit::approximateSurface
+        # (freeform patch), never re-implementing a fit; the region-growing (k-NN adjacency +
+        # residual-frontier BFS) and plane-projection grid recovery are the only self-contained
+        # logic. Both composed fitters go through the numsci facade (lstsq / least_squares), so
+        # the module + its host gate build only under CYBERCAD_HAS_NUMSCI (mirroring
+        # test_native_primitive_fit). Airtight oracles: COMPOSITE recovery (a plane+cylinder+
+        # sphere trio → exactly 3 regions, correct TYPE each, params ≤1e-6, inliers partitioned
+        # + verified on-primitive), SINGLE-primitive (pure cylinder → ONE Cylinder, radius/axis
+        # ≤1e-9), FREEFORM (bicubic bump → ONE Freeform patch RMS ≤ tol, no spurious primitive),
+        # DISCRIMINATION/NOISE (sphere NOT typed as plane; noisy sphere RMS reported as the TRUE
+        # non-zero residual, never claimed exact), and HONEST-DECLINE (tiny/degenerate cloud →
+        # Declined, never a forced primitive — no widened tolerance).
+        list(APPEND CYBERCAD_TESTS test_native_reverse_engineer)
+        set(test_native_reverse_engineer_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_reverse_engineer.cpp")
         # NURBS roadmap Layer 1 — exact analytic↔NURBS conversion (src/native/math/
         # analytic_nurbs). Analytic→NURBS builds the EXACT rational forms (P&T Ch.7):
         # circle/arc/ellipse/line as rational-quadratic curves (weight cos(halfSweep),
@@ -1445,6 +1463,14 @@ if(CYBERCAD_BUILD_TESTS)
     # include trees, exactly like the Layer-7 nurbs-fit gate above.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_primitive_fit)
         target_compile_definitions(test_native_primitive_fit PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+
+    # The Layer-7 reverse-engineering-PIPELINE gate includes reverse_engineer.h, which
+    # under CYBERCAD_HAS_NUMSCI pulls in primitive_fit.h + bspline_fit.h → numerics.h
+    # (vec.h + std only, no NumPP/SciPP headers), so its TU needs the macro but NOT the
+    # substrate include trees, exactly like the Layer-7 primitive-fit gate above.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_reverse_engineer)
+        target_compile_definitions(test_native_reverse_engineer PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     # The Layer-1 analytic↔NURBS gate includes analytic_nurbs.h, which under

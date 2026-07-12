@@ -926,6 +926,26 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_freeform_split)
         set(test_native_nurbs_freeform_split_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_freeform_split.cpp")
+        # NURBS roadmap LAYER 3, STAGE 4 — host GATE, the OCCT-free closed-form proof of
+        # general point-in-NURBS-SOLID membership across MULTIPLE trimmed NURBS faces
+        # (nurbs_solid_membership.h): the Stage-4 region classifier the readiness doc
+        # measured as MISSING (a NURBS operand was declined at recogniseCurvedSolid). A
+        # genuine-NURBS-walled bowl-cup (BSpline paraboloid bowl + flat lid, UV mapping
+        # x=u−0.5,y=v−0.5 so the closed-form in/out is exact) is ray-cast: shoot a ray
+        # (degenerate degree-1 line) from the query, intersect each trimmed face's TRUE
+        # surface via the H1 intersectCurveSurface, test each hit's (u,v) against the
+        # face's trim loops via topology::classify (In → a real crossing), odd → inside.
+        # A near-boundary/tangent hit RE-CASTS in a fresh direction, and stays honest
+        # Unknown after K directions rather than guessing. classifyFragmentVsSolid votes
+        # an interior-rep sample of a face fragment. GATES: a dense membership grid 100%
+        # closed-form-correct (no silent-wrong); on-boundary/tangent → On/Unknown/re-cast,
+        # never a wrong crisp; fragment inside/outside/straddling → well-defined vote. Its
+        # ray-cast uses the numsci-gated intersectCurveSurface, so this host suite builds
+        # only under CYBERCAD_HAS_NUMSCI. Additive header-only verb; no lib change, no
+        # cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_solid_membership)
+        set(test_native_nurbs_solid_membership_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_solid_membership.cpp")
         # MOAT M2b freeform↔analytic DISJOINT (MULTI-LUMP) CUT — host GATE (a), the
         # OCCT-free proof that freeformSlabDisjointCut composes the landed inter-solid-seam
         # weld into the FIRST native freeform boolean whose result is TWO disconnected
@@ -1466,6 +1486,16 @@ if(CYBERCAD_BUILD_TESTS)
     # header — so it needs the macro but NOT the substrate include trees, like L3-S1/S2.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_freeform_split)
         target_compile_definitions(test_native_nurbs_freeform_split PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+
+    # The L3 Stage-4 point-in-NURBS-solid membership gate ray-casts each trimmed face's
+    # surface via the numsci-gated math::intersectCurveSurface (through
+    # nurbs_solid_membership.h) and tests hits via topology::classify (always-visible),
+    # so under CYBERCAD_HAS_NUMSCI its TU gets the macro. It calls only always-visible
+    # math / topology declarations — no NumPP/SciPP header — so it needs the macro but
+    # NOT the substrate include trees, like the L3-S1/S2/S3 gates.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_solid_membership)
+        target_compile_definitions(test_native_nurbs_solid_membership PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     # The Layer-6 skinning gate includes bspline_skin.h (which under CYBERCAD_HAS_NUMSCI

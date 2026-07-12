@@ -1011,6 +1011,26 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_feature_ops)
         set(test_native_feature_ops_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_feature_ops.cpp")
+        # BOOL-MULTI-OP / LAYER 3 — host GATE (a), the OCCT-free proof of the N-OPERAND NURBS
+        # solid boolean (assemblies): nurbsSolidUnionN / nurbsSolidCutN / nurbsSolidIntersectN
+        # (nurbs_solid_boolean_nary.h), a LEFT-FOLD of the general two-solid boolean
+        # nurbsSolidBoolean(A, B, op) — union of many parts, a base minus several tools, the
+        # common of an assembly. It COMPOSES the binary boolean and re-implements NONE of it
+        # (the feature_ops.h pocket/boss compose pattern). Two-operand folds weld watertight at
+        # the inclusion-exclusion volume (UNION V(A)+V(B)−lens, CUT V(base)−lens, COMMON the
+        # lens) within the tessellation band (DISAGREED=0), the N-ary result identical to the
+        # binary weld it folds; CutN is order-aware (per-operand A−B); the fold ATTEMPTS each
+        # step in order and HONEST-DECLINES the MEASURED re-admission boundary (the binary
+        # boolean's holed-freeform-wall output the B1 gate declines) at the failing step index
+        # carrying its residual, and PROPAGATES a multi-seam-FUSE-below-band intermediate's
+        # MultiSeamDeclined residual — NEVER a leaky/partial solid; empty-list / null-operand /
+        # single-element-identity are the fold's own first-class pre-checks. Its seams are the
+        # real S3 trace, so this host suite builds only under CYBERCAD_HAS_NUMSCI. Additive
+        # header-only fold (nurbs_solid_boolean_nary.h; nurbs_solid_boolean.h byte-unchanged);
+        # no lib change, no cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_solid_boolean_nary)
+        set(test_native_nurbs_solid_boolean_nary_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_solid_boolean_nary.cpp")
         # NURBS roadmap LAYER 3, SLICE 3 (L3-S3) — host GATE (a), the OCCT-free closed-
         # form proof of the THIRD (deepest) exact-NURBS B-rep boolean: a genuine NURBS
         # (Kind::BSpline) face SPLIT BY ANOTHER FREEFORM NURBS face, welded watertight —

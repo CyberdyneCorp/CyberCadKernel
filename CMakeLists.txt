@@ -631,7 +631,13 @@ if(CYBERCAD_BUILD_TESTS)
         # iso-curve exactly (a fixed-iso pole line of the tensor-product fillet), (2) extracts the
         # fillet's cross-boundary tangent field into the gap, and (3) delegates to nSidedFillG1 with
         # those prescribed fields so the blend meets each fillet G1. Handles the setback (trimming
-        # the fillet back to a well-formed gap). Airtight closed-form oracles: the SYMMETRIC CUBE
+        # the fillet back to a well-formed gap). The vertexBlendG1Full entry point additionally
+        # interpolates each fillet's EXACT cross-tangent field along the WHOLE shared edge (a direct
+        # Gregory ribbon, not the corner-only nSidedFillG1 reuse), so the blend meets each fillet G1
+        # along the FULL boundary — the 1.545-rad corner-only residual collapses to machine
+        # precision on a mutually-G1-compatible gap loop, with internal-spoke G1 a small measured
+        # residual and honest-decline where the fillets genuinely disagree in cross-tangent
+        # direction. Airtight closed-form oracles: the SYMMETRIC CUBE
         # CORNER blend is a spherical octant (points on the sphere of radius r ≤1e-6, gap-curve
         # interpolation ≤1e-10, G1 to each fillet + across the interior spokes ≤1e-6 rad), plus an
         # asymmetric-width and an N=4 corner staying G1, and honest declines (creased/G1-infeasible

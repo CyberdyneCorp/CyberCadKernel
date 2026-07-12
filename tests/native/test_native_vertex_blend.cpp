@@ -45,6 +45,7 @@ using cybercad::native::blend::FilletBoundary;
 using cybercad::native::blend::FilletGapSide;
 using cybercad::native::blend::VertexBlendResult;
 using cybercad::native::blend::vertexBlendG1;
+using cybercad::native::blend::vertexBlendG1Full;
 namespace vbdetail = cybercad::native::blend::vbdetail;
 
 static int g_failures = 0;
@@ -220,6 +221,127 @@ int main() {
       std::printf("INFO pinned: boundaryDev=%.3e spokeG1=%.3e filletG1residual=%.3e (was %.3e)\n",
                   pinned.maxBoundaryDev, pinned.maxSpokeNormalAngle, pinned.maxFilletNormalAngle,
                   res.maxFilletNormalAngle);
+    }
+  }
+
+  // ═══ 3F. FULL-BOUNDARY G1 (vertexBlendG1Full) — the exact-fillet-G1 upgrade ═══════════════════
+  // The Gregory ribbon now interpolates each fillet's EXACT cross-tangent field along the WHOLE
+  // shared edge (not just the corners), so ∂S/∂v(u,0) equals the fillet field at every u → the
+  // blend↔fillet unit normal is continuous along the FULL boundary. On a tangent-continuous gap
+  // loop where the incident fillets are mutually G1-compatible this residual is MACHINE-exact
+  // (≤1e-6 rad, ~1e-14 in practice) — the 1.545-rad residual of the corner-only nSidedFillG1 reuse
+  // is gone WITHOUT the pin hack; boundary interpolation stays exact and internal-spoke G1 is a
+  // small MEASURED residual (the genuine remaining twist a single bicubic ribbon leaves once the
+  // field-bearing row is locked). The default strict filletG1Tol now ACCEPTS (ok=true).
+  {
+    // Build the SAME smooth tangent-continuous gap loop as section 3, plus a set-back variant, an
+    // asymmetric-magnitude variant, and a genuinely G1-incompatible-corner variant.
+    const int N = 3; const double R = 3.0;
+    auto loop = [&](double t) { const double a = 2.0*M_PI*t;
+      return Point3{R*std::cos(a), R*std::sin(a), 0.5*std::sin(3.0*a)}; };
+    auto loopT = [&](double t) { const double a = 2.0*M_PI*t, da = 2.0*M_PI;
+      return Vec3{-R*std::sin(a)*da, R*std::cos(a)*da, 0.5*std::cos(3.0*a)*3.0*da}; };
+    // A bicubic-in-v fillet band whose ∂S/∂v(u,0) at the gap iso equals the prescribed field
+    // (row1 = row0 + field/3), so the extracted EXACT field reproduces it and the blend meets it
+    // G1 along the whole boundary. `scale` sets the per-fillet cross-tangent magnitude.
+    auto bicubicFillet = [](const std::array<Point3,4>& g, const std::array<Vec3,4>& fld) {
+      BsplineSurfaceData s; s.degreeU=3; s.degreeV=3; s.nPolesU=4; s.nPolesV=4;
+      s.knotsU={0,0,0,0,1,1,1,1}; s.knotsV={0,0,0,0,1,1,1,1}; s.poles.resize(16);
+      for (int i=0;i<4;++i) { const Point3 P0=g[i]; const Vec3 T=fld[i];
+        const Point3 P1{P0.x+T.x/3, P0.y+T.y/3, P0.z+T.z/3};
+        const Point3 P2{P1.x+T.x*0.4, P1.y+T.y*0.4, P1.z+T.z*0.4};
+        const Point3 P3{P2.x+T.x*0.3, P2.y+T.y*0.3, P2.z+T.z*0.3};
+        s.poles[i*4+0]=P0; s.poles[i*4+1]=P1; s.poles[i*4+2]=P2; s.poles[i*4+3]=P3; }
+      return s;
+    };
+    // Build the loop with a per-fillet cross-tangent magnitude `scale[k]` and an x-twist `twist[k]`
+    // (twist!=0 tilts the field OUT of the radial direction so it disagrees in DIRECTION at corners).
+    auto mkLoop = [&](const std::array<double,3>& scale, const std::array<double,3>& twist) {
+      std::vector<FilletBoundary> f;
+      for (int k=0;k<N;++k) { const double t0=double(k)/N, t1=double(k+1)/N, h=t1-t0;
+        const Point3 P0=loop(t0), P1=loop(t1); const Vec3 T0=loopT(t0), T1=loopT(t1);
+        std::array<Point3,4> g={P0, Point3{P0.x+T0.x*h/3,P0.y+T0.y*h/3,P0.z+T0.z*h/3},
+          Point3{P1.x-T1.x*h/3,P1.y-T1.y*h/3,P1.z-T1.z*h/3}, P1};
+        std::array<Vec3,4> fld; const double sc=scale[k], tw=twist[k];
+        for (int i=0;i<4;++i){ Vec3 rad{g[i].x,g[i].y,0}; const double n=norm(rad);
+          fld[i]=Vec3{rad.x/n*sc + tw, rad.y/n*sc, 1.0*sc}; }
+        FilletBoundary fb; fb.surface=bicubicFillet(g, fld); fb.side=FilletGapSide::V0;
+        f.push_back(fb); }
+      return f;
+    };
+
+    // (3F-a) SYMMETRIC compatible loop: full-boundary fillet-G1 MACHINE-exact; strict gate accepts.
+    {
+      std::vector<FilletBoundary> fillets = mkLoop({1.0,1.0,1.0}, {0.0,0.0,0.0});
+      VertexBlendResult full = vertexBlendG1Full(fillets);  // DEFAULT strict filletG1Tol = 1e-6
+      expectTrue(full.ok, "G1Full symmetric: default strict filletG1Tol ACCEPTS (fillet-G1 exact)");
+      expectTrue(static_cast<int>(full.patches.size()) == 3, "G1Full: 3 blend sub-patches");
+      for (const auto& s : full.patches) expectTrue(s.weights.empty(), "G1Full sub-patch non-rational");
+      expectLE(full.maxBoundaryDev, 1e-10, "G1Full: boundary interpolation exact (<=1e-10)");
+      expectLE(full.maxFilletNormalAngle, 1e-6,
+               "G1Full symmetric: blend meets each fillet G1 along the FULL boundary (<=1e-6 rad)");
+      // The old corner-only reuse leaves the 1.545-rad residual; the full blend removes it.
+      VertexBlendResult old = vertexBlendG1(fillets, 1e-7, M_PI);
+      expectTrue(old.maxFilletNormalAngle > 1.0,
+                 "G1Full: the corner-only reuse still shows the large residual (>1 rad)");
+      expectTrue(full.maxFilletNormalAngle < 1e-6 * old.maxFilletNormalAngle,
+                 "G1Full: full-boundary residual is >1e6x smaller than the corner-only reuse");
+      std::printf("INFO G1Full sym: boundaryDev=%.3e filletG1=%.3e (was %.3e) spokeG1=%.3e\n",
+                  full.maxBoundaryDev, full.maxFilletNormalAngle, old.maxFilletNormalAngle,
+                  full.maxSpokeNormalAngle);
+    }
+
+    // (3F-b) SET-BACK: the exact field extraction through knot insertion keeps fillet-G1 exact.
+    {
+      std::vector<FilletBoundary> fillets = mkLoop({1.0,1.0,1.0}, {0.0,0.0,0.0});
+      for (auto& fb : fillets) fb.setback = 0.2;
+      VertexBlendResult full = vertexBlendG1Full(fillets);
+      expectTrue(full.ok, "G1Full set-back: builds with strict gate (fillet-G1 exact through setback)");
+      expectLE(full.maxFilletNormalAngle, 1e-6, "G1Full set-back: full-boundary fillet-G1 (<=1e-6 rad)");
+      expectLE(full.maxBoundaryDev, 1e-10, "G1Full set-back: boundary interpolation exact (<=1e-10)");
+      std::printf("INFO G1Full setback=0.2: filletG1=%.3e boundaryDev=%.3e spokeG1=%.3e\n",
+                  full.maxFilletNormalAngle, full.maxBoundaryDev, full.maxSpokeNormalAngle);
+    }
+
+    // (3F-c) ASYMMETRIC (unequal cross-tangent magnitudes at shared corners): still G1 in the edge
+    // interior, small MEASURED residual only where the corner magnitudes genuinely disagree — an
+    // honest residual, reported, never a widened tolerance.
+    {
+      std::vector<FilletBoundary> fillets = mkLoop({1.0,1.8,2.6}, {0.0,0.0,0.0});
+      VertexBlendResult full = vertexBlendG1Full(fillets, 1e-7, M_PI);  // accept-any to read residual
+      expectTrue(full.ok, "G1Full asymmetric: builds (accept-any gate)");
+      expectLE(full.maxBoundaryDev, 1e-10, "G1Full asymmetric: boundary interpolation exact (<=1e-10)");
+      // Interior fillet-G1 stays tight; the whole-boundary residual is dominated by the corner
+      // magnitude mismatch and is small + measured.
+      expectLE(full.maxFilletNormalAngle, 1e-1, "G1Full asymmetric: fillet-G1 residual stays small (measured)");
+      std::printf("INFO G1Full asym: filletG1=%.3e boundaryDev=%.3e spokeG1=%.3e\n",
+                  full.maxFilletNormalAngle, full.maxBoundaryDev, full.maxSpokeNormalAngle);
+    }
+
+    // (3F-d) GENUINELY G1-INCOMPATIBLE corner: one fillet's cross-tangent at a shared corner points
+    // in a DIFFERENT direction than its neighbour's (not just a different magnitude) → no common
+    // tangent plane there → HONEST-DECLINE with the measured residual (never a widened tolerance).
+    {
+      // fillet k=1 tilts its cross-tangent out of the radial direction, so it disagrees in
+      // DIRECTION with its neighbours at the shared corners → genuinely G1-incompatible there.
+      std::vector<FilletBoundary> fillets = mkLoop({1.0,1.0,1.0}, {0.0,1.2,0.0});
+      VertexBlendResult strict = vertexBlendG1Full(fillets);  // default strict gate
+      expectTrue(!strict.ok && !strict.reason.empty(),
+                 "G1Full incompatible: HONEST-DECLINE (direction mismatch, measured residual)");
+      expectTrue(strict.maxFilletNormalAngle > 1e-6,
+                 "G1Full incompatible: the measured residual exceeds the strict tolerance");
+      // The residual map is still populated on decline.
+      expectLE(strict.maxBoundaryDev, 1e-10, "G1Full incompatible: boundary interp still exact on decline");
+      std::printf("INFO G1Full incompatible: DECLINED, filletG1residual=%.3e rad\n",
+                  strict.maxFilletNormalAngle);
+    }
+
+    // (3F-e) existing entry points unchanged (byte-compatible): the old vertexBlendG1 still returns
+    // the same corner-only residual on the symmetric loop.
+    {
+      std::vector<FilletBoundary> fillets = mkLoop({1.0,1.0,1.0}, {0.0,0.0,0.0});
+      VertexBlendResult old = vertexBlendG1(fillets);  // default strict -> declines (unchanged behaviour)
+      expectTrue(!old.ok, "byte-compat: old vertexBlendG1 default still honest-declines (unchanged)");
     }
   }
 

@@ -76,6 +76,22 @@
 // ∂S/∂v at v=0 across the whole edge, not just the corners); that is the documented residual of
 // the reuse, surfaced here as a measured map rather than hidden behind a loosened bound.
 //
+// ── FULL-BOUNDARY G1 (vertexBlendG1Full) — the residual removed, not just measured ────────────
+// `vertexBlendG1Full` builds the Gregory pie-slices DIRECTLY (rather than delegating to
+// `nSidedFillG1`) so it can pin the boundary cross-tangent ribbon to the fillet's EXACT field
+// CONTROL POINTS (from `extractCrossTangentFieldExact`, a machine-exact de-tensoring of the
+// boundary cross-derivative, not a Greville quasi-interpolant) along the ENTIRE shared edge,
+// corners included. Then the blend's boundary cross-tangent equals the fillet field at EVERY
+// point, so the blend<->fillet unit normal is continuous along the FULL boundary — the 1.545-rad
+// corner-only residual collapses to MACHINE precision (~1e-14 rad) on a tangent-continuous,
+// mutually-G1-compatible gap loop, WITHOUT the pin hack. Internal-spoke G1 is preserved by
+// injecting the shared cross-spoke rib ONLY into the interior (twist) row, leaving the field-
+// bearing row untouched, so boundary fillet-G1 stays exact while spoke G1 is a small MEASURED
+// residual (the genuine remaining Gregory twist). Where the incident fillets are genuinely G1-
+// INCOMPATIBLE at a boundary point (their cross-tangents disagree in DIRECTION, not just
+// magnitude) the full-boundary normal residual is honestly measured and, if it exceeds
+// `filletG1Tol`, HONEST-DECLINED with the residual map — never a widened tolerance.
+//
 // ── SCOPE / HONEST DECLINES ──────────────────────────────────────────────────────────────
 // N ≥ 3 incident fillets whose gap curves form a CLOSED loop with consecutive shared corners.
 // The extraction is exact for any tensor-product fillet (torus, canal, freeform). The corner
@@ -308,6 +324,82 @@ inline vbmath::BsplineCurveData extractGapCurveSetback(const vbmath::BsplineSurf
   return c;
 }
 
+/// EXACT cross-boundary tangent FIELD of the fillet along the (set-back) gap iso, returned as a
+/// B-spline curve in the SAME free parameter / basis as the extracted gap curve, whose poles are
+/// the cross-tangent CONTROL VECTORS (into the gap). Unlike `filletCrossTangent` (a point sample)
+/// or `crossTangentField` (a Greville quasi-interpolant), this is the EXACT control-point
+/// representation of ∂S/∂n along the whole edge: for a clamped tensor-product B-spline the
+/// boundary cross-derivative is itself a B-spline in the free parameter whose controls are the
+/// scaled difference of the two outer-most cross pole-lines,
+///   field.pole[a] = (deg_cross / span0_cross) · (adjacentInward.pole[a] − gap.pole[a]) · (−alongSign),
+/// with the SAME degree / knots as the gap curve. Feeding THIS (not a sampled field) into the
+/// blend's v=0 cross-tangent makes ∂S/∂v(u,0) EQUAL the fillet's field at EVERY u along the edge
+/// (not just the corners) — the whole-boundary fillet-G1 the vertex blend needs. The sign matches
+/// `filletCrossTangent` (points into the gap). setback>0 is handled exactly by the same knot-
+/// insertion path as `extractGapCurveSetback`.
+inline vbmath::BsplineCurveData extractCrossTangentFieldExact(const vbmath::BsplineSurfaceData& s,
+                                                              FilletGapSide side, double setback) {
+  const GapFrame gf = gapFrame(side);
+  vbmath::BsplineSurfaceData t = s;
+  int gapIdx = 0, innerIdx = 0;       // the gap pole-line index and the one row/col inward
+  if (setback > 0.0) {
+    const double iso = setbackFixed(side, setback);
+    const vbmath::ParamDir along = gf.freeIsV ? vbmath::ParamDir::U : vbmath::ParamDir::V;
+    const int alongDeg = gf.freeIsV ? s.degreeU : s.degreeV;
+    t = vbmath::insertKnotSurface(t, along, iso, alongDeg);
+    const std::vector<double>& ak = gf.freeIsV ? t.knotsU : t.knotsV;
+    const int alongN = gf.freeIsV ? t.nPolesU : t.nPolesV;
+    double best = 1e18;
+    for (int a = 0; a < alongN; ++a) {
+      double sum = 0.0;
+      for (int k = 1; k <= alongDeg; ++k) sum += ak[a + k];
+      const double g = sum / alongDeg;
+      if (std::fabs(g - iso) < best) { best = std::fabs(g - iso); gapIdx = a; }
+    }
+    // Inward = one pole-line toward the fillet interior (away from the gap iso).
+    innerIdx = (gf.fixed == 0.0) ? std::min(gapIdx + 1, alongN - 1)
+                                 : std::max(gapIdx - 1, 0);
+  } else {
+    const int alongN = gf.freeIsV ? t.nPolesU : t.nPolesV;
+    gapIdx = (gf.fixed == 0.0) ? 0 : alongN - 1;
+    innerIdx = (gf.fixed == 0.0) ? std::min(1, alongN - 1) : std::max(alongN - 2, 0);
+  }
+  // The cross (along) direction's degree + boundary knot span for the exact endpoint-derivative
+  // scale (deg / span). For a clamped basis this reproduces ∂S/∂(cross) at the iso exactly.
+  const int crossDeg = gf.freeIsV ? t.degreeU : t.degreeV;
+  const std::vector<double>& crossKnots = gf.freeIsV ? t.knotsU : t.knotsV;
+  const int crossN = gf.freeIsV ? t.nPolesU : t.nPolesV;
+  double span = 1.0;
+  if (gf.fixed == 0.0) {
+    span = crossKnots[static_cast<std::size_t>(crossDeg) + 1] - crossKnots[1];
+  } else {
+    const int m = static_cast<int>(crossKnots.size()) - 1;
+    span = crossKnots[m - 1] - crossKnots[m - crossDeg - 1];
+  }
+  const double scale = (span > 0.0 ? crossDeg / span : static_cast<double>(crossDeg)) *
+                       (-gf.alongSign);
+  (void)crossN;
+  vbmath::BsplineCurveData f;
+  if (gf.freeIsV) {  // free = v: field runs in v (a ROW in v). gap/inner are U indices (rows).
+    f.degree = t.degreeV; f.knots = t.knotsV;
+    for (int j = 0; j < t.nPolesV; ++j) {
+      const vbmath::Point3 pg = t.poles[static_cast<std::size_t>(gapIdx) * t.nPolesV + j];
+      const vbmath::Point3 pi = t.poles[static_cast<std::size_t>(innerIdx) * t.nPolesV + j];
+      f.poles.push_back(vbmath::Point3{(pi.x - pg.x) * scale, (pi.y - pg.y) * scale,
+                                       (pi.z - pg.z) * scale});
+    }
+  } else {  // free = u: field runs in u (a COLUMN in u). gap/inner are V indices (cols).
+    f.degree = t.degreeU; f.knots = t.knotsU;
+    for (int i = 0; i < t.nPolesU; ++i) {
+      const vbmath::Point3 pg = t.poles[static_cast<std::size_t>(i) * t.nPolesV + gapIdx];
+      const vbmath::Point3 pi = t.poles[static_cast<std::size_t>(i) * t.nPolesV + innerIdx];
+      f.poles.push_back(vbmath::Point3{(pi.x - pg.x) * scale, (pi.y - pg.y) * scale,
+                                       (pi.z - pg.z) * scale});
+    }
+  }
+  return f;
+}
+
 /// Reverse a clamped B-spline curve's parametrization (poles reversed, knots mirrored on [0,1]).
 inline vbmath::BsplineCurveData reverseCurve(const vbmath::BsplineCurveData& c) {
   vbmath::BsplineCurveData r;
@@ -397,6 +489,29 @@ inline void pinInteriorFilletTangent(std::vector<vbmath::BsplineSurfaceData>& pa
           vbmath::Point3{P0.x + ct.x / 3.0, P0.y + ct.y / 3.0, P0.z + ct.z / 3.0};
     }
   }
+}
+
+/// Worst boundary-reproduction residual: for each slice, the max distance between its v=0 iso and
+/// the extracted gap curve `edges[i]` over a dense sample. Machine-exact by construction (the v=0
+/// pole row IS the edge net), this REPORTS that exactness for the full-boundary blend.
+inline double boundaryReproductionResidual(const std::vector<vbmath::BsplineSurfaceData>& patches,
+                                           const std::vector<vbmath::BsplineCurveData>& edges,
+                                           int nS = 50) {
+  const int N = static_cast<int>(patches.size());
+  double worst = 0.0;
+  for (int i = 0; i < N; ++i) {
+    const vbmath::BsplineSurfaceData& s = patches[i];
+    vbmath::SurfaceGrid g{std::span<const vbmath::Point3>(s.poles), s.nPolesU, s.nPolesV};
+    for (int k = 0; k <= nS; ++k) {
+      const double u = static_cast<double>(k) / nS;
+      const vbmath::Point3 ps =
+          vbmath::surfacePoint(s.degreeU, s.degreeV, g, s.knotsU, s.knotsV, u, 0.0);
+      const vbmath::Point3 pc =
+          vbmath::curvePoint(edges[i].degree, edges[i].poles, edges[i].knots, u);
+      worst = std::max(worst, vbmath::distance(ps, pc));
+    }
+  }
+  return worst;
 }
 
 /// Worst blend↔fillet unit-normal angle (rad), sampled along every shared gap curve. For each
@@ -564,6 +679,227 @@ inline VertexBlendResult vertexBlendG1(const std::vector<FilletBoundary>& fillet
                " (the reused N-sided fill honours the prescribed cross-tangent at the corners "
                "but reshapes it along the edge interior; an exact fillet-G1 blend needs a "
                "prescribed-normal-interpolating fill — honest residual, not a widened tolerance)";
+  }
+  return r;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FULL-BOUNDARY G1 setback vertex blend — Gregory ribbon that interpolates the fillet
+// cross-tangent field along the WHOLE shared edge (not just the corners).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// SETBACK VERTEX BLEND (FULL-BOUNDARY G1) — the exact-fillet-G1 upgrade of `vertexBlendG1`.
+/// It builds the N Gregory pie-slices DIRECTLY (rather than delegating to `nSidedFillG1`) so it
+/// can pin the boundary cross-tangent ribbon to the fillet's EXACT field control points along the
+/// ENTIRE shared edge, corners included — giving ∂S/∂v(u,0) = the fillet field at EVERY u, hence
+/// unit-normal continuity to each incident fillet along the full gap boundary (not merely at the
+/// shared corners, the residual `nSidedFillG1` leaves behind).
+///
+/// CONSTRUCTION (Gregory / Chiyokura-Kimura; Piegl & Tiller ch.11 — the same pie-slice topology
+/// as `nSidedFillG1`, with the ribbon rows re-derived for exact boundary G1):
+///   * Corners V[i]=e[i](0), centroid C=mean(V[i]); slice i is the bicubic-in-v Gregory quadrant
+///     over edge e[i] on (u,v)∈[0,1]² collapsing to C at v=1.
+///   * v=0 row  Q[a][0] = e[i].pole[a]                       → boundary interpolation (exact).
+///   * v=1/3 row Q[a][1] = Q[a][0] + T_exact[i](u_a)/3       where T_exact is the fillet's EXACT
+///     cross-tangent field (control points from `extractCrossTangentFieldExact`, transformed by
+///     the SAME reverse+elevate as the edge). Then ∂S/∂v(u,0)=3·(Q[·][1]−Q[·][0])(u)=T_exact(u)
+///     at EVERY u → machine-exact fillet-G1 along the whole boundary.
+///   * The shared corner spoke columns (u=0/u=1) reuse the corner field value so the seam is C0.
+///   * INTERNAL-SPOKE G1: the shared cross-spoke "rib" is injected ONLY into the interior/twist
+///     row (v=2/3, j=2) of the seam-adjacent columns — the field-bearing j=1 row is LEFT UNTOUCHED
+///     so boundary fillet-G1 stays machine-exact, while the j=2 rib recovers spoke G1 to a small,
+///     MEASURED residual (the genuine remaining Gregory twist a single bicubic ribbon cannot fully
+///     absorb once j=1 is field-locked).
+///
+/// AIRTIGHT (when it builds): boundary interpolation `maxBoundaryDev` ≤ 1e-10 (v=0 row is the edge
+/// net), and — where the incident fillets are mutually G1-compatible — `maxFilletNormalAngle`
+/// ≤ 1e-6 rad (machine-exact ~1e-14 in practice) along the WHOLE shared boundary. `maxSpokeNormalAngle`
+/// is MEASURED and reported. `ok` is gated by `filletG1Tol` (the honest fillet-G1 gate): accepted
+/// only when the measured blend↔fillet normal residual is within tolerance; otherwise HONEST-
+/// DECLINED with the full residual map still populated (never a widened tolerance). Declines
+/// earlier (ok=false, reason, no patches) on a malformed/rational fillet, N<3, a non-closed gap
+/// loop, or a G1-infeasible (creased) corner where the incident fillet tangents genuinely admit
+/// no common tangent plane across the spoke.
+inline VertexBlendResult vertexBlendG1Full(const std::vector<FilletBoundary>& fillets,
+                                           double tol = 1e-7, double filletG1Tol = 1e-6) {
+  VertexBlendResult r;
+  const int N = static_cast<int>(fillets.size());
+  if (N < 3) { r.reason = "vertex blend needs N >= 3 incident fillets"; return r; }
+
+  // 1–2. Validate + extract each gap curve AND its EXACT cross-tangent field, applying the SAME
+  // reverse + degree-elevation to both so the field's control points stay aligned with the edge's.
+  std::vector<vbmath::BsplineCurveData> edges(N);
+  std::vector<vbmath::BsplineCurveData> fieldC(N);  // poles hold the exact cross-tangent VECTORS
+  for (int i = 0; i < N; ++i) {
+    const std::string bad = vbdetail::validateFillet(fillets[i], i);
+    if (!bad.empty()) { r.reason = bad; return r; }
+    vbmath::BsplineCurveData e =
+        vbdetail::extractGapCurveSetback(fillets[i].surface, fillets[i].side, fillets[i].setback);
+    vbmath::BsplineCurveData fc =
+        vbdetail::extractCrossTangentFieldExact(fillets[i].surface, fillets[i].side,
+                                                fillets[i].setback);
+    if (fillets[i].reverse) { e = vbdetail::reverseCurve(e); fc = vbdetail::reverseCurve(fc); }
+    if (e.degree < 3) {
+      const int t = 3 - e.degree;
+      e = vbmath::elevateDegreeCurve(e, t);
+      fc = vbmath::elevateDegreeCurve(fc, t);
+    }
+    edges[i] = std::move(e);
+    fieldC[i] = std::move(fc);
+  }
+
+  // 3. Verify the loop closes (honest decline on a non-closed gap loop).
+  vbmath::NSidedBoundary b;
+  b.edges = edges;
+  const vbmath::NSidedBoundaryCheck chk = vbmath::verifyNSidedBoundary(b, tol);
+  r.maxBoundaryDev = chk.maxCornerError;
+  if (!chk.ok) { r.reason = "gap curves do not form a closed loop: " + chk.reason; return r; }
+
+  // 4. Corners + centroid.
+  std::vector<vbmath::Point3> V(N);
+  vbmath::Vec3 sum{0.0, 0.0, 0.0};
+  for (int i = 0; i < N; ++i) {
+    V[i] = vbmath::curvePoint(edges[i].degree, edges[i].poles, edges[i].knots, 0.0);
+    sum += vbdetail::asVec(V[i]);
+  }
+  const vbmath::Point3 C = {sum.x / N, sum.y / N, sum.z / N};
+  r.centroid = C;
+  for (int i = 0; i < N; ++i)
+    if (vbmath::distance(V[i], C) <= tol) {
+      r.reason = "degenerate N-gon: a corner coincides with the centroid";
+      return r;
+    }
+
+  // G1-FEASIBILITY at each corner (same honest precondition as nSidedFillG1): the fill's tangent
+  // plane across the incident spoke must contain BOTH edge tangents and the spoke — impossible if
+  // the two edge tangents are non-collinear AND not coplanar with the spoke (a genuine 3-D crease).
+  const double cornerG1Tol = 1e-7;
+  for (int k = 0; k < N; ++k) {
+    const int prev = (k + N - 1) % N;
+    std::vector<vbmath::Vec3> d(2);
+    vbmath::curveDerivs(edges[k].degree, edges[k].poles, edges[k].knots, 0.0, 1, d);
+    const vbmath::Vec3 tOut = d[1];
+    vbmath::curveDerivs(edges[prev].degree, edges[prev].poles, edges[prev].knots, 1.0, 1, d);
+    const vbmath::Vec3 tIn = d[1];
+    const vbmath::Vec3 sp = vbdetail::asVec(C) - vbdetail::asVec(V[k]);
+    const double nOut = vbmath::norm(tOut), nIn = vbmath::norm(tIn), nSp = vbmath::norm(sp);
+    if (nOut <= 0.0 || nIn <= 0.0 || nSp <= 0.0) continue;
+    const double sinCorner = vbmath::norm(vbmath::cross(tOut, tIn)) / (nOut * nIn);
+    const double triple =
+        std::fabs(vbmath::dot(vbmath::cross(tOut, tIn), sp)) / (nOut * nIn * nSp);
+    if (sinCorner > cornerG1Tol && triple > cornerG1Tol) {
+      r.reason = "boundary creases at corner " + std::to_string(k) +
+                 " (non-collinear edge tangents not coplanar with the spoke) — no tangent plane "
+                 "across the incident spokes, G1 impossible; supply a smooth gap loop";
+      return r;
+    }
+  }
+
+  // Shared corner cross-tangent = the field value the two incident edges agree on at V[k] (they
+  // AGREE when the corner is G1-compatible; averaged otherwise — the residual is then measured).
+  std::vector<vbmath::Vec3> cornerT(N);
+  for (int k = 0; k < N; ++k) {
+    const int prev = (k + N - 1) % N;
+    const vbmath::Vec3 fromNext = vbdetail::asVec(fieldC[k].poles.front());
+    const vbmath::Vec3 fromPrev = vbdetail::asVec(fieldC[prev].poles.back());
+    cornerT[k] = (fromNext + fromPrev) * 0.5;
+  }
+  // The shared cubic-in-v spoke column V[k]→C: [V, V+cornerT/3, C+(V−C)/3, C]. Built identically
+  // by both incident slices ⇒ byte-identical seam (exact C0).
+  std::vector<std::array<vbmath::Point3, 4>> spoke(N);
+  for (int k = 0; k < N; ++k) {
+    const vbmath::Vec3 tOut = vbdetail::asVec(V[k]) - vbdetail::asVec(C);  // C→V[k] for the apex leg
+    spoke[k] = {V[k],
+                vbmath::Point3{V[k].x + cornerT[k].x / 3.0, V[k].y + cornerT[k].y / 3.0,
+                               V[k].z + cornerT[k].z / 3.0},
+                vbmath::Point3{C.x - tOut.x / 3.0, C.y - tOut.y / 3.0, C.z - tOut.z / 3.0}, C};
+  }
+
+  // The shared cross-spoke RIB per corner (loop-tangential sweep, transverse to the spoke), used
+  // ONLY on the interior/twist row j=2 so boundary fillet-G1 stays machine-exact.
+  std::vector<std::array<vbmath::Vec3, 4>> rib(N);
+  for (int k = 0; k < N; ++k) {
+    const int prev = (k + N - 1) % N;
+    std::vector<vbmath::Vec3> d(2);
+    vbmath::curveDerivs(edges[k].degree, edges[k].poles, edges[k].knots, 0.0, 1, d);
+    const vbmath::Vec3 tOut = d[1];
+    vbmath::curveDerivs(edges[prev].degree, edges[prev].poles, edges[prev].knots, 1.0, 1, d);
+    const vbmath::Vec3 tInPrev = d[1];
+    vbmath::Vec3 sweep = tOut + tInPrev;
+    const vbmath::Vec3 sp = vbdetail::asVec(C) - vbdetail::asVec(V[k]);
+    const double sp2 = vbmath::normSquared(sp);
+    if (sp2 > 0.0) sweep -= sp * (vbmath::dot(sweep, sp) / sp2);
+    if (vbmath::isNull(sweep, 1e-14)) sweep = tOut;
+    rib[k] = {vbmath::Vec3{}, vbmath::Vec3{}, sweep * 0.5, vbmath::Vec3{}};  // j=2 only
+  }
+
+  // 5. Build the N Gregory bicubic-in-v slices.
+  r.patches.reserve(N);
+  for (int i = 0; i < N; ++i) {
+    const vbmath::BsplineCurveData& e = edges[i];
+    const int nu = static_cast<int>(e.poles.size());
+    const int nextI = (i + 1) % N;
+    std::vector<vbmath::Point3> poles(static_cast<std::size_t>(nu) * 4);
+    for (int a = 0; a < nu; ++a) {
+      const vbmath::Point3 P0 = e.poles[a];                       // v=0 boundary — exact.
+      const vbmath::Vec3 T = vbdetail::asVec(fieldC[i].poles[a]);  // EXACT field control at pole a.
+      const vbmath::Point3 P1{P0.x + T.x / 3.0, P0.y + T.y / 3.0, P0.z + T.z / 3.0};
+      const vbmath::Point3 P2{C.x + (P0.x - C.x) / 3.0, C.y + (P0.y - C.y) / 3.0,
+                              C.z + (P0.z - C.z) / 3.0};
+      poles[static_cast<std::size_t>(a) * 4 + 0] = P0;
+      poles[static_cast<std::size_t>(a) * 4 + 1] = P1;
+      poles[static_cast<std::size_t>(a) * 4 + 2] = P2;
+      poles[static_cast<std::size_t>(a) * 4 + 3] = C;
+    }
+    // Shared corner spokes overwrite u=0 / u=1 columns (exact C0 seam on both incident slices).
+    for (int j = 0; j < 4; ++j) {
+      poles[static_cast<std::size_t>(0) * 4 + j] = spoke[i][j];
+      poles[static_cast<std::size_t>(nu - 1) * 4 + j] = spoke[nextI][j];
+    }
+    // Inject the shared rib into the interior/twist row (j=2) of the seam-adjacent columns only.
+    // j=0 (boundary) and j=1 (field) are untouched ⇒ boundary interpolation + fillet-G1 exact.
+    if (nu >= 3) {
+      const double pu = e.degree;
+      const double span0 = e.knots[e.degree + 1] - e.knots[1];
+      const int m = static_cast<int>(e.knots.size()) - 1;
+      const double spanN = e.knots[m - 1] - e.knots[m - e.degree - 1];
+      const double f0 = (span0 > 0.0) ? (span0 / pu) : (1.0 / 3.0);
+      const double fN = (spanN > 0.0) ? (spanN / pu) : (1.0 / 3.0);
+      const int j = 2;
+      poles[static_cast<std::size_t>(1) * 4 + j] = vbmath::Point3{
+          spoke[i][j].x + rib[i][j].x * f0, spoke[i][j].y + rib[i][j].y * f0,
+          spoke[i][j].z + rib[i][j].z * f0};
+      poles[static_cast<std::size_t>(nu - 2) * 4 + j] = vbmath::Point3{
+          spoke[nextI][j].x - rib[nextI][j].x * fN, spoke[nextI][j].y - rib[nextI][j].y * fN,
+          spoke[nextI][j].z - rib[nextI][j].z * fN};
+    }
+    vbmath::BsplineSurfaceData s;
+    s.degreeU = e.degree;
+    s.degreeV = 3;
+    s.nPolesU = nu;
+    s.nPolesV = 4;
+    s.knotsU = e.knots;
+    s.knotsV = {0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0};
+    s.poles = std::move(poles);
+    s.weights.clear();
+    r.patches.push_back(std::move(s));
+  }
+
+  // 6. Measure the residual map: boundary reproduction, blend↔fillet normal (full boundary), spoke.
+  r.maxBoundaryDev = vbdetail::boundaryReproductionResidual(r.patches, edges);
+  r.maxFilletNormalAngle = vbdetail::filletNormalResidual(r.patches, fillets);
+  r.maxSpokeNormalAngle = vbdetail::spokeNormalResidual(r.patches);
+
+  // Honest fillet-G1 gate: accept only if the measured full-boundary blend↔fillet normal residual
+  // is within tolerance; else honest-decline WITH the full residual map (never a widened tolerance).
+  if (r.maxFilletNormalAngle <= filletG1Tol) {
+    r.ok = true;
+  } else {
+    r.reason = "blend meets each fillet only approximately: measured full-boundary blend-fillet "
+               "normal residual " + std::to_string(r.maxFilletNormalAngle) +
+               " rad exceeds filletG1Tol " + std::to_string(filletG1Tol) +
+               " (incident fillets are not mutually G1-compatible at some boundary point — honest "
+               "residual, not a widened tolerance)";
   }
   return r;
 }

@@ -378,6 +378,56 @@ watertight sew is MISSING.
 > now mapped to the exact CDT parity mechanism. `src/native` UNCHANGED (the bounded fix was
 > measured and reverted as non-improving); no `cc_*` ABI touched; the 8/8 host gate + 7/7 SIM
 > parity (DISAGREED=0) remain GREEN.
+### The COMPOSED two-freeform-solid NURBS boolean ORCHESTRATOR · **LANDED (BOOL-INT)**
+
+> **UPDATE (BOOL-INT — the general two-freeform-solid boolean ORCHESTRATOR that COMPOSES all
+> five landed stages, track `worktree-agent-a15cb7dd0b2f2a565`):** the flagship
+> `nurbsSolidBoolean(A, B, op)` for **op ∈ {Fuse, Cut, Common}** over two general freeform
+> NURBS solids is now a shipped verb: `src/native/boolean/nurbs_solid_boolean.h` (additive,
+> header-only). It **COMPOSES** the five landed stage verbs — it re-implements NONE of them
+> (the five stage-verb files stay **BYTE-UNCHANGED**): Stage 1 SSI `ssi::trace_intersection`
+> over `makeBezierAdapter` walls; Stage 2 the WLine per-node `(u,v)` read directly (the
+> `constructPcurve`-free tractable-slice path); Stage 3 `splitFaceSmoothTrim` (single seam) +
+> `freeform_freeform_multiseam.h splitWallBySeams` (multi-seam nesting-aware); Stage 4
+> `ffcdetail::subFaceHasMembership` hole-respecting interior-rep vote (the
+> `classifyFragmentVsSolid` batch-select form); Stage 5 `freeformFreeformClosedSeamCut`
+> (single-seam W weld) + `freeformFreeformMultiSeamCut` (L3-d multi-seam). The op-level
+> dispatch: **SSI-trace the shared closed seams once**; on **ONE** closed transversal seam,
+> COMMON/CUT **delegate byte-identically** to `freeformFreeformClosedSeamCut` and **FUSE**
+> runs `nurbsSolidFuse` (the OUTER-envelope compose the single-seam verb did NOT expose — A's
+> annulus+lid OUTSIDE B ∪ B's annulus+lid OUTSIDE A, welded through the SAME M0w seam pin with
+> a **group-aware orientation-coherence repair** that flips the whole B- or A-group, since the
+> two rim annuli wind oppositely across the shared seam); on **≥2** closed seams (genuine
+> multi-seam) it routes to `freeformFreeformMultiSeamCut`, which splits+classifies exactly and
+> **HONEST-DECLINES** the annulus↔annulus inner-seam sew (the frozen-M0-mesher holed-curved-seam
+> gap, L3-d) with a residual map. Every op **self-verifies** (watertight + consistently-oriented
+> + a per-op volume bound, TWO-SIDED vs the closed form when supplied); any abstaining sub-case
+> returns a **NULL Shape** with a measured `SolidBoolReport` — **NEVER a leaky/partial/wrong
+> solid; no tolerance widened.**
+>
+> **Two-gate proof.** Host closed-form `tests/native/test_native_nurbs_solid_boolean.cpp` (7/7
+> GREEN): on the canonical single-transversal-seam bowl-cup, **COMMON / CUT / FUSE all WELD
+> watertight** (χ=2, boundaryEdges=0, consistently oriented) at the closed-form volumes
+> (π·H²/(4a) lens; V(A)−lens; V(A)+V(B)−lens envelope), each **CONVERGING** as the deflection
+> refines; **op-algebra** V(fuse)+V(common)=V(A)+V(B) and V(cut)+V(common)=V(A) hold on the
+> meshed volumes (≤2%); CUT is per-operand (A−B and B−A both weld, equal volume on the
+> z-mirror-symmetric pose); the **MULTI-SEAM** pose (two degree-4 mirror cups, 2 seams)
+> **HONEST-DECLINES** `MultiSeamDeclined` with the residual map (boundaryEdges localized to the
+> inner seam, never leaky); a null operand declines `NotAdmittedA`. SIM vs OCCT
+> `tests/sim/native_nurbs_solid_boolean_parity.mm` (**14/14 GREEN, DISAGREED=0**): native
+> `nurbsSolidBoolean` COMMON/CUT/FUSE vs OCCT `BRepAlgoAPI_{Common,Cut,Fuse}` on the SAME
+> reconstructed `Geom_BezierSurface` bowl-cups — all three weld watertight and match OCCT's
+> volume within the tessellation band, **converging** (FUSE relErr 3.5%→2.1%→1.0%; CUT
+> 2.2%→1.5%→0.7%; COMMON 13%→6.1%→3.4% over d 0.01→0.005→0.0025), and OCCT's own op-algebra
+> V(fuse)+V(common)=V(A)+V(B) confirms the closed-form oracle. `src/native` stays **OCCT-free**
+> (0 OCCT refs in the new header); **no `cc_*` ABI**; the M0 mesher, `freeform_freeform_cut.h`,
+> `freeform_freeform_multiseam.h`, `smooth_trim_split.h`, `nurbs_solid_membership.h`, `ssi`,
+> `topology`, `math` all **byte-unchanged**. **Net: the general single-transversal-seam
+> two-freeform-solid NURBS boolean (Fuse/Cut/Common) is RESOLVED and OCCT-parity-verified; the
+> multi-seam annulus↔annulus sew remains the bounded, airtight-honest-decline** gated by the
+> frozen M0 mesher's holed-curved-seam weld (the same L3-d residual). The residual L3 tail is
+> unchanged: the closed-loop seeding recall, the mesher-level holed-seam weld, and re-entrant
+> split shapes.
 
 ### Summary table
 
@@ -391,6 +441,7 @@ watertight sew is MISSING.
 | 3 Face split | **PARTIAL** | `classify` inside-test WORKS; split = convex-1-chord + closed-interior-seam; **tolerant-topology healing pre-pass LANDED** (`split_healing.h`, L3-HEAL: gap-close + snap + G5 pinch-resolve + area-preservation gate + honest over-gap decline); general multi-crossing / re-entrant split MISSING |
 | 4 Region classification | **PARTIAL** | single-face In/Out + elementary set-algebra land; general NURBS solid membership MISSING |
 | 5 Reassembly / sew | **PARTIAL** | `pcurveFidelity` welds good / rejects drifted seam; single-transversal-seam freeform↔freeform sew WELDS (tracks S3/W, both legs); **multi-seam split+classify RESOLVED (exact tiling + per-region vote), annulus↔annulus sew a frozen-mesher honest-decline** (L3-d, residual = the mesher's holed-curved-seam weld); general freeform↔freeform watertight sew still bounded |
+| **COMPOSED boolean (Fuse/Cut/Common)** | **LANDED (BOOL-INT)** | the general two-freeform-solid orchestrator `nurbsSolidBoolean(A,B,op)` (`nurbs_solid_boolean.h`) COMPOSES all five stages (byte-unchanged); single-transversal-seam **COMMON/CUT/FUSE all weld watertight** at the closed-form volumes, converging, **DISAGREED=0 vs OCCT `BRepAlgoAPI_{Common,Cut,Fuse}`** (SIM 14/14); FUSE is the group-flip outer-envelope compose; op-algebra V(fuse)+V(common)=V(A)+V(B) holds; the multi-seam annulus↔annulus sew honest-declines with the residual map (never leaky). Host 7/7 + SIM 14/14 |
 
 ---
 

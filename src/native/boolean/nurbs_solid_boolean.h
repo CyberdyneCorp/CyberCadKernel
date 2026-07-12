@@ -204,6 +204,50 @@ inline std::optional<std::pair<topo::Shape, tess::Mesh>> weldGroupCoherent(
   return std::nullopt;
 }
 
+/// The FUSE OUTER-envelope survivor set: A's fragments OUTSIDE B (wall annulus + lids) then
+/// B's fragments OUTSIDE A. `nFromA` (out) = the count of leading A-faces (the weld's group
+/// boundary). Returns false (ambiguous membership) on an unresolved sub-face — never a wrong
+/// pick. Isolated so the FUSE driver stays a flat guard-clause pass (backend band).
+inline bool selectFuseSurvivors(const FreeformOperand& foA, const FreeformOperand& foB,
+                                const SmoothFaceSplit& splitA, const SmoothFaceSplit& splitB,
+                                const tess::Mesh& meshA, const tess::Mesh& meshB, const Aabb& bbA,
+                                const Aabb& bbB, double deflection, std::vector<topo::Shape>& faces,
+                                std::size_t& nFromA) {
+  const auto aKeep = pickByMembership(splitA, meshB, bbB, deflection, Membership::Out);
+  if (!aKeep) return false;
+  faces.push_back(*aKeep);
+  collectAnalyticByMembership(foA, meshB, bbB, deflection, Membership::Out, faces);
+  nFromA = faces.size();
+  const auto bKeep = pickByMembership(splitB, meshA, bbA, deflection, Membership::Out);
+  if (!bKeep) return false;
+  faces.push_back(*bKeep);
+  collectAnalyticByMembership(foB, meshA, bbA, deflection, Membership::Out, faces);
+  return true;
+}
+
+/// The two-sided analytic-volume band gate shared by every op's self-verify: when the
+/// closed-form op-volume is supplied, the meshed volume `v` must lie within a
+/// deflection-bounded band of it (a smooth cap's O(deflection) bias). Returns true if the
+/// band holds OR no closed form was supplied. `slope` scales the band with the deflection.
+inline bool analyticVolumeBandOk(double v, double analyticOpVolume, double deflection,
+                                 double slope = 30.0) {
+  if (std::isnan(analyticOpVolume) || !(analyticOpVolume > 0.0)) return true;
+  const double band = std::min(0.5, slope * deflection) * analyticOpVolume;
+  return std::fabs(v - analyticOpVolume) <= band;
+}
+
+/// Populate a `SolidBoolReport` with a result solid's M0 self-verify witnesses. Isolated so
+/// the op-dispatch drivers stay flat guard-clause passes.
+inline void recordMeshWitnesses(SolidBoolReport& rep, const topo::Shape& r, double deflection) {
+  tess::MeshParams mp;
+  mp.deflection = deflection;
+  const tess::Mesh m = tess::SolidMesher(mp).mesh(r);
+  rep.watertight = tess::isWatertight(m);
+  rep.coherent = tess::isConsistentlyOriented(m);
+  rep.boundaryEdges = tess::boundaryEdgeCount(m);
+  rep.enclosedVolume = std::fabs(tess::enclosedVolume(m));
+}
+
 }  // namespace nsbdetail
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -253,15 +297,10 @@ inline topo::Shape nurbsSolidFuse(const topo::Shape& A, const topo::Shape& B,
 
   // Stage 4 — select the OUTER envelope survivors (A OUTSIDE B, then B OUTSIDE A).
   std::vector<topo::Shape> faces;
-  const auto aKeep = pickByMembership(*srA.split, meshB, bbB, deflection, Membership::Out);
-  if (!aKeep) return fail(SolidBoolDecline::ClassifyAmbiguous);
-  faces.push_back(*aKeep);
-  collectAnalyticByMembership(*foA, meshB, bbB, deflection, Membership::Out, faces);
-  const std::size_t nFromA = faces.size();
-  const auto bKeep = pickByMembership(*srB.split, meshA, bbA, deflection, Membership::Out);
-  if (!bKeep) return fail(SolidBoolDecline::ClassifyAmbiguous);
-  faces.push_back(*bKeep);
-  collectAnalyticByMembership(*foB, meshA, bbA, deflection, Membership::Out, faces);
+  std::size_t nFromA = 0;
+  if (!selectFuseSurvivors(*foA, *foB, *srA.split, *srB.split, meshA, meshB, bbA, bbB, deflection,
+                           faces, nFromA))
+    return fail(SolidBoolDecline::ClassifyAmbiguous);
   if (faces.size() < 2) return fail(SolidBoolDecline::WeldOpen);
   rep.survivorFaces = static_cast<int>(faces.size());
 
@@ -269,7 +308,6 @@ inline topo::Shape nurbsSolidFuse(const topo::Shape& A, const topo::Shape& B,
   std::size_t minBE = 1;
   const auto welded = weldGroupCoherent(std::move(faces), nFromA, mp, minBE);
   if (!welded) { rep.boundaryEdges = minBE; return fail(SolidBoolDecline::NotWatertight); }
-  const topo::Shape result = welded->first;
   const tess::Mesh& m = welded->second;
   rep.watertight = tess::isWatertight(m);
   rep.coherent = tess::isConsistentlyOriented(m);
@@ -278,22 +316,17 @@ inline topo::Shape nurbsSolidFuse(const topo::Shape& A, const topo::Shape& B,
   rep.enclosedVolume = v;
   if (!(v > 0.0) || std::isnan(v)) return fail(SolidBoolDecline::VolumeInconsistent);
 
-  // Self-verify — FUSE contains BOTH operands and is contained in their sum.
+  // Self-verify — FUSE contains BOTH operands and is contained in their sum, and lands in
+  // the two-sided analytic band when the closed form is supplied.
   const double vA = std::fabs(tess::enclosedVolume(meshA));
   const double vB = std::fabs(tess::enclosedVolume(meshB));
   const double band = 0.10 * std::max(std::max(vA, vB), 1e-12);
-  if (v < std::max(vA, vB) - band) return fail(SolidBoolDecline::VolumeInconsistent);
-  if (v > vA + vB + band) return fail(SolidBoolDecline::VolumeInconsistent);
-
-  if (!std::isnan(analyticOpVolume) && analyticOpVolume > 0.0) {
-    constexpr double kVolConvergeSlope = 30.0;
-    const double vband = std::min(0.5, kVolConvergeSlope * deflection) * analyticOpVolume;
-    if (std::fabs(v - analyticOpVolume) > vband)
-      return fail(SolidBoolDecline::VolumeInconsistent);
-  }
+  const bool boundsOk = v >= std::max(vA, vB) - band && v <= vA + vB + band;
+  if (!boundsOk || !analyticVolumeBandOk(v, analyticOpVolume, deflection))
+    return fail(SolidBoolDecline::VolumeInconsistent);
 
   rep.decline = SolidBoolDecline::Ok;
-  return result;
+  return welded->first;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -356,27 +389,24 @@ inline topo::Shape nurbsSolidBooleanWithSeams(const topo::Shape& A, const topo::
   // the annulus↔annulus inner-seam sew (L3-d) with the residual map.
   if (seams.size() >= 2) {
     rep.multiSeam = true;
-    if (op == SolidBoolOp::Common || op == SolidBoolOp::Cut) {
-      MultiSeamCutReport mrep;
-      const FfOp fop = op == SolidBoolOp::Common ? FfOp::Common : FfOp::Cut;
-      const topo::Shape r = freeformFreeformMultiSeamCutWithSeams(
-          A, B, seams, fop, deflection, &mrep, analyticOpVolume);
-      rep.multiDecline = mrep.decline;
-      rep.survivorFaces = mrep.survivorFaces;
-      rep.watertight = mrep.watertight;
-      rep.coherent = mrep.coherent;
-      rep.boundaryEdges = mrep.boundaryEdges;
-      rep.enclosedVolume = mrep.enclosedVolume;
-      if (!r.isNull()) { rep.decline = SolidBoolDecline::Ok; return emit(r); }
-      rep.decline = SolidBoolDecline::MultiSeamDeclined;
-      return emit({});
-    }
-    // FUSE over a multi-seam pose is the same annulus↔annulus inner-seam sew — declined.
-    rep.decline = SolidBoolDecline::MultiSeamDeclined;
-    return emit({});
+    // FUSE over a multi-seam pose is the same annulus↔annulus inner-seam sew as CUT/COMMON.
+    if (op == SolidBoolOp::Fuse) return fail(SolidBoolDecline::MultiSeamDeclined);
+    MultiSeamCutReport mrep;
+    const FfOp fop = op == SolidBoolOp::Common ? FfOp::Common : FfOp::Cut;
+    const topo::Shape r = freeformFreeformMultiSeamCutWithSeams(A, B, seams, fop, deflection, &mrep,
+                                                               analyticOpVolume);
+    rep.multiDecline = mrep.decline;
+    rep.survivorFaces = mrep.survivorFaces;
+    rep.watertight = mrep.watertight;
+    rep.coherent = mrep.coherent;
+    rep.boundaryEdges = mrep.boundaryEdges;
+    rep.enclosedVolume = mrep.enclosedVolume;
+    if (r.isNull()) return fail(SolidBoolDecline::MultiSeamDeclined);
+    rep.decline = SolidBoolDecline::Ok;
+    return emit(r);
   }
 
-  // (4) SINGLE-SEAM dispatch (exactly one closed transversal seam).
+  // (3) SINGLE-SEAM dispatch (exactly one closed transversal seam).
   if (seams.size() != 1) return fail(SolidBoolDecline::NoSeam);
 
   if (op == SolidBoolOp::Common || op == SolidBoolOp::Cut) {
@@ -385,19 +415,10 @@ inline topo::Shape nurbsSolidBooleanWithSeams(const topo::Shape& A, const topo::
     const topo::Shape r =
         freeformFreeformClosedSeamCut(A, B, fop, deflection, &why, analyticOpVolume);
     rep.subDecline = why;
-    if (!r.isNull()) {
-      rep.decline = SolidBoolDecline::Ok;
-      tess::MeshParams mp;
-      mp.deflection = deflection;
-      const tess::Mesh m = tess::SolidMesher(mp).mesh(r);
-      rep.watertight = tess::isWatertight(m);
-      rep.coherent = tess::isConsistentlyOriented(m);
-      rep.boundaryEdges = tess::boundaryEdgeCount(m);
-      rep.enclosedVolume = std::fabs(tess::enclosedVolume(m));
-      return emit(r);
-    }
-    rep.decline = SolidBoolDecline::SingleSeamDeclined;
-    return emit({});
+    if (r.isNull()) return fail(SolidBoolDecline::SingleSeamDeclined);
+    rep.decline = SolidBoolDecline::Ok;
+    recordMeshWitnesses(rep, r, deflection);
+    return emit(r);
   }
 
   // FUSE — the OUTER envelope compose (the single-seam CUT/COMMON verb did not expose it).

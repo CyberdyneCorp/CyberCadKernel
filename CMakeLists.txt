@@ -706,6 +706,20 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_cc_nurbs_boolean)
         set(test_cc_nurbs_boolean_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cc_nurbs_boolean.cpp")
+        # BOOL-CC-EXTEND — the cc_nurbs_solid_union_n / _cut_n (N-ary fold),
+        # cc_nurbs_pocket / _boss (feature ops), and cc_nurbs_step_write / _step_read
+        # (exact trimmed-NURBS STEP round-trip) FACADE wrappers
+        # (src/facade/cc_nurbs_boolean_ext.cpp). Driven through the public cc_* surface,
+        # reusing the J7 bowl-cup operand model. Oracles: two-operand union/cut → a
+        # watertight CCMesh (χ=2) at the closed-form volume; a >=3-operand freeform union
+        # honest-declines (the measured re-admission boundary) with cc_last_error + a
+        # zeroed CCMesh; pocket/boss → watertight; STEP write→read round-trips the NURBS
+        # surface data bit-exact (≤1e-9). The N-ary fold + feature ops compose the numsci
+        # SSI seam trace, so the gate is wired into the CYBERCAD_HAS_NUMSCI block; the
+        # STEP path is numsci-free. The compile-def is added below.
+        list(APPEND CYBERCAD_TESTS test_cc_nurbs_boolean_ext)
+        set(test_cc_nurbs_boolean_ext_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cc_nurbs_boolean_ext.cpp")
         # NURBS roadmap Layer 1 — tolerance-BOUNDED simplification (src/native/math/
         # bspline_simplify). The CAD complement to the EXACT bspline_ops removeKnot/
         # reduceDegree: greedy bounded knot removal (P&T Ch.9.3, increasing-error order)
@@ -1782,6 +1796,9 @@ if(CYBERCAD_BUILD_TESTS)
     # The J7 facade wrapper test drives the numsci-gated general NURBS solid boolean (its TU
     # includes the native boolean orchestrator's numsci-guarded seam trace), so it needs the
     # CYBERCAD_HAS_NUMSCI macro to compile the substantive (non-decline) assertions.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_cc_nurbs_boolean_ext)
+        target_compile_definitions(test_cc_nurbs_boolean_ext PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_cc_nurbs_boolean)
         target_compile_definitions(test_cc_nurbs_boolean PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()

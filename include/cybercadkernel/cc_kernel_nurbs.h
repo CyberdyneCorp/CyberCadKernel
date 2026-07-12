@@ -850,6 +850,102 @@ int cc_nurbs_solid_boolean(cc_surface wallA, double rimA, double lidA, cc_surfac
 
 /* ═══════════════════ end --- J7: general NURBS solid boolean --- ══════════════ */
 
+/* ════════════════════════════════════════════════════════════════════════════
+ * --- BOOL-CC-EXTEND: N-operand boolean + feature ops + STEP ---  (append-only;
+ * this track owns this delimited section)
+ *
+ * Additive `cc_nurbs_*` wrappers over three landed OCCT-free native capabilities not
+ * yet reachable from cc_* / Python (bridging in src/facade/cc_nurbs_boolean_ext.cpp — a
+ * NEW file, disjoint from cc_nurbs_boolean.cpp):
+ *
+ *   src/native/boolean/nurbs_solid_boolean_nary.h → cc_nurbs_solid_union_n / _cut_n
+ *   src/native/boolean/feature_ops.h              → cc_nurbs_pocket / cc_nurbs_boss
+ *   src/native/exchange/step_brep.h               → cc_nurbs_step_write / _step_read
+ *
+ * OPERAND MODEL — the N-ary + feature wrappers reuse the SAME bowl-cup operand model
+ * as cc_nurbs_solid_boolean (J7): each operand is a freeform single-patch Bézier WALL
+ * cc_surface trimmed by a rim CIRCLE (radius `rim` in the wall's (u,v), centred at the
+ * domain midpoint), closed by a flat LID plane at world-z `lid`. So each operand is the
+ * (wall, rim, lid) triple. The result is ONE WATERTIGHT CCMesh (owned by the caller;
+ * free with cc_mesh_free) or an HONEST DECLINE (0 + zeroed *out + cc_last_error).
+ *
+ * HONESTY — the native folds/feature ops honest-decline-short-circuit: a ≥3-operand
+ * freeform fold declines at the MEASURED re-admission boundary (nurbs_solid_boolean_nary.h)
+ * — carried across as 0 + cc_last_error + a zeroed CCMesh, NEVER a leaky mesh. Every
+ * wrapper self-verifies watertightness before crossing the boundary.
+ *
+ * BUILD GATE — the N-ary fold + feature ops compose the numsci SSI seam trace, so those
+ * wrappers compile the real path only under CYBERCAD_HAS_NUMSCI (honest-decline requiring
+ * the numsci substrate otherwise; the ABI symbol is always present). The STEP round-trip
+ * is OCCT-free AND numsci-free (pure string + topology), so cc_nurbs_step_write / _step_read
+ * are ALWAYS available.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+#ifndef CC_KERNEL_NO_PROTOTYPES
+
+/* N-ARY UNION — fuse a LIST of `n` (>= 1) freeform bowl-cup solids:
+ * (((s0 ∪ s1) ∪ s2) … ∪ sn). `walls` is `n` freeform wall cc_surface handles (each a
+ * single-patch Bézier); `rims` / `lids` are `n` doubles each (the rim radius + lid z of
+ * each operand). Fills `out` (a CCMesh owned by the caller; free with cc_mesh_free) with
+ * the WATERTIGHT union. Returns 1 on success. On an HONEST DECLINE returns 0 and zeroes
+ * *out + sets cc_last_error — a single-element list is the identity; a ≥3-operand freeform
+ * fold declines at the MEASURED re-admission boundary (the binary boolean's welded seam-
+ * split wall is not re-admissible), NEVER a leaky mesh. `deflection` (<=0 ⇒ native default). */
+int cc_nurbs_solid_union_n(const cc_surface* walls, const double* rims, const double* lids,
+                           int n, double deflection, CCMesh* out);
+
+/* N-ARY CUT — subtract a LIST of `nTools` (>= 0) tool solids from a base:
+ * (((base − t0) − t1) … − tn). ORDER-SENSITIVE. `baseWall`/`baseRim`/`baseLid` is the base
+ * bowl-cup; `toolWalls`/`toolRims`/`toolLids` are `nTools` tool operands. An empty tool list
+ * is the identity (the base, unchanged). Fills `out` with the carved WATERTIGHT solid;
+ * returns 1 on success, or 0 + zeroed *out + cc_last_error on an HONEST DECLINE (unknown /
+ * non-Bézier wall, degenerate rim, or the ≥2-freeform-tool re-admission boundary). NEVER a
+ * leaky mesh. `deflection` (<=0 ⇒ native default). */
+int cc_nurbs_solid_cut_n(cc_surface baseWall, double baseRim, double baseLid,
+                         const cc_surface* toolWalls, const double* toolRims,
+                         const double* toolLids, int nTools, double deflection, CCMesh* out);
+
+/* POCKET — subtract the tool bowl-cup solid from the base (Cut), a carved feature. Both
+ * operands are the (wall, rim, lid) bowl-cup triple. Fills `out` with the pocketed
+ * WATERTIGHT solid; returns 1 on success, or 0 + zeroed *out + cc_last_error on an HONEST
+ * DECLINE (unknown / non-Bézier wall, degenerate rim, or the underlying boolean declining).
+ * NEVER a leaky mesh. `deflection` (<=0 ⇒ native default). */
+int cc_nurbs_pocket(cc_surface baseWall, double baseRim, double baseLid, cc_surface toolWall,
+                    double toolRim, double toolLid, double deflection, CCMesh* out);
+
+/* BOSS / PAD — add the tool bowl-cup solid to the base (Fuse), a raised pad. Same operand
+ * model + honest-decline contract as cc_nurbs_pocket. Fills `out` with the boss'd WATERTIGHT
+ * solid; returns 1 on success, 0 + zeroed *out + cc_last_error on decline. */
+int cc_nurbs_boss(cc_surface baseWall, double baseRim, double baseLid, cc_surface toolWall,
+                  double toolRim, double toolLid, double deflection, CCMesh* out);
+
+/* STEP WRITE — serialise a set of `n` (>= 1) NURBS `surfaces` (each a B-spline / Bézier
+ * cc_surface, given a synthetic rectangular [u0,u1]×[v0,v1] outer trim loop over its knot
+ * domain so it is a valid trimmed-NURBS face) to an ISO-10303-21 AP214 Part-21 STEP string.
+ * On success returns 1 and writes a NUL-terminated, malloc'd STEP string into *out (owned by
+ * the caller; free with cc_string_free). On an HONEST DECLINE returns 0, writes *out = NULL,
+ * and sets cc_last_error — an unknown handle, an empty set, or a surface the exact writer
+ * cannot represent (an invalid STEP is NEVER emitted). Deterministic (stable #id numbering).
+ * The NURBS data (poles / knots / weights) round-trips bit-exact (≤ 1e-9) through _step_read. */
+int cc_nurbs_step_write(const cc_surface* surfaces, int n, char** out);
+
+/* STEP READ — parse a STEP AP214 string produced by cc_nurbs_step_write back into its
+ * surfaces, EXACT for the NURBS data (poles / knots / weights recovered to ≤ 1e-9). Each
+ * recovered surface is registered as a cc_surface written into `outSurfaces` (capacity
+ * `cap` handles; the caller releases each with cc_surface_release). Returns the recovered
+ * surface count (>= 1) on success. Pass outSurfaces = NULL to QUERY the count without
+ * registering anything (then size a buffer and call again). On an HONEST DECLINE returns
+ * < 0 and sets cc_last_error (malformed / unresolvable STEP, `cap` too small — NOTHING is
+ * registered, no handle leaks, or a recovered surface out of cc_surface scope). */
+int cc_nurbs_step_read(const char* step, cc_surface* outSurfaces, int cap);
+
+/* Free a STEP string returned by cc_nurbs_step_write. Idempotent on NULL. */
+void cc_string_free(char* s);
+
+#endif /* CC_KERNEL_NO_PROTOTYPES */
+
+/* ═══════ end --- BOOL-CC-EXTEND: N-operand boolean + feature ops + STEP --- ════ */
+
 #ifdef __cplusplus
 }
 #endif

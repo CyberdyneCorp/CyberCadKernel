@@ -650,6 +650,19 @@ def _bind(lib: ctypes.CDLL) -> None:
             I,
         ),
         "cc_nurbs_trim_loops_free": ([POINTER(CCTrimLoop), I], None),
+        # J7: general NURBS solid boolean
+        "cc_nurbs_solid_boolean": ([SU, D, D, SU, D, D, I, D, POINTER(CCMesh)], I),
+        # BOOL-CC-EXTEND: N-ary boolean + feature ops + STEP
+        "cc_nurbs_solid_union_n": ([SUP, _DBL_P, _DBL_P, I, D, POINTER(CCMesh)], I),
+        "cc_nurbs_solid_cut_n": (
+            [SU, D, D, SUP, _DBL_P, _DBL_P, I, D, POINTER(CCMesh)],
+            I,
+        ),
+        "cc_nurbs_pocket": ([SU, D, D, SU, D, D, D, POINTER(CCMesh)], I),
+        "cc_nurbs_boss": ([SU, D, D, SU, D, D, D, POINTER(CCMesh)], I),
+        "cc_nurbs_step_write": ([SUP, I, POINTER(c_char_p)], I),
+        "cc_nurbs_step_read": ([c_char_p, SUP, I], I),
+        "cc_string_free": ([c_char_p], None),
     }
     sigs.update(nurbs_sigs)
 

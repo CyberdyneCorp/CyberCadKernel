@@ -816,6 +816,17 @@ _NURBS_SIGS: "dict[str, tuple[list, object]]" = {
         [_SURF, _D, _D, _SURF, _D, _D, _I, _D, POINTER(CCMesh)],
         _I,
     ),
+    # ── BOOL-CC-EXTEND: N-ary boolean + feature ops + STEP ─────────────────────
+    "cc_nurbs_solid_union_n": ([_SURF_P, _DBL_P, _DBL_P, _I, _D, POINTER(CCMesh)], _I),
+    "cc_nurbs_solid_cut_n": (
+        [_SURF, _D, _D, _SURF_P, _DBL_P, _DBL_P, _I, _D, POINTER(CCMesh)],
+        _I,
+    ),
+    "cc_nurbs_pocket": ([_SURF, _D, _D, _SURF, _D, _D, _D, POINTER(CCMesh)], _I),
+    "cc_nurbs_boss": ([_SURF, _D, _D, _SURF, _D, _D, _D, POINTER(CCMesh)], _I),
+    "cc_nurbs_step_write": ([_SURF_P, _I, POINTER(ctypes.c_char_p)], _I),
+    "cc_nurbs_step_read": ([ctypes.c_char_p, _SURF_P, _I], _I),
+    "cc_string_free": ([ctypes.c_char_p], None),
     # ── J5: intersection + trim boolean ───────────────────────────────────────
     "cc_nurbs_intersect_cc": ([_CURVE, _CURVE, _D, _HITCC_PP], _I),
     "cc_nurbs_hits_cc_free": ([POINTER(CCCurveHit)], None),

@@ -330,6 +330,107 @@ def test_solid_boolean_unknown_wall_raises(kernel):
             nurbs.solid_boolean(wa, _BOWL_R, 0.0, wb, _BOWL_R, 0.0, nurbs.BoolOp.COMMON, 0.005)
 
 
+# ── BOOL-CC-EXTEND: N-ary boolean + feature ops + STEP ──────────────────────────
+
+
+def test_union_n_two_operand_watertight(kernel, trimesh_or_skip):
+    """union_n([A, B]) of two bowl-cups welds to a WATERTIGHT trimesh at the closed-form
+    union volume (V(A)+V(B)−lens)."""
+    d = 0.005
+    lid_a = _BOWL_A * _BOWL_R**2
+    lid_b = _BOWL_H - _BOWL_A * _BOWL_R**2
+    cf = 2.0 * (math.pi * _BOWL_A * _BOWL_R**4 / 2.0) - math.pi * _BOWL_H**2 / (4.0 * _BOWL_A)
+    with _bowl_wall(False) as wa, _bowl_wall(True) as wb:
+        try:
+            mesh = nurbs.union_n([(wa, _BOWL_R, lid_a), (wb, _BOWL_R, lid_b)], d)
+        except KernelError as exc:
+            _numsci_or_skip(exc)
+        tm = mesh.to_trimesh()
+        assert tm.is_watertight
+        assert tm.euler_number == 2
+        assert abs(abs(tm.volume) - cf) / cf < 30.0 * d
+
+
+def test_cut_n_single_tool_watertight(kernel, trimesh_or_skip):
+    """cut_n(A, [B]) carves a WATERTIGHT trimesh at V(A) − lens."""
+    d = 0.005
+    lid_a = _BOWL_A * _BOWL_R**2
+    lid_b = _BOWL_H - _BOWL_A * _BOWL_R**2
+    cf = math.pi * _BOWL_A * _BOWL_R**4 / 2.0 - math.pi * _BOWL_H**2 / (4.0 * _BOWL_A)
+    with _bowl_wall(False) as wa, _bowl_wall(True) as wb:
+        try:
+            mesh = nurbs.cut_n((wa, _BOWL_R, lid_a), [(wb, _BOWL_R, lid_b)], d)
+        except KernelError as exc:
+            _numsci_or_skip(exc)
+        tm = mesh.to_trimesh()
+        assert tm.is_watertight
+        assert tm.euler_number == 2
+        assert abs(abs(tm.volume) - cf) / cf < 30.0 * d
+
+
+def test_union_n_three_operand_raises(kernel):
+    """A ≥3-operand freeform union RAISES KernelError at the measured re-admission boundary
+    (never a leaky mesh) — and likewise honest-declines on a no-numsci dylib."""
+    lid_a = _BOWL_A * _BOWL_R**2
+    lid_b = _BOWL_H - _BOWL_A * _BOWL_R**2
+    with _bowl_wall(False) as wa, _bowl_wall(True) as wb, _bowl_wall(False) as wc:
+        with pytest.raises(KernelError):
+            nurbs.union_n(
+                [(wa, _BOWL_R, lid_a), (wb, _BOWL_R, lid_b), (wc, _BOWL_R, lid_a)], 0.005
+            )
+
+
+def test_pocket_and_boss_watertight(kernel, trimesh_or_skip):
+    """pocket / boss of two bowl-cups each weld to a WATERTIGHT trimesh."""
+    d = 0.005
+    lid_a = _BOWL_A * _BOWL_R**2
+    lid_b = _BOWL_H - _BOWL_A * _BOWL_R**2
+    with _bowl_wall(False) as wa, _bowl_wall(True) as wb:
+        for fn in (nurbs.pocket, nurbs.boss):
+            try:
+                mesh = fn((wa, _BOWL_R, lid_a), (wb, _BOWL_R, lid_b), d)
+            except KernelError as exc:
+                _numsci_or_skip(exc)
+            tm = mesh.to_trimesh()
+            assert tm.is_watertight
+            assert tm.euler_number == 2
+
+
+def test_step_write_read_roundtrip_bit_exact(kernel):
+    """step_write then step_read recovers the surfaces bit-exact: evaluating each recovered
+    surface against its original on a (u,v) grid agrees ≤ 1e-9. Numsci-free path."""
+    with _bowl_wall(False) as a, _bowl_wall(True) as b:
+        step = nurbs.step_write([a, b])
+        assert step.startswith("ISO-10303-21;")
+        recovered = nurbs.step_read(step)
+        try:
+            assert len(recovered) == 2
+            max_err = 0.0
+            for orig, rec in zip((a, b), recovered):
+                for iu in range(5):
+                    for iv in range(5):
+                        u, v = iu / 4.0, iv / 4.0
+                        p0 = orig.eval(u, v)
+                        p1 = rec.eval(u, v)
+                        max_err = max(max_err, float(np.max(np.abs(p0 - p1))))
+            assert max_err <= 1e-9
+        finally:
+            for r in recovered:
+                r.close()
+
+
+def test_step_write_empty_raises(kernel):
+    """step_write of an empty surface set RAISES (honest decline, no invalid STEP)."""
+    with pytest.raises((ValueError, KernelError)):
+        nurbs.step_write([])
+
+
+def test_step_read_malformed_raises(kernel):
+    """step_read of a non-STEP string RAISES KernelError (never fabricates geometry)."""
+    with pytest.raises(KernelError):
+        nurbs.step_read("this is not a STEP file")
+
+
 # ── lifetime: RAII release + stale-handle guard ─────────────────────────────────
 
 

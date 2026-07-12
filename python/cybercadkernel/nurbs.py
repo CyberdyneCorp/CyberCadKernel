@@ -108,6 +108,12 @@ __all__ = [
     "shell_trimmed",
     "BoolOp",
     "solid_boolean",
+    "union_n",
+    "cut_n",
+    "pocket",
+    "boss",
+    "step_write",
+    "step_read",
     "intersect_cc",
     "intersect_cs",
     "trim_region_boolean",
@@ -1208,6 +1214,158 @@ def solid_boolean(
         return _mesh_from_ccmesh(out)
     finally:
         _cffi.lib().cc_mesh_free(out)
+
+
+# ── N-ary boolean + feature ops + STEP (BOOL-CC-EXTEND) ─────────────────────────
+
+
+def _cup(operand) -> tuple[Surface, float, float]:
+    """Normalize a bowl-cup operand into ``(surface, rim, lid)``.
+
+    Accepts a ``(surface, rim, lid)`` tuple/list, validating the shape."""
+    surf, rim, lid = operand
+    if not isinstance(surf, Surface):
+        raise TypeError("operand[0] must be a Surface (the freeform wall)")
+    return surf, float(rim), float(lid)
+
+
+def union_n(operands: Sequence, deflection: float = 0.0) -> Mesh:
+    """N-ARY UNION — fuse a list of freeform bowl-cup solids ``(((A ∪ B) ∪ C) …)``.
+
+    ``operands`` is a sequence of ``(wall_surface, rim, lid)`` triples (the same bowl-cup
+    operand model as :func:`solid_boolean`: each ``wall_surface`` is a single-patch Bézier
+    trimmed by a rim circle of radius ``rim`` in its ``(u, v)`` domain, closed by a flat lid
+    at world-z ``lid``). Returns the WATERTIGHT union :class:`Mesh`.
+
+    **Raises** :class:`KernelError` on an honest decline — a single-element list is the
+    identity; a ≥3-operand freeform fold declines at the MEASURED re-admission boundary
+    (the binary boolean's welded seam-split wall is not re-admissible). NEVER a leaky mesh.
+    """
+    ops = [_cup(o) for o in operands]
+    if not ops:
+        raise ValueError("union_n needs >= 1 operand")
+    walls = _surface_handles([s for s, _, _ in ops])
+    rims = _c_double_array([r for _, r, _ in ops])
+    lids = _c_double_array([lid for _, _, lid in ops])
+    out = CCMesh()
+    ok = _cffi.lib().cc_nurbs_solid_union_n(
+        walls, rims, lids, len(ops), float(deflection), ctypes.byref(out)
+    )
+    if not ok:
+        raise CyberCadError("cc_nurbs_solid_union_n failed: " + (_last_error() or ""))
+    try:
+        return _mesh_from_ccmesh(out)
+    finally:
+        _cffi.lib().cc_mesh_free(out)
+
+
+def cut_n(base, tools: Sequence, deflection: float = 0.0) -> Mesh:
+    """N-ARY CUT — subtract a list of tool solids from a base ``(((base − t0) − t1) …)``.
+
+    ``base`` is a ``(wall_surface, rim, lid)`` triple; ``tools`` is a sequence of the same.
+    ORDER-SENSITIVE. An empty tool list is the identity (the base). Returns the carved
+    WATERTIGHT :class:`Mesh`. **Raises** :class:`KernelError` on an honest decline (unknown /
+    non-Bézier wall, degenerate rim, or the ≥2-freeform-tool re-admission boundary)."""
+    bs, br, bl = _cup(base)
+    ops = [_cup(t) for t in tools]
+    walls = _surface_handles([s for s, _, _ in ops]) if ops else (cc_surface * 0)()
+    rims = _c_double_array([r for _, r, _ in ops]) if ops else (ctypes.c_double * 0)()
+    lids = _c_double_array([lid for _, _, lid in ops]) if ops else (ctypes.c_double * 0)()
+    out = CCMesh()
+    ok = _cffi.lib().cc_nurbs_solid_cut_n(
+        cc_surface(bs.id), br, bl, walls, rims, lids, len(ops), float(deflection),
+        ctypes.byref(out),
+    )
+    if not ok:
+        raise CyberCadError("cc_nurbs_solid_cut_n failed: " + (_last_error() or ""))
+    try:
+        return _mesh_from_ccmesh(out)
+    finally:
+        _cffi.lib().cc_mesh_free(out)
+
+
+def pocket(base, tool, deflection: float = 0.0) -> Mesh:
+    """POCKET — subtract the tool bowl-cup solid from the base (Cut), a carved feature.
+
+    ``base`` / ``tool`` are ``(wall_surface, rim, lid)`` triples. Returns the pocketed
+    WATERTIGHT :class:`Mesh`. **Raises** :class:`KernelError` on an honest decline."""
+    bs, br, bl = _cup(base)
+    ts, tr, tl = _cup(tool)
+    out = CCMesh()
+    ok = _cffi.lib().cc_nurbs_pocket(
+        cc_surface(bs.id), br, bl, cc_surface(ts.id), tr, tl, float(deflection),
+        ctypes.byref(out),
+    )
+    if not ok:
+        raise CyberCadError("cc_nurbs_pocket failed: " + (_last_error() or ""))
+    try:
+        return _mesh_from_ccmesh(out)
+    finally:
+        _cffi.lib().cc_mesh_free(out)
+
+
+def boss(base, tool, deflection: float = 0.0) -> Mesh:
+    """BOSS / PAD — add the tool bowl-cup solid to the base (Fuse), a raised pad.
+
+    Same operand model + honest-decline contract as :func:`pocket`. Returns the boss'd
+    WATERTIGHT :class:`Mesh`."""
+    bs, br, bl = _cup(base)
+    ts, tr, tl = _cup(tool)
+    out = CCMesh()
+    ok = _cffi.lib().cc_nurbs_boss(
+        cc_surface(bs.id), br, bl, cc_surface(ts.id), tr, tl, float(deflection),
+        ctypes.byref(out),
+    )
+    if not ok:
+        raise CyberCadError("cc_nurbs_boss failed: " + (_last_error() or ""))
+    try:
+        return _mesh_from_ccmesh(out)
+    finally:
+        _cffi.lib().cc_mesh_free(out)
+
+
+def step_write(surfaces: Sequence[Surface]) -> str:
+    """STEP WRITE — serialise a set of NURBS ``surfaces`` to an ISO-10303-21 AP214 Part-21
+    STEP string (each surface given a synthetic rectangular outer trim loop over its knot
+    domain so it is a valid trimmed-NURBS face). Returns the STEP string.
+
+    **Raises** :class:`KernelError` on an honest decline — an empty set, an unknown handle,
+    or a surface the exact writer cannot represent (an invalid STEP is NEVER emitted). The
+    NURBS data round-trips bit-exact (≤ 1e-9) through :func:`step_read`."""
+    surfs = list(surfaces)
+    if not surfs:
+        raise ValueError("step_write needs >= 1 surface")
+    walls = _surface_handles(surfs)
+    out = ctypes.c_char_p()
+    ok = _cffi.lib().cc_nurbs_step_write(walls, len(surfs), ctypes.byref(out))
+    if not ok:
+        raise CyberCadError("cc_nurbs_step_write failed: " + (_last_error() or ""))
+    try:
+        raw = out.value or b""
+        return raw.decode("ascii")
+    finally:
+        _cffi.lib().cc_string_free(out)
+
+
+def step_read(step: str) -> list[Surface]:
+    """STEP READ — parse a STEP AP214 string produced by :func:`step_write` back into its
+    :class:`Surface` set, EXACT for the NURBS data (poles / knots / weights recovered to
+    ≤ 1e-9). Returns the recovered surfaces (each owned; released as usual).
+
+    **Raises** :class:`KernelError` on an honest decline (malformed / unresolvable STEP,
+    or a recovered surface out of scope)."""
+    data = step.encode("ascii") if isinstance(step, str) else bytes(step)
+    # Count-query first (register nothing), then size the buffer.
+    count = _cffi.lib().cc_nurbs_step_read(data, None, 0)
+    if count < 0:
+        raise CyberCadError("cc_nurbs_step_read failed: " + (_last_error() or ""))
+    if count == 0:
+        return []
+    out = (cc_surface * int(count))()
+    got = _cffi.lib().cc_nurbs_step_read(data, out, int(count))
+    if got < 0:
+        raise CyberCadError("cc_nurbs_step_read failed: " + (_last_error() or ""))
+    return [Surface(int(out[i].id)) for i in range(got)]
 
 
 # ── Intersection + trim boolean ────────────────────────────────────────────────

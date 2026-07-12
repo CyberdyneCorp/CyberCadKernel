@@ -576,7 +576,7 @@ S4-f DETECTS + REPORTS + traces-through, it does not repair topology.
 
 Archived change `openspec/changes/archive/2026-07-05-add-native-ssi-s4f-completeness`.
 
-### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g/h/i/j landed (CONE surface family opened — coaxial cone∩cylinder, single- AND two-circle cone∩sphere, coaxial cone∩cone (frustum AND apex-to-apex hourglass), AND two-circle cylinder∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; ~months for full coverage)
+### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g/h/i/j landed + S5-k FIRST TRANSVERSAL (non-coaxial) slice (CONE surface family opened — coaxial cone∩cylinder, single- AND two-circle cone∩sphere, coaxial cone∩cone (frustum AND apex-to-apex hourglass), AND two-circle cylinder∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; S5-k lands the FIRST non-coaxial pose — the offset cylinder∩sphere COMMON from a NON-PLANAR traced seam; ~months for full coverage)
 Use SSI curves to **split** the curved faces of two solids, **classify**
 fragments inside/outside (reuse the BSP-CSG classifier + a curved point-in-solid
 test), **assemble** the surviving shell watertight (curved-seam weld from the
@@ -848,11 +848,50 @@ sphere FUSE/CUT as an equal-R AND an unequal-R fixture; 6 honest fallbacks):
   r=0.5+y off-axis base, seam y*=0.75/r*=1.25) exercising the mixed disc-cap+apex-band COMMON/CUT. CUT
   is order-sensitive (B−A is the other conical shell). A both-ends-off-axis frustum pair is left to
   S5-g; parallel-wall / non-coaxial (transversal quartic) cone∩cone still decline → NULL → OCCT.
+- **S5-k — TRANSVERSAL (NON-COAXIAL) CYLINDER∩SPHERE COMMON** (the FIRST transversal / non-coaxial
+  curved-boolean slice — the genuine frontier beyond the coaxial S5 families). Where S5-i handles
+  the COAXIAL finite-cylinder∩sphere pose (sphere centre ON the cylinder axis → two ANALYTIC circle
+  seams, PLANAR rings), S5-k handles the OFFSET pose: the cylinder axis is PARALLEL to but
+  perpendicular-DISPLACED from the sphere centre, so the two seams are NON-PLANAR closed space
+  curves (generalised Viviani curves) — NO analytic circle exists. The seam is consumed DIRECTLY
+  from the S3 `TraceSet` (the general SSI freeform-seam machinery the roadmap names), not re-derived
+  from a closed form. Pose: a THIN cylinder (Rc < Rs) whose offset axis still pierces BOTH poles of
+  the sphere (`offset + Rc < Rs`) → the wall crosses the sphere in exactly TWO disjoint closed loops
+  (a lower + an upper loop along the axis), both fully transversal (`nearTangentGaps==0`,
+  `branchPoints==0`, both Closed). COMMON is the SAME TOPOLOGY as the coaxial S5-i COMMON — a
+  cylinder mid-band capped by two spherical caps — but every ring is the TRACED non-planar seam:
+  `buildTransCylSphereCommon` welds the sphere LOWER cap (inside the cyl) + the cylinder BAND
+  (seamLo→seamHi, inside the sphere) + the sphere UPPER cap (inside the cyl) through one `VertexPool`.
+  The new prologue `transCylSphereSetup` recognises the pierce-both-poles offset pose (offset > tol,
+  parallel axis, Rc < Rs, both loops interior + the inside-the-other survival samples) and resamples
+  BOTH traced seams onto a COMMON cylinder-azimuth grid (`resampleByAzimuth`) so the band welds
+  ring-to-ring; the cap builder `appendSphereCap` already slerps an apex to ARBITRARY non-planar seam
+  nodes (S5-c), and the band reuses `appendRevolvedBand` on the aligned rings (a straight ruling is
+  exact on the cylinder). REDUCTION: as the offset → 0 the pose becomes coaxial and S5-i's
+  `cylSphere2Setup` claims it FIRST in the dispatch (S5-k gates on a STRICTLY-POSITIVE offset),
+  reproducing the landed coaxial COMMON — a pinned regression. Verified vs a deterministic
+  numerical-integration oracle (no closed form exists for a non-analytic seam): host fixture
+  (Y-cylinder Rc=1.0 over y∈[−3,3]; sphere Rs=2.0 centre (0.5,0,0), offset 0.5), COMMON volN≈11.275
+  vs numeric 11.279, ΔV≈3.5e-4, watertight, symmetric (both operand orders), inside the 1%
+  curved-parity bar — no tolerance weakened. CUT/FUSE both additionally need the sphere OUTER SHELL
+  (the sphere ZONE between the two NON-PLANAR seams, the long way round outside the bore); welding
+  that zone as a watertight shared-pool planar-facet shell is the UNRESOLVED transversal residual
+  (no revolved-band / single-far-pole meridian tiles a two-non-planar-seam zone watertight), so they
+  HONEST-DECLINE → OCCT. The residual map (measured): the S3/S2 co-resident seeding recall returns
+  BOTH loops only up to offset ≈ 0.5·Rc; at larger offsets ONLY ONE of the two co-resident loops is
+  traced (the documented co-resident seeding-recall limit — same one S5-h/S5-i work around
+  analytically, impossible here), so S5-k's two-loop gate declines beyond that (no faking from a
+  missing loop). A grazing / internally-tangent offset (NearTangent), a fat cylinder (Rc ≥ Rs), a
+  cylinder that does not pierce both poles (offset+Rc ≥ Rs, single loop), and a skew (non-parallel)
+  axis all decline → NULL → OCCT.
 
 Honest scope still declining → OCCT (measured NULL fallbacks, never faked):
-- **oblique / multi-tube cyl∩cyl**, and other curved-curved families (cyl∩sphere,
-  sphere∩box, freeform), the TRANSVERSAL (non-coaxial) cone∩cylinder / cone∩sphere / cone∩cone
-  quartic space curve, apex-crossing / apex-in-extent frustums, parallel-wall (equal-half-angle)
+- **the TRANSVERSAL (offset) cylinder∩sphere CUT + FUSE** (the sphere-outer-zone weld between two
+  non-planar seams — the S5-k residual) and the LARGER-offset transversal cyl∩sphere COMMON (offset
+  ≳ 0.5·Rc, where the S2 co-resident seeding recall returns only ONE of the two loops); the SMALL-
+  offset pierce-both-poles COMMON is now native — S5-k. Plus **oblique / multi-tube cyl∩cyl**, and
+  other curved-curved families (sphere∩box, freeform), the TRANSVERSAL (non-coaxial) cone∩cylinder /
+  cone∩sphere / cone∩cone quartic space curve, apex-crossing / apex-in-extent frustums, parallel-wall (equal-half-angle)
   coaxial cone∩cone, the APEX-SPANNING / internally-tangent coaxial cone∩sphere crossing (the
   two-circle POKE-THROUGH pose is now native — S5-h; only the apex-spanning / tangent sub-configs
   still decline), and the sphere-minuend `sphere − cone` CUT → decline; plus any
@@ -861,9 +900,10 @@ Honest scope still declining → OCCT (measured NULL fallbacks, never faked):
   (sphere∩sphere, Steinmetz, the coaxial cone∩cylinder, cone∩sphere single-crossing, the coaxial
   cone∩cone, the TWO-CIRCLE coaxial cone∩sphere, AND the TWO-CIRCLE coaxial cylinder∩sphere
   FUSE/CUT/COMMON op-sets are now COMPLETE 3/3 NATIVE — see S5-c/S5-d/S5-e/S5-f/S5-g/S5-h/S5-i above.)
-Remaining S5 work: general (non-Steinmetz) branched pairs, transversal/apex cone
-pairs, the apex-spanning / tangent cone∩sphere sub-configs, transversal (non-coaxial)
-cone pairs, and more curved-curved families.
+Remaining S5 work: the transversal (offset) cyl∩sphere CUT/FUSE + larger-offset COMMON (the
+S5-k sphere-outer-zone weld + the co-resident second-loop recall), general (non-Steinmetz)
+branched pairs, transversal/apex cone pairs, the apex-spanning / tangent cone∩sphere sub-configs,
+transversal (non-coaxial) cone pairs, and more curved-curved families.
 
 ## NURBS Layer 2 — general-freeform measurement pass (empirical decline map) · ✅ MEASURED 2026-07-10 · ⛔ POST-HOC RECALL CAMPAIGN DECLINED 2026-07-11 · ✅ SCALE-ADAPTIVE INITIAL SEEDING LANDED 2026-07-11 (decline 28.5%→18.8%, DISAGREED==0) · ✅ LOCUS-COVERAGE ORACLE AUDIT + FREEFORM-PAIR SEEDING EXTENSION LANDED 2026-07-11 (true decline 18.8%; audit → 0 over-counts, residual 100% genuine; extension → 18.8%→16.7%/17.4% combined, DISAGREED==0) · ✅ SEED-CLUSTER DISTINCT-BRANCH SPLIT LANDED 2026-07-11 (decline 16.7%→13.9%, multi-branch declines 19→14, DISAGREED==0)
 

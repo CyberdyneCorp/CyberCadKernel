@@ -53,11 +53,16 @@
 // in V so every iso-curve is the rational section translated, machine-exact (this is the oracle
 // that turns a rational CIRCLE into an exact rational CYLINDER); `sweepRationalAlongTrajectory`
 // places the rational section at K stations by RIGID transforms (which preserve the weights
-// exactly) and RATIONAL-SKINS them via `skinRationalSurface`. A ROTATIONAL sweep (a profile
-// revolved — a distinct exact-rational construction), exact GeomFill/BRepFill-class sweeps (an
-// analytically exact swept surface rather than a skinned approximation of stations), and a
-// VARIABLE section (a section that morphs along the spine) are documented residuals for later
-// slices — this module never fakes them. See docs/NURBS-SCOPE.md Layer-6 row.
+// exactly) and RATIONAL-SKINS them via `skinRationalSurface`. PLUS the ROTATIONAL (revolved)
+// sweep: `sweepRotational` revolves a section PROFILE about an AXIS by an angle — an EXACT
+// RATIONAL surface of revolution (the standard rational-arc construction, *The NURBS Book*
+// Algorithm A7.1): the revolve direction (V) is a degree-2 rational arc built from piecewise
+// ≤90° segments with cos-half-angle middle weights, so the surface matches the ANALYTIC surface
+// of revolution pointwise (a straight offset segment → exact CYLINDER, a tilted segment → exact
+// CONE, a semicircle → exact SPHERE). Exact GeomFill/BRepFill-class sweeps (an analytically exact
+// swept surface rather than a skinned approximation of stations) and a VARIABLE section (a
+// section that morphs along the spine) are documented residuals for later slices — this module
+// never fakes them. See docs/NURBS-SCOPE.md Layer-6 row.
 //
 // GUARD — the general sweep composes skinSurface, which solves linear systems through the
 // numsci facade, so the whole implementation TU is under CYBERCAD_HAS_NUMSCI (exactly like
@@ -177,6 +182,39 @@ SweepResult sweepRationalAlongTrajectory(const BsplineCurveData& section,
                                          const BsplineCurveData& trajectory,
                                          const Dir3& sectionNormal, int stations = 16,
                                          int degreeV = 3);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rotational (revolved) sweep — EXACT rational surface of revolution.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// EXACT rotational sweep (*The NURBS Book* §8.5 / Algorithm A7.1 — MakeRevolvedSurface):
+/// revolve the section PROFILE `section` about the axis (`axisPoint`, `axisDir`) through the
+/// signed `angle` radians. The result is an EXACT RATIONAL NURBS surface of revolution whose
+/// U direction is the profile (degree p, the profile's knots/poles, and — if the profile is
+/// rational — its WEIGHTS carried through) and whose V direction is the standard degree-2
+/// rational CIRCULAR ARC: the arc is split into `narcs = ceil(|angle| / 90°)` segments each
+/// spanning ≤ 90°, giving `2·narcs + 1` V-poles over a clamped degree-2 knot vector with
+/// interior multiplicity 2. Each profile point Pₖ contributes, per segment, an ON-arc pole
+/// (weight 1) and a BETWEEN pole at radius rₖ / cos(Δθ/2) with weight cos(Δθ/2), where rₖ is
+/// Pₖ's distance from the axis. The homogeneous product of the profile weight and the arc
+/// weight is the surface weight — so the revolved surface reproduces the ANALYTIC surface of
+/// revolution POINTWISE (not a facet):
+///   * a straight segment offset from and PARALLEL to the axis, revolved 360° → an EXACT CYLINDER;
+///   * a straight segment TILTED to the axis, revolved → an EXACT CONE / frustum;
+///   * a semicircle whose diameter lies on the axis, revolved 360° → an EXACT SPHERE.
+///
+/// The finished surface CONTAINS the profile at V = 0 (`S(·, 0)` equals `section`) and the
+/// profile rotated by `angle` at V = 1. `vParams = {0, 1}` (the domain endpoints; the arc in
+/// between is the exact rational sweep of the profile through the swept angle).
+///
+/// Declines (`ok=false`, no crash) on: a malformed profile (bad knot vector, degree < 1, or —
+/// if rational — a non-positive / mismatched weight); a non-unit / null `axisDir`; a
+/// (near-)zero `|angle|` (no surface is swept); or a DEGENERATE placement where the entire
+/// profile lies ON the axis (every rₖ ≈ 0 — the revolve collapses to the axis line, no
+/// surface). A profile that only PARTLY touches the axis (some rₖ = 0, e.g. a sphere's pole)
+/// is fine — those poles stay on the axis and the surface degenerates smoothly there.
+SweepResult sweepRotational(const BsplineCurveData& section, const Point3& axisPoint,
+                            const Dir3& axisDir, double angle);
 
 }  // namespace cybercad::native::math
 

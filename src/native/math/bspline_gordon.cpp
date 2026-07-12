@@ -193,6 +193,183 @@ bool interpGrid(const std::vector<Point3>& Q, int K, int L,
   return true;
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// RATIONAL boolean-sum machinery — every interpolation runs in HOMOGENEOUS R⁴.
+// A rational curve/surface is carried as its homogeneous net (w·P, w); the four
+// coordinates (wx, wy, wz, w) are interpolated by the SAME collocation matrix as the
+// non-rational path, then projected back to (pole, weight). Non-positive projected
+// weights clear the caller's `ok` (never divide by ≤ 0, never a faked rational net).
+// ═════════════════════════════════════════════════════════════════════════════
+
+// A homogeneous point (wx, wy, wz, w) — the R⁴ lift of a rational control point.
+struct Homog4 { double x, y, z, w; };
+
+Homog4 liftH(const Point3& p, double w) { return {w * p.x, w * p.y, w * p.z, w}; }
+
+// Evaluate the HOMOGENEOUS point (wx, wy, wz, w) of a rational curve at parameter u — the
+// numerator/denominator of the NURBS quotient BEFORE the divide. Runs the ordinary B-spline
+// basis on the lifted R⁴ net (the same span/basis the rational evaluator uses). This is the
+// value the boolean-sum grid must be consistent in (not merely the projected Euclidean point).
+Homog4 homogCurvePoint(const BsplineCurveData& c, double u) {
+  const int n = nPolesOf(c) - 1;
+  const int span = findSpan(n, c.degree, u, c.knots);
+  std::vector<double> Nb(c.degree + 1);
+  basisFuns(span, u, c.degree, c.knots, Nb);
+  Homog4 acc{0, 0, 0, 0};
+  for (int j = 0; j <= c.degree; ++j) {
+    const int idx = span - c.degree + j;
+    const double w = c.weights[idx];
+    const Point3& p = c.poles[idx];
+    acc.x += Nb[j] * w * p.x;
+    acc.y += Nb[j] * w * p.y;
+    acc.z += Nb[j] * w * p.z;
+    acc.w += Nb[j] * w;
+  }
+  return acc;
+}
+
+// Interpolate ONE rational family of compatible curves ACROSS at prescribed params t_k,
+// in homogeneous R⁴. `compat` are rational (poles + one weight per pole), sharing degree p,
+// along-curve knots, and N control points. Produces the rational surface net (poles+weights)
+// whose iso-curve at t_k equals rational curve k. `alongIsU` chooses the surface direction.
+bool interpFamilyAcrossRational(const std::vector<BsplineCurveData>& compat,
+                                const std::vector<double>& t, int q, bool alongIsU,
+                                BsplineSurfaceData& out) {
+  const int M = static_cast<int>(compat.size());
+  const int p = compat.front().degree;
+  const std::vector<double>& alongKnots = compat.front().knots;
+  const int N = nPolesOf(compat.front());
+  const std::vector<double> acrossKnots = avgKnots(t, q);
+
+  // Collocation matrix A(k,j) = N_{j,q}(t_k), M×M, shared by every along-index / coord.
+  std::vector<double> A(static_cast<std::size_t>(M) * M, 0.0);
+  std::vector<double> Nb(q + 1);
+  for (int k = 0; k < M; ++k) {
+    const int span = findSpan(M - 1, q, t[k], acrossKnots);
+    basisFuns(span, t[k], q, acrossKnots, Nb);
+    for (int j = 0; j <= q; ++j)
+      A[static_cast<std::size_t>(k) * M + (span - q + j)] = Nb[j];
+  }
+
+  std::vector<Point3> netPoles(static_cast<std::size_t>(N) * M);
+  std::vector<double> netW(static_cast<std::size_t>(N) * M);
+  std::vector<double> bx(M), by(M), bz(M), bw(M);
+  for (int i = 0; i < N; ++i) {
+    for (int k = 0; k < M; ++k) {
+      const Homog4 h = liftH(compat[k].poles[i], compat[k].weights[i]);
+      bx[k] = h.x; by[k] = h.y; bz[k] = h.z; bw[k] = h.w;
+    }
+    const std::vector<double> cx = lin_solve(A, M, bx);
+    const std::vector<double> cy = lin_solve(A, M, by);
+    const std::vector<double> cz = lin_solve(A, M, bz);
+    const std::vector<double> cw = lin_solve(A, M, bw);
+    if (static_cast<int>(cx.size()) != M || static_cast<int>(cy.size()) != M ||
+        static_cast<int>(cz.size()) != M || static_cast<int>(cw.size()) != M)
+      return false;  // singular across-collocation
+    for (int j = 0; j < M; ++j) {
+      if (!(cw[j] > 0.0)) return false;  // projected weight ≤ 0 — documented guard
+      netPoles[static_cast<std::size_t>(i) * M + j] = {cx[j] / cw[j], cy[j] / cw[j], cz[j] / cw[j]};
+      netW[static_cast<std::size_t>(i) * M + j] = cw[j];
+    }
+  }
+
+  if (alongIsU) {
+    out.degreeU = p;         out.degreeV = q;
+    out.nPolesU = N;         out.nPolesV = M;
+    out.knotsU = alongKnots; out.knotsV = acrossKnots;
+    out.poles = std::move(netPoles);
+    out.weights = std::move(netW);
+  } else {
+    out.degreeU = q;         out.degreeV = p;
+    out.nPolesU = M;         out.nPolesV = N;
+    out.knotsU = acrossKnots; out.knotsV = alongKnots;
+    out.poles.assign(static_cast<std::size_t>(M) * N, Point3{});
+    out.weights.assign(static_cast<std::size_t>(M) * N, 1.0);
+    for (int i = 0; i < N; ++i)
+      for (int j = 0; j < M; ++j) {
+        const std::size_t src = static_cast<std::size_t>(i) * M + j;
+        const std::size_t dst = static_cast<std::size_t>(j) * N + i;
+        out.poles[dst] = netPoles[src];
+        out.weights[dst] = netW[src];
+      }
+  }
+  return true;
+}
+
+// Tensor-product interpolation of the K×L HOMOGENEOUS grid at (uParams, vParams). `Qh` is the
+// homogeneous grid (K outer, L inner: Qh[k*L+l]) — the SAME homogeneous intersection values the
+// two rational skins land at, so the boolean sum cancels. Interpolate each v-row across u then
+// the resulting columns across v, all four coords, project back. Row-major U-outer output.
+bool interpGridRational(const std::vector<Homog4>& Qh, int K, int L,
+                        const std::vector<double>& uParams, const std::vector<double>& vParams,
+                        int qU, int qV, BsplineSurfaceData& out) {
+  const std::vector<double> knotsU = avgKnots(uParams, qU);
+  const std::vector<double> knotsV = avgKnots(vParams, qV);
+
+  // Stage 1 — each v-station row: interpolate the L homogeneous points across u.
+  std::vector<double> Au(static_cast<std::size_t>(L) * L, 0.0);
+  std::vector<double> Nb(qU + 1);
+  for (int l = 0; l < L; ++l) {
+    const int span = findSpan(L - 1, qU, uParams[l], knotsU);
+    basisFuns(span, uParams[l], qU, knotsU, Nb);
+    for (int j = 0; j <= qU; ++j)
+      Au[static_cast<std::size_t>(l) * L + (span - qU + j)] = Nb[j];
+  }
+  std::vector<Homog4> mid(static_cast<std::size_t>(K) * L);  // homogeneous u-controls per row
+  std::vector<double> bx(L), by(L), bz(L), bw(L);
+  for (int k = 0; k < K; ++k) {
+    for (int l = 0; l < L; ++l) {
+      const Homog4 h = Qh[static_cast<std::size_t>(k) * L + l];
+      bx[l] = h.x; by[l] = h.y; bz[l] = h.z; bw[l] = h.w;
+    }
+    const std::vector<double> cx = lin_solve(Au, L, bx);
+    const std::vector<double> cy = lin_solve(Au, L, by);
+    const std::vector<double> cz = lin_solve(Au, L, bz);
+    const std::vector<double> cw = lin_solve(Au, L, bw);
+    if (static_cast<int>(cx.size()) != L || static_cast<int>(cy.size()) != L ||
+        static_cast<int>(cz.size()) != L || static_cast<int>(cw.size()) != L)
+      return false;
+    for (int a = 0; a < L; ++a)
+      mid[static_cast<std::size_t>(k) * L + a] = {cx[a], cy[a], cz[a], cw[a]};
+  }
+
+  // Stage 2 — each u-control column: interpolate the K homogeneous rows across v, project back.
+  std::vector<double> Av(static_cast<std::size_t>(K) * K, 0.0);
+  std::vector<double> Nv(qV + 1);
+  for (int k = 0; k < K; ++k) {
+    const int span = findSpan(K - 1, qV, vParams[k], knotsV);
+    basisFuns(span, vParams[k], qV, knotsV, Nv);
+    for (int j = 0; j <= qV; ++j)
+      Av[static_cast<std::size_t>(k) * K + (span - qV + j)] = Nv[j];
+  }
+  out.degreeU = qU;    out.degreeV = qV;
+  out.nPolesU = L;     out.nPolesV = K;
+  out.knotsU = knotsU; out.knotsV = knotsV;
+  out.poles.assign(static_cast<std::size_t>(L) * K, Point3{});
+  out.weights.assign(static_cast<std::size_t>(L) * K, 1.0);
+  std::vector<double> gx(K), gy(K), gz(K), gw(K);
+  for (int a = 0; a < L; ++a) {
+    for (int k = 0; k < K; ++k) {
+      const Homog4 h = mid[static_cast<std::size_t>(k) * L + a];
+      gx[k] = h.x; gy[k] = h.y; gz[k] = h.z; gw[k] = h.w;
+    }
+    const std::vector<double> cx = lin_solve(Av, K, gx);
+    const std::vector<double> cy = lin_solve(Av, K, gy);
+    const std::vector<double> cz = lin_solve(Av, K, gz);
+    const std::vector<double> cw = lin_solve(Av, K, gw);
+    if (static_cast<int>(cx.size()) != K || static_cast<int>(cy.size()) != K ||
+        static_cast<int>(cz.size()) != K || static_cast<int>(cw.size()) != K)
+      return false;
+    for (int k = 0; k < K; ++k) {
+      if (!(cw[k] > 0.0)) return false;  // projected weight ≤ 0 — documented guard
+      const std::size_t idx = static_cast<std::size_t>(a) * K + k;
+      out.poles[idx] = {cx[k] / cw[k], cy[k] / cw[k], cz[k] / cw[k]};
+      out.weights[idx] = cw[k];
+    }
+  }
+  return true;
+}
+
 // ── Bring two surfaces to a common basis in ONE direction (exact Layer-1) ─────────
 // Raise both to the common max degree, then merge both onto the union knot vector in
 // direction d. Both ops are exact (geometry-preserving), so neither surface's geometry
@@ -334,6 +511,71 @@ NetworkCheck verifyNetwork(const CurveNetwork& network, double tol) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Rational network consistency (grid checked with the RATIONAL evaluator).
+// ─────────────────────────────────────────────────────────────────────────────
+
+NetworkCheck verifyRationalNetwork(const CurveNetwork& network, double tol) {
+  NetworkCheck r;
+  const int K = static_cast<int>(network.uCurves.size());
+  const int L = static_cast<int>(network.vCurves.size());
+  r.K = K;
+  r.L = L;
+
+  if (K < 2 || L < 2) { r.reason = "need at least 2 curves in each direction"; return r; }
+  if (static_cast<int>(network.vParams.size()) != K) { r.reason = "vParams size != K"; return r; }
+  if (static_cast<int>(network.uParams.size()) != L) { r.reason = "uParams size != L"; return r; }
+
+  // Rational + well-formed guard for both families (one strictly-positive weight per pole).
+  auto wellFormedRat = [](const BsplineCurveData& c) {
+    if (c.weights.size() != c.poles.size()) return false;  // non-rational or mismatched
+    if (c.poles.empty()) return false;
+    for (double w : c.weights)
+      if (!(w > 0.0)) return false;
+    return c.degree >= 1 &&
+           static_cast<int>(c.knots.size()) == nPolesOf(c) + c.degree + 1 && nPolesOf(c) >= 1;
+  };
+  for (const BsplineCurveData& c : network.uCurves)
+    if (!wellFormedRat(c)) { r.reason = "a u-curve is non-rational or malformed"; return r; }
+  for (const BsplineCurveData& c : network.vCurves)
+    if (!wellFormedRat(c)) { r.reason = "a v-curve is non-rational or malformed"; return r; }
+
+  // Strictly-increasing station params (a proper monotone grid).
+  for (int k = 1; k < K; ++k)
+    if (!(network.vParams[k] > network.vParams[k - 1] + 1e-12)) {
+      r.reason = "vParams not strictly increasing"; return r;
+    }
+  for (int l = 1; l < L; ++l)
+    if (!(network.uParams[l] > network.uParams[l - 1] + 1e-12)) {
+      r.reason = "uParams not strictly increasing"; return r;
+    }
+
+  // Grid consistency via the RATIONAL evaluator: C_k(u_l) must equal D_l(v_k) (= Q_{k,l}).
+  r.grid.assign(static_cast<std::size_t>(K) * L, Point3{});
+  double worst = 0.0;
+  for (int k = 0; k < K; ++k) {
+    const BsplineCurveData& Ck = network.uCurves[k];
+    for (int l = 0; l < L; ++l) {
+      const BsplineCurveData& Dl = network.vCurves[l];
+      const Point3 pC = nurbsCurvePoint(Ck.degree, Ck.poles, Ck.weights, Ck.knots,
+                                        network.uParams[l]);
+      const Point3 pD = nurbsCurvePoint(Dl.degree, Dl.poles, Dl.weights, Dl.knots,
+                                        network.vParams[k]);
+      worst = std::max(worst, distance(pC, pD));
+      r.grid[static_cast<std::size_t>(k) * L + l] = {0.5 * (pC.x + pD.x),
+                                                     0.5 * (pC.y + pD.y),
+                                                     0.5 * (pC.z + pD.z)};
+    }
+  }
+  r.maxGridError = worst;
+  if (worst > tol) {
+    r.reason = "inconsistent rational network: curve intersections exceed tolerance";
+    return r;
+  }
+  r.ok = true;
+  return r;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Gordon / network surface (boolean sum).
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -398,6 +640,102 @@ GordonResult gordonSurface(const CurveNetwork& network, double tol,
                   Su.poles[i].z + Sv.poles[i].z - T.poles[i].z};
   }
   G.weights.clear();  // non-rational.
+
+  r.surface = std::move(G);
+  r.ok = true;
+  return r;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rational Gordon / network surface (boolean sum in HOMOGENEOUS R⁴).
+// ─────────────────────────────────────────────────────────────────────────────
+
+GordonResult gordonRationalSurface(const CurveNetwork& network, double tol,
+                                   int uInterpDegree, int vInterpDegree) {
+  GordonResult r;
+
+  // Step 1 — verify the rational network (grid checked with the rational evaluator).
+  const NetworkCheck chk = verifyRationalNetwork(network, tol);
+  r.maxGridError = chk.maxGridError;
+  if (!chk.ok) { r.reason = chk.reason; return r; }
+  const int K = chk.K, L = chk.L;
+
+  // Step 2 — make each family compatible in HOMOGENEOUS space (rational-aware elevate/refine).
+  const SectionCompatibility compU = makeRationalSectionsCompatible(network.uCurves);
+  const SectionCompatibility compV = makeRationalSectionsCompatible(network.vCurves);
+  if (!compU.ok || !compV.ok) { r.reason = "rational family compatibility failed"; return r; }
+
+  int qV = vInterpDegree; if (qV > K - 1) qV = K - 1; if (qV < 1) qV = 1;  // across v (K curves)
+  int qU = uInterpDegree; if (qU > L - 1) qU = L - 1; if (qU < 1) qU = 1;  // across u (L curves)
+
+  // Homogeneous grid Qh_{k,l} = C_k^w(u_l): the value BOTH rational skins land at (must agree
+  // homogeneously with D_l^w(v_k) for the boolean sum to cancel). Honest precondition: decline
+  // if the two families disagree in HOMOGENEOUS space at the grid (a Euclidean-consistent but
+  // weight-inconsistent network cannot be reproduced by the rational boolean sum).
+  std::vector<Homog4> Qh(static_cast<std::size_t>(K) * L);
+  double worstH = 0.0;
+  for (int k = 0; k < K; ++k)
+    for (int l = 0; l < L; ++l) {
+      const Homog4 hC = homogCurvePoint(compU.sections[k], network.uParams[l]);
+      const Homog4 hD = homogCurvePoint(compV.sections[l], network.vParams[k]);
+      const double d = std::sqrt((hC.x - hD.x) * (hC.x - hD.x) + (hC.y - hD.y) * (hC.y - hD.y) +
+                                 (hC.z - hD.z) * (hC.z - hD.z) + (hC.w - hD.w) * (hC.w - hD.w));
+      worstH = std::max(worstH, d);
+      Qh[static_cast<std::size_t>(k) * L + l] = hC;
+    }
+  if (worstH > tol) {
+    r.reason = "rational network inconsistent in homogeneous (weight) space at the grid";
+    return r;
+  }
+
+  // Step 3 — the three homogeneous boolean-sum summands.
+  BsplineSurfaceData Su, Sv, T;
+  if (!interpFamilyAcrossRational(compU.sections, network.vParams, qV, /*alongIsU=*/true, Su)) {
+    r.reason = "singular rational u-family interpolation"; return r;
+  }
+  if (!interpFamilyAcrossRational(compV.sections, network.uParams, qU, /*alongIsU=*/false, Sv)) {
+    r.reason = "singular rational v-family interpolation"; return r;
+  }
+  if (!interpGridRational(Qh, K, L, network.uParams, network.vParams, qU, qV, T)) {
+    r.reason = "singular rational grid interpolation"; return r;
+  }
+
+  // Step 4 — common basis via the exact RATIONAL-AWARE Layer-1 ops (weights ride through).
+  unifyDirection(Su, Sv, ParamDir::U);
+  unifyDirection(Su, Sv, ParamDir::V);
+  unifyDirection(Su, T, ParamDir::U);
+  unifyDirection(Su, T, ParamDir::V);
+  unifyDirection(Sv, T, ParamDir::U);
+  unifyDirection(Sv, T, ParamDir::V);
+  unifyDirection(Su, Sv, ParamDir::U);
+  unifyDirection(Su, Sv, ParamDir::V);
+  unifyDirection(Su, T, ParamDir::U);
+  unifyDirection(Su, T, ParamDir::V);
+
+  if (!sameBasis(Su, Sv) || !sameBasis(Su, T)) {
+    r.reason = "rational summands failed to reach a common basis"; return r;
+  }
+  if (Su.weights.size() != Su.poles.size() || Sv.weights.size() != Sv.poles.size() ||
+      T.weights.size() != T.poles.size()) {
+    r.reason = "rational summand lost its weights under unification"; return r;
+  }
+
+  // Form the Gordon net in HOMOGENEOUS space: homog(G) = homog(Su) + homog(Sv) − homog(T),
+  // then project back to (pole, weight). A projected non-positive weight is a documented guard.
+  BsplineSurfaceData G = Su;  // inherits the common basis/degrees/knots.
+  const std::size_t n = Su.poles.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    const Homog4 hu = liftH(Su.poles[i], Su.weights[i]);
+    const Homog4 hv = liftH(Sv.poles[i], Sv.weights[i]);
+    const Homog4 ht = liftH(T.poles[i], T.weights[i]);
+    const double gx = hu.x + hv.x - ht.x;
+    const double gy = hu.y + hv.y - ht.y;
+    const double gz = hu.z + hv.z - ht.z;
+    const double gw = hu.w + hv.w - ht.w;
+    if (!(gw > 0.0)) { r.reason = "rational boolean sum produced a non-positive weight"; return r; }
+    G.poles[i] = {gx / gw, gy / gw, gz / gw};
+    G.weights[i] = gw;
+  }
 
   r.surface = std::move(G);
   r.ok = true;

@@ -29,6 +29,7 @@
 #include "native/math/bspline.h"
 #include "native/math/bspline_gordon.h"
 #include "native/math/bspline_ops.h"
+#include "native/math/bspline_sweep.h"  // sweepRotational (a KNOWN rational surface source)
 
 #include <algorithm>
 #include <cmath>
@@ -140,6 +141,94 @@ static BsplineCurveData isoVCurve(const BsplineSurfaceData& s, double uFixed) {
     c.poles[j] = curvePoint(s.degreeU, urow, s.knotsU, uFixed);
   }
   return c;
+}
+
+// ── Rational evaluators + iso-curve extraction (for the rational Gordon oracle) ──
+static Point3 evalRatCurve(const BsplineCurveData& c, double u) {
+  return nurbsCurvePoint(c.degree, c.poles, c.weights, c.knots, u);
+}
+static Point3 evalRatSurface(const BsplineSurfaceData& s, double u, double v) {
+  SurfaceGrid g{std::span<const Point3>(s.poles), s.nPolesU, s.nPolesV};
+  return nurbsSurfacePoint(s.degreeU, s.degreeV, g, s.weights, s.knotsU, s.knotsV, u, v);
+}
+static double ratIsoUVsCurve(const BsplineSurfaceData& s, double v, const BsplineCurveData& c,
+                             int nS = 120) {
+  double worst = 0.0;
+  for (int i = 0; i <= nS; ++i) {
+    const double u = static_cast<double>(i) / nS;
+    worst = std::max(worst, distance(evalRatSurface(s, u, v), evalRatCurve(c, u)));
+  }
+  return worst;
+}
+static double ratIsoVVsCurve(const BsplineSurfaceData& s, double u, const BsplineCurveData& c,
+                             int nS = 120) {
+  double worst = 0.0;
+  for (int i = 0; i <= nS; ++i) {
+    const double v = static_cast<double>(i) / nS;
+    worst = std::max(worst, distance(evalRatSurface(s, u, v), evalRatCurve(c, v)));
+  }
+  return worst;
+}
+
+// Extract the RATIONAL iso-curve S(·, vFixed) of a rational surface as a U-direction NURBS
+// curve. Blends each U-pole row in HOMOGENEOUS space at vFixed (the same lift the kernel uses),
+// then projects back to (pole, weight) — so the extracted curve is the exact rational iso-curve.
+static BsplineCurveData ratIsoUCurve(const BsplineSurfaceData& s, double vFixed) {
+  BsplineCurveData c;
+  c.degree = s.degreeU;
+  c.knots = s.knotsU;
+  c.poles.resize(s.nPolesU);
+  c.weights.resize(s.nPolesU);
+  for (int i = 0; i < s.nPolesU; ++i) {
+    std::vector<Point3> hw(s.nPolesV);  // homogeneous (w·P) row
+    std::vector<Point3> ww(s.nPolesV);  // carry w in x-slot for the scalar blend
+    for (int l = 0; l < s.nPolesV; ++l) {
+      const std::size_t idx = static_cast<std::size_t>(i) * s.nPolesV + l;
+      const double w = s.weights[idx];
+      hw[l] = {w * s.poles[idx].x, w * s.poles[idx].y, w * s.poles[idx].z};
+      ww[l] = {w, 0, 0};
+    }
+    const Point3 wp = curvePoint(s.degreeV, hw, s.knotsV, vFixed);
+    const double w = curvePoint(s.degreeV, ww, s.knotsV, vFixed).x;
+    c.poles[i] = {wp.x / w, wp.y / w, wp.z / w};
+    c.weights[i] = w;
+  }
+  return c;
+}
+static BsplineCurveData ratIsoVCurve(const BsplineSurfaceData& s, double uFixed) {
+  BsplineCurveData c;
+  c.degree = s.degreeV;
+  c.knots = s.knotsV;
+  c.poles.resize(s.nPolesV);
+  c.weights.resize(s.nPolesV);
+  for (int j = 0; j < s.nPolesV; ++j) {
+    std::vector<Point3> hw(s.nPolesU);
+    std::vector<Point3> ww(s.nPolesU);
+    for (int i = 0; i < s.nPolesU; ++i) {
+      const std::size_t idx = static_cast<std::size_t>(i) * s.nPolesV + j;
+      const double w = s.weights[idx];
+      hw[i] = {w * s.poles[idx].x, w * s.poles[idx].y, w * s.poles[idx].z};
+      ww[i] = {w, 0, 0};
+    }
+    const Point3 wp = curvePoint(s.degreeU, hw, s.knotsU, uFixed);
+    const double w = curvePoint(s.degreeU, ww, s.knotsU, uFixed).x;
+    c.poles[j] = {wp.x / w, wp.y / w, wp.z / w};
+    c.weights[j] = w;
+  }
+  return c;
+}
+
+// Build a RATIONAL curve network from a known rational surface (both families from the same
+// surface ⇒ homogeneously consistent at the grid, the precondition the rational boolean sum needs).
+static CurveNetwork extractRationalNetwork(const BsplineSurfaceData& src,
+                                           const std::vector<double>& vStations,
+                                           const std::vector<double>& uStations) {
+  CurveNetwork net;
+  net.vParams = vStations;
+  net.uParams = uStations;
+  for (double vk : vStations) net.uCurves.push_back(ratIsoUCurve(src, vk));
+  for (double ul : uStations) net.vCurves.push_back(ratIsoVCurve(src, ul));
+  return net;
 }
 
 // Build a curve network by extracting K u-iso-curves + L v-iso-curves from `src` at the
@@ -357,6 +446,118 @@ int main() {
       nm.vParams = {0.0, 0.0, 1.0};  // not strictly increasing
       expectTrue(!verifyNetwork(nm).ok, "verifyNetwork declines non-monotone vParams");
       expectTrue(!gordonSurface(nm).ok, "gordonSurface declines non-monotone vParams");
+    }
+  }
+
+  // ═══ 5. RATIONAL GORDON — CONTAINMENT of every rational network curve ════════
+  // Build a KNOWN rational surface (a partial cylinder patch — a rational quarter-revolve of a
+  // straight profile), extract a u/v network of RATIONAL iso-curves at its Greville abscissae,
+  // build the rational Gordon surface, and confirm it CONTAINS every rational network curve
+  // POINTWISE (~1e-9). This is the core rational oracle: the surface reproduces every weighted
+  // network curve exactly (weights and all).
+  {
+    // A rational surface source: revolve a straight profile (radius R, along +Z) by 120°.
+    // U (profile) is degree-1 rational-trivial; to exercise a genuinely rational U we instead
+    // use the revolve's V (the rational arc) as one direction and a rational profile as the
+    // other. Simplest airtight source: a rational bicubic-ish patch built by revolve.
+    const double PI = 3.14159265358979323846;
+    BsplineCurveData prof;  // rational quadratic circle-arc profile in XZ (radius varies with z)
+    const double s = std::sqrt(2.0) / 2.0;
+    prof.degree = 2;
+    prof.knots = {0, 0, 0, 1, 1, 1};
+    prof.poles = {{1.0, 0, 0}, {1.5, 0, 1.0}, {1.0, 0, 2.0}};  // a bulged profile, offset from axis
+    prof.weights = {1.0, s, 1.0};
+    SweepResult rev = sweepRotational(prof, Point3{0, 0, 0}, Dir3(0, 0, 1), 2.0 * PI / 3.0);  // 120°
+    expectTrue(rev.ok, "rational Gordon source (120° revolve of rational profile) ok");
+    expectTrue(!rev.surface.weights.empty(), "rational Gordon source IS rational");
+    const BsplineSurfaceData& src = rev.surface;
+
+    const std::vector<double> vSt = greville(src.knotsV, src.nPolesV, src.degreeV);
+    const std::vector<double> uSt = greville(src.knotsU, src.nPolesU, src.degreeU);
+    const CurveNetwork net = extractRationalNetwork(src, vSt, uSt);
+
+    // Rational network consistency (checked with the rational evaluator).
+    NetworkCheck chk = verifyRationalNetwork(net);
+    expectTrue(chk.ok, "verifyRationalNetwork ok on rational iso-curve network");
+    expectLE(chk.maxGridError, 1e-9, "rational extracted network grid consistency ~1e-9");
+    std::printf("INFO rational-network grid error = %.3e\n", chk.maxGridError);
+
+    GordonResult g = gordonRationalSurface(net, 1e-7, src.degreeU, src.degreeV);
+    expectTrue(g.ok, "gordonRationalSurface ok on rational network");
+    expectTrue(!g.surface.weights.empty(), "rational Gordon surface IS rational");
+    expectTrue(g.surface.weights.size() == g.surface.poles.size(),
+               "one weight per rational Gordon pole");
+
+    // CONTAINMENT — every rational u-curve and v-curve is contained pointwise (~1e-9).
+    double worstU = 0.0;
+    for (std::size_t k = 0; k < net.uCurves.size(); ++k)
+      worstU = std::max(worstU, ratIsoUVsCurve(g.surface, net.vParams[k], net.uCurves[k]));
+    expectLE(worstU, 1e-9, "rational Gordon contains every rational u-curve pointwise (~1e-9)");
+    double worstV = 0.0;
+    for (std::size_t l = 0; l < net.vCurves.size(); ++l)
+      worstV = std::max(worstV, ratIsoVVsCurve(g.surface, net.uParams[l], net.vCurves[l]));
+    expectLE(worstV, 1e-9, "rational Gordon contains every rational v-curve pointwise (~1e-9)");
+    std::printf("INFO rational Gordon containment: worst u = %.3e, worst v = %.3e\n",
+                worstU, worstV);
+
+    // GRID INTERSECTION — the K×L rational grid points lie on the surface (~1e-9).
+    double worstGrid = 0.0;
+    for (std::size_t k = 0; k < net.vParams.size(); ++k)
+      for (std::size_t l = 0; l < net.uParams.size(); ++l) {
+        const Point3 onSurf = evalRatSurface(g.surface, net.uParams[l], net.vParams[k]);
+        const Point3 grid = chk.grid[k * net.uParams.size() + l];
+        worstGrid = std::max(worstGrid, distance(onSurf, grid));
+      }
+    expectLE(worstGrid, 1e-9, "rational grid intersection points lie on the surface (~1e-9)");
+    std::printf("INFO rational Gordon grid-on-surface worst dev = %.3e\n", worstGrid);
+  }
+
+  // ═══ 6. RATIONAL GORDON — honest declines ════════════════════════════════════
+  {
+    const double PI = 3.14159265358979323846;
+    const double s = std::sqrt(2.0) / 2.0;
+    BsplineCurveData prof;
+    prof.degree = 2;
+    prof.knots = {0, 0, 0, 1, 1, 1};
+    prof.poles = {{1.0, 0, 0}, {1.5, 0, 1.0}, {1.0, 0, 2.0}};
+    prof.weights = {1.0, s, 1.0};
+    SweepResult rev = sweepRotational(prof, Point3{0, 0, 0}, Dir3(0, 0, 1), 2.0 * PI / 3.0);
+    const BsplineSurfaceData& src = rev.surface;
+    const std::vector<double> vSt = greville(src.knotsV, src.nPolesV, src.degreeV);
+    const std::vector<double> uSt = greville(src.knotsU, src.nPolesU, src.degreeU);
+
+    // (a) NON-rational network declined by the rational path (weights stripped).
+    {
+      CurveNetwork nr = extractRationalNetwork(src, vSt, uSt);
+      for (auto& c : nr.uCurves) c.weights.clear();
+      for (auto& c : nr.vCurves) c.weights.clear();
+      expectTrue(!verifyRationalNetwork(nr).ok, "verifyRationalNetwork declines non-rational curves");
+      expectTrue(!gordonRationalSurface(nr).ok, "gordonRationalSurface declines non-rational network");
+    }
+    // (b) Non-positive weight declined.
+    {
+      CurveNetwork bw = extractRationalNetwork(src, vSt, uSt);
+      bw.uCurves[0].weights[0] = 0.0;
+      expectTrue(!verifyRationalNetwork(bw).ok, "verifyRationalNetwork declines a non-positive weight");
+      expectTrue(!gordonRationalSurface(bw).ok, "gordonRationalSurface declines a non-positive weight");
+    }
+    // (c) Inconsistent rational network (displace a v-curve off the grid) declined.
+    {
+      CurveNetwork bad = extractRationalNetwork(src, vSt, uSt);
+      for (Point3& p : bad.vCurves[bad.vCurves.size() / 2].poles) p.z += 3.0;
+      NetworkCheck chk = verifyRationalNetwork(bad);
+      expectTrue(!chk.ok, "verifyRationalNetwork declines an inconsistent rational network");
+      expectTrue(!gordonRationalSurface(bad).ok, "gordonRationalSurface declines inconsistent network");
+    }
+    // (d) Too few curves declined.
+    {
+      CurveNetwork few;
+      few.uCurves.push_back(ratIsoUCurve(src, vSt[0]));
+      few.vCurves.push_back(ratIsoVCurve(src, uSt[0]));
+      few.vCurves.push_back(ratIsoVCurve(src, uSt.back()));
+      few.vParams = {vSt[0]};
+      few.uParams = {uSt[0], uSt.back()};
+      expectTrue(!gordonRationalSurface(few).ok, "gordonRationalSurface declines <2 curves in a direction");
     }
   }
 

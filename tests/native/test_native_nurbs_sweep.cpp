@@ -533,6 +533,231 @@ int main() {
                "rational general declines on coincident trajectory");
   }
 
+  // ═══ 9. ROTATIONAL (REVOLVED) SWEEP — EXACT surfaces of revolution ══════════
+  // Revolving a profile about an axis is an EXACT RATIONAL surface of revolution. The
+  // strongest oracles are the closed-form analytic surfaces: cylinder / cone / sphere.
+  {
+    const double PI = 3.14159265358979323846;
+    const Point3 axisP{0, 0, 0};
+    const Dir3 axisD(0, 0, 1);  // revolve about +Z
+
+    // ── (a) CYLINDER: a straight segment PARALLEL to the axis, offset by R, revolved 360°. ──
+    // Profile: vertical line x=R, z from 0 to H (degree-1, 2 poles). Every surface point must
+    // lie at radius R and its own height — the EXACT analytic cylinder.
+    {
+      const double R = 2.0, H = 5.0;
+      BsplineCurveData prof;
+      prof.degree = 1;
+      prof.knots = {0, 0, 1, 1};
+      prof.poles = {{R, 0, 0}, {R, 0, H}};  // straight, parallel to +Z, radius R
+      SweepResult r = sweepRotational(prof, axisP, axisD, 2 * PI);
+      expectTrue(r.ok, "sweepRotational cylinder ok");
+      expectTrue(!r.surface.weights.empty(), "revolved cylinder IS rational");
+      expectTrue(r.surface.degreeV == 2, "revolve V degree == 2 (rational arc)");
+
+      // The EXACT analytic cylinder is the implicit surface {radius==R, z==u*H}. A rational
+      // Bézier arc is NOT linear-in-parameter in ANGLE, so the analytic oracle is the implicit
+      // surface condition (radius + height), not an assumed uniform angle. Radius err at machine
+      // zero proves a TRUE circle (not faceted). We ALSO confirm the swept angle at V=1 is the
+      // full 2π (the arc spans the requested angle) via atan2 of the end iso-curve.
+      double worstRad = 0.0, worstZ = 0.0;
+      for (int iu = 0; iu <= 8; ++iu)
+        for (int iv = 0; iv <= 96; ++iv) {
+          const double u = static_cast<double>(iu) / 8.0;
+          const double v = static_cast<double>(iv) / 96.0;
+          const Point3 sp = evalRatSurface(r.surface, u, v);
+          worstRad = std::max(worstRad, std::fabs(std::hypot(sp.x, sp.y) - R));
+          worstZ = std::max(worstZ, std::fabs(sp.z - u * H));
+        }
+      expectLE(worstRad, 1e-9, "EXACT cylinder: every point at radius R from axis (true circle)");
+      expectLE(worstZ, 1e-9, "EXACT cylinder: height linear in profile param (analytic surface)");
+      std::printf("INFO revolved cylinder radius err = %.3e, height err = %.3e\n",
+                  worstRad, worstZ);
+
+      // Containment: S(·,0) == profile, S(·,1) == profile (full 360° returns to start).
+      double worstStart = 0.0;
+      for (int iu = 0; iu <= 40; ++iu) {
+        const double u = static_cast<double>(iu) / 40.0;
+        const Point3 sp = evalRatSurface(r.surface, u, 0.0);
+        const Point3 cp = evalCurve(prof, u);  // non-rational profile
+        worstStart = std::max(worstStart, distance(sp, cp));
+      }
+      expectLE(worstStart, 1e-9, "revolved surface contains the profile at V=0");
+    }
+
+    // ── (b) CONE: a straight segment TILTED to the axis (radius grows with height), 360°. ──
+    // Profile from (R0,0,0) to (R1,0,H). At height z the radius is R0+(R1-R0)*(z/H) — an
+    // EXACT truncated cone (frustum). Check against the analytic frustum.
+    {
+      const double R0 = 1.0, R1 = 3.0, H = 4.0;
+      BsplineCurveData prof;
+      prof.degree = 1;
+      prof.knots = {0, 0, 1, 1};
+      prof.poles = {{R0, 0, 0}, {R1, 0, H}};
+      SweepResult r = sweepRotational(prof, axisP, axisD, 2 * PI);
+      expectTrue(r.ok, "sweepRotational cone ok");
+      // Analytic frustum: implicit surface {radius == R0+(R1-R0)*u, z == u*H}. Independent of
+      // the arc's angle parametrization; radius-at-height exactness proves the exact cone.
+      double worstRad = 0.0, worstZ = 0.0;
+      for (int iu = 0; iu <= 8; ++iu)
+        for (int iv = 0; iv <= 96; ++iv) {
+          const double u = static_cast<double>(iu) / 8.0;
+          const double v = static_cast<double>(iv) / 96.0;
+          const Point3 sp = evalRatSurface(r.surface, u, v);
+          const double radExpect = R0 + (R1 - R0) * u;  // profile param u ↦ radius, z=u*H
+          worstRad = std::max(worstRad, std::fabs(std::hypot(sp.x, sp.y) - radExpect));
+          worstZ = std::max(worstZ, std::fabs(sp.z - u * H));
+        }
+      expectLE(worstRad, 1e-9, "EXACT cone/frustum: radius == R0+(R1-R0)*u at every point (analytic)");
+      expectLE(worstZ, 1e-9, "EXACT cone/frustum: height linear in profile param (analytic)");
+      std::printf("INFO revolved cone radius err = %.3e, height err = %.3e\n", worstRad, worstZ);
+    }
+
+    // ── (c) SPHERE: a rational SEMICIRCLE whose diameter lies on the axis, revolved 360°. ──
+    // Profile = a rational quadratic half-circle of radius R in the XZ plane, from the south
+    // pole (0,0,-R) through (R,0,0) to the north pole (0,0,R), diameter on the Z axis. Revolved
+    // 360° about Z it is an EXACT SPHERE of radius R — every surface point at distance R from
+    // the center. This is the strongest oracle (rational profile × rational revolve arc).
+    {
+      const double R = 2.5;
+      const double s = std::sqrt(2.0) / 2.0;
+      // 5-pole rational half-circle (two 90° Bézier arcs) in XZ, center at origin.
+      // South pole (0,0,-R) → (R,0,-R) w=s → (R,0,0) → (R,0,R) w=s → north pole (0,0,R).
+      BsplineCurveData semi;
+      semi.degree = 2;
+      semi.knots = {0, 0, 0, 0.5, 0.5, 1, 1, 1};  // 5 poles, two segments
+      semi.poles = {{0, 0, -R}, {R, 0, -R}, {R, 0, 0}, {R, 0, R}, {0, 0, R}};
+      semi.weights = {1, s, 1, s, 1};
+
+      SweepResult r = sweepRotational(semi, axisP, axisD, 2 * PI);
+      expectTrue(r.ok, "sweepRotational sphere ok");
+      expectTrue(!r.surface.weights.empty(), "revolved sphere IS rational");
+
+      double worstRad = 0.0;
+      for (int iu = 0; iu <= 64; ++iu)
+        for (int iv = 0; iv <= 96; ++iv) {
+          const double u = static_cast<double>(iu) / 64.0;
+          const double v = static_cast<double>(iv) / 96.0;
+          const Point3 sp = evalRatSurface(r.surface, u, v);
+          worstRad = std::max(worstRad, std::fabs(std::hypot(std::hypot(sp.x, sp.y), sp.z) - R));
+        }
+      expectLE(worstRad, 1e-9, "EXACT sphere: every revolved point at distance R from center");
+      std::printf("INFO revolved sphere radius err = %.3e\n", worstRad);
+
+      // Profile containment at V=0 (rational).
+      expectLE(ratIsoVsCurveMaxDev(r.surface, 0.0, semi), 1e-9,
+               "revolved sphere contains the rational profile at V=0");
+    }
+
+    // ── (d) PARTIAL-ANGLE revolve = the correct rational arc sector. ──
+    // Revolve the cylinder profile by only 90° (a quarter). The surface must be the analytic
+    // quarter-cylinder: angles v·(π/2), and S(·,1) == profile rotated by 90°.
+    {
+      const double R = 1.8, H = 3.0, sweepAng = PI / 2.0;
+      BsplineCurveData prof;
+      prof.degree = 1;
+      prof.knots = {0, 0, 1, 1};
+      prof.poles = {{R, 0, 0}, {R, 0, H}};
+      SweepResult r = sweepRotational(prof, axisP, axisD, sweepAng);
+      expectTrue(r.ok, "sweepRotational partial (90°) ok");
+      // Analytic quarter-cylinder: radius R at every point, angle stays within [0, π/2] (the
+      // sector), height linear. Radius exactness proves the exact arc sector (not faceted).
+      double worstRad = 0.0, worstZ = 0.0, worstAngle = 0.0;
+      for (int iu = 0; iu <= 8; ++iu)
+        for (int iv = 0; iv <= 48; ++iv) {
+          const double u = static_cast<double>(iu) / 8.0;
+          const double v = static_cast<double>(iv) / 48.0;
+          const Point3 sp = evalRatSurface(r.surface, u, v);
+          worstRad = std::max(worstRad, std::fabs(std::hypot(sp.x, sp.y) - R));
+          worstZ = std::max(worstZ, std::fabs(sp.z - u * H));
+          const double ang = std::atan2(sp.y, sp.x);  // in [0, π/2] for the quarter sector
+          if (ang < -1e-9 || ang > sweepAng + 1e-9) worstAngle = std::max(worstAngle, 1.0);
+        }
+      expectLE(worstRad, 1e-9, "partial 90° revolve: radius R exact (true arc sector)");
+      expectLE(worstZ, 1e-9, "partial 90° revolve: height linear (analytic quarter-cylinder)");
+      expectLE(worstAngle, 0.0, "partial 90° revolve: every point within the [0,90°] sector");
+      std::printf("INFO partial 90° revolve radius err = %.3e\n", worstRad);
+
+      // S(·,1) is the profile rotated by exactly 90° (x→y): (R,0,z) → (0,R,z).
+      double worstEnd = 0.0;
+      for (int iu = 0; iu <= 40; ++iu) {
+        const double u = static_cast<double>(iu) / 40.0;
+        const Point3 sp = evalRatSurface(r.surface, u, 1.0);
+        const Point3 end{0.0, R, u * H};
+        worstEnd = std::max(worstEnd, distance(sp, end));
+      }
+      expectLE(worstEnd, 1e-9, "partial revolve: S(.,1) == profile rotated by the full angle");
+    }
+
+    // ── (e) A 270° revolve (>180°, forces 3 arc segments) still analytic. ──
+    {
+      const double R = 1.2, H = 2.0, sweepAng = 1.5 * PI;
+      BsplineCurveData prof;
+      prof.degree = 1;
+      prof.knots = {0, 0, 1, 1};
+      prof.poles = {{R, 0, 0}, {R, 0, H}};
+      SweepResult r = sweepRotational(prof, axisP, axisD, sweepAng);
+      expectTrue(r.ok, "sweepRotational 270° ok");
+      expectTrue(r.surface.nPolesV == 7, "270° revolve: 3 arc segments → 7 V-poles");
+      double worstRad = 0.0, worstZ = 0.0;
+      for (int iu = 0; iu <= 4; ++iu)
+        for (int iv = 0; iv <= 90; ++iv) {
+          const double u = static_cast<double>(iu) / 4.0;
+          const double v = static_cast<double>(iv) / 90.0;
+          const Point3 sp = evalRatSurface(r.surface, u, v);
+          worstRad = std::max(worstRad, std::fabs(std::hypot(sp.x, sp.y) - R));
+          worstZ = std::max(worstZ, std::fabs(sp.z - u * H));
+        }
+      expectLE(worstRad, 1e-9, "270° revolve: radius R exact at every point (3-segment arc)");
+      expectLE(worstZ, 1e-9, "270° revolve: height linear (analytic surface)");
+      // Endpoint at V=1 is the profile rotated 270° about Z: (R,0,z) → (0,-R,z).
+      double worstEnd = 0.0;
+      for (int iu = 0; iu <= 20; ++iu) {
+        const double u = static_cast<double>(iu) / 20.0;
+        const Point3 sp = evalRatSurface(r.surface, u, 1.0);
+        worstEnd = std::max(worstEnd, distance(sp, Point3{0.0, -R, u * H}));
+      }
+      expectLE(worstEnd, 1e-9, "270° revolve: S(.,1) == profile rotated 270°");
+      std::printf("INFO revolved 270° radius err = %.3e (nPolesV=%d)\n",
+                  worstRad, r.surface.nPolesV);
+    }
+
+    // ── (f) DEGENERATE / decline guards. ──
+    {
+      // Zero angle → no surface.
+      BsplineCurveData prof;
+      prof.degree = 1;
+      prof.knots = {0, 0, 1, 1};
+      prof.poles = {{2, 0, 0}, {2, 0, 5}};
+      expectTrue(!sweepRotational(prof, axisP, axisD, 0.0).ok,
+                 "rotational declines on zero angle");
+
+      // Profile entirely ON the axis (radius 0 everywhere) → collapses → decline.
+      BsplineCurveData onAxis;
+      onAxis.degree = 1;
+      onAxis.knots = {0, 0, 1, 1};
+      onAxis.poles = {{0, 0, 0}, {0, 0, 5}};  // lies on the Z axis
+      expectTrue(!sweepRotational(onAxis, axisP, axisD, 2 * PI).ok,
+                 "rotational declines when the whole profile lies on the axis");
+
+      // Null axis direction → decline.
+      expectTrue(!sweepRotational(prof, axisP, Dir3(0, 0, 0), 2 * PI).ok,
+                 "rotational declines on a null axis direction");
+
+      // Malformed profile (bad knot vector) → decline.
+      BsplineCurveData bad = prof;
+      bad.knots.pop_back();
+      expectTrue(!sweepRotational(bad, axisP, axisD, 2 * PI).ok,
+                 "rotational declines on a malformed profile");
+
+      // Rational profile with a non-positive weight → decline.
+      BsplineCurveData ratbad = prof;
+      ratbad.weights = {1.0, 0.0};
+      expectTrue(!sweepRotational(ratbad, axisP, axisD, 2 * PI).ok,
+                 "rotational declines on a rational profile with a non-positive weight");
+    }
+  }
+
   // ── report ──
   if (g_failures == 0)
     std::printf("OK  test_native_nurbs_sweep: %d checks passed\n", g_checks);

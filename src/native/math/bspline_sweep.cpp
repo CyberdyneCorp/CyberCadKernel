@@ -345,6 +345,137 @@ SweepResult sweepRationalAlongTrajectory(const BsplineCurveData& section,
   return r;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Rotational (revolved) sweep — EXACT rational surface of revolution (A7.1).
+// ─────────────────────────────────────────────────────────────────────────────
+
+SweepResult sweepRotational(const BsplineCurveData& section, const Point3& axisPoint,
+                            const Dir3& axisDir, double angle) {
+  SweepResult r;
+  if (!wellFormed(section)) return r;               // malformed profile
+  if (!section.weights.empty() && !wellFormedRational(section))
+    return r;                                        // rational but bad/non-positive weight
+  if (!axisDir.valid()) return r;                    // null / non-unit axis
+  if (!(std::fabs(angle) > 1e-12)) return r;         // zero swept angle — no surface
+
+  const int N = nPolesOf(section);
+  const bool rational = !section.weights.empty();
+
+  // ── V direction: degree-2 rational circular arc through `angle` (A7.1). ──
+  // Split into narcs ≤ 90° segments; each segment contributes an ON-arc pole (w=1) and a
+  // BETWEEN pole at radius r/cos(Δθ/2), weight cos(Δθ/2). nPolesV = 2*narcs + 1.
+  constexpr double kHalfPi = 1.57079632679489661923;  // π/2 (portable, no M_PI_2 macro)
+  const double absAngle = std::fabs(angle);
+  const int narcs = static_cast<int>(std::ceil(absAngle / kHalfPi - 1e-12));
+  const int nArc = (narcs < 1) ? 1 : narcs;
+  const double dtheta = angle / nArc;                // signed per-segment sweep
+  const double wm = std::cos(dtheta / 2.0);          // between-pole weight (cos half-angle)
+  const int nV = 2 * nArc + 1;
+
+  // Degree-2 clamped V-knots on [0,1]: interior breakpoints at j/nArc with multiplicity 2.
+  std::vector<double> knotsV;
+  knotsV.reserve(static_cast<std::size_t>(nV) + 3);
+  knotsV.push_back(0.0); knotsV.push_back(0.0); knotsV.push_back(0.0);
+  for (int j = 1; j < nArc; ++j) {
+    const double b = static_cast<double>(j) / nArc;
+    knotsV.push_back(b); knotsV.push_back(b);
+  }
+  knotsV.push_back(1.0); knotsV.push_back(1.0); knotsV.push_back(1.0);
+
+  // Rotation about the axis by the cumulative angle at each ON-arc station j (j=0..nArc):
+  //   station j sits at angle j*dtheta. The BETWEEN pole (j+1/2) bisects segment j.
+  const Vec3 av = axisDir.vec();
+
+  // Project a point onto the axis and get its radial offset vector O→P⊥ (foot on the axis).
+  auto radialOf = [&](const Point3& p, Point3& foot, Vec3& radial, double& radius) {
+    const Vec3 d = p - axisPoint;                    // axisPoint→P
+    const double t = dot(d, av);                     // signed distance along the axis
+    foot = axisPoint + av * t;                       // foot of perpendicular on the axis
+    radial = p - foot;                               // perpendicular component
+    radius = norm(radial);
+  };
+
+  // Guard: the ENTIRE profile on the axis ⇒ every radius ≈ 0 ⇒ the revolve collapses.
+  double maxRadius = 0.0;
+  for (int i = 0; i < N; ++i) {
+    Point3 foot; Vec3 radial; double radius = 0.0;
+    radialOf(section.poles[i], foot, radial, radius);
+    maxRadius = std::max(maxRadius, radius);
+  }
+  if (!(maxRadius > 1e-12)) return r;                // degenerate: profile lies on the axis
+
+  // Assemble the surface net (row-major U outer, V inner): pole(i, jv) = poles[i*nV + jv].
+  r.surface.degreeU = section.degree;
+  r.surface.degreeV = 2;
+  r.surface.nPolesU = N;
+  r.surface.nPolesV = nV;
+  r.surface.knotsU = section.knots;
+  r.surface.knotsV = std::move(knotsV);
+  r.surface.poles.assign(static_cast<std::size_t>(N) * nV, Point3{});
+  r.surface.weights.assign(static_cast<std::size_t>(N) * nV, 1.0);  // always rational
+
+  for (int i = 0; i < N; ++i) {
+    const Point3 P0 = section.poles[i];
+    const double wP = rational ? section.weights[i] : 1.0;  // profile weight (rides through)
+
+    Point3 foot; Vec3 radial; double radius = 0.0;
+    radialOf(P0, foot, radial, radius);
+
+    // Local right-handed frame at this profile point: e0 = radial direction (if any),
+    // e1 = axis × e0 (the tangent of revolution). For an on-axis point (radius≈0) both the ON
+    // and BETWEEN poles collapse to the POSITION P0 (it stays on the axis under revolve), but the
+    // WEIGHT still follows the arc pattern wP·{1, cos(Δθ/2), 1, …} — forcing weight 1 there would
+    // break the surface's separable weight structure wᵢⱼ = wProfileᵢ·wArcⱼ and warp the revolve.
+    const bool onAxis = !(radius > 1e-12);
+    Vec3 e0{0, 0, 0}, e1{0, 0, 0};
+    if (!onAxis) {
+      e0 = radial / radius;
+      e1 = cross(av, e0);  // unit (av, e0 orthonormal)
+    }
+
+    // Point on the arc at cumulative angle a (radians about the axis, foot as center).
+    auto arcPoint = [&](double a) -> Point3 {
+      if (onAxis) return P0;
+      const double cx = radius * std::cos(a);
+      const double cy = radius * std::sin(a);
+      return foot + e0 * cx + e1 * cy;
+    };
+
+    for (int seg = 0; seg < nArc; ++seg) {
+      const double a0 = seg * dtheta;          // segment start angle
+      const double am = a0 + dtheta / 2.0;     // segment mid angle
+      const Point3 onStart = arcPoint(a0);     // ON-arc pole at segment start (weight 1)
+
+      // BETWEEN pole: intersection of the two segment-endpoint tangents. Lies along the
+      // mid direction at radius/cos(Δθ/2); weight = cos(Δθ/2). On-axis ⇒ just P0.
+      Point3 between = P0;
+      if (!onAxis) {
+        const double rr = radius / wm;
+        const double cx = rr * std::cos(am);
+        const double cy = rr * std::sin(am);
+        between = foot + e0 * cx + e1 * cy;
+      }
+
+      const std::size_t base = static_cast<std::size_t>(i) * nV + 2 * seg;
+      r.surface.poles[base + 0] = onStart;
+      r.surface.weights[base + 0] = wP * 1.0;   // ON-arc pole weight (arc weight 1)
+      r.surface.poles[base + 1] = between;
+      r.surface.weights[base + 1] = wP * wm;    // BETWEEN weight = wProfile · cos(Δθ/2), ALWAYS
+    }
+    // Final ON-arc pole at the full swept angle (weight 1).
+    const Point3 onEnd = arcPoint(angle);
+    const std::size_t last = static_cast<std::size_t>(i) * nV + (nV - 1);
+    r.surface.poles[last] = onEnd;
+    r.surface.weights[last] = wP * 1.0;
+  }
+
+  // If the profile was NON-rational, the only weights are the arc's cos-half-angle pattern —
+  // that is correct (a non-rational profile revolved is still a rational surface). Keep them.
+  r.vParams = {0.0, 1.0};
+  r.ok = true;
+  return r;
+}
+
 }  // namespace cybercad::native::math
 
 #endif  // CYBERCAD_HAS_NUMSCI

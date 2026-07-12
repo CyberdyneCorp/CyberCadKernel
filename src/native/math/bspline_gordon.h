@@ -45,10 +45,14 @@
 // `gordonSurface` DECLINES (`ok = false`, with a reason) on an inconsistent or
 // degenerate network — it never emits a surface that silently misses its own curves.
 //
-// SCOPE — NON-RATIONAL network only (all weights = 1). Rational (weighted) Gordon
-// surfaces, IRREGULAR / N-sided networks (non-grid topologies, trimmed boundaries),
-// and the exact BRepFill/GeomFill residual are documented residuals for later slices —
-// this module never fakes them. See docs/NURBS-SCOPE.md Layer-6 row.
+// SCOPE — NON-RATIONAL network (`gordonSurface`) PLUS the RATIONAL (weighted) network
+// (`gordonRationalSurface`): the u/v section curves carry weights, and the whole boolean sum
+// — the two skins and the tensor grid interpolant — is formed in HOMOGENEOUS (wx,wy,wz,w) space
+// (the same rational-skin / rational-fit lift), then projected back to a rational surface. The
+// weight coordinate is interpolated and combined exactly like x/y/z, so the rational Gordon
+// surface CONTAINS every rational network curve pointwise. IRREGULAR / N-sided networks (non-grid
+// topologies, trimmed boundaries) and the exact BRepFill/GeomFill residual are documented
+// residuals for later slices — this module never fakes them. See docs/NURBS-SCOPE.md Layer-6 row.
 //
 // GUARD — the construction composes `skinSurface` / `interpolateSurface`, which solve
 // linear systems through the numsci facade, so the whole implementation TU is under
@@ -108,6 +112,14 @@ struct NetworkCheck {
 /// On failure `ok=false` with a `reason` and `maxGridError` (the worst mismatch found).
 NetworkCheck verifyNetwork(const CurveNetwork& network, double tol = 1e-7);
 
+/// RATIONAL analogue of verifyNetwork — every u/v curve MUST be rational (non-empty,
+/// strictly-positive weights, one per pole). The grid consistency is checked with the RATIONAL
+/// evaluator (`nurbsCurvePoint`): `C_k(uParams[l])` must equal `D_l(vParams[k])` (both the
+/// EUCLIDEAN grid point `Q_{k,l}`) to within `tol`. Same monotone-station / size preconditions
+/// as verifyNetwork. On success `grid` holds the K×L EUCLIDEAN intersection points; on failure
+/// `ok=false` with a `reason`. Declines a NON-rational or non-positive-weight curve honestly.
+NetworkCheck verifyRationalNetwork(const CurveNetwork& network, double tol = 1e-7);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Gordon / network surface.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -145,6 +157,30 @@ struct GordonResult {
 /// (clamped to `[1, K−1]` / `[1, L−1]`); the along-curve degrees come from the curves.
 GordonResult gordonSurface(const CurveNetwork& network, double tol = 1e-7,
                            int uInterpDegree = 3, int vInterpDegree = 3);
+
+/// RATIONAL GORDON surface — the weighted analogue of `gordonSurface`. Every u/v network curve
+/// MUST be rational (non-empty, strictly-positive weights). The construction mirrors the
+/// non-rational boolean sum `G = S_u ⊕ S_v ⊖ T`, but ENTIRELY in HOMOGENEOUS (wx,wy,wz,w) space:
+///
+///   1. `verifyRationalNetwork(network, tol)` — decline honestly on an inconsistent/degenerate
+///      or non-rational network (the grid is checked with the RATIONAL evaluator).
+///   2. `S_u` = rational skin of the K u-curves across v at `vParams`; `S_v` = rational skin of
+///      the L v-curves across u at `uParams`; `T` = rational tensor interpolant of the K×L grid
+///      at `(uParams, vParams)` — each interpolation runs on the 4-D homogeneous net (the same
+///      collocation as the non-rational skin/fit, solved for all four coordinates).
+///   3. Raise the three rational surfaces to a COMMON degree/knots with the exact, RATIONAL-AWARE
+///      Layer-1 surface ops (elevate/refine run on the homogeneous R⁴ net, so weights ride through
+///      exactly), then form the Gordon net in HOMOGENEOUS space:
+///          homog(G) = homog(S_u) + homog(S_v) − homog(T),   G = project(homog(G)).
+///
+/// GUARANTEE (the rational containment oracle): the rational Gordon surface CONTAINS every
+/// rational network curve — `G(·, v_k)` equals `C_k` and `G(u_l, ·)` equals `D_l` pointwise as
+/// NURBS. `surface.weights` carries one weight per pole (non-empty ⇒ rational). Requires K ≥ 2
+/// and L ≥ 2. Declines (`ok=false`) on an inconsistent/degenerate network, a NON-rational or
+/// non-positive-weight curve, a singular interpolation, or a projected non-positive control
+/// weight — honest guards, never a crash and never a silently-wrong / faked rational net.
+GordonResult gordonRationalSurface(const CurveNetwork& network, double tol = 1e-7,
+                                   int uInterpDegree = 3, int vInterpDegree = 3);
 
 }  // namespace cybercad::native::math
 

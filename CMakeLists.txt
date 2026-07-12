@@ -400,7 +400,13 @@ if(CYBERCAD_BUILD_TESTS)
         # oracle, proves an exact rational surface not a facet), sweepRationalAlongTrajectory
         # places the rational section by rigid frames (weights preserved) then rational-skins
         # (station containment ~1e-8); non-positive/mismatched-weight + rational-trajectory
-        # declines. Rotational/exact-BRepFill/variable-section sweeps residual.
+        # declines. Also ROTATIONAL (revolved) sweep sweepRotational — an EXACT RATIONAL surface
+        # of revolution (A7.1 rational-arc construction, degree-2 V with cos-half-angle weights):
+        # a straight offset segment revolved 360° = an EXACT CYLINDER, a tilted segment = an
+        # EXACT CONE/frustum, a semicircle = an EXACT SPHERE (each matching the analytic surface
+        # pointwise ~1e-9 — the strongest oracle), partial-angle = the correct rational arc sector,
+        # >180° forces 3 arc segments; degenerate (profile on the axis / zero angle / null axis)
+        # declines. exact-BRepFill/variable-section sweeps residual.
         list(APPEND CYBERCAD_TESTS test_native_nurbs_sweep)
         set(test_native_nurbs_sweep_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_sweep.cpp")
@@ -413,8 +419,12 @@ if(CYBERCAD_BUILD_TESTS)
         # and v-curve pointwise ~1e-8), grid intersection on-surface (~1e-8), known-surface
         # round-trip (extract a u/v iso-curve network from a KNOWN tensor surface → Gordon →
         # recover the original pointwise ~1e-8), and honest inconsistent/degenerate/rational
-        # declines. Non-rational scope; rational + irregular/N-sided networks + exact
-        # BRepFill residual.
+        # declines. Also RATIONAL Gordon (gordonRationalSurface / verifyRationalNetwork): the
+        # weighted u/v network is skinned + grid-interpolated + boolean-summed ENTIRELY in
+        # homogeneous (wx,wy,wz,w) space — the rational Gordon surface CONTAINS every rational
+        # network curve pointwise (~1e-9, extracted from a KNOWN rational revolved surface),
+        # with non-rational/non-positive-weight/inconsistent-network declines. Irregular/N-sided
+        # networks + exact BRepFill residual.
         list(APPEND CYBERCAD_TESTS test_native_nurbs_gordon)
         set(test_native_nurbs_gordon_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_gordon.cpp")

@@ -287,6 +287,74 @@ CurveFitResult fitCurveConstrained(std::span<const Point3> points,
                                    int nCtrl, ParamMethod method = ParamMethod::ChordLength);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// RATIONAL equality-CONSTRAINED least-squares curve fitting — the rational analogue
+// of fitCurveConstrained. The data carries PRESCRIBED per-point weights wₖ (as in
+// interpolateRationalCurve), and the constraints are imposed in HOMOGENEOUS (wx,wy,
+// wz,w) space with their OWN prescribed weight.
+//
+// Each datum Qₖ (weight wₖ) is lifted to Qʷₖ = (wₖ·Qₖ, wₖ) ∈ R⁴ and the same
+// nData×nCtrl basis collocation drives a least-squares fit of the homogeneous control
+// net Pʷᵢ = (Wᵢ·Pᵢ, Wᵢ). A constraint is a linear equality on that HOMOGENEOUS net:
+// the order-r basis-derivative row Σ_i N^{(r)}_{i,p}(u_e)·Pʷᵢ = valueʷ, where the
+// homogeneous RHS valueʷ is the prescribed Euclidean value scaled by the constraint's
+// prescribed weight (position: (w·P, w); derivative rows carry the corresponding
+// homogeneous-derivative target). Because the fit is LINEAR in the 4-D net, the whole
+// system is the SAME KKT saddle  [AᵀA Cᵀ; C 0][x;λ]=[Aᵀb;d]  as the non-rational case,
+// solved once per HOMOGENEOUS coordinate (four solves: wx, wy, wz, w). The recovered
+// net is projected back Pᵢ = (Xᵢ/Wᵢ, …), weightᵢ = Wᵢ; a non-positive solved weight is
+// a documented guard (never divide by ≤ 0). Since Cʷ satisfies the homogeneous
+// equalities exactly, the projected rational curve passes through the EUCLIDEAN
+// constraints exactly and reproduces a rational shape sampled with matching weights.
+//
+// GUARDS (HONEST-DECLINE, never a faked fit, never a widened tolerance): the same
+// dimension / over-constrained / order / singular-KKT guards as fitCurveConstrained,
+// PLUS weights.size()==points.size(), every input weight strictly POSITIVE, and every
+// solved control weight strictly positive (else ok=false).
+
+/// One HOMOGENEOUS boundary constraint for a rational constrained fit: the `order`-th
+/// derivative of the curve at `end` must equal `value` (a Euclidean point for order 0,
+/// a derivative vector otherwise), imposed with the PRESCRIBED weight `weight` in
+/// homogeneous space. For an order-0 position constraint the homogeneous target is
+/// (weight·value, weight); the projected rational curve then interpolates `value`
+/// exactly. `weight` must be strictly positive.
+struct CurveEndConstraintRational {
+  CurveEnd end = CurveEnd::Start;
+  int order = 0;        ///< 0 = position, 1 = 1st derivative, 2 = 2nd derivative
+  Vec3 value{};         ///< prescribed EUCLIDEAN value (point for order 0; derivative otherwise)
+  double weight = 1.0;  ///< prescribed homogeneous weight (> 0)
+};
+
+/// RATIONAL equality-constrained least-squares curve fit. Fits a degree-`degree`,
+/// `nCtrl`-control-point RATIONAL B-spline with the PRESCRIBED per-point `weights`,
+/// minimizing the homogeneous least-squares residual to the lifted data SUBJECT TO
+/// every constraint in `constraints` holding EXACTLY in homogeneous space (see the
+/// block comment above). Solved as the KKT system through numerics::lin_solve, once
+/// per homogeneous coordinate. Reports the achieved max / RMS EUCLIDEAN error over the
+/// data (the TRUE error — never a widened tolerance). With EMPTY constraints this
+/// reduces to the plain homogeneous least-squares rational fit. HONEST-DECLINES
+/// (ok=false, no curve) on the dimension / over-constrained / order / singular-KKT
+/// guards of fitCurveConstrained, on a non-positive input or solved weight, or when
+/// weights.size() != points.size().
+CurveFitResult fitCurveConstrainedRational(
+    std::span<const Point3> points, std::span<const double> weights,
+    std::span<const CurveEndConstraintRational> constraints, int degree, int nCtrl,
+    ParamMethod method = ParamMethod::ChordLength);
+
+/// Rational constrained fit with EXPLICIT parameters and knots — the airtight form for
+/// EXACT rational reproduction. Same homogeneous KKT solve as the method-based overload,
+/// but the caller supplies the parameter uₖ for every datum and the flat knot vector
+/// directly. This matters because a rational shape's projective parameter is NOT its
+/// chord length: a known rational curve (e.g. a conic arc) is reproduced to solver
+/// precision only when the data carries its own NURBS parameter and the fit uses the
+/// curve's own knot vector. Requires params.size()==points.size(),
+/// knots.size()==nCtrl+degree+1, and the same dimension / over-constrained / order /
+/// weight-positivity guards as the method-based overload.
+CurveFitResult fitCurveConstrainedRationalWithParams(
+    std::span<const Point3> points, std::span<const double> weights,
+    std::span<const double> params, std::span<const double> knots,
+    std::span<const CurveEndConstraintRational> constraints, int degree, int nCtrl);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Surface fitting (tensor-product; each row then each column via the curve core).
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -424,6 +492,68 @@ RationalSurfaceFitResult fitRationalSurfaceEstimateWeightsWithParams(
 SurfaceFitResult approximateSurface(const PointGrid& grid, int nCtrlU, int nCtrlV,
                                     int degreeU, int degreeV,
                                     ParamMethod method = ParamMethod::ChordLength);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Equality-CONSTRAINED least-squares SURFACE fitting — the tensor-product analogue
+// of fitCurveConstrained (*The NURBS Book* §9.4; the KKT saddle solve). Fit a
+// degree-(degreeU,degreeV), nCtrlU×nCtrlV control-net B-spline that MINIMIZES the
+// summed squared distance to the grid data WHILE EXACTLY holding a set of poles of the
+// fitted net to prescribed values.
+//
+// A constraint fixes one net pole (i,j) to a prescribed point. The primitive is total,
+// yet expresses every stitching case exactly for a CLAMPED tensor B-spline:
+//   * FIXED BOUNDARY ROW  — pinning the whole i=0 (or i=nCtrlU-1, j=0, j=nCtrlV-1)
+//     pole row makes the fitted surface interpolate the prescribed EDGE CURVE exactly:
+//     a clamped surface's boundary curve is the B-spline of that boundary pole row, so
+//     fixing the row reproduces the edge to solver precision, independent of the
+//     interior least-squares.
+//   * CROSS-BOUNDARY TANGENT (G1) — the clamped cross-boundary first derivative at an
+//     edge is (degree/knot-span)·(row1 − row0). Fixing BOTH the boundary row (row 0)
+//     and the adjacent row (row 1) pins position AND cross-tangent, so two patches that
+//     share a boundary row and a matching row-1 target meet G1 (tangent-plane / unit-
+//     normal continuous) along the shared edge — the stitch primitive. (This mirrors
+//     bspline_join.h's row-0 = C0, row-1 = G1 convention.)
+//   * FIXED CORNER — pinning a single corner pole fixes that surface corner exactly.
+//
+// Each constraint is ONE linear equation on the tensor net (its row is 1 at the flat
+// control index i·nCtrlV+j, zero elsewhere — the SAME row for x/y/z, only the RHS
+// differs per axis). Stacking the constraints into C·x = d and the global 2-D least-
+// squares design into A·x ≈ b, the fit is the KKT system [AᵀA Cᵀ; C 0][x;λ]=[Aᵀb;d]
+// solved once per coordinate through numerics::lin_solve. The pinned poles hold to
+// solver precision; the free poles absorb the interior data in the least-squares sense.
+//
+// REDUCTION — with an EMPTY `constraints` list this delegates to approximateSurface
+// (the separable tensor least-squares), reproducing it byte-for-byte.
+//
+// GUARDS (HONEST-DECLINE, never a faked fit, never a widened tolerance):
+//   * degreeU/degreeV < 1, nCtrl outside [degree+1, nGrid] in either direction → ok=false
+//   * a constraint index (i,j) outside the net → ok=false
+//   * OVER-CONSTRAINED: as many (or more) independent constraints as net poles, or a
+//     duplicated/inconsistent constraint set making the KKT matrix singular (lin_solve
+//     returns empty) → ok=false
+
+/// One surface pole constraint: the fitted net pole at (i,j) must equal `value`
+/// (row-major, U outer: i over U in [0,nCtrlU-1], j over V in [0,nCtrlV-1]). Fix a
+/// whole boundary row to interpolate a prescribed edge curve; additionally fix the
+/// adjacent row to pin the cross-boundary tangent (G1); fix a single corner pole to
+/// pin a corner. Each is an EXACT equality the fit satisfies to solver precision.
+struct SurfacePoleConstraint {
+  int i = 0;     ///< U pole index (0..nCtrlU-1)
+  int j = 0;     ///< V pole index (0..nCtrlV-1)
+  Vec3 value{};  ///< the prescribed control-point value
+};
+
+/// Equality-CONSTRAINED least-squares tensor-product surface fit. Fits a
+/// degree-(degreeU,degreeV), nCtrlU×nCtrlV-net B-spline minimizing the summed squared
+/// distance to `grid` SUBJECT TO every pole constraint in `constraints` holding EXACTLY
+/// (see the block comment above). Formulated as the global 2-D KKT saddle system and
+/// solved through numerics::lin_solve, once per coordinate. Reports the achieved max /
+/// RMS grid error (the TRUE error of the constrained fit — never a widened tolerance).
+/// With EMPTY constraints it delegates to approximateSurface (exact reduction).
+SurfaceFitResult fitSurfaceConstrained(const PointGrid& grid,
+                                       std::span<const SurfacePoleConstraint> constraints,
+                                       int degreeU, int degreeV, int nCtrlU, int nCtrlV,
+                                       ParamMethod method = ParamMethod::ChordLength);
 
 }  // namespace cybercad::native::math
 

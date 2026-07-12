@@ -736,6 +736,163 @@ CurveFitResult fitCurveConstrained(std::span<const Point3> points,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// RATIONAL equality-CONSTRAINED least-squares curve fitting — the rational analogue
+// of fitCurveConstrained. Lift each datum Qₖ (prescribed weight wₖ) to Qʷₖ=(wₖQₖ,wₖ)
+// ∈ R⁴ and fit the homogeneous control net Pʷᵢ=(WᵢPᵢ,Wᵢ) by least-squares. A
+// constraint is a linear equality on the HOMOGENEOUS net using the same basis-
+// derivative row as the non-rational case (buildConstraintRow); the homogeneous RHS
+// carries the prescribed constraint weight. Because the fit is linear in the 4-D net,
+// the KKT system [AᵀA Cᵀ; C 0][x;λ]=[Aᵀb;d] is the SAME as the non-rational case,
+// solved once per HOMOGENEOUS coordinate (wx,wy,wz,w). Project back Pᵢ=(Xᵢ/Wᵢ,…),
+// weightᵢ=Wᵢ; a non-positive solved weight is a hard guard. Since Cʷ satisfies the
+// homogeneous equalities exactly, the projected rational curve passes through the
+// EUCLIDEAN position constraints exactly and reproduces a rational shape sampled with
+// matching weights.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+
+// Homogeneous RHS of one rational constraint, per homogeneous coordinate.
+//   * order 0 (position): the datum lifts to (weight·P, weight) — so the projected
+//     curve interpolates the Euclidean point P exactly.
+//   * order r > 0 (derivative): the homogeneous curve's r-th derivative is pinned to
+//     (weight·value, 0) — a linear equality on the homogeneous net that fixes the
+//     cross/tangent ribbon in projective space (the weight coordinate's derivative is
+//     left free at 0, so the along-curve weight variation is not over-specified).
+struct Homog4Rhs { double x, y, z, w; };
+Homog4Rhs rationalConstraintRhs(const CurveEndConstraintRational& con) {
+  const double cw = con.weight;
+  if (con.order == 0) return {cw * con.value.x, cw * con.value.y, cw * con.value.z, cw};
+  return {cw * con.value.x, cw * con.value.y, cw * con.value.z, 0.0};
+}
+
+}  // namespace
+
+CurveFitResult fitCurveConstrainedRationalWithParams(
+    std::span<const Point3> points, std::span<const double> weights,
+    std::span<const double> params, std::span<const double> knots,
+    std::span<const CurveEndConstraintRational> constraints, int degree, int nCtrl) {
+  CurveFitResult r;
+  const int n = static_cast<int>(points.size());
+  if (degree < 1 || nCtrl < degree + 1 || nCtrl > n) return r;
+  if (static_cast<int>(weights.size()) != n) return r;   // one weight per point
+  if (static_cast<int>(params.size()) != n) return r;    // one param per point
+  if (static_cast<int>(knots.size()) != nCtrl + degree + 1) return r;  // flat knot length
+  for (int k = 0; k < n; ++k)
+    if (!(weights[k] > 0.0)) return r;                    // non-positive input weight guard
+
+  const int nCon = static_cast<int>(constraints.size());
+  if (nCon >= nCtrl) return r;                            // over-constrained: no LS freedom
+  for (int c = 0; c < nCon; ++c)
+    if (!(constraints[c].weight > 0.0)) return r;         // non-positive constraint weight
+
+  const std::span<const double> u = params;
+  const std::span<const double> U = knots;
+  const int lastPole = nCtrl - 1;
+
+  // ── Full nData×nCtrl collocation matrix A(k,i) = N_{i,p}(u_k). ──
+  std::vector<double> A(static_cast<std::size_t>(n) * nCtrl, 0.0);
+  std::vector<double> N(degree + 1);
+  for (int k = 0; k < n; ++k) {
+    const int span = findSpan(lastPole, degree, u[k], U);
+    basisFuns(span, u[k], degree, U, N);
+    for (int j = 0; j <= degree; ++j)
+      A[static_cast<std::size_t>(k) * nCtrl + (span - degree + j)] = N[j];
+  }
+
+  // Normal block AᵀA (nCtrl×nCtrl) and homogeneous RHS Aᵀbʷ per coordinate. The
+  // lifted datum is Qʷₖ = (wₖQₖ, wₖ); the 4th coordinate solves for the weights Wᵢ.
+  std::vector<double> AtA(static_cast<std::size_t>(nCtrl) * nCtrl, 0.0);
+  std::vector<double> Atbx(nCtrl, 0.0), Atby(nCtrl, 0.0), Atbz(nCtrl, 0.0), Atbw(nCtrl, 0.0);
+  for (int k = 0; k < n; ++k) {
+    const double* Ak = &A[static_cast<std::size_t>(k) * nCtrl];
+    const double w = weights[k];
+    const Point3 q = points[k];
+    for (int i = 0; i < nCtrl; ++i) {
+      const double aki = Ak[i];
+      if (aki == 0.0) continue;
+      Atbx[i] += aki * (w * q.x);
+      Atby[i] += aki * (w * q.y);
+      Atbz[i] += aki * (w * q.z);
+      Atbw[i] += aki * w;
+      double* rowAtA = &AtA[static_cast<std::size_t>(i) * nCtrl];
+      for (int j = 0; j < nCtrl; ++j) rowAtA[j] += aki * Ak[j];
+    }
+  }
+
+  // ── Constraint rows C (nCon×nCtrl): basis-derivative coefficients (SAME as the
+  // non-rational case) with a per-coordinate homogeneous RHS. ──
+  std::vector<ConstraintRow> rows(nCon);
+  std::vector<Homog4Rhs> rhs(nCon);
+  for (int c = 0; c < nCon; ++c) {
+    const CurveEndConstraintRational& con = constraints[c];
+    if (con.order < 0 || con.order > degree) return r;   // order beyond degree
+    CurveEndConstraint base{con.end, con.order, con.value};
+    if (!buildConstraintRow(base, nCtrl, degree, U, rows[c])) return r;
+    rhs[c] = rationalConstraintRhs(con);
+  }
+
+  // ── KKT saddle matrix [AᵀA Cᵀ; C 0] (size nCtrl+nCon), row-major. ──
+  const int dim = nCtrl + nCon;
+  std::vector<double> K(static_cast<std::size_t>(dim) * dim, 0.0);
+  for (int i = 0; i < nCtrl; ++i)
+    for (int j = 0; j < nCtrl; ++j)
+      K[static_cast<std::size_t>(i) * dim + j] = AtA[static_cast<std::size_t>(i) * nCtrl + j];
+  for (int c = 0; c < nCon; ++c) {
+    const std::vector<double>& cc = rows[c].coeff;
+    for (int i = 0; i < nCtrl; ++i) {
+      K[static_cast<std::size_t>(nCtrl + c) * dim + i] = cc[i];        // C block
+      K[static_cast<std::size_t>(i) * dim + (nCtrl + c)] = cc[i];      // Cᵀ block
+    }
+  }
+
+  // Solve the KKT system once per HOMOGENEOUS coordinate.
+  auto solveH = [&](const std::vector<double>& Atb,
+                    double (*pick)(const Homog4Rhs&)) -> std::vector<double> {
+    std::vector<double> b(dim, 0.0);
+    for (int i = 0; i < nCtrl; ++i) b[i] = Atb[i];
+    for (int c = 0; c < nCon; ++c) b[nCtrl + c] = pick(rhs[c]);
+    return lin_solve(K, dim, b);
+  };
+  const std::vector<double> sx = solveH(Atbx, [](const Homog4Rhs& v) { return v.x; });
+  const std::vector<double> sy = solveH(Atby, [](const Homog4Rhs& v) { return v.y; });
+  const std::vector<double> sz = solveH(Atbz, [](const Homog4Rhs& v) { return v.z; });
+  const std::vector<double> sw = solveH(Atbw, [](const Homog4Rhs& v) { return v.w; });
+  if (static_cast<int>(sx.size()) != dim || static_cast<int>(sy.size()) != dim ||
+      static_cast<int>(sz.size()) != dim || static_cast<int>(sw.size()) != dim)
+    return r;  // singular KKT (rank-deficient / inconsistent) — honest decline
+
+  // Project the homogeneous net back; a non-positive control weight is a hard guard.
+  r.curve.degree = degree;
+  r.curve.knots.assign(U.begin(), U.end());
+  r.curve.poles.resize(nCtrl);
+  r.curve.weights.resize(nCtrl);
+  for (int i = 0; i < nCtrl; ++i) {
+    const double wi = sw[i];
+    if (!(wi > 0.0)) return CurveFitResult{};  // projected weight ≤ 0 — decline
+    r.curve.poles[i] = {sx[i] / wi, sy[i] / wi, sz[i] / wi};
+    r.curve.weights[i] = wi;
+  }
+
+  rationalCurveErrors(r.curve, points, u, r.maxError, r.rmsError);
+  r.ok = true;
+  return r;
+}
+
+CurveFitResult fitCurveConstrainedRational(
+    std::span<const Point3> points, std::span<const double> weights,
+    std::span<const CurveEndConstraintRational> constraints, int degree, int nCtrl,
+    ParamMethod method) {
+  // Method-based overload: derive chord-length/centripetal/uniform params and the
+  // approximation knot vector (Eq 9.68/9.69), then delegate to the WithParams core.
+  const int n = static_cast<int>(points.size());
+  if (degree < 1 || nCtrl < degree + 1 || nCtrl > n) return {};
+  const std::vector<double> u = paramsImpl(points, method);
+  if (static_cast<int>(u.size()) != n) return {};  // degenerate (all-coincident) input
+  const std::vector<double> U = approxKnotsImpl(u, degree, nCtrl);
+  return fitCurveConstrainedRationalWithParams(points, weights, u, U, constraints, degree, nCtrl);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Surface fitting — tensor product: fit each row (V), then each column (U).
 // ─────────────────────────────────────────────────────────────────────────────
 namespace {
@@ -1246,6 +1403,126 @@ RationalSurfaceFitResult fitRationalSurfaceEstimateWeights(const PointGrid& grid
 SurfaceFitResult approximateSurface(const PointGrid& grid, int nCtrlU, int nCtrlV,
                                     int degreeU, int degreeV, ParamMethod method) {
   return fitSurface(grid, nCtrlU, nCtrlV, degreeU, degreeV, method);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Equality-CONSTRAINED least-squares SURFACE fitting — the tensor analogue of
+// fitCurveConstrained. Each constraint fixes one net pole (i,j) to a prescribed value
+// (fixing a whole boundary row ⇒ interpolate a prescribed edge curve exactly; fixing
+// the boundary row AND the adjacent row ⇒ pin the cross-boundary tangent so two
+// patches meet G1; fixing a corner pole ⇒ pin that corner). The constraint row is 1 at
+// the flat control index i·nCtrlV+j (zero elsewhere), the SAME row for x/y/z. Stacking
+// C·x=d and the GLOBAL 2-D least-squares design A·x≈b gives the KKT saddle system
+// [AᵀA Cᵀ; C 0][x;λ]=[Aᵀb;d], solved once per coordinate through lin_solve. With no
+// constraints this delegates to approximateSurface (exact separable reduction).
+// ─────────────────────────────────────────────────────────────────────────────
+
+SurfaceFitResult fitSurfaceConstrained(const PointGrid& grid,
+                                       std::span<const SurfacePoleConstraint> constraints,
+                                       int degreeU, int degreeV, int nCtrlU, int nCtrlV,
+                                       ParamMethod method) {
+  SurfaceFitResult r;
+  if (degreeU < 1 || degreeV < 1) return r;
+  if (nCtrlU < degreeU + 1 || nCtrlU > grid.nU) return r;
+  if (nCtrlV < degreeV + 1 || nCtrlV > grid.nV) return r;
+  if (grid.nU < degreeU + 1 || grid.nV < degreeV + 1) return r;
+
+  const int nCon = static_cast<int>(constraints.size());
+
+  // REDUCTION — no constraints ⇒ the separable least-squares surface fit, byte-for-byte.
+  if (nCon == 0)
+    return fitSurface(grid, nCtrlU, nCtrlV, degreeU, degreeV, method);
+
+  const int nCtrl = nCtrlU * nCtrlV;  // total tensor control points
+  if (nCon >= nCtrl) return r;        // over-constrained: no least-squares freedom left
+  for (int c = 0; c < nCon; ++c) {
+    const SurfacePoleConstraint& con = constraints[c];
+    if (con.i < 0 || con.i >= nCtrlU || con.j < 0 || con.j >= nCtrlV) return r;  // bad index
+  }
+
+  // Shared U/V parameter assignments (averaged across the grid) and approximation knots.
+  const std::vector<double> uP = gridParams(grid, method, /*dirU=*/true);
+  const std::vector<double> vP = gridParams(grid, method, /*dirU=*/false);
+  if (static_cast<int>(uP.size()) != grid.nU || static_cast<int>(vP.size()) != grid.nV) return r;
+  const std::vector<double> knotsU = approxKnotsImpl(uP, degreeU, nCtrlU);
+  const std::vector<double> knotsV = approxKnotsImpl(vP, degreeV, nCtrlV);
+  const int lastU = nCtrlU - 1, lastV = nCtrlV - 1;
+
+  // ── Global 2-D normal block AᵀA (nCtrl×nCtrl) and RHS Aᵀb per axis. Each grid datum
+  // Q(k,l) contributes the outer product of its (degU+1)·(degV+1) active tensor basis
+  // products Nᵢ(uₖ)Nⱼ(vₗ) onto AᵀA, and Nᵢⱼ·Q onto Aᵀb. ──
+  std::vector<double> AtA(static_cast<std::size_t>(nCtrl) * nCtrl, 0.0);
+  std::vector<double> Atbx(nCtrl, 0.0), Atby(nCtrl, 0.0), Atbz(nCtrl, 0.0);
+  std::vector<double> Nu(degreeU + 1), Nv(degreeV + 1);
+  std::vector<std::pair<int, double>> act;  // active flat-index / basis-product pairs
+  act.reserve((degreeU + 1) * (degreeV + 1));
+  for (int k = 0; k < grid.nU; ++k) {
+    const int spanU = findSpan(lastU, degreeU, uP[k], knotsU);
+    basisFuns(spanU, uP[k], degreeU, knotsU, Nu);
+    for (int l = 0; l < grid.nV; ++l) {
+      const int spanV = findSpan(lastV, degreeV, vP[l], knotsV);
+      basisFuns(spanV, vP[l], degreeV, knotsV, Nv);
+      act.clear();
+      for (int a = 0; a <= degreeU; ++a) {
+        const int ii = spanU - degreeU + a;
+        for (int b = 0; b <= degreeV; ++b) {
+          const int jj = spanV - degreeV + b;
+          act.emplace_back(ii * nCtrlV + jj, Nu[a] * Nv[b]);
+        }
+      }
+      const Point3 q = grid.at(k, l);
+      for (const auto& [ci, cv] : act) {
+        Atbx[ci] += cv * q.x;
+        Atby[ci] += cv * q.y;
+        Atbz[ci] += cv * q.z;
+        double* row = &AtA[static_cast<std::size_t>(ci) * nCtrl];
+        for (const auto& [cj, cw] : act) row[cj] += cv * cw;
+      }
+    }
+  }
+
+  // ── KKT saddle matrix [AᵀA Cᵀ; C 0] (size nCtrl+nCon), row-major. Each constraint is
+  // a unit row selecting the flat control index i·nCtrlV+j. ──
+  const int dim = nCtrl + nCon;
+  std::vector<double> K(static_cast<std::size_t>(dim) * dim, 0.0);
+  for (int i = 0; i < nCtrl; ++i)
+    for (int j = 0; j < nCtrl; ++j)
+      K[static_cast<std::size_t>(i) * dim + j] = AtA[static_cast<std::size_t>(i) * nCtrl + j];
+  std::vector<int> conIdx(nCon);
+  for (int c = 0; c < nCon; ++c) {
+    const int flat = constraints[c].i * nCtrlV + constraints[c].j;
+    conIdx[c] = flat;
+    K[static_cast<std::size_t>(nCtrl + c) * dim + flat] = 1.0;  // C block
+    K[static_cast<std::size_t>(flat) * dim + (nCtrl + c)] = 1.0;  // Cᵀ block
+  }
+
+  // Solve the KKT system once per coordinate; the top nCtrl entries are the poles.
+  auto solveAxisS = [&](const std::vector<double>& Atb,
+                        double (*pick)(const Vec3&)) -> std::vector<double> {
+    std::vector<double> b(dim, 0.0);
+    for (int i = 0; i < nCtrl; ++i) b[i] = Atb[i];
+    for (int c = 0; c < nCon; ++c) b[nCtrl + c] = pick(constraints[c].value);
+    return lin_solve(K, dim, b);
+  };
+  const std::vector<double> sx = solveAxisS(Atbx, [](const Vec3& v) { return v.x; });
+  const std::vector<double> sy = solveAxisS(Atby, [](const Vec3& v) { return v.y; });
+  const std::vector<double> sz = solveAxisS(Atbz, [](const Vec3& v) { return v.z; });
+  if (static_cast<int>(sx.size()) != dim || static_cast<int>(sy.size()) != dim ||
+      static_cast<int>(sz.size()) != dim)
+    return r;  // singular KKT (duplicate / inconsistent constraints) — honest decline
+
+  r.surface.degreeU = degreeU;
+  r.surface.degreeV = degreeV;
+  r.surface.nPolesU = nCtrlU;
+  r.surface.nPolesV = nCtrlV;
+  r.surface.knotsU = knotsU;
+  r.surface.knotsV = knotsV;
+  r.surface.poles.resize(nCtrl);
+  for (int i = 0; i < nCtrl; ++i) r.surface.poles[i] = {sx[i], sy[i], sz[i]};
+
+  surfaceErrors(r.surface, grid, uP, vP, r.maxError, r.rmsError);
+  r.ok = true;
+  return r;
 }
 
 }  // namespace cybercad::native::math

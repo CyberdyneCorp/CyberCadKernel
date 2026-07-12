@@ -208,6 +208,7 @@ static std::vector<Point3> sampleCurve(const BsplineCurveData& c, int N) {
 }
 
 int main() {
+  std::setvbuf(stdout, nullptr, _IONBF, 0);  // unbuffered so a crash keeps prior output
   // ═══ 4. PARAMETRIZATION SANITY ══════════════════════════════════════════════
   {
     std::vector<Point3> pts = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {3, 1, 0}, {3, 4, 0}};
@@ -1094,6 +1095,285 @@ int main() {
       expectTrue(!rd.ok, "constrained fit: nCtrl > nData declines honestly");
       expectTrue(rc.curve.poles.empty() && rh.curve.poles.empty(),
                  "declined constrained fits return no curve");
+    }
+  }
+
+  // ═══ CONSTRAINED SURFACE FIT — boundary interpolation / G1 stitch / reduction ═
+  //
+  // fitSurfaceConstrained minimizes the grid least-squares subject to EXACT pole
+  // constraints via the tensor KKT system. Oracles: (a) fixed boundary row reproduces
+  // a prescribed edge curve exactly while the interior approximates, (b) two patches
+  // sharing boundary + cross-tangent rows meet G1 (unit normal continuous), boundary
+  // unchanged, (c) empty constraints reduce to approximateSurface exactly, (d) bad
+  // index / over-constrained honest-decline.
+  {
+    const BsplineSurfaceData src = knownPatch();
+    const int nU = 12, nV = 10;
+    std::vector<Point3> gpts(static_cast<std::size_t>(nU) * nV);
+    for (int i = 0; i < nU; ++i)
+      for (int j = 0; j < nV; ++j)
+        gpts[static_cast<std::size_t>(i) * nV + j] =
+            evalSurface(src, static_cast<double>(i) / (nU - 1), static_cast<double>(j) / (nV - 1));
+    PointGrid grid{std::span<const Point3>(gpts), nU, nV};
+    const int dU = 3, dV = 2, nCU = 7, nCV = 6;
+
+    // (c) REDUCTION — empty constraints == approximateSurface, byte-for-byte.
+    {
+      std::vector<SurfacePoleConstraint> none;
+      SurfaceFitResult rc = fitSurfaceConstrained(grid, none, dU, dV, nCU, nCV,
+                                                  ParamMethod::ChordLength);
+      SurfaceFitResult ra = approximateSurface(grid, nCU, nCV, dU, dV, ParamMethod::ChordLength);
+      expectTrue(rc.ok && ra.ok, "constrained-surface (no constraints) & approximateSurface ok");
+      expectTrue(rc.surface.poles.size() == ra.surface.poles.size(), "reduction #poles matches");
+      double worst = 0.0;
+      for (std::size_t i = 0; i < rc.surface.poles.size(); ++i)
+        worst = std::max(worst, distance(rc.surface.poles[i], ra.surface.poles[i]));
+      expectLE(worst, 1e-12, "empty-constraint surface == approximateSurface to 1e-12");
+      std::printf("INFO constrained-surface reduction: worst pole delta=%.3e\n", worst);
+    }
+
+    // (a) BOUNDARY INTERPOLATION — fix the whole i=0 boundary row to a PRESCRIBED edge
+    // curve's control poles. The clamped surface's u=0 boundary is exactly the V B-
+    // spline of row 0, so the fitted surface must reproduce that edge curve exactly,
+    // independent of the interior least-squares over the grid data.
+    {
+      // A prescribed edge curve: nCV control poles in V, deliberately OFF the data.
+      std::vector<Point3> edgePoles(nCV);
+      for (int j = 0; j < nCV; ++j)
+        edgePoles[j] = {0.4 * j, 3.0 + 0.3 * std::sin(1.1 * j), 1.5 - 0.2 * j};
+      std::vector<SurfacePoleConstraint> cons;
+      for (int j = 0; j < nCV; ++j)
+        cons.push_back({0, j, edgePoles[j].asVec()});
+      SurfaceFitResult r =
+          fitSurfaceConstrained(grid, cons, dU, dV, nCU, nCV, ParamMethod::ChordLength);
+      expectTrue(r.ok, "boundary-constrained surface fit ok");
+
+      // The reference edge curve built from the SAME prescribed poles and the fitted
+      // surface's V knots (a clamped V B-spline of degree dV).
+      BsplineCurveData edge;
+      edge.degree = dV;
+      edge.poles = edgePoles;
+      edge.knots = r.surface.knotsV;
+      // Every fixed row-0 pole must sit exactly at its prescribed value.
+      double worstPole = 0.0;
+      for (int j = 0; j < nCV; ++j)
+        worstPole = std::max(worstPole, distance(r.surface.poles[j], edgePoles[j]));
+      expectLE(worstPole, 1e-12, "boundary row poles pinned to prescribed edge ≤1e-12");
+      // The surface at u=0 must equal the prescribed edge curve at every v.
+      double worstEdge = 0.0;
+      for (int t = 0; t <= 20; ++t) {
+        const double v = static_cast<double>(t) / 20;
+        worstEdge = std::max(worstEdge, distance(evalSurface(r.surface, 0.0, v),
+                                                 evalCurve(edge, v)));
+      }
+      expectLE(worstEdge, 1e-12, "surface u=0 boundary reproduces prescribed edge curve ≤1e-12");
+      // The interior still APPROXIMATES the grid data (finite, reported error).
+      expectTrue(r.maxError < 5.0 && r.maxError >= 0.0, "boundary-constrained interior approximates");
+      std::printf("INFO boundary-interp: worst edge dev=%.3e poles=%.3e gridErr=%.3e\n",
+                  worstEdge, worstPole, r.maxError);
+    }
+
+    // (b) G1 STITCH — two adjacent patches sharing the seam boundary row AND a matched
+    // adjacent (cross-tangent) row meet G1: the unit normal is continuous along the
+    // shared edge. Patch A occupies the lower-U half of the grid (seam at its u=1
+    // edge), patch B the upper-U half (seam at its u=0 edge). At the seam we pin:
+    //   A.row[nCU-1] = B.row[0] = E          (C0: shared boundary)
+    //   A.row[nCU-2] = E - D , B.row[1] = E + D  (G1: collinear cross-tangent ribbon)
+    // so A's cross-tangent at u=1 (∝ row[nCU-1]-row[nCU-2] = D) is parallel to B's at
+    // u=0 (∝ row[1]-row[0] = D) at every v ⇒ tangent planes coincide ⇒ normal continuous.
+    {
+      // Two independent dense patch grids sampled from `src`: A over u∈[0,0.5], B over
+      // u∈[0.5,1], each 9 rows × nV cols — well over nCU=6, so both have real LS freedom.
+      const int nPU = 9;
+      std::vector<Point3> aPts(static_cast<std::size_t>(nPU) * nV);
+      std::vector<Point3> bPts(static_cast<std::size_t>(nPU) * nV);
+      for (int i = 0; i < nPU; ++i) {
+        const double t = static_cast<double>(i) / (nPU - 1);
+        for (int j = 0; j < nV; ++j) {
+          const double v = static_cast<double>(j) / (nV - 1);
+          aPts[static_cast<std::size_t>(i) * nV + j] = evalSurface(src, 0.5 * t, v);
+          bPts[static_cast<std::size_t>(i) * nV + j] = evalSurface(src, 0.5 + 0.5 * t, v);
+        }
+      }
+      PointGrid aGrid{std::span<const Point3>(aPts), nPU, nV};
+      PointGrid bGrid{std::span<const Point3>(bPts), nPU, nV};
+
+      // Prescribed seam edge E(j) and cross-tangent offset D(j) (a smooth ramp in v).
+      std::vector<Point3> E(nCV);
+      std::vector<Vec3> D(nCV);
+      for (int j = 0; j < nCV; ++j) {
+        E[j] = {1.0 + 0.5 * j, 2.0 + 0.25 * std::cos(0.9 * j), 0.7 + 0.1 * j};
+        D[j] = {0.6, 0.4 + 0.05 * j, -0.3 + 0.02 * j};
+      }
+      std::vector<SurfacePoleConstraint> consA, consB;
+      for (int j = 0; j < nCV; ++j) {
+        consA.push_back({nCU - 1, j, E[j].asVec()});          // A seam boundary = E
+        consA.push_back({nCU - 2, j, (E[j].asVec() - D[j])}); // A cross-tangent row
+        consB.push_back({0, j, E[j].asVec()});                // B seam boundary = E
+        consB.push_back({1, j, (E[j].asVec() + D[j])});       // B cross-tangent row
+      }
+      // Uniform V-params so BOTH patches derive the IDENTICAL V knot vector — the seam
+      // boundary curve of a clamped surface is the V B-spline of the pinned pole row, so
+      // matching V knots make equal pinned rows produce the identical edge (exact C0/G1).
+      SurfaceFitResult A = fitSurfaceConstrained(aGrid, consA, dU, dV, nCU, nCV,
+                                                 ParamMethod::Uniform);
+      SurfaceFitResult B = fitSurfaceConstrained(bGrid, consB, dU, dV, nCU, nCV,
+                                                 ParamMethod::Uniform);
+      expectTrue(A.ok && B.ok, "G1 stitch: both surface patches fit");
+
+      if (A.ok && B.ok) {
+      SurfaceGrid gA{std::span<const Point3>(A.surface.poles), A.surface.nPolesU, A.surface.nPolesV};
+      SurfaceGrid gB{std::span<const Point3>(B.surface.poles), B.surface.nPolesU, B.surface.nPolesV};
+
+      double worstC0 = 0.0, worstNormal = 0.0;
+      for (int t = 0; t <= 16; ++t) {
+        const double v = static_cast<double>(t) / 16;
+        // C0: A(u=1,v) == B(u=0,v) along the seam.
+        const Point3 pa = evalSurface(A.surface, 1.0, v);
+        const Point3 pb = evalSurface(B.surface, 0.0, v);
+        worstC0 = std::max(worstC0, distance(pa, pb));
+        // G1: the unit surface normal is continuous across the seam.
+        const Dir3 nA = surfaceNormal(dU, dV, gA, A.surface.weights,
+                                      A.surface.knotsU, A.surface.knotsV, 1.0, v);
+        const Dir3 nB = surfaceNormal(dU, dV, gB, B.surface.weights,
+                                      B.surface.knotsU, B.surface.knotsV, 0.0, v);
+        worstNormal = std::max(worstNormal, nA.angle(nB));
+      }
+      expectLE(worstC0, 1e-12, "G1 stitch: seam boundary shared (C0) ≤1e-12");
+      expectLE(worstNormal, 1e-7, "G1 stitch: unit normal continuous across seam ≤1e-7 rad");
+      std::printf("INFO surface G1 stitch: max normal angle=%.3e rad  seam C0 dev=%.3e\n",
+                  worstNormal, worstC0);
+      }  // if (A.ok && B.ok)
+    }
+
+    // (d) GUARDS — bad index, over-constrained, bad dims → HONEST-DECLINE.
+    {
+      std::vector<SurfacePoleConstraint> badIdx = {{nCU, 0, Vec3{0, 0, 0}}};  // i out of range
+      SurfaceFitResult rb =
+          fitSurfaceConstrained(grid, badIdx, dU, dV, nCU, nCV, ParamMethod::ChordLength);
+      expectTrue(!rb.ok, "constrained surface: out-of-range pole index declines");
+      // Over-constrained: pin as many poles as the net has → no LS freedom.
+      std::vector<SurfacePoleConstraint> tooMany;
+      for (int i = 0; i < nCU; ++i)
+        for (int j = 0; j < nCV; ++j) tooMany.push_back({i, j, Vec3{0, 0, 0}});
+      SurfaceFitResult rt =
+          fitSurfaceConstrained(grid, tooMany, dU, dV, nCU, nCV, ParamMethod::ChordLength);
+      expectTrue(!rt.ok, "over-constrained surface (nCon >= nCtrl) declines honestly");
+      expectTrue(rb.surface.poles.empty() && rt.surface.poles.empty(),
+                 "declined constrained surface fits return no surface");
+    }
+  }
+
+  // ═══ RATIONAL CONSTRAINED CURVE FIT — homogeneous KKT with prescribed weights ══
+  //
+  // fitCurveConstrainedRational fits a rational curve with PRESCRIBED per-point weights
+  // subject to EXACT constraints imposed in homogeneous (wx,wy,wz,w) space. Oracle:
+  // sample a KNOWN rational curve (the unit circle) at parameters carrying the curve's
+  // OWN weights, pin the endpoints with those weights, and recover the rational shape
+  // exactly (≤1e-10); over-constrained honest-declines.
+  {
+    const BsplineCurveData circle = fullCircle();  // degree 2 unit circle, weights {1,w,1,...}
+    const int degree = 2;
+    const int nCtrl = 9;   // the circle's own control count — an exact reproduction target
+
+    // Sample the circle at N params; each datum carries the circle's rational
+    // denominator at that param as its prescribed weight (the exact homogeneous weight).
+    const int N = 40;
+    std::vector<Point3> pts(N);
+    std::vector<double> wts(N);
+    std::vector<double> sampleU(N);
+    for (int k = 0; k < N; ++k) {
+      const double u = static_cast<double>(k) / (N - 1);
+      sampleU[k] = u;
+      pts[k] = evalRationalCurve(circle, u);
+      wts[k] = rationalDenominator(circle, u);  // the exact weight this datum carries
+    }
+
+    // Pin BOTH endpoints (position) with their prescribed homogeneous weights. The
+    // circle starts and ends at (1,0,0) with denominator 1 there.
+    const Point3 P0 = evalRationalCurve(circle, 0.0);
+    const Point3 P1 = evalRationalCurve(circle, 1.0);
+    std::vector<CurveEndConstraintRational> cons = {
+        {CurveEnd::Start, 0, P0.asVec(), rationalDenominator(circle, 0.0)},
+        {CurveEnd::End, 0, P1.asVec(), rationalDenominator(circle, 1.0)}};
+    // EXACT reproduction needs the curve's OWN projective params + knot vector (a
+    // rational shape's parameter is NOT its chord length) — the airtight WithParams form.
+    CurveFitResult rc = fitCurveConstrainedRationalWithParams(
+        pts, wts, sampleU, circle.knots, cons, degree, nCtrl);
+    expectTrue(rc.ok, "rational constrained fit ok");
+    expectTrue(!rc.curve.weights.empty(), "rational constrained fit is rational (weights present)");
+
+    // Endpoints EXACT (the pinned homogeneous constraints).
+    expectLE(distance(evalRationalCurve(rc.curve, 0.0), P0), 1e-10,
+             "rational constrained: start point exact ≤1e-10");
+    expectLE(distance(evalRationalCurve(rc.curve, 1.0), P1), 1e-10,
+             "rational constrained: end point exact ≤1e-10");
+    // The fitted rational curve reproduces the CIRCLE (radius 1) at dense params.
+    double worstRadius = 0.0, worstShape = 0.0;
+    for (int t = 0; t <= 100; ++t) {
+      const double u = static_cast<double>(t) / 100;
+      const Point3 p = evalRationalCurve(rc.curve, u);
+      worstRadius = std::max(worstRadius, std::fabs(norm(p.asVec()) - 1.0));
+      worstShape = std::max(worstShape, distance(p, evalRationalCurve(circle, u)));
+    }
+    expectLE(worstRadius, 1e-10, "rational constrained: fitted curve stays on the unit circle ≤1e-10");
+    expectLE(worstShape, 1e-10, "rational constrained: reproduces the known rational shape ≤1e-10");
+    expectLE(rc.maxError, 1e-10, "rational constrained: reported data error ≤1e-10");
+    std::printf("INFO rational constrained: radiusDev=%.3e shapeDev=%.3e maxErr=%.3e\n",
+                worstRadius, worstShape, rc.maxError);
+
+    // REDUCTION — empty constraints ⇒ a valid homogeneous LS rational fit reproducing
+    // the shape (the prescribed weights alone recover the circle exactly at nCtrl=9).
+    {
+      std::vector<CurveEndConstraintRational> none;
+      CurveFitResult rn = fitCurveConstrainedRationalWithParams(
+          pts, wts, sampleU, circle.knots, none, degree, nCtrl);
+      expectTrue(rn.ok, "rational constrained (no constraints) ok");
+      double worst = 0.0;
+      for (int t = 0; t <= 100; ++t) {
+        const double u = static_cast<double>(t) / 100;
+        worst = std::max(worst, distance(evalRationalCurve(rn.curve, u),
+                                         evalRationalCurve(circle, u)));
+      }
+      expectLE(worst, 1e-10, "rational constrained no-constraint fit reproduces the shape ≤1e-10");
+    }
+
+    // GUARDS — over-constrained, non-positive weight, mismatched sizes → HONEST-DECLINE.
+    {
+      // nCtrl small (=3), request 3 constraints (≥ nCtrl) → decline.
+      std::vector<Point3> few(pts.begin(), pts.begin() + 10);
+      std::vector<double> fewW(wts.begin(), wts.begin() + 10);
+      std::vector<CurveEndConstraintRational> tooMany = {
+          {CurveEnd::Start, 0, few.front().asVec(), 1.0},
+          {CurveEnd::Start, 1, Vec3{1, 0, 0}, 1.0},
+          {CurveEnd::End, 0, few.back().asVec(), 1.0}};
+      CurveFitResult ro =
+          fitCurveConstrainedRational(few, fewW, tooMany, degree, 3, ParamMethod::ChordLength);
+      expectTrue(!ro.ok, "rational over-constrained (nCon >= nCtrl) declines honestly");
+
+      // Non-positive input weight → decline.
+      std::vector<double> badW = wts;
+      badW[5] = -1.0;
+      std::vector<CurveEndConstraintRational> onePin = {
+          {CurveEnd::Start, 0, P0.asVec(), 1.0}};
+      CurveFitResult rw =
+          fitCurveConstrainedRational(pts, badW, onePin, degree, nCtrl, ParamMethod::ChordLength);
+      expectTrue(!rw.ok, "rational constrained: non-positive input weight declines honestly");
+
+      // Non-positive CONSTRAINT weight → decline.
+      std::vector<CurveEndConstraintRational> badConW = {
+          {CurveEnd::Start, 0, P0.asVec(), -1.0}};
+      CurveFitResult rcw =
+          fitCurveConstrainedRational(pts, wts, badConW, degree, nCtrl, ParamMethod::ChordLength);
+      expectTrue(!rcw.ok, "rational constrained: non-positive constraint weight declines honestly");
+
+      // Mismatched weight count → decline.
+      std::vector<double> shortW(wts.begin(), wts.end() - 1);
+      CurveFitResult rm =
+          fitCurveConstrainedRational(pts, shortW, onePin, degree, nCtrl, ParamMethod::ChordLength);
+      expectTrue(!rm.ok, "rational constrained: weights.size() != points.size() declines");
+      expectTrue(ro.curve.poles.empty() && rw.curve.poles.empty(),
+                 "declined rational constrained fits return no curve");
     }
   }
 

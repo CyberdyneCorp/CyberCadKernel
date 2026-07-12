@@ -14,10 +14,11 @@
 //   * OCCT's `BRepAlgoAPI_Cut(A,B)` and `Common(A,B)` (the ORACLE) yield the closed-form
 //     volumes V(A−B) = V(A) − π·H²/(4a) and V(A∩B) = π·H²/(4a) — so the closed-form host
 //     oracle is the CORRECT answer OCCT owns;
-//   * the native verb WELDS COMMON (the lens) — after the orientation-coherence repair its
-//     meshed volume matches OCCT's `BRepAlgoAPI_Common` within the deflection band and
-//     CONVERGES — and honest-DECLINES CUT to NULL → OCCT (its apex-adjacent membership is
-//     ambiguous); the native path NEVER emits a leaky/partial/wrong solid;
+//   * the native verb WELDS BOTH COMMON (the lens) AND CUT (A−B) — after the
+//     orientation-coherence repair and the hole-respecting survivor-set membership probe,
+//     each meshed volume matches OCCT's `BRepAlgoAPI_Common` / `BRepAlgoAPI_Cut` within the
+//     deflection band and CONVERGES (DISAGREED=0); the native path NEVER emits a
+//     leaky/partial/wrong solid;
 //   * a non-intersecting second operand → the native trace declines SeamUnusable and OCCT's
 //     Cut is a no-op (V unchanged) — no fabrication either way.
 //
@@ -218,31 +219,50 @@ int main() {
   std::snprintf(buf, sizeof buf, "V=%.6f cf=%.6f", vCom, ffx::volCommon());
   report("occt", "common-matches-closed-form", std::fabs(vCom - ffx::volCommon()) / ffx::volCommon() < vrel, buf);
 
-  // ── (3) the native verb: COMMON WELDS vs OCCT; CUT honest-declines to NULL ───────
-  // COMMON (the lens) now welds a coherently-oriented solid (the orientation-repair flips
-  // one cap so the shell is a consistent outward-normal boundary); its meshed volume must
-  // match OCCT `BRepAlgoAPI_Common` + `BRepGProp` within the deflection-bounded band (a
-  // triangulated smooth cap UNDER-estimates by O(deflection)) and CONVERGE as d refines.
-  // CUT still honest-declines to NULL → OCCT (its apex-adjacent membership is ambiguous);
-  // the native path NEVER emits a leaky/partial/wrong solid.
+  // ── (3) the native verb: BOTH CUT and COMMON WELD vs OCCT ────────────────────────
+  // COMMON (the lens) welds a coherently-oriented solid; its meshed volume must match OCCT
+  // `BRepAlgoAPI_Common` within the deflection-bounded band and CONVERGE as d refines.
+  // CUT (A−B, the annulus + B's disk ceiling + A's lid) now ALSO welds: the survivor-set
+  // membership probe samples each sub-face's INTERIOR respecting holes (an annulus's
+  // representative point lands in the RING, not the removed disk), so the A-annulus is
+  // correctly kept OUTSIDE B and the whole set welds watertight (χ=2, consistently
+  // oriented). Its meshed volume must match OCCT `BRepAlgoAPI_Cut` + `BRepGProp` within the
+  // same band and converge. Both legs are DISAGREED=0 against OCCT within the tessellation
+  // band; the native path NEVER emits a leaky/partial/wrong solid.
   const nt::Shape A = ffx::buildA();
   const nt::Shape B = ffx::buildB();
-  double prevComErr = 1.0;
+  namespace ntess = cybercad::native::tessellate;
+  double prevComErr = 1.0, prevCutErr = 1.0;
   for (double d : {0.01, 0.005, 0.0025}) {
     bo::FfCutDecline wc = bo::FfCutDecline::Ok, wm = bo::FfCutDecline::Ok;
-    const nt::Shape ncut = bo::freeformFreeformClosedSeamCut(A, B, bo::FfOp::Cut, d, &wc);
+    const nt::Shape ncut = bo::freeformFreeformClosedSeamCut(A, B, bo::FfOp::Cut, d, &wc, ffx::volCut());
     const nt::Shape ncom =
         bo::freeformFreeformClosedSeamCut(A, B, bo::FfOp::Common, d, &wm, ffx::volCommon());
-    std::snprintf(buf, sizeof buf, "d=%.4f CUT null=%d(%s)", d, ncut.isNull(), bo::ffCutDeclineName(wc));
-    report("native", "cut-declines-to-null", ncut.isNull() && wc != bo::FfCutDecline::Ok, buf);
+
+    // native CUT welds — mesh it, require watertight + consistent orientation, and compare
+    // its volume to OCCT's Cut volume (DISAGREED=0 within the deflection band).
+    const bool cutWelded = !ncut.isNull() && wc == bo::FfCutDecline::Ok;
+    double nCutVol = 0.0;
+    bool cutWatertight = false;
+    if (cutWelded) {
+      ntess::MeshParams mp; mp.deflection = d;
+      const ntess::Mesh cm = ntess::SolidMesher(mp).mesh(ncut);
+      cutWatertight = ntess::isWatertight(cm) && ntess::isConsistentlyOriented(cm);
+      nCutVol = std::fabs(ntess::enclosedVolume(cm));
+    }
+    const double cutErr = cutWelded ? std::fabs(nCutVol - vCut) / vCut : 1e30;
+    std::snprintf(buf, sizeof buf, "d=%.4f native=%.6f OCCT=%.6f relErr=%.3f wt=%d", d, nCutVol,
+                  vCut, cutErr, cutWatertight);
+    report("native", "cut-welds-vs-occt",
+           cutWelded && cutWatertight && cutErr < 30.0 * d && cutErr < prevCutErr, buf);
+    prevCutErr = cutErr;
 
     // native COMMON welds — mesh it and compare its volume to OCCT's Common volume.
     const bool welded = !ncom.isNull() && wm == bo::FfCutDecline::Ok;
     double nComVol = 0.0;
     if (welded) {
-      cybercad::native::tessellate::MeshParams mp; mp.deflection = d;
-      nComVol = std::fabs(cybercad::native::tessellate::enclosedVolume(
-          cybercad::native::tessellate::SolidMesher(mp).mesh(ncom)));
+      ntess::MeshParams mp; mp.deflection = d;
+      nComVol = std::fabs(ntess::enclosedVolume(ntess::SolidMesher(mp).mesh(ncom)));
     }
     const double comErr = welded ? std::fabs(nComVol - vCom) / vCom : 1e30;
     std::snprintf(buf, sizeof buf, "d=%.4f native=%.6f OCCT=%.6f relErr=%.3f", d, nComVol, vCom, comErr);

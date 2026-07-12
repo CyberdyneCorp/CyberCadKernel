@@ -183,6 +183,29 @@ watertight sew is MISSING.
 > callout). The residual is the **CUT** leg (apex-ambiguous membership, honest-declined) + the
 > multi-crossing / re-entrant split — NOT the curved↔curved COMMON sew itself.
 
+> **UPDATE (CUT leg RESOLVED, track W — watertight curved-seam weld):** the **CUT (`A−B`)** leg
+> now **WELDS watertight** and agrees with OCCT `BRepAlgoAPI_Cut` (DISAGREED=0). The measured
+> re-diagnosis overturned the "mesher wall" framing: the two-curved-side closed seam
+> (A-annulus's inner-hole boundary ↔ B-disk's outer boundary) already welds through the SAME
+> M0w seam-chord pin the COMMON lens uses. **Measured on the canonical bowl-cup fixture at
+> deflection 0.005:** the full CUT survivor set (A-annulus + B-disk + A-lid) meshes to
+> **boundaryEdges = 0, χ = 2, consistently oriented**, with the 366 shared-seam nodes matched
+> to **max ‖evalA − evalB‖ = 2.9e-14** — NOT the ~1788 open edges the naive framing predicted.
+> The actual blocker was a **membership-probe bug, not a weld**: `subFaceCentroid3d` averaged
+> the annulus's OUTER loop only, so its representative point was the disk CENTRE — which for
+> the annulus (a face with the seam disk as a HOLE) lands in the REMOVED disk (the bowl apex at
+> z=0), reading INSIDE B and declining `ClassifyAmbiguous`. Fix (bounded, in
+> `freeform_freeform_cut.h`, M0 mesher UNTOUCHED): `subFaceInteriorReps` samples the sub-face
+> respecting holes and votes membership over in-material points — every one of 125 annulus ring
+> samples votes OUTSIDE B unanimously. **Result:** CUT meshed volume vs OCCT `BRepAlgoAPI_Cut`
+> = 2.2%→1.5%→0.7% over deflection 0.01→0.005→0.0025 (monotone convergence, all watertight),
+> host `ff_cut_welds_watertight_at_closed_form` + SIM `native_freeform_freeform_cut_parity.mm`
+> `cut-welds-vs-occt` GREEN (SIM 14/14, DISAGREED=0). `src/native` stays OCCT-free; no `cc_*`
+> ABI touched. The COMMON path is unchanged (its disks have no holes → the interior-sample vote
+> agrees with the old centroid). The remaining L3 tail is the **multi-crossing / re-entrant /
+> multi-seam** NURBS↔NURBS split and the closed-loop seeding recall — NOT the closed-seam
+> curved↔curved weld, which is now resolved for BOTH legs of the single-transversal-seam pose.
+
 ### Summary table
 
 | stage | readiness | one-line evidence |

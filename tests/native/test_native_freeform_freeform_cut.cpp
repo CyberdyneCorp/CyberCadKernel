@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Host GATE (a) for MOAT M2 freeform↔freeform CLOSED-SEAM CUT / COMMON — the
-// OCCT-FREE analytic proof that the recognise → trace → split → classify pipeline
-// composes for TWO curved operands over a shared CLOSED curved seam, and that the weld
-// verb HONEST-DECLINES to NULL (never a leaky/partial solid) because the two-CURVED-side
-// closed-seam weld is gated on the byte-frozen M0 tessellator.
+// OCCT-FREE analytic proof that the recognise → trace → split → classify → weld pipeline
+// composes for TWO curved operands over a shared CLOSED curved seam, and that BOTH the
+// CUT and the COMMON leg weld watertight at the closed-form volume (never a leaky/partial
+// solid) — the two-curved-side closed seam welds through the M0w seam-chord pin.
 //
 // The fixture is two coaxial paraboloid bowl-cups (an UP bowl-cup A and a DOWN dome-cup
 // B) whose two curved walls meet in ONE CLOSED CIRCLE of radius ρ = √(H/2a) at z = H/2
@@ -14,10 +14,12 @@
 //     ~1e-13, on both surfaces to the trace residual;
 //   * the closed-form volume oracles are self-consistent (V(A−B)+V(A∩B)=V(A));
 //   * `freeformFreeformClosedSeamCut` runs the whole pipeline: COMMON (the lens) WELDS
-//     watertight at the closed-form volume π·H²/(4a) after the orientation-coherence
-//     repair (one cap reversed) and CONVERGES as the deflection refines, verified
-//     TWO-SIDED; CUT honest-declines to NULL (its apex-adjacent membership is ambiguous)
-//     — NEVER a leaky/wrong solid; and it DECLINES a non-operand / non-intersecting pose.
+//     watertight at π·H²/(4a) after the orientation-coherence repair (one cap reversed),
+//     and CUT (A−B — the wall annulus + B's disk ceiling + A's lid) ALSO WELDS watertight
+//     at V(A)−π·H²/(4a) once the survivor-set membership probe respects HOLES (an annulus
+//     representative point lands in the ring, not the removed disk); both CONVERGE as the
+//     deflection refines, verified TWO-SIDED — NEVER a leaky/wrong solid; and the verb
+//     DECLINES a non-operand / non-intersecting pose.
 // Requires CYBERCAD_HAS_NUMSCI (the seam is the real S3 trace between two Béziers).
 //
 #include "native/boolean/freeform_freeform_cut.h"
@@ -74,23 +76,41 @@ CC_TEST(ff_closed_form_partition_is_consistent) {
   CC_CHECK(ffx::volCommon() > 0.01 * ffx::volA());  // a SUBSTANTIAL, discriminating lens
 }
 
-// ── CUT HONEST-DECLINES to NULL (never a leaky solid): the two-CURVED-side seam ──
-// weld is gated on the byte-frozen M0 tessellator (MEASURED: the closed seam between
-// two independently-tessellated CURVED sub-faces opens — curved↔flat welds via the M0w
-// pin, curved↔curved does not, so the verb returns NULL → OCCT, NEVER a leaky solid).
-CC_TEST(ff_cut_honest_declines_never_leaky) {
+// ── CUT (A−B) WELDS watertight at the CLOSED-FORM volume, and CONVERGES ──────────
+// The CUT survivor set is A's wall ANNULUS (outside B) + B's wall DISK (the new curved
+// ceiling of the carved lens, inside A) + A's flat LID. The two-CURVED-side closed seam
+// (A-annulus's inner hole ↔ B-disk's outer) welds watertight through the SAME M0w
+// seam-chord pin the COMMON lens uses — MEASURED: 0 boundary edges, χ=2, consistently
+// oriented, seam nodes matched to ~3e-14. The prior decline was NOT a weld failure but a
+// membership mis-probe: the annulus's outer-loop centroid landed in its HOLE (the removed
+// disk = the bowl apex) and read INSIDE B, so the survivor select declined
+// `ClassifyAmbiguous`. The hole-respecting interior-sample vote (subFaceInteriorReps)
+// fixes it — every ring sample votes OUTSIDE B unanimously — so the CUT now welds and its
+// meshed volume matches the closed form V(A)−π·H²/(4a) within the deflection band AND
+// converges as the deflection refines. Two-sided self-verify (closed form passed in).
+CC_TEST(ff_cut_welds_watertight_at_closed_form) {
   const topo::Shape A = ffx::buildA();
   const topo::Shape B = ffx::buildB();
+  const double cf = ffx::volCut();
+  double prevErr = 1.0;
   for (double d : {0.01, 0.005, 0.0025}) {
     bo::FfCutDecline why = bo::FfCutDecline::Ok;
-    const topo::Shape cut = bo::freeformFreeformClosedSeamCut(A, B, bo::FfOp::Cut, d, &why);
-    CC_CHECK(cut.isNull());                      // NULL → OCCT (the disciplined outcome)
-    CC_CHECK(why != bo::FfCutDecline::Ok);       // with a measured blocker
-    // The blocker is the weld itself (or the membership at the degenerate apex), NOT a
-    // recognise/trace/split failure — the pipeline reaches the weld and refuses to emit
-    // a non-watertight solid.
-    CC_CHECK(why == bo::FfCutDecline::NotWatertight ||
-             why == bo::FfCutDecline::ClassifyAmbiguous);
+    const topo::Shape cut = bo::freeformFreeformClosedSeamCut(A, B, bo::FfOp::Cut, d, &why, cf);
+    CC_CHECK(!cut.isNull());                               // WELDS (not a decline)
+    CC_CHECK(why == bo::FfCutDecline::Ok);
+    if (cut.isNull()) continue;
+    tess::MeshParams mp;
+    mp.deflection = d;
+    const tess::Mesh m = tess::SolidMesher(mp).mesh(cut);
+    CC_CHECK(tess::isWatertight(m));                       // χ = 2 (closed 2-manifold)
+    CC_CHECK(tess::boundaryEdgeCount(m) == 0);             // zero open edges (the weld holds)
+    CC_CHECK(tess::isConsistentlyOriented(m));             // coherent winding
+    const double v = std::fabs(tess::enclosedVolume(m));
+    const double err = std::fabs(v - cf) / cf;
+    CC_CHECK(err < 30.0 * d);                              // within the deflection band
+    CC_CHECK(v < cf);                                      // smooth cap under-estimates
+    CC_CHECK(err < prevErr);                               // and CONVERGES toward cf
+    prevErr = err;
   }
 }
 

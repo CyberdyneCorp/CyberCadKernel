@@ -162,46 +162,92 @@ inline ssi::WLine rekeyToB(const ssi::WLine& seam) {
   return out;
 }
 
-/// The 3-D centroid of a (trimmed) sub-face: the surface value at its flattened
-/// outer-loop UV centroid (an in-domain (u,v) for the disk/annulus sub-faces the
-/// smooth-trim split lays). Mirrors `todetail::faceCentroid3d`.
-inline std::optional<math::Point3> subFaceCentroid3d(const topo::Shape& face) {
+/// Interior REPRESENTATIVE points of a (trimmed) sub-face — surface values at UV
+/// samples that pass the region keep-rule (inside the outer loop AND outside every
+/// hole). This is the HOLE-RESPECTING generalisation of an outer-loop centroid.
+///
+/// WHY NOT the outer-loop centroid (the previous approach). For a DISK sub-face
+/// (faceInside — no hole) the outer-loop UV centroid is in-material, so membership
+/// is correct. For an ANNULUS sub-face (faceOutside — the seam disk is a HOLE) the
+/// outer-loop centroid is the disk CENTRE, which lies IN THE HOLE (the removed disk).
+/// On the bowl-cup fixture that centre is the bowl APEX, and the apex sits on the
+/// WRONG side of the other operand — so the CUT's A-annulus mis-classifies as IN B
+/// and the whole verb honest-declines `ClassifyAmbiguous` even though the survivor
+/// set welds watertight. An annulus is not star-shaped from its centroid, so no
+/// single averaged point is reliable; we therefore sample the region and vote.
+///
+/// A coarse (N+1)×(N+1) grid over the region's UV bounding box, keeping only samples
+/// that pass `reg.inside()`, yields points GUARANTEED in the sub-face material for
+/// BOTH a disk and an annulus. The caller votes their membership (a robust majority),
+/// so an occasional On/Unknown near-boundary sample cannot flip the verdict. No
+/// tolerance is weakened — this only fixes WHICH point represents the sub-face.
+inline std::vector<math::Point3> subFaceInteriorReps(const topo::Shape& face, int grid = 12) {
+  std::vector<math::Point3> reps;
   const auto srf = topo::surfaceOf(face);
-  if (!srf || !srf->surface) return std::nullopt;
-  const tess::UVRegion reg = tess::buildRegion(face, 16);
-  if (!reg.hasOuter()) return std::nullopt;
-  double su = 0, sv = 0;
-  for (const tess::UV& q : reg.outer) { su += q.u; sv += q.v; }
-  const double inv = 1.0 / static_cast<double>(reg.outer.size());
+  if (!srf || !srf->surface) return reps;
+  const tess::UVRegion reg = tess::buildRegion(face, 24);
+  if (!reg.hasOuter() || !reg.box.valid) return reps;
   const tess::SurfaceEvaluator ev(*srf->surface, srf->location);
-  return ev.value(su * inv, sv * inv);
+  const double du = reg.box.uMax - reg.box.uMin;
+  const double dv = reg.box.vMax - reg.box.vMin;
+  if (!(du > 0.0) || !(dv > 0.0)) return reps;
+  for (int i = 0; i <= grid; ++i)
+    for (int j = 0; j <= grid; ++j) {
+      const tess::UV g{reg.box.uMin + du * (static_cast<double>(i) / grid),
+                       reg.box.vMin + dv * (static_cast<double>(j) / grid)};
+      if (reg.inside(g)) reps.push_back(ev.value(g.u, g.v));
+    }
+  return reps;
 }
 
-/// Pick the sub-face of a smooth-trim split whose centroid has the requested membership
-/// in `other`'s mesh (`In` or `Out`). Returns nullopt (→ ClassifyAmbiguous) if NEITHER
-/// sub-face confirms the wanted side, or a centroid is unusable / On / Unknown.
+/// Membership of a sub-face in `other`'s mesh by a MAJORITY VOTE over hole-respecting
+/// interior representative points (see subFaceInteriorReps). Returns the wanted verdict
+/// only when a strict majority of usable (In/Out) samples agree on it and NO usable
+/// sample crisply votes the opposite side — so a mixed/ambiguous sub-face (e.g. one
+/// straddling the other operand) is honestly reported as NOT the wanted side, never
+/// forced. `On`/`Unknown` samples are abstentions (near-boundary / declined rays).
+inline bool subFaceHasMembership(const topo::Shape& face, const tess::Mesh& other,
+                                 const Aabb& otherBox, double deflection, Membership want) {
+  const std::vector<math::Point3> reps = subFaceInteriorReps(face);
+  if (reps.empty()) return false;
+  int inVotes = 0, outVotes = 0;
+  for (const math::Point3& p : reps) {
+    switch (classifyPointInMesh(other, otherBox, deflection, p)) {
+      case Membership::In: ++inVotes; break;
+      case Membership::Out: ++outVotes; break;
+      default: break;  // On / Unknown → abstain
+    }
+  }
+  const int wantVotes = want == Membership::In ? inVotes : outVotes;
+  const int antiVotes = want == Membership::In ? outVotes : inVotes;
+  // A crisp verdict: at least one usable sample on the wanted side, a strict majority
+  // there, and NO usable sample on the opposite side (a clean, unanimous-usable side).
+  return wantVotes > 0 && antiVotes == 0 && wantVotes > (inVotes + outVotes) / 2;
+}
+
+/// Pick the sub-face of a smooth-trim split whose interior has the requested membership
+/// in `other`'s mesh (`In` or `Out`), by the hole-respecting majority vote above.
+/// Returns nullopt (→ ClassifyAmbiguous) if NEITHER sub-face crisply confirms the wanted
+/// side. For a DISK candidate this reduces to the old outer-centroid verdict (no hole);
+/// for an ANNULUS it is now correct (samples land in the ring, not the removed disk).
 inline std::optional<topo::Shape> pickByMembership(const SmoothFaceSplit& split,
                                                    const tess::Mesh& other, const Aabb& otherBox,
                                                    double deflection, Membership want) {
   const topo::Shape* cands[2] = {&split.faceInside, &split.faceOutside};
-  for (const topo::Shape* c : cands) {
-    const auto ctr = subFaceCentroid3d(*c);
-    if (!ctr) continue;
-    if (classifyPointInMesh(other, otherBox, deflection, *ctr) == want) return *c;
-  }
+  for (const topo::Shape* c : cands)
+    if (subFaceHasMembership(*c, other, otherBox, deflection, want)) return *c;
   return std::nullopt;
 }
 
-/// Every analytic (lid) face of `op` whose centroid has the requested membership in
-/// `other`'s mesh. For CUT the lids OUTSIDE the other operand are kept whole.
+/// Every analytic (lid) face of `op` whose interior has the requested membership in
+/// `other`'s mesh. For CUT the lids OUTSIDE the other operand are kept whole. A flat lid
+/// has no hole, so the interior-sample vote agrees with the old centroid verdict.
 inline void collectAnalyticByMembership(const FreeformOperand& op, const tess::Mesh& other,
                                         const Aabb& otherBox, double deflection, Membership want,
                                         std::vector<topo::Shape>& out) {
-  for (std::size_t idx : op.analytic) {
-    const auto ctr = subFaceCentroid3d(op.faces[idx].face);
-    if (!ctr) continue;
-    if (classifyPointInMesh(other, otherBox, deflection, *ctr) == want) out.push_back(op.faces[idx].face);
-  }
+  for (std::size_t idx : op.analytic)
+    if (subFaceHasMembership(op.faces[idx].face, other, otherBox, deflection, want))
+      out.push_back(op.faces[idx].face);
 }
 
 /// Assemble `faces` into a Solid and mesh it, then REPAIR orientation coherence: the

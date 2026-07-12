@@ -315,10 +315,19 @@ inline topo::Shape nurbsSolidFuse(const topo::Shape& A, const topo::Shape& B,
 //
 // `analyticOpVolume` (optional) enables the TWO-SIDED closed-form volume band.
 // ─────────────────────────────────────────────────────────────────────────────
-inline topo::Shape nurbsSolidBoolean(const topo::Shape& A, const topo::Shape& B, SolidBoolOp op,
-                                     double deflection = 0.005, SolidBoolReport* report = nullptr,
-                                     double analyticOpVolume =
-                                         std::numeric_limits<double>::quiet_NaN()) {
+// ─────────────────────────────────────────────────────────────────────────────
+// nurbsSolidBooleanWithSeams — the ORCHESTRATOR core, taking the already-traced shared
+// closed seams. This overload EXISTS so a caller (a host gate sweeping several deflections,
+// or a multi-op run) can trace the — expensive, e.g. degree-4 — SSI seams ONCE and re-run
+// only the split+select+weld+verify per call. `nurbsSolidBoolean` below traces then
+// forwards. Semantics identical to `nurbsSolidBoolean`.
+// ─────────────────────────────────────────────────────────────────────────────
+inline topo::Shape nurbsSolidBooleanWithSeams(const topo::Shape& A, const topo::Shape& B,
+                                              const std::vector<ssi::WLine>& seams, SolidBoolOp op,
+                                              double deflection = 0.005,
+                                              SolidBoolReport* report = nullptr,
+                                              double analyticOpVolume =
+                                                  std::numeric_limits<double>::quiet_NaN()) {
   using namespace nsbdetail;
   SolidBoolReport rep;
   rep.op = op;
@@ -341,11 +350,9 @@ inline topo::Shape nurbsSolidBoolean(const topo::Shape& A, const topo::Shape& B,
   const topo::FaceSurface* fsB = freeformWall(*foB, &wallB, wB);
   if (!fsB) return fail(SolidBoolDecline::WallUnusableB);
 
-  // (2) Stage 1 — SSI-trace the shared closed seams once (the multi-seam trigger).
-  const std::vector<ssi::WLine> seams = tracedClosedSeams(*fsA, *fsB);
   rep.seamLoops = static_cast<int>(seams.size());
 
-  // (3) MULTI-SEAM dispatch (≥ 2 closed loops) — split+classify exactly, honest-decline
+  // (2) MULTI-SEAM dispatch (≥ 2 closed loops) — split+classify exactly, honest-decline
   // the annulus↔annulus inner-seam sew (L3-d) with the residual map.
   if (seams.size() >= 2) {
     rep.multiSeam = true;
@@ -396,6 +403,43 @@ inline topo::Shape nurbsSolidBoolean(const topo::Shape& A, const topo::Shape& B,
   // FUSE — the OUTER envelope compose (the single-seam CUT/COMMON verb did not expose it).
   const topo::Shape r = nurbsSolidFuse(A, B, seams.front(), deflection, rep, analyticOpVolume);
   return emit(r);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// nurbsSolidBoolean — the general two-freeform-solid NURBS boolean ORCHESTRATOR (tracing
+// wrapper). SSI-traces the shared closed seams `A.wall ∩ B.wall` ONCE and forwards them to
+// the core above. Returns the composed watertight result for op ∈ {Fuse, Cut, Common} or an
+// HONEST decline to NULL with a measured `SolidBoolReport` (never a leaky/wrong solid; no
+// tolerance widened).
+// ─────────────────────────────────────────────────────────────────────────────
+inline topo::Shape nurbsSolidBoolean(const topo::Shape& A, const topo::Shape& B, SolidBoolOp op,
+                                     double deflection = 0.005, SolidBoolReport* report = nullptr,
+                                     double analyticOpVolume =
+                                         std::numeric_limits<double>::quiet_NaN()) {
+  using namespace nsbdetail;
+  SolidBoolReport rep;
+  rep.op = op;
+  auto emit = [&](topo::Shape s) -> topo::Shape {
+    if (report) *report = rep;
+    return s;
+  };
+  auto fail = [&](SolidBoolDecline d) -> topo::Shape { rep.decline = d; return emit({}); };
+
+  // Recognise + trace once, then forward the seams to the core (no double-trace).
+  const auto foA = recogniseFreeformSolid(A);
+  if (!foA) return fail(SolidBoolDecline::NotAdmittedA);
+  const auto foB = recogniseFreeformSolid(B);
+  if (!foB) return fail(SolidBoolDecline::NotAdmittedB);
+  const OperandFace* wallA = nullptr;
+  const OperandFace* wallB = nullptr;
+  FfCutDecline wA = FfCutDecline::Ok, wB = FfCutDecline::Ok;
+  const topo::FaceSurface* fsA = freeformWall(*foA, &wallA, wA);
+  if (!fsA) return fail(SolidBoolDecline::WallUnusableA);
+  const topo::FaceSurface* fsB = freeformWall(*foB, &wallB, wB);
+  if (!fsB) return fail(SolidBoolDecline::WallUnusableB);
+
+  const std::vector<ssi::WLine> seams = tracedClosedSeams(*fsA, *fsB);
+  return nurbsSolidBooleanWithSeams(A, B, seams, op, deflection, report, analyticOpVolume);
 }
 
 }  // namespace cybercad::native::boolean

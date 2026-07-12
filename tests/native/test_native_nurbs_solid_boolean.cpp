@@ -175,12 +175,15 @@ CC_TEST(nsb_op_algebra_inclusion_exclusion) {
 CC_TEST(nsb_multi_seam_honest_declines_never_leaky) {
   const topo::Shape A = msx::buildA();
   const topo::Shape B = msx::buildB();
-  // Prime the cached 2-seam trace (expensive degree-4 trace) — asserts it returns 2 loops.
-  CC_CHECK(msx::closedSeams().size() == 2);
+  // Use the fixture's CACHED 2-seam trace (the expensive degree-4 trace runs ONCE) via the
+  // WithSeams core overload — asserts it returns 2 loops.
+  const std::vector<bo::ssi::WLine>& seams = msx::closedSeams();
+  CC_CHECK(seams.size() == 2);
+  if (seams.size() != 2) return;
   for (bo::SolidBoolOp op : {bo::SolidBoolOp::Common, bo::SolidBoolOp::Cut}) {
     const double cf = op == bo::SolidBoolOp::Common ? msx::volCommon() : msx::volCut();
     bo::SolidBoolReport rep;
-    const topo::Shape r = bo::nurbsSolidBoolean(A, B, op, 0.0025, &rep, cf);
+    const topo::Shape r = bo::nurbsSolidBooleanWithSeams(A, B, seams, op, 0.0025, &rep, cf);
     CC_CHECK(r.isNull());                                       // NEVER a leaky solid
     CC_CHECK(rep.multiSeam);                                    // dispatched to multi-seam
     CC_CHECK(rep.seamLoops == 2);

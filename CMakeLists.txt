@@ -737,6 +737,17 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_face_split)
         set(test_native_face_split_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_face_split.cpp")
+        # L3-b Stage-3 MULTI-CROSSING / RE-ENTRANT / HOLE-CROSSING face split — the
+        # planar-arrangement generalisation of the convex-1-chord (face_split.h) +
+        # closed-interior-seam (smooth_trim_split.h) slices into N ≥ 2 sub-regions.
+        # Reuses the trim_boolean segment-crossing closed form + orientation-coherent
+        # arc-walk; header-only over native/topology (flattenTrimLoop, from the always-on
+        # topology lib). Registered in the numsci block for symmetry with its split
+        # siblings. Airtight oracles: 2-chord (3 regions) / crossing (4 regions) / hole-
+        # crossing net-area tiling (≤1e-10), re-entrant U-cut, degenerate honest-decline.
+        list(APPEND CYBERCAD_TESTS test_native_multi_crossing_split)
+        set(test_native_multi_crossing_split_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_multi_crossing_split.cpp")
         # SSI Stage S4-e chart singularities (sphere pole / cone apex crossing) — the
         # point-based crossing corrector rides the same least_squares substrate, so its
         # host suite builds only under CYBERCAD_HAS_NUMSCI (like the S3 marching suite).

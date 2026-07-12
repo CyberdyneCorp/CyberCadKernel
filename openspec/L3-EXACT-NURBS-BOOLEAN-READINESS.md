@@ -461,6 +461,75 @@ watertight sew is MISSING.
 > resonance, [0.005, 0.01] for FUSE) welds watertight + converges, and the full host + SIM gates
 > remain GREEN.
 
+> **UPDATE (MESH-SHARED-STRIP — the deliberate M0-core shared-seam-strip weld ATTEMPTED, measured
+> to the precise weld-collapse mechanism, HONEST-DECLINED with a sharpened plan, track
+> `worktree-agent-afc8f7057ebb8d4fb`):** the M0-mesher-core attempt at the enabler MESH-FINE + W2
+> named but did NOT implement — mesh the seam-adjacent STRIP ONCE, shared by both faces. Two
+> bounded M0-core levers were implemented and MEASURED against the exact fine-d residual, then
+> REVERTED as non-watertight; the measurement sharpens the root cause a step PAST MESH-FINE's
+> "UV-interior-maps-onto-3-D-seam" to the precise **weld-collapse** mechanism, and proves NO
+> post-hoc weld repair can close it. **Baseline reproduced (host, `SolidMesher`, raw welded
+> edge-use histogram, fixture = the two coaxial degree-4 cups):** COMMON welds watertight to
+> d = 0.002 and reappears **NONMANIF = 4 → 9** at d = 0.00125 → 0.001, ALL at the inner seam r₁,
+> **grows with refinement** (the parity-gap signature); CUT welds clean to d = 0.001; FUSE reappears
+> **NONMANIF = 1 → 5 → 19 → 57** at d = 0.0025 → 0.001 PLUS a broad `oth` open-boundary crack
+> (OPEN = 8368 / 14128 at d = 0.002 / 0.00125) in the rim-to-r₂ background↔lid tessellation (the
+> distinct THIRD, coarser defect MESH-FINE named). **Root cause (measured, not assumed — a
+> vertex-level dissection of the welded solid at d = 0.00125–0.001):** each surviving annulus,
+> meshed ALONE, is CLEAN — its inner-seam hole boundary is 308 edges each used EXACTLY ONCE, zero
+> near-seam interior vertices, zero degenerate seam slivers; the two walls' seam boundary points
+> agree to **1.263e-11** (bit-identical via the M0w seam-chord pin). The appended (UN-welded) two-
+> face mesh has **ZERO** non-manifold edges. **The non-manifold appears ONLY at the SPATIAL WELD**:
+> `VertexWelder` collapses a dense pile of near-coincident on-seam vertices (both faces' hole-loop
+> samples + the ear-clip hole-bridge structure) into one representative, and a per-face ring
+> triangle whose apex collapses onto a seam vertex becomes a ZERO-3-D-AREA sliver all three of
+> whose welded vertices lie on the shared seam; two such slivers (one per face) share the SAME seam
+> edge with the two real ring triangles, so that seam edge is used FOUR times. The slivers have
+> DISTINCT vertex triples (different collapsed apex), so the existing coincident-duplicate weld
+> repair (`reindexTriangles`) does not catch them — the residual GROWS with refinement because a
+> finer seam samples the pile more densely. **Two bounded M0-core fixes were implemented +
+> measured, each proven insufficient, then reverted:** (a) a **3-D seam-proximity insert guard** in
+> `ConstrainedDelaunay` — a `std::function<bool(const UV&)>` the face mesher supplies that refuses
+> to insert an interior Steiner point whose S(u,v) lands within k·deflection (k tried 1,2,3) of a
+> hole-loop 3-D seam polyline, so the near-seam strip is triangulated ONLY from the shared boundary
+> samples. It is a **measured NO-OP for this fixture** (guard on vs off gave IDENTICAL histograms):
+> the wall is steep enough that refinement never proposes an interior centroid near the seam, so
+> there is no interior-Steiner point to reject — MESH-FINE's "UV-interior-maps-onto-3-D-seam" is NOT
+> the dominant mechanism at these deflections; the weld-collapse of the boundary pile is. (b) an
+> **area-ranked post-weld sliver drop** in `VertexWelder::reindexTriangles` — on each still-over-used
+> edge, drop the smallest-3-D-area triangles until exactly two remain (the analogue of
+> `dropConstrainedFolds`, applied post-weld across the two faces). This drives **NONMANIF → 0 at
+> EVERY deflection**, but TRADES it for **OPEN = 16 / 28** unpaired edges at d = 0.00125 / 0.001 —
+> because dropping a sliver that was a boundary edge's second user leaves that edge open. **This is
+> the decisive negative result: no post-hoc weld repair can produce a watertight mesh from two
+> NON-CORRESPONDING per-face seam-strip triangulations — you can eliminate the non-manifold edges OR
+> the open edges but not both, because the two triangulations do not pair 1:1 near the seam.** The
+> working band [0.002, 0.01] (COMMON) stays watertight either way; neither lever WIDENS it. **So the
+> genuine enabler is CONFIRMED to require what its name says — mesh the seam-adjacent strip ONCE,
+> shared, so there is a SINGLE triangulation the two faces both reference and the weld has no pile of
+> independent coincidences to collapse — which is a cross-face-coordinated change to the frozen M0
+> mesher's FACE-AT-A-TIME architecture (SolidMesher meshes each face independently, then welds), NOT
+> a bounded per-face insert/repair.** SHARPENED IMPLEMENTATION PLAN (the next real attack): **(1)**
+> in `SolidMesher::meshAllFaces`, BEFORE meshing faces, detect each shared SEAM loop (a wire that
+> is an outer wire of one face and a hole wire of another, carrying `isSeamChord` edges) and mesh
+> its seam-adjacent STRIP ONCE — a single constrained triangulation of the annular band between the
+> seam loop and a one-ring offset, keyed by the seam's TShape edge node so both faces read the SAME
+> strip; **(2)** hand each of the two faces that shared strip as a FIXED near-seam sub-mesh and let
+> each face's `ConstrainedDelaunay` fill only the REMAINDER (outer-ward of the strip), constrained
+> to the strip's inner ring — so the two faces' seam-adjacent triangles are literally the SAME
+> triangles (mirror-wound), pairing 1:1 at the weld with no pile; **(3)** the FUSE `oth` open crack
+> (a coarser rim-to-r₂ background↔lid parity defect, separate from the seam) is out of the shared-
+> strip's scope and needs its own rim-strip share. This is a genuine but BOUNDED restructuring (a
+> shared-strip cache + a two-phase per-face fill), NOT a full mesher rewrite — the M0w seam-chord
+> pin already guarantees the shared strip's boundary is bit-identical, so only the near-seam
+> INTERIOR triangulation needs to be made common. **MESH-SHARED-STRIP re-affirms the fine-band
+> honest-decline** (`NotWatertight`, residual localized + refinement-growing, DISAGREED=0-safe) as a
+> first-class outcome, now with the residual mapped to the exact weld-collapse mechanism and a
+> proof that no post-hoc repair closes it. `src/native` UNCHANGED (both bounded fixes measured and
+> reverted — byte-identical to baseline; every existing tessellate/boolean/blend test GREEN); no
+> `cc_*` ABI touched; `src/native` stays OCCT-free; the measurement harness
+> (`tests/native/measure_shared_strip.cpp`) reproduces the histogram for the next track.
+
 ### The COMPOSED two-freeform-solid NURBS boolean ORCHESTRATOR · **LANDED (BOOL-INT)**
 
 > **UPDATE (BOOL-INT — the general two-freeform-solid boolean ORCHESTRATOR that COMPOSES all

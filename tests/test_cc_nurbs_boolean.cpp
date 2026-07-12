@@ -207,8 +207,10 @@ CC_TEST(cc_solid_boolean_single_seam_watertight_and_volume) {
     cc_surface_release(wallB);
 }
 
-// ── A multi-seam pose HONEST-DECLINES: 0 return, *out zeroed, cc_last_error — no leak ──
-CC_TEST(cc_solid_boolean_multi_seam_honest_declines_never_leaky) {
+// ── Multi-seam pose: after the M0-WELD shared-seam-strip fix, COMMON/CUT now WELD watertight
+//    (the annulus↔annulus inner seam closes); FUSE still honest-declines (outer-envelope compose
+//    not exposed by the sew verb). No op is ever a leaky mesh. ──
+CC_TEST(cc_solid_boolean_multi_seam_common_cut_weld_fuse_declines) {
     cc_surface wallA = makeValleyWall(/*downDome=*/false);
     cc_surface wallB = makeValleyWall(/*downDome=*/true);
     CC_CHECK(wallA.id != 0 && wallB.id != 0);
@@ -218,15 +220,35 @@ CC_TEST(cc_solid_boolean_multi_seam_honest_declines_never_leaky) {
     const double zAatR = 4.0 * (rimR * rimR - 0.28 * 0.28) * (rimR * rimR - 0.28 * 0.28);
     const double lidA = zAatR;       // A's top lid
     const double lidB = H - zAatR;   // B's bottom lid
-
+#ifdef CYBERCAD_HAS_NUMSCI
+    // COMMON / CUT weld to a closed 2-manifold — the wrapper returns ok only when its own
+    // watertight + coherence self-verify passes, so a returned mesh is never leaky.
     for (CCBoolOp op : {CC_BOOL_COMMON, CC_BOOL_CUT}) {
         CCMesh out{};
         const int ok = cc_nurbs_solid_boolean(wallA, rimR, lidA, wallB, rimR, lidB, op, 0.0025, &out);
-        CC_CHECK(ok == 0);                                     // NEVER a leaky mesh
+        CC_CHECK(ok == 1);                                     // multi-seam now welds (M0-WELD)
+        CC_CHECK(out.vertexCount > 0 && out.triangleCount > 0);
+        CC_CHECK(ccMeshWatertight(out));                       // closed: every edge used exactly twice
+        cc_mesh_free(out);
+    }
+    // FUSE (multi-seam) still honest-declines: 0 return, *out zeroed, cc_last_error — no leak.
+    {
+        CCMesh out{};
+        const int ok = cc_nurbs_solid_boolean(wallA, rimR, lidA, wallB, rimR, lidB, CC_BOOL_FUSE, 0.0025, &out);
+        CC_CHECK(ok == 0);
         CC_CHECK(out.vertices == nullptr && out.vertexCount == 0);
         CC_CHECK(out.triangles == nullptr && out.triangleCount == 0);
-        CC_CHECK(cc_last_error()[0] != '\0');                  // a measured decline is logged
+        CC_CHECK(cc_last_error()[0] != '\0');
     }
+#else
+    // Without the numsci substrate the whole path honest-declines.
+    for (CCBoolOp op : {CC_BOOL_COMMON, CC_BOOL_CUT, CC_BOOL_FUSE}) {
+        CCMesh out{};
+        const int ok = cc_nurbs_solid_boolean(wallA, rimR, lidA, wallB, rimR, lidB, op, 0.0025, &out);
+        CC_CHECK(ok == 0);
+        CC_CHECK(cc_last_error()[0] != '\0');
+    }
+#endif
     cc_surface_release(wallA);
     cc_surface_release(wallB);
 }

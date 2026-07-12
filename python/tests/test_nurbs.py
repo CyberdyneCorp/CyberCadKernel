@@ -298,21 +298,27 @@ def test_solid_boolean_single_seam_watertight_volume(kernel, trimesh_or_skip, op
         assert abs(abs(tm.volume) - cf) / cf < 30.0 * d
 
 
-def test_solid_boolean_multi_seam_raises(kernel):
-    """A MULTI-seam pose (two degree-4 mirror cups meeting in TWO seams) is the
-    annulus↔annulus sew the orchestrator honest-declines → RAISES ``KernelError``
-    (never a leaky mesh)."""
+def test_solid_boolean_multi_seam_common_cut_weld_fuse_raises(kernel, trimesh_or_skip):
+    """After the M0-WELD shared-seam-strip fix, a MULTI-seam pose (two degree-4 mirror cups
+    meeting in TWO seams) welds the annulus↔annulus inner seam: COMMON/CUT return a WATERTIGHT
+    mesh; FUSE still honest-declines (outer-envelope compose not exposed by the sew verb) →
+    RAISES ``KernelError``. Never a leaky mesh."""
     H = 0.03
     rim = 0.45
     z_at_r = 4.0 * (rim * rim - 0.28**2) ** 2
     lid_a, lid_b = z_at_r, H - z_at_r
+    d = 0.0025
     with _valley_wall(False) as wa, _valley_wall(True) as wb:
-        # Probe numsci availability with the CUT op; skip cleanly if the substrate is off.
-        try:
-            with pytest.raises(KernelError):
-                nurbs.solid_boolean(wa, rim, lid_a, wb, rim, lid_b, nurbs.BoolOp.COMMON, 0.0025)
-        except KernelError as exc:  # pragma: no cover - only on a no-numsci build
-            _numsci_or_skip(exc)
+        # COMMON / CUT now weld to a watertight mesh (skip cleanly on a no-numsci dylib).
+        for op in (nurbs.BoolOp.COMMON, nurbs.BoolOp.CUT):
+            try:
+                mesh = nurbs.solid_boolean(wa, rim, lid_a, wb, rim, lid_b, op, d)
+            except KernelError as exc:
+                _numsci_or_skip(exc)
+            assert mesh.to_trimesh().is_watertight
+        # FUSE (multi-seam) still honest-declines → RAISES, never a leaky mesh.
+        with pytest.raises(KernelError):
+            nurbs.solid_boolean(wa, rim, lid_a, wb, rim, lid_b, nurbs.BoolOp.FUSE, d)
 
 
 def test_solid_boolean_unknown_wall_raises(kernel):

@@ -135,12 +135,18 @@ inline ssi::SurfaceAdapter valleyAdapter() { return ssi::makeBezierAdapter(valle
 inline ssi::SurfaceAdapter domeAdapter() { return ssi::makeBezierAdapter(domePoles(), 5, 5); }
 
 // The real M1 seams: trace A's valley ∩ B's dome → the TWO closed WLines (circles r₁,r₂).
-inline std::vector<ssi::WLine> closedSeams() {
-  const ssi::TraceSet tr = ssi::trace_intersection(valleyAdapter(), domeAdapter());
-  std::vector<ssi::WLine> out;
-  for (const ssi::WLine& w : tr.lines)
-    if (w.points.size() >= 3 && w.isClosed()) out.push_back(w);
-  return out;
+// The degree-4↔degree-4 trace is expensive (~2–3 min), so it is CACHED in a function-local
+// static — every test in the process shares the ONE trace (the trace is a pure function of
+// the fixed poles). Const-correct: callers only read the returned loops.
+inline const std::vector<ssi::WLine>& closedSeams() {
+  static const std::vector<ssi::WLine> cached = [] {
+    const ssi::TraceSet tr = ssi::trace_intersection(valleyAdapter(), domeAdapter());
+    std::vector<ssi::WLine> out;
+    for (const ssi::WLine& w : tr.lines)
+      if (w.points.size() >= 3 && w.isClosed()) out.push_back(w);
+    return out;
+  }();
+  return cached;
 }
 
 // The rim circle in a wall's (u,v): (½ + R·cosθ, ½ + R·sinθ), CCW, kRimSegs samples.

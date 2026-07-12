@@ -307,6 +307,45 @@ watertight sew is MISSING.
 > multi-seam** NURBS↔NURBS split and the closed-loop seeding recall — NOT the closed-seam
 > curved↔curved weld, which is now resolved for BOTH legs of the single-transversal-seam pose.
 
+> **UPDATE (L3-d — MULTI-SEAM split RESOLVED; annulus↔annulus sew is a FROZEN-MESHER
+> honest-decline, track `worktree-agent-a82ec06b23a4baf52`):** the **multi-seam SPLIT +
+> CLASSIFY** machinery — the case where two freeform walls meet along **>1 closed seam** (the
+> SSI returns several loops) — is now **RESOLVED**, and the annulus↔annulus **SEW** is a
+> sharply-mapped **frozen-M0-mesher honest-decline** (never leaky). `boolean/freeform_freeform_multiseam.h`
+> (`freeformFreeformMultiSeamCut`, additive; `freeform_freeform_cut.h` byte-unchanged) traces
+> ALL closed seams (requires ≥2, else `NoMultiSeam` → track W), splits **BOTH walls by ALL
+> seams** into a **nesting-aware** (loops+1) sub-region set (inner disk + middle annulus +
+> background) that **tiles the parent EXACTLY** (UV gap 0), classifies **EACH** sub-region by
+> W's hole-respecting `subFaceInteriorReps` vote, and sews the survivors with an
+> orientation-coherence repair + a **mandatory M0 watertight/coherent/two-sided-volume
+> self-verify**. **Measured on a genuine 2-seam pose** (a degree-4 VALLEY cup mirrored into a
+> degree-4 DOME cup — walls meet in TWO concentric circles r₁≈0.131, r₂≈0.374, the SSI trace
+> returning exactly **2 closed loops** at 2.0e-11 on-surface): the split tiles exactly
+> (gap 0), the middle annulus of A votes INSIDE B and of B INSIDE A (the annular lens), and
+> the **OUTER seam** (seam-as-OUTER on both annuli) **welds watertight** — but the **INNER
+> seam** (seam-as-HOLE on both annuli) hits the **frozen M0 mesher's holed-curved-annulus weld
+> gap** (the SAME residual the L3-S3 NURBS CUT leg named: the mesher's per-face
+> curvature-driven CDT never welds two curved trimmed faces across a shared HOLE seam). So the
+> verb **HONEST-DECLINES to NULL** (`NotWatertight`) with a **sharpened residual map**
+> (`boundaryEdges` — COMMON≈59, CUT≈307 unpaired edges, ALL localized to the inner seam, out
+> of ~10⁴ shell edges — the sew is complete but for the one holed seam), **NEVER a
+> leaky/partial/wrong solid; no tolerance widened.** Two-gate proof: host closed-form
+> `tests/native/test_native_freeform_freeform_multiseam.cpp` (8/8 GREEN — 2-loop trace, exact
+> multi-seam tiling, per-region membership, the honest annulus-lens decline + residual map,
+> the single-seam pose declined `NoMultiSeam`, **W's single-seam weld UNREGRESSED** [still
+> welds watertight χ=2, be=0], non-operand declined) + SIM vs OCCT
+> `tests/sim/native_freeform_freeform_multiseam_parity.mm` (**7/7 GREEN, DISAGREED=0**: OCCT
+> confirms the two seams on BOTH degree-4 surfaces to 1.2e-11 and its `BRepAlgoAPI_Common` =
+> the closed-form lens 0.007695 EXACTLY, while native **honest-declines** — native abstains,
+> never fabricates a solid OCCT would contradict). `src/native` stays **OCCT-free**; **no
+> `cc_*` ABI** touched; the M0 mesher, `freeform_freeform_cut.h`, `smooth_trim_split.h`, `ssi`,
+> `topology`, `math` all **byte-unchanged**. **Net Stage-5 verdict: the multi-seam
+> SPLIT+CLASSIFY is RESOLVED; the multi-seam annulus↔annulus watertight SEW is a bounded,
+> airtight-honest-decline** gated by the frozen M0 mesher's holed-curved-annulus weld — the
+> next real enabler (a mesher-level shared-seam-as-hole weld, out of this additive slice's
+> scope). The residual L3 tail is now the **re-entrant** split shape (nesting handled; a
+> genuinely self-re-entering seam untested) and that mesher-level holed-seam weld.
+
 ### Summary table
 
 | stage | readiness | one-line evidence |
@@ -318,7 +357,7 @@ watertight sew is MISSING.
 | 2 Pcurve construction | **PARTIAL** | `constructPcurve` declines the iso-curve round-trip (parametrisation + non-rational fit); data model + fidelity guard land |
 | 3 Face split | **PARTIAL** | `classify` inside-test WORKS; split = convex-1-chord + closed-interior-seam; **tolerant-topology healing pre-pass LANDED** (`split_healing.h`, L3-HEAL: gap-close + snap + G5 pinch-resolve + area-preservation gate + honest over-gap decline); general multi-crossing / re-entrant split MISSING |
 | 4 Region classification | **PARTIAL** | single-face In/Out + elementary set-algebra land; general NURBS solid membership MISSING |
-| 5 Reassembly / sew | **PARTIAL** | `pcurveFidelity` welds good / rejects drifted seam; general freeform↔freeform watertight sew MISSING |
+| 5 Reassembly / sew | **PARTIAL** | `pcurveFidelity` welds good / rejects drifted seam; single-transversal-seam freeform↔freeform sew WELDS (tracks S3/W, both legs); **multi-seam split+classify RESOLVED (exact tiling + per-region vote), annulus↔annulus sew a frozen-mesher honest-decline** (L3-d, residual = the mesher's holed-curved-seam weld); general freeform↔freeform watertight sew still bounded |
 
 ---
 

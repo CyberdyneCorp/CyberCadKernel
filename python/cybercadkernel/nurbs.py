@@ -106,6 +106,8 @@ __all__ = [
     "offset_trimmed",
     "thicken_trimmed",
     "shell_trimmed",
+    "BoolOp",
+    "solid_boolean",
     "intersect_cc",
     "intersect_cs",
     "trim_region_boolean",
@@ -176,6 +178,14 @@ class TrimBoolOp:
     UNION = 0
     INTERSECT = 1
     DIFFERENCE = 2
+
+
+class BoolOp:
+    """``CCBoolOp`` — the general NURBS solid boolean operator (:func:`solid_boolean`)."""
+
+    FUSE = 0
+    CUT = 1
+    COMMON = 2
 
 
 # ── Result dataclasses ─────────────────────────────────────────────────────────
@@ -1152,6 +1162,48 @@ def shell_trimmed(
     )
     if not ok:
         raise CyberCadError("cc_nurbs_shell_trimmed failed: " + (_last_error() or ""))
+    try:
+        return _mesh_from_ccmesh(out)
+    finally:
+        _cffi.lib().cc_mesh_free(out)
+
+
+# ── General NURBS solid boolean ────────────────────────────────────────────────
+
+
+def solid_boolean(
+    face_a: Surface,
+    rim_a: float,
+    lid_a: float,
+    face_b: Surface,
+    rim_b: float,
+    lid_b: float,
+    op: int = BoolOp.COMMON,
+    deflection: float = 0.0,
+) -> Mesh:
+    """GENERAL NURBS SOLID BOOLEAN (fuse / cut / common) of two freeform bowl-cup solids.
+
+    Each operand is built from a freeform WALL surface (``face_a`` / ``face_b`` — each
+    a single-patch Bézier: clamped knots, no interior knots) trimmed by a rim CIRCLE of
+    radius ``rim_a`` / ``rim_b`` in the wall's ``(u, v)`` domain (centred at the domain
+    midpoint), closed by a flat LID plane at world-z ``lid_a`` / ``lid_b`` sharing that
+    rim. ``op`` selects :attr:`BoolOp.FUSE` / :attr:`BoolOp.CUT` / :attr:`BoolOp.COMMON`;
+    ``deflection`` (``<= 0`` → native default) is the result-mesh tessellation deflection.
+
+    Returns the WATERTIGHT result :class:`Mesh` (a closed, positive-volume shell whose
+    volume matches the native/OCCT op-volume within the tessellation band). **Raises**
+    :class:`KernelError` on an honest decline — an unknown / non-single-patch-Bézier wall,
+    a non-admissible operand, or the MULTI-SEAM / non-watertight annulus↔annulus pose the
+    orchestrator declines. It NEVER returns a leaky / partial mesh.
+    """
+    out = CCMesh()
+    ok = _cffi.lib().cc_nurbs_solid_boolean(
+        cc_surface(face_a.id), float(rim_a), float(lid_a),
+        cc_surface(face_b.id), float(rim_b), float(lid_b),
+        int(op), float(deflection), ctypes.byref(out),
+    )
+    if not ok:
+        raise CyberCadError("cc_nurbs_solid_boolean failed: " + (_last_error() or ""))
     try:
         return _mesh_from_ccmesh(out)
     finally:

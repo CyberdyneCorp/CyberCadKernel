@@ -216,6 +216,115 @@ def test_spindle_torus_raises(kernel):
         nurbs.torus([0, 0, 0], [0, 0, 1], [1, 0, 0], 1.0, 2.0)
 
 
+# ── general NURBS solid boolean (fuse / cut / common) ───────────────────────────
+
+
+_BOWL_A = 2.0   # bowl amplitude
+_BOWL_R = 0.35  # rim radius (in the wall's u,v)
+_BOWL_H = 0.16  # B's dome apex height (seam rho = sqrt(H/2a) = 0.2)
+
+
+def _bowl_wall(down_dome: bool) -> Surface:
+    """A degree-2 Bézier bowl wall z = a(x²+y²) (or its z↦H−z mirror), matching the
+    native single-seam fixture. Single-patch Bézier (clamped {0,0,0,1,1,1} knots)."""
+    xc = (-0.5, 0.0, 0.5)
+    zc = (0.25 * _BOWL_A, -0.25 * _BOWL_A, 0.25 * _BOWL_A)
+    poles = []
+    for i in range(3):
+        for j in range(3):
+            z = zc[i] + zc[j]
+            if down_dome:
+                z = _BOWL_H - z
+            poles += [xc[i], xc[j], z, 1.0]
+    kn = [0, 0, 0, 1, 1, 1]
+    return Surface.create(2, 2, poles, 3, 3, kn, kn)
+
+
+def _valley_wall(down_dome: bool) -> Surface:
+    """A degree-4 Bézier valley wall z = a(x²+y²−ρ₀²)² (or its mirror), matching the
+    native MULTI-seam fixture (a=4, ρ₀=0.28) — the two walls meet in TWO seams."""
+    H = 0.03
+    xc = (-0.5, -0.25, 0.0, 0.25, 0.5)
+    Z = [
+        [0.710986, -0.132214, 0.253386, -0.132214, 0.710986],
+        [-0.132214, -0.475414, 0.076853, -0.475414, -0.132214],
+        [0.253386, 0.076853, 0.684675, 0.076853, 0.253386],
+        [-0.132214, -0.475414, 0.076853, -0.475414, -0.132214],
+        [0.710986, -0.132214, 0.253386, -0.132214, 0.710986],
+    ]
+    poles = []
+    for i in range(5):
+        for j in range(5):
+            z = Z[i][j]
+            if down_dome:
+                z = H - z
+            poles += [xc[i], xc[j], z, 1.0]
+    kn = [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+    return Surface.create(4, 4, poles, 5, 5, kn, kn)
+
+
+def _numsci_or_skip(exc: KernelError) -> None:
+    """Skip when the desktop dylib was built WITHOUT the numsci substrate (the general
+    boolean composes the numsci SSI seam trace); otherwise re-raise the honest decline."""
+    if "numsci" in str(exc):
+        pytest.skip("dylib built without CYBERCAD_HAS_NUMSCI (no general NURBS boolean)")
+    raise exc
+
+
+@pytest.mark.parametrize(
+    "op, cf",
+    [
+        (nurbs.BoolOp.COMMON, math.pi * _BOWL_H * _BOWL_H / (4.0 * _BOWL_A)),
+        (nurbs.BoolOp.CUT,
+         math.pi * _BOWL_A * _BOWL_R**4 / 2.0 - math.pi * _BOWL_H**2 / (4.0 * _BOWL_A)),
+        (nurbs.BoolOp.FUSE,
+         2.0 * (math.pi * _BOWL_A * _BOWL_R**4 / 2.0) - math.pi * _BOWL_H**2 / (4.0 * _BOWL_A)),
+    ],
+)
+def test_solid_boolean_single_seam_watertight_volume(kernel, trimesh_or_skip, op, cf):
+    """The canonical single-seam bowl-cup COMMON/CUT/FUSE welds to a WATERTIGHT trimesh
+    mesh whose volume matches the closed-form op-volume within the tessellation band."""
+    d = 0.005
+    lid_a = _BOWL_A * _BOWL_R**2         # A's lid at z = a·R²
+    lid_b = _BOWL_H - _BOWL_A * _BOWL_R**2  # B's lid at z = H − a·R²
+    with _bowl_wall(False) as wa, _bowl_wall(True) as wb:
+        try:
+            mesh = nurbs.solid_boolean(wa, _BOWL_R, lid_a, wb, _BOWL_R, lid_b, op, d)
+        except KernelError as exc:
+            _numsci_or_skip(exc)
+        tm = mesh.to_trimesh()
+        assert tm.is_watertight
+        assert tm.euler_number == 2            # closed, genus-0
+        assert abs(abs(tm.volume) - cf) / cf < 30.0 * d
+
+
+def test_solid_boolean_multi_seam_raises(kernel):
+    """A MULTI-seam pose (two degree-4 mirror cups meeting in TWO seams) is the
+    annulus↔annulus sew the orchestrator honest-declines → RAISES ``KernelError``
+    (never a leaky mesh)."""
+    H = 0.03
+    rim = 0.45
+    z_at_r = 4.0 * (rim * rim - 0.28**2) ** 2
+    lid_a, lid_b = z_at_r, H - z_at_r
+    with _valley_wall(False) as wa, _valley_wall(True) as wb:
+        # Probe numsci availability with the CUT op; skip cleanly if the substrate is off.
+        try:
+            with pytest.raises(KernelError):
+                nurbs.solid_boolean(wa, rim, lid_a, wb, rim, lid_b, nurbs.BoolOp.COMMON, 0.0025)
+        except KernelError as exc:  # pragma: no cover - only on a no-numsci build
+            _numsci_or_skip(exc)
+
+
+def test_solid_boolean_unknown_wall_raises(kernel):
+    """An operation on a released (stale) wall handle RAISES — never a fabricated mesh."""
+    wb = _bowl_wall(True)
+    wa = _bowl_wall(False)
+    wa.close()  # stale handle
+    with wb:
+        with pytest.raises(KernelError):
+            nurbs.solid_boolean(wa, _BOWL_R, 0.0, wb, _BOWL_R, 0.0, nurbs.BoolOp.COMMON, 0.005)
+
+
 # ── lifetime: RAII release + stale-handle guard ─────────────────────────────────
 
 

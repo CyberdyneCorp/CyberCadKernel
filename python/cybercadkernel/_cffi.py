@@ -811,6 +811,11 @@ _NURBS_SIGS: "dict[str, tuple[list, object]]" = {
         [_SURF_P, _I, _INT_P, _I, _D, _D, POINTER(CCMesh)],
         _I,
     ),
+    # ── J7: general NURBS solid boolean ───────────────────────────────────────
+    "cc_nurbs_solid_boolean": (
+        [_SURF, _D, _D, _SURF, _D, _D, _I, _D, POINTER(CCMesh)],
+        _I,
+    ),
     # ── J5: intersection + trim boolean ───────────────────────────────────────
     "cc_nurbs_intersect_cc": ([_CURVE, _CURVE, _D, _HITCC_PP], _I),
     "cc_nurbs_hits_cc_free": ([POINTER(CCCurveHit)], None),

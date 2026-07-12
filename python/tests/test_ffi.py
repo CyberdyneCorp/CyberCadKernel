@@ -66,12 +66,13 @@ def test_nurbs_struct_layouts_match_abi():
 def test_all_abi_symbols_are_bound():
     # 100% coverage guard: every cc_* symbol declared in the header must have a
     # signature in the _cffi table (kept in lockstep with _ffi). 111 core cc_*
-    # symbols + 58 cc_nurbs_* / cc_curve_* / cc_surface_* additions = 169.
+    # symbols + 59 cc_nurbs_* / cc_curve_* / cc_surface_* additions = 170
+    # (the J7 cc_nurbs_solid_boolean brings the NURBS additions to 59).
     lib = _cffi.lib()
     for name in _cffi._SIGS:
         assert callable(getattr(lib, name)), name
-    assert len(_cffi._SIGS) == 169
-    assert len(_cffi._NURBS_SIGS) == 58
+    assert len(_cffi._SIGS) == 170
+    assert len(_cffi._NURBS_SIGS) == 59
 
 
 def test_raw_extrude_box_volume():

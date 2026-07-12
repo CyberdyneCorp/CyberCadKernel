@@ -672,6 +672,20 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_cc_nurbs_blend_offset)
         set(test_cc_nurbs_blend_offset_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cc_nurbs_blend_offset.cpp")
+        # Wave-J track J7 — the cc_nurbs_solid_boolean FACADE wrapper
+        # (src/facade/cc_nurbs_boolean.cpp) over the native LAYER-3 general two-freeform-solid
+        # NURBS boolean orchestrator. Driven entirely through the public cc_* surface:
+        # cc_surface_create builds the two freeform Bézier walls, the wrapper builds the
+        # bowl-cup operands (wall + circular UV rim trim + flat lid) + runs the boolean, and
+        # the CCMesh accessors read the WATERTIGHT result back. Oracles: the canonical single-
+        # seam bowl-cup COMMON/CUT/FUSE → a watertight CCMesh (χ=2, every edge twice) whose
+        # meshed volume matches the closed-form op-volume within the tessellation band; a
+        # multi-seam pose → 0 + cc_last_error + a zeroed CCMesh (no leaky mesh). The boolean
+        # composes the numsci SSI seam trace, so the gate is wired into the CYBERCAD_HAS_NUMSCI
+        # block; the compile-def is added below.
+        list(APPEND CYBERCAD_TESTS test_cc_nurbs_boolean)
+        set(test_cc_nurbs_boolean_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cc_nurbs_boolean.cpp")
         # NURBS roadmap Layer 1 — tolerance-BOUNDED simplification (src/native/math/
         # bspline_simplify). The CAD complement to the EXACT bspline_ops removeKnot/
         # reduceDegree: greedy bounded knot removal (P&T Ch.9.3, increasing-error order)
@@ -1674,6 +1688,12 @@ if(CYBERCAD_BUILD_TESTS)
     # the numsci-guarded assertions, exactly like the offset/thicken gates.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_cc_nurbs_blend_offset)
         target_compile_definitions(test_cc_nurbs_blend_offset PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+    # The J7 facade wrapper test drives the numsci-gated general NURBS solid boolean (its TU
+    # includes the native boolean orchestrator's numsci-guarded seam trace), so it needs the
+    # CYBERCAD_HAS_NUMSCI macro to compile the substantive (non-decline) assertions.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_cc_nurbs_boolean)
+        target_compile_definitions(test_cc_nurbs_boolean PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
     # The Layer-5 thicken gate includes bspline_thicken.h (→ bspline_ops.h + tessellate/
     # mesh.h) + bspline_offset.h + numerics.h — all vec.h/std only, no NumPP/SciPP headers —

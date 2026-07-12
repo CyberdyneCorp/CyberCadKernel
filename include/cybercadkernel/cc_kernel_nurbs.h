@@ -785,6 +785,71 @@ int cc_nurbs_join(cc_surface a, cc_surface b, CCSurfaceEdge edgeA, CCSurfaceEdge
 
 /* ═══════════════════ end --- J3: surfacing --- ════════════════════════════════ */
 
+/* ════════════════════════════════════════════════════════════════════════════
+ * --- J7: general NURBS solid boolean ---  (append-only; J7 owns this delimited
+ * section)
+ *
+ * A thin `cc_nurbs_*` wrapper over the OCCT-free native LAYER-3 boolean ORCHESTRATOR
+ * (src/native/boolean/nurbs_solid_boolean.h — `nurbsSolidBoolean(A, B, op)`), the
+ * general two-freeform-solid NURBS boolean: FUSE / CUT / COMMON over two freeform
+ * NURBS "bowl-cup" solids (each a single trimmed freeform Bézier wall + a flat lid),
+ * yielding ONE WATERTIGHT result mesh — or an HONEST DECLINE (the multi-seam /
+ * non-watertight annulus↔annulus sew) that NEVER emits a leaky mesh.
+ *
+ * OPERAND MODEL (the minimal additional input beyond a bare cc_surface, documented
+ * here — the boolean consumes a trimmed-face SOLID, not a lone surface). Each operand
+ * is built, on the C side of the boundary, exactly like the native proof fixture's
+ * `buildCup`: a freeform WALL (the `cc_surface` face, which MUST be a single-patch
+ * Bézier — clamped knots, no interior knots, so nPolesU==degreeU+1 and likewise V —
+ * because the L3 seam trace treats the wall poles as ONE Bézier patch) trimmed by a
+ * CIRCLE of radius `rim` in the wall's (u,v) domain centred at the domain midpoint,
+ * closed by a flat LID plane at world height `lid` (z = lid) sharing that rim curve.
+ * The wall's outward normal is resolved so the sewn cup is a consistent closed shell.
+ * A rational wall's weights ride through. This reproduces the canonical bowl-cup pose
+ * the native boolean welds watertight (single seam) or honest-declines (multi-seam).
+ *
+ * BUILD GATE: the native boolean composes the numsci-backed SSI seam trace, so it
+ * compiles only under CYBERCAD_HAS_NUMSCI. With that macro OFF the wrapper honest-
+ * declines ("… requires the numsci substrate") — the ABI symbol is always present,
+ * only the capability is gated. The produced CCMesh is owned by the caller (free with
+ * cc_mesh_free); it carries the native WATERTIGHT closed shell (never a leaky mesh).
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+/* The boolean operator over two freeform NURBS solids (mirrors native SolidBoolOp). */
+typedef enum {
+    CC_BOOL_FUSE = 0,    /* A ∪ B (the outer envelope) */
+    CC_BOOL_CUT = 1,     /* A − B (the carved bowl)    */
+    CC_BOOL_COMMON = 2   /* A ∩ B (the lens)           */
+} CCBoolOp;
+
+#ifndef CC_KERNEL_NO_PROTOTYPES
+
+/* GENERAL NURBS SOLID BOOLEAN — build the two freeform bowl-cup solids A and B from
+ * their freeform WALL faces + trims, run the native LAYER-3 orchestrator for `op`, and
+ * fill `out` (a CCMesh owned by the caller; free with cc_mesh_free) with the WATERTIGHT
+ * result.
+ *
+ * `wallA` / `wallB` are the two freeform wall `cc_surface` handles (each a single-patch
+ * Bézier — see the OPERAND MODEL note above). `rimA` / `rimB` are the rim-circle radii
+ * (in each wall's (u,v) domain, centred at the domain midpoint) that trim the walls.
+ * `lidA` / `lidB` are the world-z heights of the two flat lid planes closing the cups.
+ * `op` selects fuse / cut / common. `deflection` (<=0 ⇒ native default) is the
+ * tessellation deflection of the produced mesh.
+ *
+ * Returns 1 on success (out carries a CLOSED, positive-volume, watertight mesh — the
+ * meshed volume matches the native/OCCT op-volume within the tessellation band). On an
+ * HONEST DECLINE returns 0 and zeroes *out + sets cc_last_error — an unknown/ill-formed
+ * wall handle, a non-admissible operand, or the MULTI-SEAM / non-watertight pose whose
+ * annulus↔annulus sew the orchestrator declines (per the L3-d frozen-mesher gap). NEVER
+ * a leaky/partial mesh; NO tolerance is widened. */
+int cc_nurbs_solid_boolean(cc_surface wallA, double rimA, double lidA, cc_surface wallB,
+                           double rimB, double lidB, CCBoolOp op, double deflection,
+                           CCMesh* out);
+
+#endif /* CC_KERNEL_NO_PROTOTYPES */
+
+/* ═══════════════════ end --- J7: general NURBS solid boolean --- ══════════════ */
+
 #ifdef __cplusplus
 }
 #endif

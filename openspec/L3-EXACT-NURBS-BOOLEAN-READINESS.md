@@ -168,6 +168,39 @@ surfaces, freeform, torus → nullopt → declined"*).
 **Verdict 4: PARTIAL** — set-algebra + single-face In/Out land; general NURBS solid
 membership is MISSING.
 
+> **UPDATE (L3 Stage-4 point-in-NURBS-solid membership LANDED, track L3-c):** the general
+> **point-in-SOLID membership across MULTIPLE trimmed NURBS faces** — the classifier that
+> tags a face fragment inside/outside the OTHER freeform solid, named MISSING above — is now
+> a shipped OCCT-free verb: `src/native/boolean/nurbs_solid_membership.h`
+> (`pointInNurbsSolid` + `classifyFragmentVsSolid`). It composes exactly the two measured-
+> WORKS Stage-4 primitives this doc lists — the H1 exact intersector
+> `math/bspline_intersect.h intersectCurveSurface` + `topology/trimmed_nurbs.h classify` —
+> into an EXACT (no-mesh) ray-cast: shoot a ray from the query point along a generic
+> direction (a degenerate degree-1 line = the `cc`/`cs` curve), intersect it with each
+> trimmed face's TRUE surface, and count as a crossing only the forward hits whose (u,v)
+> classify `In` the face's trim loops; odd count ⇒ inside. A hit ON a trim edge
+> (`OnBoundary`/`Unknown`), a TANGENTIAL surface hit, or a curve-on-surface `Coincident`
+> decline makes the ray ambiguous, and it RE-CASTS in a fresh generic direction (8 fixed,
+> non-parallel, non-axis-aligned) rather than miscounting; after K directions with no clean
+> ray the verdict is an honest `Unknown`, NEVER a guessed In/Out. `classifyFragmentVsSolid`
+> samples interior representatives of a fragment (respecting holes) and votes — the batch
+> region classifier the keep/discard select consumes; a straddling fragment's interior-rep
+> vote is well-defined (both In and Out votes, `straddles` flagged). **Proof (host closed-
+> form gate `tests/native/test_native_nurbs_solid_membership.cpp`):** a genuine-NURBS-walled
+> bowl-cup (BSpline paraboloid bowl `z=a(x²+y²)` + flat lid, UV mapping x=u−0.5, y=v−0.5 so
+> the in/out is EXACT) classified on a **945-point membership grid to 100% crisp-correct (no
+> silent-wrong, 0 On, 0 Unknown clear of the boundary)**; on-boundary/tangent points resolve
+> to a defined verdict (On/In/Out) via re-cast, never a wrong crisp; a fragment entirely
+> inside → In, entirely outside → Out, and a straddling fragment votes both (32 In / 20 Out,
+> flagged). `src/native` stays OCCT-free (0 OCCT refs in the changed header); no `cc_*` ABI;
+> header-only, numsci-gated ray-cast body with an honest-decline stub when the substrate is
+> off; `bspline_intersect` / `trimmed_nurbs` / `ssi_boolean` / `assemble` unmodified.
+> **So the Stage-4 general NURBS solid membership is now RESOLVED** — a freeform operand no
+> longer has to decline at `recogniseCurvedSolid` for the keep/discard verdict. The residual
+> Stage-4 tail is only near-boundary/coincident-face configurations that stay honest
+> `Unknown` after every re-cast direction, and analytic-curved-wall solids (Cylinder/Sphere/
+> Cone), which keep their existing closed-form `classifyPoint` path (`ssi_boolean.h`).
+
 ### Stage 5 — Reassembly / sewing · **PARTIAL**
 
 The watertight-seam **invariant** — `trimmed_nurbs.h` `pcurveFidelity` — **WORKS and is
@@ -230,7 +263,7 @@ watertight sew is MISSING.
 | 1 Surface–surface intersection | **WORKS** | exact NURBS-cyl∩plane circle to **5.6e-16**; freeform open line **4.2e-13**; closed interior loop **1 seed → 446-pt loop 2.0e-11** (the "0 seeds" reading was a flawed empty-intersection fixture — corrected). Residual = near-tangent multi-branch moat (S4), ≈13.9% general decline |
 | 2 Pcurve construction | **WORKS** (L3-a) | parameter-aligned + rational `constructPcurve` welds the iso-curve **1.1e-15**, a curved freeform seam on a plane **1.6e-16**, a rational circular seam on a rational NURBS cylinder **4.0e-16** (was 0.026 decline); a curved seam on a nonlinear bicubic honestly declines its ~2e-7 surface-truncation residual (never widened) |
 | 3 Face split | **PARTIAL** | `classify` inside-test WORKS; split = convex-1-chord + closed-interior-seam only; multi-crossing + healing MISSING |
-| 4 Region classification | **PARTIAL** | single-face In/Out + elementary set-algebra land; general NURBS solid membership MISSING |
+| 4 Region classification | **WORKS** | single-face In/Out + elementary set-algebra land; general point-in-NURBS-solid membership across MULTIPLE trimmed faces now LANDED (`nurbs_solid_membership.h`, exact ray-cast: `intersectCurveSurface` ∩ `classify`, tangent/on-edge → re-cast → honest `Unknown`): 945-pt grid **100% crisp-correct**, fragment vote well-defined |
 | 5 Reassembly / sew | **PARTIAL** | `pcurveFidelity` welds good / rejects drifted seam; general freeform↔freeform watertight sew MISSING |
 
 ---
@@ -386,7 +419,7 @@ followed by **G3** (the split self-verify on a NURBS grid). G1/G2/G4/G6 are low-
 | **Closed-interior-loop seeding recall** on freeform pairs | 1 | the ≈13.9% general NURBS decline, ~83% multi-branch/small-loop; a boolean seam is *usually* a closed loop; the SSI-ROADMAP measured a targeted-reseed campaign that landed 0.0 pt (hard) | **1–3** |
 | **Boolean-grade general `constructPcurve`** | 2 | ✅ **LANDED (L3-a)** for the affine/rational seam family: parameter-aligned (`interpolateCurveWithParams`) + rational-capable fit at an edge-length-relative fidelity bar — iso-curve **1.1e-15**, plane freeform seam **1.6e-16**, rational NURBS-cyl circle **4.0e-16**. Residual: the curved-seam-on-a-**nonlinear** surface truncation (~2e-7), honest-declined | **~0 done / 0.25–0.5 residual** |
 | **General multi-crossing / re-entrant face split + tolerant-topology healing** | 3 | the BOPAlgo-class combinatorial split + gapped-loop / pinch-point healing | **1–2** |
-| **General NURBS solid membership** (point-in-trimmed-NURBS-solid) | 4 | ray-cast / winding across many trimmed NURBS faces, robust on tangencies | **0.5–1** |
+| ~~**General NURBS solid membership** (point-in-trimmed-NURBS-solid)~~ **✅ LANDED (L3-c)** | 4 | ~~ray-cast / winding across many trimmed NURBS faces, robust on tangencies~~ — landed in `nurbs_solid_membership.h` (exact ray-cast over the true face surfaces, tangent/on-edge re-cast → honest `Unknown`); 945-pt grid 100% crisp-correct | ~~0.5–1~~ **done** |
 | **General freeform↔freeform watertight sew** | 5 | the curved↔curved seam weld `freeform_freeform_cut.h` declines today | **1–2** |
 
 **Deep-tail total ≈ 4–9 py** — consistent with `docs/NURBS-SCOPE.md`'s Layer-3 estimate of

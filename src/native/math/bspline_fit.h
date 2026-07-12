@@ -222,6 +222,71 @@ CurveFitResult approximateCurve(std::span<const Point3> points, int nCtrl, int d
                                 ParamMethod method = ParamMethod::ChordLength);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CONSTRAINED least-squares curve fitting (*The NURBS Book* §9.4.1 — end
+// derivatives; the equality-constrained normal equations / KKT solve).
+//
+// Fit a degree-`degree`, `nCtrl`-control-point B-spline that MINIMIZES the summed
+// squared distance to the data WHILE EXACTLY satisfying a set of boundary
+// constraints at the START (u=0) and/or END (u=1) of the curve:
+//   * fixed endpoint POSITION   C (u_end) = P   (interpolate a prescribed point)
+//   * fixed end TANGENT         C'(u_end) = T   (match a prescribed 1st derivative)
+//   * fixed end CURVATURE       C"(u_end) = K   (match a prescribed 2nd derivative)
+// This is the stitching primitive: constraining an end position + tangent lets a
+// fitted patch meet existing geometry with G1 continuity (position + curvature → G2).
+//
+// Each requested constraint is one LINEAR equation in the control points (its row is
+// the basis functions Nᵢ, or their derivatives N'ᵢ / N"ᵢ, evaluated at the end
+// parameter — SAME row for all three coordinates, only the right-hand side differs
+// per axis). Stacking them into C·x = d and the least-squares design into A·x ≈ b,
+// the fit is the KKT system  [AᵀA Cᵀ; C 0][x; λ] = [Aᵀb; d]  solved once per axis
+// through numerics::lin_solve. The constraints hold to solver precision; the free
+// remaining degrees of freedom absorb the interior data in the least-squares sense.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Which end of the curve a constraint applies to.
+enum class CurveEnd {
+  Start,  ///< u = 0 (clamped: the first control point / start derivatives)
+  End,    ///< u = 1 (clamped: the last control point / end derivatives)
+};
+
+/// One boundary constraint: the `order`-th derivative of the curve at `end` must
+/// equal `value`. order 0 = position (interpolate the point), order 1 = tangent
+/// (first derivative), order 2 = curvature vector (second derivative). Each is an
+/// EXACT equality the fit satisfies to solver precision.
+struct CurveEndConstraint {
+  CurveEnd end = CurveEnd::Start;
+  int order = 0;    ///< 0 = position, 1 = 1st derivative, 2 = 2nd derivative
+  Vec3 value{};     ///< the prescribed value (a point for order 0; a derivative vector otherwise)
+};
+
+/// A9.4-class equality-CONSTRAINED least-squares curve fit. Fits a degree-`degree`,
+/// `nCtrl`-control-point B-spline minimizing the summed squared distance to `points`
+/// (chord-length / centripetal / uniform parameters, approximation knots Eq 9.68/9.69
+/// — identical to approximateCurve) SUBJECT TO every constraint in `constraints`
+/// holding EXACTLY. Formulated as the KKT system [AᵀA Cᵀ; C 0][x;λ]=[Aᵀb;d] and solved
+/// through numerics::lin_solve, once per coordinate (the constraint block is shared,
+/// only the RHS d differs by axis). Reports the achieved max / RMS error over the data
+/// (the TRUE error of the constrained fit — never a widened tolerance).
+///
+/// REDUCTION — with an EMPTY `constraints` list this reproduces the unconstrained
+/// approximateCurve result to solver precision (the KKT system degenerates to the
+/// plain normal equations AᵀA x = Aᵀb). NOTE — unlike approximateCurve, endpoints are
+/// NOT auto-pinned here: pin them explicitly with order-0 Start/End constraints when
+/// you want endpoint interpolation. This keeps the semantics of `constraints` total.
+///
+/// GUARDS (HONEST-DECLINE, never a faked fit, never a widened tolerance):
+///   * degree < 1, nCtrl < degree+1, or nCtrl > points.size() → ok=false
+///   * OVER-CONSTRAINED: more independent constraints than control points
+///     (constraints.size() ≥ nCtrl) leaves no least-squares freedom → ok=false
+///   * an order > 2 constraint, or a degree too low to carry the requested
+///     derivative (order > degree) → ok=false
+///   * a rank-deficient / inconsistent constraint set makes the KKT matrix singular;
+///     numerics::lin_solve returns empty and the fit declines → ok=false
+CurveFitResult fitCurveConstrained(std::span<const Point3> points,
+                                   std::span<const CurveEndConstraint> constraints, int degree,
+                                   int nCtrl, ParamMethod method = ParamMethod::ChordLength);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Surface fitting (tensor-product; each row then each column via the curve core).
 // ─────────────────────────────────────────────────────────────────────────────
 

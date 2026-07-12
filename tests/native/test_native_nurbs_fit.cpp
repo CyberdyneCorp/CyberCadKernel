@@ -937,6 +937,166 @@ int main() {
                "declined surface weight-est returns no surface");
   }
 
+  // ═══ CONSTRAINED LEAST-SQUARES FIT — endpoint / tangent / curvature (§9.4.1) ══
+  //
+  // fitCurveConstrained minimizes ‖A x − b‖² subject to EXACT end constraints via the
+  // KKT system [AᵀA Cᵀ; C 0][x;λ]=[Aᵀb;d]. Oracles: (a) endpoint interpolation exact,
+  // (b) end tangent + curvature reproduced exactly, (c) no-constraint reduction to
+  // approximateCurve, (d) G1 stitch of two patches, (e) over-constrained honest-decline.
+  {
+    // Evaluate the r-th derivative of a fitted curve at u via curveDerivs (A3.2).
+    auto endDeriv = [](const BsplineCurveData& c, double u, int order) -> Vec3 {
+      std::vector<Vec3> d(order + 1);
+      curveDerivs(c.degree, c.poles, c.knots, u, order, d);
+      return d[order];
+    };
+
+    // A smooth known cubic sampled densely — the interior data the fit approximates.
+    const BsplineCurveData src = knownCubic();
+    const int N = 50;
+    std::vector<Point3> pts = sampleCurve(src, N);
+    const int degree = 3;
+    const int nCtrl = 10;
+
+    // (c) REDUCTION — two airtight forms:
+    //   (c1) EMPTY constraints ⇒ the plain unconstrained least-squares solution (all
+    //        control points free). Cross-check against an independent normal-equations
+    //        solve of the SAME collocation system, min ‖A x − b‖² with no pinning.
+    //   (c2) Pinning BOTH endpoints with order-0 Start=Q0 / End=Qn constraints ⇒ the
+    //        endpoint-pinned approximateCurve result EXACTLY (its documented behavior).
+    {
+      // (c1) empty constraints == unconstrained LS. Independently assemble A and solve
+      //      the normal equations via lstsq over the same approx params/knots.
+      std::vector<CurveEndConstraint> none;
+      CurveFitResult rc = fitCurveConstrained(pts, none, degree, nCtrl, ParamMethod::ChordLength);
+      expectTrue(rc.ok, "constrained (no constraints) ok");
+      std::vector<double> u = assignParams(pts, ParamMethod::ChordLength);
+      std::vector<double> U = approxKnots(u, degree, nCtrl);
+      std::vector<double> Amat(static_cast<std::size_t>(N) * nCtrl, 0.0);
+      std::vector<double> Nrow(degree + 1);
+      const int lastPole = nCtrl - 1;
+      for (int k = 0; k < N; ++k) {
+        const int span = findSpan(lastPole, degree, u[k], U);
+        basisFuns(span, u[k], degree, U, Nrow);
+        for (int j = 0; j <= degree; ++j)
+          Amat[static_cast<std::size_t>(k) * nCtrl + (span - degree + j)] = Nrow[j];
+      }
+      // Won't use lstsq here (that's the fitter's job); instead compare the fitted
+      // curve to itself pointwise-stable and check the residual is a genuine LS minimum
+      // by verifying the normal-equation gradient AᵀA x − Aᵀb ≈ 0.
+      double gradMax = 0.0;
+      for (int i = 0; i < nCtrl; ++i) {
+        Vec3 g{0, 0, 0};
+        for (int k = 0; k < N; ++k) {
+          const double aki = Amat[static_cast<std::size_t>(k) * nCtrl + i];
+          if (aki == 0.0) continue;
+          const Point3 cval = evalCurve(rc.curve, u[k]);
+          g += aki * (cval - pts[k]);  // Aᵀ(A x − b) row i
+        }
+        gradMax = std::max(gradMax, norm(g));
+      }
+      expectLE(gradMax, 1e-9, "empty-constraint fit is the unconstrained LS minimum (∇=0 ≤1e-9)");
+      std::printf("INFO constrained reduction (c1): LS gradient max=%.3e\n", gradMax);
+
+      // (c2) endpoint-pinned constraints reproduce approximateCurve EXACTLY.
+      std::vector<CurveEndConstraint> pinEnds = {
+          {CurveEnd::Start, 0, pts.front().asVec()}, {CurveEnd::End, 0, pts.back().asVec()}};
+      CurveFitResult rp = fitCurveConstrained(pts, pinEnds, degree, nCtrl, ParamMethod::ChordLength);
+      CurveFitResult ra = approximateCurve(pts, nCtrl, degree, ParamMethod::ChordLength);
+      expectTrue(rp.ok && ra.ok, "endpoint-pinned constrained & approximateCurve both ok");
+      expectTrue(rp.curve.poles.size() == ra.curve.poles.size(), "reduction pole count matches");
+      double worstPole = 0.0;
+      for (std::size_t i = 0; i < rp.curve.poles.size(); ++i)
+        worstPole = std::max(worstPole, distance(rp.curve.poles[i], ra.curve.poles[i]));
+      expectLE(worstPole, 1e-10, "endpoint-pinned reduction == approximateCurve to 1e-10");
+      std::printf("INFO constrained reduction (c2): worst pole delta=%.3e\n", worstPole);
+    }
+
+    // (a) ENDPOINT INTERPOLATION — pin both ends to prescribed points EXACTLY.
+    {
+      const Vec3 P0 = pts.front().asVec() + Vec3{0.3, -0.2, 0.1};  // deliberately OFF the data
+      const Vec3 P1 = pts.back().asVec() + Vec3{-0.1, 0.25, -0.15};
+      std::vector<CurveEndConstraint> cons = {
+          {CurveEnd::Start, 0, P0}, {CurveEnd::End, 0, P1}};
+      CurveFitResult rc = fitCurveConstrained(pts, cons, degree, nCtrl, ParamMethod::ChordLength);
+      expectTrue(rc.ok, "endpoint-constrained fit ok");
+      const Point3 c0 = evalCurve(rc.curve, 0.0);
+      const Point3 c1 = evalCurve(rc.curve, 1.0);
+      expectLE(distance(c0, Point3{P0.x, P0.y, P0.z}), 1e-12, "constrained start point exact ≤1e-12");
+      expectLE(distance(c1, Point3{P1.x, P1.y, P1.z}), 1e-12, "constrained end point exact ≤1e-12");
+      std::printf("INFO endpoint-constrained: start dev=%.3e end dev=%.3e\n",
+                  distance(c0, Point3{P0.x, P0.y, P0.z}),
+                  distance(c1, Point3{P1.x, P1.y, P1.z}));
+    }
+
+    // (b) TANGENT + CURVATURE — prescribe end position, 1st and 2nd derivatives.
+    {
+      const Vec3 P0 = pts.front().asVec();
+      const Vec3 T0{2.0, -1.0, 0.5};   // prescribed start tangent (magnitude matters)
+      const Vec3 K0{-1.0, 3.0, 0.7};   // prescribed start curvature vector (2nd deriv)
+      std::vector<CurveEndConstraint> cons = {
+          {CurveEnd::Start, 0, P0}, {CurveEnd::Start, 1, T0}, {CurveEnd::Start, 2, K0}};
+      CurveFitResult rc = fitCurveConstrained(pts, cons, degree, nCtrl, ParamMethod::ChordLength);
+      expectTrue(rc.ok, "tangent+curvature-constrained fit ok");
+      const Vec3 d1 = endDeriv(rc.curve, 0.0, 1);
+      const Vec3 d2 = endDeriv(rc.curve, 0.0, 2);
+      expectLE(distance(evalCurve(rc.curve, 0.0), Point3{P0.x, P0.y, P0.z}), 1e-12,
+               "tangent case: start point exact");
+      expectLE(norm(d1 - T0), 1e-10, "prescribed end TANGENT reproduced (dir+mag) ≤1e-10");
+      expectLE(norm(d2 - K0), 1e-9, "prescribed end CURVATURE (2nd deriv) reproduced ≤1e-9");
+      std::printf("INFO tangent+curvature: |dC'-T|=%.3e |dC''-K|=%.3e\n",
+                  norm(d1 - T0), norm(d2 - K0));
+    }
+
+    // (d) G1 STITCH — two adjacent patches sharing an endpoint + tangent meet G1.
+    {
+      // Patch A: fit the first half of the samples; Patch B: the second half. They
+      // share the junction point J and a common tangent direction there, imposed as
+      // an End constraint on A and a Start constraint on B. G1 ⇔ tangents parallel.
+      std::vector<Point3> half1(pts.begin(), pts.begin() + N / 2 + 1);
+      std::vector<Point3> half2(pts.begin() + N / 2, pts.end());
+      const Vec3 J = pts[N / 2].asVec();
+      const Vec3 Tj{1.5, 0.4, -0.3};  // shared junction tangent (both patches match it)
+      std::vector<CurveEndConstraint> consA = {{CurveEnd::End, 0, J}, {CurveEnd::End, 1, Tj}};
+      std::vector<CurveEndConstraint> consB = {{CurveEnd::Start, 0, J}, {CurveEnd::Start, 1, Tj}};
+      CurveFitResult A = fitCurveConstrained(half1, consA, degree, 7, ParamMethod::ChordLength);
+      CurveFitResult B = fitCurveConstrained(half2, consB, degree, 7, ParamMethod::ChordLength);
+      expectTrue(A.ok && B.ok, "G1 stitch: both patches fit");
+      // Position continuity (C0) at the junction.
+      expectLE(distance(evalCurve(A.curve, 1.0), evalCurve(B.curve, 0.0)), 1e-12,
+               "G1 stitch: patches share the junction point ≤1e-12");
+      // Tangent continuity (G1): A's end tangent == B's start tangent == Tj.
+      const Vec3 tA = endDeriv(A.curve, 1.0, 1);
+      const Vec3 tB = endDeriv(B.curve, 0.0, 1);
+      expectLE(norm(tA - Tj), 1e-10, "G1 stitch: patch A end tangent == prescribed ≤1e-10");
+      expectLE(norm(tB - Tj), 1e-10, "G1 stitch: patch B start tangent == prescribed ≤1e-10");
+      expectLE(norm(tA - tB), 1e-10, "G1 stitch: tangents continuous across junction ≤1e-10");
+      std::printf("INFO G1 stitch: |tA-tB|=%.3e junction dev=%.3e\n", norm(tA - tB),
+                  distance(evalCurve(A.curve, 1.0), evalCurve(B.curve, 0.0)));
+    }
+
+    // (e) OVER-CONSTRAINED — more constraints than control points → HONEST-DECLINE.
+    {
+      // nCtrl small (=4), request 4 constraints (≥ nCtrl) → no LS freedom → decline.
+      std::vector<CurveEndConstraint> tooMany = {
+          {CurveEnd::Start, 0, pts.front().asVec()}, {CurveEnd::Start, 1, Vec3{1, 0, 0}},
+          {CurveEnd::End, 0, pts.back().asVec()}, {CurveEnd::End, 1, Vec3{0, 1, 0}}};
+      CurveFitResult rc = fitCurveConstrained(pts, tooMany, degree, 4, ParamMethod::ChordLength);
+      expectTrue(!rc.ok, "over-constrained (nCon >= nCtrl) declines honestly");
+      // Order beyond the degree (3rd deriv of a cubic constrained) → decline.
+      std::vector<CurveEndConstraint> tooHigh = {{CurveEnd::Start, 4, Vec3{1, 0, 0}}};
+      CurveFitResult rh = fitCurveConstrained(pts, tooHigh, degree, nCtrl, ParamMethod::ChordLength);
+      expectTrue(!rh.ok, "constraint order > degree declines honestly");
+      // Bad dimensions (nCtrl > nData) → decline.
+      std::vector<Point3> few = {pts[0], pts[1], pts[2]};
+      std::vector<CurveEndConstraint> one = {{CurveEnd::Start, 0, few.front().asVec()}};
+      CurveFitResult rd = fitCurveConstrained(few, one, degree, 10, ParamMethod::ChordLength);
+      expectTrue(!rd.ok, "constrained fit: nCtrl > nData declines honestly");
+      expectTrue(rc.curve.poles.empty() && rh.curve.poles.empty(),
+                 "declined constrained fits return no curve");
+    }
+  }
+
   // ── report ──
   if (g_failures == 0)
     std::printf("OK  test_native_nurbs_fit: %d checks passed\n", g_checks);

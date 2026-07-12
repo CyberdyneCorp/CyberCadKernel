@@ -594,6 +594,148 @@ CurveFitResult approximateCurve(std::span<const Point3> points, int nCtrl, int d
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CONSTRAINED least-squares curve fitting (§9.4.1) — minimize ‖A x − b‖² subject to
+// the equality constraints C x = d (fixed end position / tangent / curvature).
+//
+// The unconstrained LS objective has normal equations AᵀA x = Aᵀb, where A(k,i) =
+// N_{i,p}(u_k) is the full nData×nCtrl collocation matrix (NO endpoint pinning — the
+// constraints, if any, do the pinning). A constraint on the r-th derivative at an end
+// parameter u_e is the LINEAR row  Σ_i N^{(r)}_{i,p}(u_e)·x_i = value  (the row uses
+// the SAME basis-derivative coefficients for every coordinate; only `value` — the RHS
+// d — varies by axis). The equality-constrained minimum is the saddle point of the
+// Lagrangian, i.e. the KKT system
+//     [ AᵀA  Cᵀ ] [ x ]   [ Aᵀb ]
+//     [ C    0  ] [ λ ] = [ d   ]
+// which is (nCtrl+nCon) square and solved once per coordinate through lin_solve. With
+// no constraints the block reduces to AᵀA x = Aᵀb — the plain least-squares solution.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+
+// One assembled constraint row: coefficient c_i on control point i (only the
+// degree+1 active ones are non-zero), plus the RHS value per coordinate.
+struct ConstraintRow {
+  std::vector<double> coeff;  // length nCtrl (sparse: only span..span+degree filled)
+  Vec3 rhs;                   // prescribed value (per axis)
+};
+
+// Build the constraint row for the `order`-th derivative of the basis at parameter u_e
+// (order 0 = position, 1 = first derivative, 2 = second …). Uses dersBasisFuns to get
+// N^{(order)}_{i,p}(u_e) for the degree+1 active basis functions and scatters them into
+// a dense nCtrl-length coefficient row. Returns false if the derivative order exceeds
+// the degree (a degree-p spline has no non-trivial (p+1)-th derivative).
+bool buildConstraintRow(const CurveEndConstraint& con, int nCtrl, int degree,
+                        std::span<const double> U, ConstraintRow& out) {
+  if (con.order < 0 || con.order > degree) return false;
+  const double ue = (con.end == CurveEnd::Start) ? 0.0 : 1.0;
+  const int lastPole = nCtrl - 1;
+  const int span = findSpan(lastPole, degree, ue, U);
+  // dersBasisFuns: row-major (order+1)×(degree+1); row `order` holds N^{(order)}.
+  std::vector<double> ders(static_cast<std::size_t>(con.order + 1) * (degree + 1), 0.0);
+  dersBasisFuns(span, ue, degree, con.order, U, ders);
+  out.coeff.assign(nCtrl, 0.0);
+  const double* row = &ders[static_cast<std::size_t>(con.order) * (degree + 1)];
+  for (int j = 0; j <= degree; ++j) {
+    const int i = span - degree + j;
+    if (i >= 0 && i < nCtrl) out.coeff[i] = row[j];
+  }
+  out.rhs = con.value;
+  return true;
+}
+
+}  // namespace
+
+CurveFitResult fitCurveConstrained(std::span<const Point3> points,
+                                   std::span<const CurveEndConstraint> constraints, int degree,
+                                   int nCtrl, ParamMethod method) {
+  CurveFitResult r;
+  const int n = static_cast<int>(points.size());
+  if (degree < 1 || nCtrl < degree + 1 || nCtrl > n) return r;
+
+  const int nCon = static_cast<int>(constraints.size());
+  // Over-constrained: no least-squares freedom left once the equalities are imposed.
+  if (nCon >= nCtrl) return r;
+
+  const std::vector<double> u = paramsImpl(points, method);
+  if (static_cast<int>(u.size()) != n) return r;  // degenerate (all-coincident) input
+
+  const std::vector<double> U = approxKnotsImpl(u, degree, nCtrl);
+  const int lastPole = nCtrl - 1;
+
+  // ── Assemble the full nData×nCtrl collocation matrix A(k,i) = N_{i,p}(u_k). ──
+  std::vector<double> A(static_cast<std::size_t>(n) * nCtrl, 0.0);
+  std::vector<double> N(degree + 1);
+  for (int k = 0; k < n; ++k) {
+    const int span = findSpan(lastPole, degree, u[k], U);
+    basisFuns(span, u[k], degree, U, N);
+    for (int j = 0; j <= degree; ++j) {
+      const int i = span - degree + j;
+      A[static_cast<std::size_t>(k) * nCtrl + i] = N[j];
+    }
+  }
+
+  // Normal-equation block AᵀA (nCtrl×nCtrl) and RHS Aᵀb per axis.
+  std::vector<double> AtA(static_cast<std::size_t>(nCtrl) * nCtrl, 0.0);
+  std::vector<double> Atbx(nCtrl, 0.0), Atby(nCtrl, 0.0), Atbz(nCtrl, 0.0);
+  for (int k = 0; k < n; ++k) {
+    const double* Ak = &A[static_cast<std::size_t>(k) * nCtrl];
+    const Point3 q = points[k];
+    for (int i = 0; i < nCtrl; ++i) {
+      const double aki = Ak[i];
+      if (aki == 0.0) continue;
+      Atbx[i] += aki * q.x;
+      Atby[i] += aki * q.y;
+      Atbz[i] += aki * q.z;
+      double* rowAtA = &AtA[static_cast<std::size_t>(i) * nCtrl];
+      for (int j = 0; j < nCtrl; ++j) rowAtA[j] += aki * Ak[j];
+    }
+  }
+
+  // ── Assemble the constraint rows C (nCon×nCtrl) and per-axis RHS d. ──
+  std::vector<ConstraintRow> rows(nCon);
+  for (int c = 0; c < nCon; ++c)
+    if (!buildConstraintRow(constraints[c], nCtrl, degree, U, rows[c])) return r;  // bad order
+
+  // ── Build the KKT saddle matrix [AᵀA Cᵀ; C 0] (size nCtrl+nCon), row-major. ──
+  const int dim = nCtrl + nCon;
+  std::vector<double> K(static_cast<std::size_t>(dim) * dim, 0.0);
+  for (int i = 0; i < nCtrl; ++i)
+    for (int j = 0; j < nCtrl; ++j)
+      K[static_cast<std::size_t>(i) * dim + j] = AtA[static_cast<std::size_t>(i) * nCtrl + j];
+  for (int c = 0; c < nCon; ++c) {
+    const std::vector<double>& cc = rows[c].coeff;
+    for (int i = 0; i < nCtrl; ++i) {
+      K[static_cast<std::size_t>(nCtrl + c) * dim + i] = cc[i];  // C block
+      K[static_cast<std::size_t>(i) * dim + (nCtrl + c)] = cc[i];  // Cᵀ block
+    }
+    // lower-right 0 block stays zero
+  }
+
+  // Solve the KKT system once per coordinate; the top nCtrl entries are the poles.
+  auto solveAxis = [&](const std::vector<double>& Atb,
+                       double (*pickRhs)(const Vec3&)) -> std::vector<double> {
+    std::vector<double> rhs(dim, 0.0);
+    for (int i = 0; i < nCtrl; ++i) rhs[i] = Atb[i];
+    for (int c = 0; c < nCon; ++c) rhs[nCtrl + c] = pickRhs(rows[c].rhs);
+    return lin_solve(K, dim, rhs);
+  };
+  const std::vector<double> sx = solveAxis(Atbx, [](const Vec3& v) { return v.x; });
+  const std::vector<double> sy = solveAxis(Atby, [](const Vec3& v) { return v.y; });
+  const std::vector<double> sz = solveAxis(Atbz, [](const Vec3& v) { return v.z; });
+  if (static_cast<int>(sx.size()) != dim || static_cast<int>(sy.size()) != dim ||
+      static_cast<int>(sz.size()) != dim)
+    return r;  // singular KKT (rank-deficient / inconsistent constraints) — honest decline
+
+  r.curve.degree = degree;
+  r.curve.knots = U;
+  r.curve.poles.resize(nCtrl);
+  for (int i = 0; i < nCtrl; ++i) r.curve.poles[i] = {sx[i], sy[i], sz[i]};
+
+  curveErrors(r.curve, points, u, r.maxError, r.rmsError);
+  r.ok = true;
+  return r;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Surface fitting — tensor product: fit each row (V), then each column (U).
 // ─────────────────────────────────────────────────────────────────────────────
 namespace {

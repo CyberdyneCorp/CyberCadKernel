@@ -519,6 +519,19 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_nsided_g2)
         set(test_native_nurbs_nsided_g2_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_nsided_g2.cpp")
+        # NURBS roadmap Layer 6 — RATIONAL N-SIDED boundary-filled surface (additive to
+        # src/native/math/bspline_nsided, fillNSidedRational). The exact-rational analogue of
+        # the C0 fillNSided: the whole midpoint subdivision + per-corner Coons boolean-sum runs
+        # in HOMOGENEOUS (wx,wy,wz,w) space, de-homogenizing only at the end, so a RATIONAL
+        # boundary edge (an exact circular arc) is reproduced EXACTLY rather than approximated
+        # polynomially. Airtight oracles: rational-arc exactness (a rounded frame of 4 quarter-
+        # circle NURBS arcs reproduced ≤1e-12 — a polynomial cannot trace a circle, so this
+        # proves the fill stayed rational), non-rational reduction (weights-all-1 == fillNSided
+        # pointwise ≤1e-12), planar rational containment (arcs in a plane → fill points on that
+        # plane ≤1e-10), and honest non-closed / non-positive-weight / N<3 / malformed declines.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_nsided_rational)
+        set(test_native_nurbs_nsided_rational_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_nsided_rational.cpp")
         # NURBS roadmap Layer 5 — surface OFFSET (src/native/math/bspline_offset).
         # Samples the true offset locus S + d·N and fits a non-rational NURBS surface
         # through it with the Layer-7 fitter (interpolateSurface → lin_solve), refining
@@ -1264,6 +1277,13 @@ if(CYBERCAD_BUILD_TESTS)
     # family uniformity).
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_nsided_g2)
         target_compile_definitions(test_native_nurbs_nsided_g2 PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+    # The Layer-6 RATIONAL N-sided fill gate includes bspline_nsided.h (which under
+    # CYBERCAD_HAS_NUMSCI pulls bspline_coons.h + bspline_ops.h — no substrate header, no
+    # numerics solve), so its TU needs the macro but NOT the substrate include trees, exactly
+    # like the C0 N-sided gate above (the module is numsci-gated for family uniformity).
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_nsided_rational)
+        target_compile_definitions(test_native_nurbs_nsided_rational PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
     # The Layer-5 offset gate includes bspline_offset.h + numerics.h (numerics.h is
     # vec.h + std only, no NumPP/SciPP headers), so its TU needs the macro but NOT the

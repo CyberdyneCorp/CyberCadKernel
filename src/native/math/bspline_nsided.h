@@ -126,6 +126,51 @@ struct NSidedFillResult {
 /// builder rejects — honest guards, never a crash, never a silently-wrong net.
 NSidedFillResult fillNSided(const NSidedBoundary& b, double tol = 1e-7);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Rational N-sided fill (homogeneous midpoint subdivision → N rational Coons sub-patches).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Verify that the N edges form a CLOSED loop for the RATIONAL fill: every edge is
+/// well-formed (clamped flat knot vector, degree ≥ 1, ≥ 2 poles) and, if rational, carries
+/// exactly one STRICTLY-POSITIVE weight per pole (a zero / negative weight is dishonest and
+/// declined). Non-rational edges (empty weights) are accepted and treated as w = 1. N ≥ 3,
+/// and consecutive corners meet `edges[i](1) == edges[(i+1)%N](0)` to within `tol` (measured
+/// with the RATIONAL evaluator). On any violation returns `ok = false` with a reason.
+NSidedBoundaryCheck verifyNSidedBoundaryRational(const NSidedBoundary& b, double tol = 1e-7);
+
+/// Result of a rational N-sided boundary fill.
+struct NSidedFillRationalResult {
+  bool ok = false;                          ///< true ⇔ the rational N-sided fill was built
+  std::vector<BsplineSurfaceData> patches;  ///< the N (possibly rational) Coons sub-patches
+  Point3 centroid{};                        ///< the shared interior hub C
+  double maxCornerError = 0.0;              ///< the loop's corner consistency error
+  std::string reason;                       ///< decline reason when !ok
+};
+
+/// RATIONAL N-SIDED FILL — the exact-rational analogue of `fillNSided`. Fill the closed
+/// N-gon boundary `b` (edges may be RATIONAL — e.g. exact circular arcs) with N tensor-
+/// product Coons sub-patches by midpoint subdivision, performing the ENTIRE construction —
+/// the edge split at the midpoint, the per-corner Coons boolean-sum, and the weld — in
+/// HOMOGENEOUS (wx, wy, wz, w) space, de-homogenizing only at the end:
+///
+///   1. `verifyNSidedBoundaryRational(b, tol)` — decline honestly on a non-closed /
+///      malformed / non-positive-weight boundary (ok=false with a reason).
+///   2. Corners V[i] = edges[i](0) (rational evaluation), edge midpoints M[i] = split of
+///      edges[i] at 0.5 (the Layer-1 `splitCurve` preserves the rational half-arc EXACTLY),
+///      centroid C = mean(V[i]).
+///   3. For each corner build the quad from the two boundary half-edges (rational,
+///      exact) + two straight interior spokes to C, and fill it with a homogeneous Coons
+///      boolean sum `L_u ⊕ L_v ⊖ B` on the R⁴ nets, projecting back to (poles, weights).
+///
+/// GUARANTEE: a RATIONAL boundary edge (an exact circular arc) is REPRODUCED EXACTLY by the
+/// sub-patch's outer iso-curve — NOT a polynomial approximation (≤ 1e-12). When all edges
+/// are NON-RATIONAL (weights all 1) the result reduces to `fillNSided` (≤ 1e-12). A planar
+/// rational boundary yields sub-patch points ON that plane exactly (≤ 1e-10). Declines
+/// (`ok=false`) on a non-closed / malformed / non-positive-weight boundary, a degenerate
+/// centroid spoke, or a sub-quad the homogeneous Coons rejects — honest guards, never a
+/// crash, never a silently-wrong net, never a widened tolerance.
+NSidedFillRationalResult fillNSidedRational(const NSidedBoundary& b, double tol = 1e-7);
+
 }  // namespace cybercad::native::math
 
 #endif  // CYBERCAD_NATIVE_MATH_BSPLINE_NSIDED_H

@@ -418,6 +418,21 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_gordon)
         set(test_native_nurbs_gordon_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_gordon.cpp")
+        # NURBS roadmap Layer 6 — boundary-filled COONS patch (src/native/math/bspline_coons).
+        # Fills a CLOSED four-sided boundary of curves with a smooth tensor-product surface as
+        # the bilinearly-blended boolean sum Coons = L_u ⊕ L_v ⊖ B (ruled surface between d0,d1
+        # + ruled surface between c0,c1 − bilinear tensor of the 4 corners), brought to a common
+        # basis via the Layer-1 exact elevate/refine (curve + surface) then nets added/subtracted.
+        # No linear solve, but numsci-gated to sit with the rest of the Layer-6 surfacing family
+        # (mirroring the skin/gordon gates). Airtight oracles: boundary containment (surface's 4
+        # edges reproduce the 4 boundary curves pointwise ~1e-9), corner interpolation exact, flat
+        # boundary → flat patch matching the plane, known-surface round-trip (a ruled/bilinear
+        # surface is recovered pointwise — Coons is exact for bilinearly-blended surfaces), and
+        # honest mismatched-corner / rational / malformed declines. Non-rational 4-sided scope;
+        # N-sided + rational boundaries + Gregory/plate G1/G2 blends are residuals.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_coons)
+        set(test_native_nurbs_coons_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_coons.cpp")
         # NURBS roadmap Layer 5 — surface OFFSET (src/native/math/bspline_offset).
         # Samples the true offset locus S + d·N and fits a non-rational NURBS surface
         # through it with the Layer-7 fitter (interpolateSurface → lin_solve), refining
@@ -1082,6 +1097,13 @@ if(CYBERCAD_BUILD_TESTS)
     # needs the macro to compile the SEEDED gordonSurface path (matches the library build).
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_gordon)
         target_compile_definitions(test_native_nurbs_gordon PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+    # The Layer-6 Coons boundary-fill gate includes bspline_coons.h (which under
+    # CYBERCAD_HAS_NUMSCI pulls only bspline_ops.h — no substrate header, no numerics
+    # solve), so its TU needs the macro but NOT the substrate include trees, exactly like
+    # the Layer-6 skinning gate above (the module is numsci-gated for family uniformity).
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_coons)
+        target_compile_definitions(test_native_nurbs_coons PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
     # The Layer-5 offset gate includes bspline_offset.h + numerics.h (numerics.h is
     # vec.h + std only, no NumPP/SciPP headers), so its TU needs the macro but NOT the

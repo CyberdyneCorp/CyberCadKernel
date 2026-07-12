@@ -25,6 +25,10 @@
 //                    through a NETWORK of u- and v-curves via the boolean sum
 //                    G = S_u ⊕ S_v ⊖ T (§10.5); interpolates every network curve.
 //                    (numsci-gated; composes skinSurface + surface interpolation.)
+//   * bspline_coons.h—NURBS boundary-filled Coons patch (NURBS-SCOPE Layer 6): fill a
+//                    CLOSED four-sided boundary with the bilinearly-blended boolean sum
+//                    Coons = L_u ⊕ L_v ⊖ B; interpolates all four boundary curves.
+//                    (numsci-gated for Layer-6 family uniformity; exact Layer-1 ops only.)
 //   * bspline_offset.h—NURBS surface offset (NURBS-SCOPE Layer 5): S + d·N sampled on
 //                    an adaptive grid + fitted to a NURBS surface (Layer-7), with a
 //                    curvature-radius self-intersection guard. (numsci-gated; the fit +
@@ -58,6 +62,7 @@
 #include "bspline_skin.h"
 #include "bspline_sweep.h"
 #include "bspline_gordon.h"
+#include "bspline_coons.h"
 #include "bspline_offset.h"
 #include "bezier.h"
 #include "elementary.h"

@@ -632,6 +632,24 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_plane_split)
         set(test_native_nurbs_plane_split_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_plane_split.cpp")
+        # NURBS roadmap LAYER 3, SLICE 2 (L3-S2) — host GATE (a), the OCCT-free closed-
+        # form proof of the SECOND exact-NURBS B-rep boolean: a genuine NURBS
+        # (Kind::BSpline degree-2) face SPLIT BY A CURVED (analytic) FACE (a SPHERE),
+        # welded watertight. A NURBS-walled bowl cut by a sphere has a CLOSED CIRCULAR
+        # seam on the NURBS wall — a curve on BOTH curved surfaces; nurbsFaceCurvedSplit
+        # composes NURBS-adapter ∩ sphere-adapter trace[stage 1] → WLine-(u,v)-read
+        # fidelity gate on BOTH F and G[stage 2] → splitFaceSmoothTrim[stage 3] →
+        # CURVED-solid membership keep[stage 4] → curved-G cap fan synth + M0 curved↔
+        # CURVED weld[stage 5] → watertight+volume self-verify, into the CUT (Below, the
+        # closed-form LENS V_lens) and COMMON (Above) keep sides, the CUT lens volume
+        # converging to the closed form as the mesh refines (deflection-bounded curved
+        # cap), watertight χ=2, DISAGREED=0. A non-curved cutter / non-NURBS wall / far
+        # sphere HONEST-DECLINES to NULL. Its seam is the real S3 trace, so this host
+        # suite builds only under CYBERCAD_HAS_NUMSCI. Additive header-only verb
+        # (nurbs_curved_split.h); no lib change, no cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_curved_split)
+        set(test_native_nurbs_curved_split_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_curved_split.cpp")
         # MOAT M2 freeform↔freeform CLOSED-SEAM CUT / COMMON — host GATE (a), the
         # OCCT-free proof that the recognise[B1] → trace[M1] → split[B2 smooth-trim] →
         # classify[B3] pipeline composes for TWO curved operands over a shared CLOSED
@@ -1034,6 +1052,16 @@ if(CYBERCAD_BUILD_TESTS)
     # macro but NOT the substrate include trees, like the L3 readiness gate above.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_plane_split)
         target_compile_definitions(test_native_nurbs_plane_split PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+
+    # The L3-S2 exact-NURBS face-split-by-curved-face gate traces the NURBS wall ∩ sphere
+    # seam via the numsci-gated ssi::trace_intersection (through nurbs_curved_split.h) and
+    # recognises the sphere cutter via ssi_boolean.h's recogniseCurvedSolid (also numsci-
+    # gated), so under CYBERCAD_HAS_NUMSCI its TU gets the macro. It calls only always-
+    # visible ssi / topology / tessellate / construct declarations — no NumPP/SciPP header
+    # — so it needs the macro but NOT the substrate include trees, like the L3-S1 gate.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_curved_split)
+        target_compile_definitions(test_native_nurbs_curved_split PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     # The Layer-6 skinning gate includes bspline_skin.h (which under CYBERCAD_HAS_NUMSCI

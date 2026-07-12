@@ -186,6 +186,33 @@ watertight sew is MISSING.
 > parity within the tessellation band). `src/native` stays OCCT-free; no `cc_*` ABI; `assemble.h`
 > / `face_split.h` / `ssi` / `trimmed_nurbs` / `math` unmodified. The general NURBS↔NURBS boolean
 > remains the §4 deep tail.
+>
+> **✅ ALSO LANDED — L3-S2 (OpenSpec change `nurbs-boolean-l3-s2`), the face∩CURVED-face
+> extension.** `src/native/boolean/nurbs_curved_split.h` (`nurbsFaceCurvedSplit`) extends
+> L3-S1 from a PLANE cutter to an **ANALYTIC CURVED** cutter (Cylinder/Sphere/Cone): the seam
+> is a curve on BOTH curved surfaces and the sew is **curved-NURBS↔analytic-CURVED**, the
+> stage-5 residual this doc named. It reuses L3-S1's `npsdetail::{makeWallAdapter, seamFidelity}`
+> + S5-a's `ssidetail::{recogniseCurvedSolid, CurvedSolid::adapter, classifyPoint}` +
+> `splitFaceSmoothTrim` + the S5-a `appendMouthCap` fan idiom (`assemble.h::{VertexPool,
+> triangleFace}`), composing: NURBS-adapter ∩ curved-cutter-adapter **trace**[stage 1] →
+> WLine-`(u,v)`-read fidelity on BOTH F and G (`S_F==C` AND `S_G==C`)[stage 2] →
+> `splitFaceSmoothTrim`[stage 3] → **CURVED-solid membership** keep (`classifyPoint`, not a
+> half-space)[stage 4] → **curved-G cap fan** synth (deflection-bounded planar-triangle fan on
+> the true cutter surface, outer ring = exact seam nodes so it welds bit-for-bit to the NURBS
+> disk)[stage 5] → watertight+volume self-verify. Two-gate proof: host closed-form
+> `tests/native/test_native_nurbs_curved_split.cpp` (a `Kind::BSpline` paraboloid bowl cut by a
+> genuine analytic SPHERE; the CUT/Below keep side is the closed-form **LENS**
+> `2π[zc·ρ²/2 − a·ρ⁴/4] − (2π/3)[Rs³ − (Rs²−ρ²)^{3/2}]`, the meshed volume CONVERGING to it
+> monotonely as the deflection refines — measured 7.2%→0.9% over 0.004→0.0005 — with χ=2,
+> DISAGREED=0 [`S_F`=0, `S_G`~2e-11], honest NULL declines) + sim vs OCCT
+> `tests/sim/native_nurbs_curved_split_parity.mm` (native vs `BRepAlgoAPI_Cut(cup, ball)` for
+> the lens + `BRepAlgoAPI_Common(cup, ball)` for the inside piece — volume/watertight/χ parity
+> within the tessellation band; 14/14). `src/native` stays OCCT-free; no `cc_*` ABI;
+> `nurbs_plane_split.h` / `ssi_boolean.{h,cpp}` / `assemble.h` / `face_split.h` / `ssi` /
+> `trimmed_nurbs` / `math` unmodified. **So stage 5 (the curved↔curved sew) is now resolved for
+> the ANALYTIC curved cutter** — the general **freeform↔freeform** sew (both operands arbitrary
+> NURBS) remains the §4 deep tail, alongside the closed-loop seeding recall and the
+> multi-crossing split.
 
 **Slice L3-S1 — a NURBS face SPLIT BY A PLANE, welded exact.** Concretely: **cut a single
 trimmed NURBS solid by a half-space (planar cutter)**, keeping the exact-NURBS wall on the

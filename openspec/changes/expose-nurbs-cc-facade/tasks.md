@@ -58,14 +58,14 @@ delivery; implementation lands as waves J1–J7 (see `design.md` §7).
   assembly stage; areas machine-exact, coincident → decline. (**host**)
 
 ## 6. J6 — Python object model
-- [ ] 6.1 `Curve` / `Surface` RAII classes over the new handles (context manager +
+- [x] 6.1 `Curve` / `Surface` RAII classes over the new handles (context manager +
   GC backstop + stale-handle guard), NumPy pole/knot/weight accessors, `.eval`,
   `.tessellate` → `Mesh`. Low-level tables (`_cffi`/`_ffi`) extended in lockstep;
   `test_ffi` symbol-count + `sizeof` guards updated. (**py**, **abi**)
-- [ ] 6.2 `nurbs` submodule surfacing every `cc_nurbs_*` wrapper, following the
+- [x] 6.2 `nurbs` submodule surfacing every `cc_nurbs_*` wrapper, following the
   `api.py` RAII / `KernelError`-from-`cc_last_error` pattern. Honest declines raise
   `KernelError`, asserted (not fabricated). (**py**)
-- [ ] 6.3 Real-geometry pytest: evaluation exactness vs analytic; a closed surface
+- [x] 6.3 Real-geometry pytest: evaluation exactness vs analytic; a closed surface
   (revolved sphere) tessellates watertight (`trimesh.is_watertight`); round-trip
   `recognize(circle) == circle`; a fit through sampled points reproduces them;
   over-constrained fit / over-radius fillet RAISE. (**py**)

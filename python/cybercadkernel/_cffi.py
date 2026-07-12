@@ -297,6 +297,177 @@ class CCSection(ctypes.Structure):
     ]
 
 
+# ── NURBS geometry POD types (mirror cc_kernel_nurbs.h byte-for-byte) ─────────
+# Additive: opaque cc_curve / cc_surface handles (registry-backed like CCShapeId)
+# plus the read-back header structs, tessellation options, intersection hits, trim
+# loops, fit constraints, and reverse-engineering result structs. Sizes are guarded
+# in test_ffi.py against a C `sizeof` of the header (LP64, arm64 macOS).
+
+
+class cc_curve(ctypes.Structure):
+    """typedef struct { int32_t id; } cc_curve; — opaque NURBS-curve handle
+    (id == 0 is the invalid / not-built sentinel)."""
+
+    _fields_ = [("id", c_int)]
+
+
+class cc_surface(ctypes.Structure):
+    """typedef struct { int32_t id; } cc_surface; — opaque NURBS-surface handle."""
+
+    _fields_ = [("id", c_int)]
+
+
+class CCCurveInfo(ctypes.Structure):
+    """typedef struct { int32_t degree, n_ctrl, n_knots, rational; } CCCurveInfo;"""
+
+    _fields_ = [
+        ("degree", c_int),
+        ("n_ctrl", c_int),
+        ("n_knots", c_int),  # = n_ctrl + degree + 1
+        ("rational", c_int),  # 0 = weights all 1, 1 = rational
+    ]
+
+
+class CCSurfaceInfo(ctypes.Structure):
+    """typedef struct { int32_t degree_u, degree_v, n_ctrl_u, n_ctrl_v,
+    n_knots_u, n_knots_v, rational; } CCSurfaceInfo;"""
+
+    _fields_ = [
+        ("degree_u", c_int),
+        ("degree_v", c_int),
+        ("n_ctrl_u", c_int),
+        ("n_ctrl_v", c_int),
+        ("n_knots_u", c_int),
+        ("n_knots_v", c_int),
+        ("rational", c_int),
+    ]
+
+
+class CCTessOptions(ctypes.Structure):
+    """typedef struct { int32_t n_u, n_v; } CCTessOptions; — sample counts for
+    cc_surface_tessellate (each clamped to >= 2; <= 0 => built-in default)."""
+
+    _fields_ = [
+        ("n_u", c_int),
+        ("n_v", c_int),
+    ]
+
+
+class CCCurveHit(ctypes.Structure):
+    """typedef struct { double xyz[3]; double tA, tB; int32_t tangential; }
+    CCCurveHit; — one curve<->curve intersection point."""
+
+    _fields_ = [
+        ("xyz", c_double * 3),
+        ("tA", c_double),
+        ("tB", c_double),
+        ("tangential", c_int),
+    ]
+
+
+class CCCurveSurfaceHit(ctypes.Structure):
+    """typedef struct { double xyz[3]; double t, u, v; int32_t tangential; }
+    CCCurveSurfaceHit; — one curve<->surface pierce point."""
+
+    _fields_ = [
+        ("xyz", c_double * 3),
+        ("t", c_double),
+        ("u", c_double),
+        ("v", c_double),
+        ("tangential", c_int),
+    ]
+
+
+class CCTrimLoop(ctypes.Structure):
+    """typedef struct { double* uv; int32_t pointCount; int32_t outer;
+    double signedArea; } CCTrimLoop; — one result loop of a trim-region boolean
+    (uv = pointCount (u,v) pairs, owned; free with cc_nurbs_trim_loops_free)."""
+
+    _fields_ = [
+        ("uv", POINTER(c_double)),  # pointCount (u,v) pairs, len = 2*pointCount
+        ("pointCount", c_int),
+        ("outer", c_int),  # 1 = CCW outer boundary, 0 = CW hole
+        ("signedArea", c_double),
+    ]
+
+
+class CCCurveEndConstraint(ctypes.Structure):
+    """typedef struct { int32_t end, order; double value[3]; }
+    CCCurveEndConstraint; — one end constraint for cc_nurbs_fit_curve_constrained."""
+
+    _fields_ = [
+        ("end", c_int),  # 0 = start (u=0), 1 = end (u=1)
+        ("order", c_int),  # 0 = position, 1 = 1st deriv, 2 = 2nd deriv
+        ("value", c_double * 3),
+    ]
+
+
+class CCSurfacePoleConstraint(ctypes.Structure):
+    """typedef struct { int32_t i, j; double value[3]; }
+    CCSurfacePoleConstraint; — one pole constraint for
+    cc_nurbs_fit_surface_constrained (pole at (i,j) row-major)."""
+
+    _fields_ = [
+        ("i", c_int),  # U pole index (0..n_ctrl_u-1)
+        ("j", c_int),  # V pole index (0..n_ctrl_v-1)
+        ("value", c_double * 3),
+    ]
+
+
+class CCPrimitiveDetection(ctypes.Structure):
+    """typedef struct { int32_t type; double rms, rel_error, plane_normal[3],
+    plane_offset, center[3], axis[3], radius, half_angle; }
+    CCPrimitiveDetection; — result of cc_nurbs_detect_primitive."""
+
+    _fields_ = [
+        ("type", c_int),  # CCPrimitiveType
+        ("rms", c_double),
+        ("rel_error", c_double),
+        ("plane_normal", c_double * 3),
+        ("plane_offset", c_double),
+        ("center", c_double * 3),  # sphere / cylinder-axis-point / cone-apex
+        ("axis", c_double * 3),
+        ("radius", c_double),
+        ("half_angle", c_double),
+    ]
+
+
+class CCCurveRecognition(ctypes.Structure):
+    """typedef struct { int32_t kind; double residual, line_start[3], line_end[3],
+    center[3], normal[3], x_axis[3], radius, minor_radius, start_angle,
+    sweep_angle; } CCCurveRecognition; — result of cc_nurbs_recognize_curve."""
+
+    _fields_ = [
+        ("kind", c_int),  # CCCurveKind
+        ("residual", c_double),
+        ("line_start", c_double * 3),
+        ("line_end", c_double * 3),
+        ("center", c_double * 3),
+        ("normal", c_double * 3),
+        ("x_axis", c_double * 3),
+        ("radius", c_double),  # circle radius / ellipse major radius
+        ("minor_radius", c_double),  # ellipse semi-minor
+        ("start_angle", c_double),  # arc, radians
+        ("sweep_angle", c_double),  # arc, radians
+    ]
+
+
+class CCSurfaceRecognition(ctypes.Structure):
+    """typedef struct { int32_t kind; double residual, origin[3], axis[3],
+    x_axis[3], radius, half_angle; } CCSurfaceRecognition; — result of
+    cc_nurbs_recognize_surface."""
+
+    _fields_ = [
+        ("kind", c_int),  # CCSurfaceKind
+        ("residual", c_double),
+        ("origin", c_double * 3),
+        ("axis", c_double * 3),
+        ("x_axis", c_double * 3),
+        ("radius", c_double),
+        ("half_angle", c_double),  # cone, radians
+    ]
+
+
 # ── Library discovery ────────────────────────────────────────────────────────
 
 _DYLIB_NAME = {
@@ -525,6 +696,135 @@ _SIGS: "dict[str, tuple[list, object]]" = {
     "cc_shape_release": ([_S], None),
 }
 
+# ── NURBS facade signatures (cc_kernel_nurbs.h) ────────────────────────────────
+# Appended to _SIGS below so the symbol-count guard stays a single source of truth.
+# Handles cross by value (cc_curve / cc_surface are 4-byte {int32 id} structs);
+# accessors fill caller buffers; every constructor honest-declines with a 0-handle.
+_CURVE = cc_curve
+_SURF = cc_surface
+_CURVE_P = POINTER(cc_curve)
+_SURF_P = POINTER(cc_surface)
+_CURVEINFO_P = POINTER(CCCurveInfo)
+_SURFINFO_P = POINTER(CCSurfaceInfo)
+_TESSOPT_P = POINTER(CCTessOptions)
+_HITCC_PP = POINTER(POINTER(CCCurveHit))
+_HITCS_PP = POINTER(POINTER(CCCurveSurfaceHit))
+_TRIMLOOP_PP = POINTER(POINTER(CCTrimLoop))
+_ENDCON_P = POINTER(CCCurveEndConstraint)
+_POLECON_P = POINTER(CCSurfacePoleConstraint)
+_PRIMDET_P = POINTER(CCPrimitiveDetection)
+_CURVEREC_P = POINTER(CCCurveRecognition)
+_SURFREC_P = POINTER(CCSurfaceRecognition)
+
+_NURBS_SIGS: "dict[str, tuple[list, object]]" = {
+    # ── J1: construction / lifetime ───────────────────────────────────────────
+    "cc_curve_create": ([_I, _DBL_P, _I, _DBL_P, _I], _CURVE),
+    "cc_surface_create": (
+        [_I, _I, _DBL_P, _I, _I, _DBL_P, _I, _DBL_P, _I],
+        _SURF,
+    ),
+    "cc_curve_release": ([_CURVE], None),
+    "cc_surface_release": ([_SURF], None),
+    # ── J1: accessors (POD header + buffer-fill) ──────────────────────────────
+    "cc_curve_info": ([_CURVE, _CURVEINFO_P], _I),
+    "cc_surface_info": ([_SURF, _SURFINFO_P], _I),
+    "cc_curve_knots": ([_CURVE, _DBL_P, _I], _I),
+    "cc_curve_poles": ([_CURVE, _DBL_P, _I], _I),
+    "cc_surface_knots_u": ([_SURF, _DBL_P, _I], _I),
+    "cc_surface_knots_v": ([_SURF, _DBL_P, _I], _I),
+    "cc_surface_poles": ([_SURF, _DBL_P, _I], _I),
+    # ── J1: evaluators ────────────────────────────────────────────────────────
+    "cc_curve_eval": ([_CURVE, _D, _DBL_P], _I),
+    "cc_surface_eval": ([_SURF, _D, _D, _DBL_P], _I),
+    # ── J1: display tessellation bridge ───────────────────────────────────────
+    "cc_surface_tessellate": ([_SURF, _TESSOPT_P, POINTER(CCMesh)], _I),
+    "cc_curve_polyline": ([_CURVE, _I, POINTER(CCEdgePolyline)], _I),
+    # ── J2: fitting / interpolation ───────────────────────────────────────────
+    "cc_nurbs_fit_curve": ([_DBL_P, _I, _I, _I, _I], _CURVE),
+    "cc_nurbs_interp_curve": ([_DBL_P, _I, _I, _I], _CURVE),
+    "cc_nurbs_fit_surface": ([_DBL_P, _I, _I, _I, _I, _I, _I, _I], _SURF),
+    "cc_nurbs_estimate_weights_curve": ([_DBL_P, _I, _I, _I, _I], _CURVE),
+    "cc_nurbs_estimate_weights_surface": (
+        [_DBL_P, _I, _I, _I, _I, _I, _I, _I],
+        _SURF,
+    ),
+    "cc_nurbs_fit_curve_constrained": (
+        [_DBL_P, _I, _ENDCON_P, _I, _I, _I, _I],
+        _CURVE,
+    ),
+    "cc_nurbs_fit_surface_constrained": (
+        [_DBL_P, _I, _I, _POLECON_P, _I, _I, _I, _I, _I, _I],
+        _SURF,
+    ),
+    "cc_nurbs_fair_curve": ([_CURVE, _D, _I], _CURVE),
+    "cc_nurbs_fair_surface": ([_SURF, _D, _I], _SURF),
+    "cc_nurbs_simplify_curve": ([_CURVE, _D], _CURVE),
+    # ── J2: reverse-engineering (detection / recognition) ─────────────────────
+    "cc_nurbs_detect_primitive": ([_DBL_P, _I, _D, _PRIMDET_P], _I),
+    "cc_nurbs_recognize_curve": ([_CURVE, _D, _CURVEREC_P], _I),
+    "cc_nurbs_recognize_surface": ([_SURF, _D, _SURFREC_P], _I),
+    # ── J2: analytic -> exact rational NURBS ──────────────────────────────────
+    "cc_nurbs_circle": ([_DBL_P, _DBL_P, _DBL_P, _D], _CURVE),
+    "cc_nurbs_arc": ([_DBL_P, _DBL_P, _DBL_P, _D, _D, _D], _CURVE),
+    "cc_nurbs_ellipse": ([_DBL_P, _DBL_P, _DBL_P, _D, _D], _CURVE),
+    "cc_nurbs_plane": ([_DBL_P, _DBL_P, _DBL_P, _D, _D, _D, _D], _SURF),
+    "cc_nurbs_cylinder": ([_DBL_P, _DBL_P, _DBL_P, _D, _D, _D], _SURF),
+    "cc_nurbs_cone": ([_DBL_P, _DBL_P, _DBL_P, _D, _D, _D, _D], _SURF),
+    "cc_nurbs_sphere": ([_DBL_P, _DBL_P, _DBL_P, _D], _SURF),
+    "cc_nurbs_torus": ([_DBL_P, _DBL_P, _DBL_P, _D, _D], _SURF),
+    # ── J3: surfacing ─────────────────────────────────────────────────────────
+    "cc_nurbs_skin": ([_CURVE_P, _I, _I], _SURF),
+    "cc_nurbs_gordon": ([_CURVE_P, _I, _CURVE_P, _I, _DBL_P, _DBL_P], _SURF),
+    "cc_nurbs_coons": ([_CURVE, _CURVE, _CURVE, _CURVE, _D], _SURF),
+    "cc_nurbs_nsided_fill": ([_CURVE_P, _I, _I, _D, _SURF_P, _I], _I),
+    "cc_nurbs_sweep_variable": (
+        [_CURVE, _CURVE, _DBL_P, _DBL_P, _DBL_P, _I, _I],
+        _SURF,
+    ),
+    "cc_nurbs_sweep_two_rail": (
+        [_CURVE, _CURVE, _CURVE, _DBL_P, _I, _I, _I, _I],
+        _SURF,
+    ),
+    "cc_nurbs_revolve": ([_CURVE, _DBL_P, _DBL_P, _D], _SURF),
+    "cc_nurbs_join": (
+        [_SURF, _SURF, _I, _I, _I, _I, _D, _DBL_P, _SURF_P, _SURF_P],
+        _I,
+    ),
+    # ── J4: blend + offset / thicken / shell ──────────────────────────────────
+    "cc_nurbs_fillet_freeform_g2": (
+        [_SURF, _SURF, _D, _DBL_P, _DBL_P, _D, _D, _D, _I, _I],
+        _SURF,
+    ),
+    "cc_nurbs_vertex_blend": (
+        [_SURF_P, _I, _INT_P, _DBL_P, _INT_P, _I, _SURF_P, _I],
+        _I,
+    ),
+    "cc_nurbs_chamfer_variable": ([_DBL_P, _DBL_P, _DBL_P, _I, _D, _D], _SURF),
+    "cc_nurbs_chamfer_freeform": ([_SURF, _SURF, _DBL_P, _I, _D], _SURF),
+    "cc_nurbs_offset_rational": ([_SURF, _D, _D], _SURF),
+    "cc_nurbs_offset_trimmed": ([_SURF, _D, _D, _DBL_P, _INT_P], _SURF),
+    "cc_nurbs_thicken_trimmed": (
+        [_SURF, _D, _D, POINTER(CCMesh), _DBL_P, _INT_P],
+        _I,
+    ),
+    "cc_nurbs_shell_trimmed": (
+        [_SURF_P, _I, _INT_P, _I, _D, _D, POINTER(CCMesh)],
+        _I,
+    ),
+    # ── J5: intersection + trim boolean ───────────────────────────────────────
+    "cc_nurbs_intersect_cc": ([_CURVE, _CURVE, _D, _HITCC_PP], _I),
+    "cc_nurbs_hits_cc_free": ([POINTER(CCCurveHit)], None),
+    "cc_nurbs_intersect_cs": ([_CURVE, _SURF, _D, _HITCS_PP], _I),
+    "cc_nurbs_hits_cs_free": ([POINTER(CCCurveSurfaceHit)], None),
+    "cc_nurbs_trim_region_boolean": (
+        [_CURVE_P, _I, _CURVE_P, _I, _I, _TRIMLOOP_PP, _DBL_P],
+        _I,
+    ),
+    "cc_nurbs_trim_loops_free": ([POINTER(CCTrimLoop), _I], None),
+}
+
+_SIGS.update(_NURBS_SIGS)
+
 
 def _bind(lib: ctypes.CDLL) -> None:
     """Apply ``argtypes`` / ``restype`` to every ``cc_*`` symbol in ``_SIGS``."""
@@ -569,6 +869,20 @@ __all__ = [
     "CCHlrOptions",
     "CCSectionLoop",
     "CCSection",
+    # NURBS facade (cc_kernel_nurbs.h)
+    "cc_curve",
+    "cc_surface",
+    "CCCurveInfo",
+    "CCSurfaceInfo",
+    "CCTessOptions",
+    "CCCurveHit",
+    "CCCurveSurfaceHit",
+    "CCTrimLoop",
+    "CCCurveEndConstraint",
+    "CCSurfacePoleConstraint",
+    "CCPrimitiveDetection",
+    "CCCurveRecognition",
+    "CCSurfaceRecognition",
     "KernelLibraryNotFound",
     "lib",
 ]

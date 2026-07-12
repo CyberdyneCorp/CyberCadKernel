@@ -56,6 +56,11 @@ from .api import (
 # Backwards-compatible alias: the exception was historically ``KernelError``.
 KernelError = CyberCadError
 
+# Exact-NURBS object model (cc_nurbs_* facade). The ``nurbs`` submodule surfaces
+# every wrapper; ``Curve`` / ``Surface`` are the RAII handles.
+from . import nurbs  # noqa: E402
+from .nurbs import Curve, Surface  # noqa: E402
+
 __all__ = [
     "Kernel",
     "Shape",
@@ -82,6 +87,10 @@ __all__ = [
     "SectionLoop",
     "Drawing",
     "CCProfileSeg",
+    # Exact-NURBS object model
+    "nurbs",
+    "Curve",
+    "Surface",
 ]
 
 __version__ = "0.1.0"

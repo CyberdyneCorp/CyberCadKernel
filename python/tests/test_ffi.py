@@ -43,13 +43,35 @@ def test_new_struct_layouts_match_abi():
     assert ctypes.sizeof(_cffi.CCSection) == 32
 
 
+def test_nurbs_struct_layouts_match_abi():
+    # Sizes cross-checked against a C `sizeof` compiled from cc_kernel_nurbs.h
+    # (LP64, arm64 macOS). These guard the NURBS-facade POD structs (opaque
+    # handles, read-back headers, tessellation options, intersection hits, trim
+    # loops, fit constraints, and reverse-engineering results) from drifting.
+    assert ctypes.sizeof(_cffi.cc_curve) == 4
+    assert ctypes.sizeof(_cffi.cc_surface) == 4
+    assert ctypes.sizeof(_cffi.CCCurveInfo) == 16
+    assert ctypes.sizeof(_cffi.CCSurfaceInfo) == 28
+    assert ctypes.sizeof(_cffi.CCTessOptions) == 8
+    assert ctypes.sizeof(_cffi.CCCurveHit) == 48
+    assert ctypes.sizeof(_cffi.CCCurveSurfaceHit) == 56
+    assert ctypes.sizeof(_cffi.CCTrimLoop) == 24
+    assert ctypes.sizeof(_cffi.CCCurveEndConstraint) == 32
+    assert ctypes.sizeof(_cffi.CCSurfacePoleConstraint) == 32
+    assert ctypes.sizeof(_cffi.CCPrimitiveDetection) == 120
+    assert ctypes.sizeof(_cffi.CCCurveRecognition) == 168
+    assert ctypes.sizeof(_cffi.CCSurfaceRecognition) == 104
+
+
 def test_all_abi_symbols_are_bound():
     # 100% coverage guard: every cc_* symbol declared in the header must have a
-    # signature in the _cffi table (kept in lockstep with _ffi).
+    # signature in the _cffi table (kept in lockstep with _ffi). 111 core cc_*
+    # symbols + 58 cc_nurbs_* / cc_curve_* / cc_surface_* additions = 169.
     lib = _cffi.lib()
     for name in _cffi._SIGS:
         assert callable(getattr(lib, name)), name
-    assert len(_cffi._SIGS) == 111
+    assert len(_cffi._SIGS) == 169
+    assert len(_cffi._NURBS_SIGS) == 58
 
 
 def test_raw_extrude_box_volume():

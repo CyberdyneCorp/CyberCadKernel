@@ -226,6 +226,132 @@ class CCSection(ctypes.Structure):
     ]
 
 
+# ── NURBS geometry POD types (mirror cc_kernel_nurbs.h byte-for-byte) ─────────
+# Kept in lockstep with the same declarations in _cffi.py.
+
+
+class cc_curve(ctypes.Structure):
+    _fields_ = [("id", c_int)]
+
+
+class cc_surface(ctypes.Structure):
+    _fields_ = [("id", c_int)]
+
+
+class CCCurveInfo(ctypes.Structure):
+    _fields_ = [
+        ("degree", c_int),
+        ("n_ctrl", c_int),
+        ("n_knots", c_int),
+        ("rational", c_int),
+    ]
+
+
+class CCSurfaceInfo(ctypes.Structure):
+    _fields_ = [
+        ("degree_u", c_int),
+        ("degree_v", c_int),
+        ("n_ctrl_u", c_int),
+        ("n_ctrl_v", c_int),
+        ("n_knots_u", c_int),
+        ("n_knots_v", c_int),
+        ("rational", c_int),
+    ]
+
+
+class CCTessOptions(ctypes.Structure):
+    _fields_ = [
+        ("n_u", c_int),
+        ("n_v", c_int),
+    ]
+
+
+class CCCurveHit(ctypes.Structure):
+    _fields_ = [
+        ("xyz", c_double * 3),
+        ("tA", c_double),
+        ("tB", c_double),
+        ("tangential", c_int),
+    ]
+
+
+class CCCurveSurfaceHit(ctypes.Structure):
+    _fields_ = [
+        ("xyz", c_double * 3),
+        ("t", c_double),
+        ("u", c_double),
+        ("v", c_double),
+        ("tangential", c_int),
+    ]
+
+
+class CCTrimLoop(ctypes.Structure):
+    _fields_ = [
+        ("uv", POINTER(c_double)),
+        ("pointCount", c_int),
+        ("outer", c_int),
+        ("signedArea", c_double),
+    ]
+
+
+class CCCurveEndConstraint(ctypes.Structure):
+    _fields_ = [
+        ("end", c_int),
+        ("order", c_int),
+        ("value", c_double * 3),
+    ]
+
+
+class CCSurfacePoleConstraint(ctypes.Structure):
+    _fields_ = [
+        ("i", c_int),
+        ("j", c_int),
+        ("value", c_double * 3),
+    ]
+
+
+class CCPrimitiveDetection(ctypes.Structure):
+    _fields_ = [
+        ("type", c_int),
+        ("rms", c_double),
+        ("rel_error", c_double),
+        ("plane_normal", c_double * 3),
+        ("plane_offset", c_double),
+        ("center", c_double * 3),
+        ("axis", c_double * 3),
+        ("radius", c_double),
+        ("half_angle", c_double),
+    ]
+
+
+class CCCurveRecognition(ctypes.Structure):
+    _fields_ = [
+        ("kind", c_int),
+        ("residual", c_double),
+        ("line_start", c_double * 3),
+        ("line_end", c_double * 3),
+        ("center", c_double * 3),
+        ("normal", c_double * 3),
+        ("x_axis", c_double * 3),
+        ("radius", c_double),
+        ("minor_radius", c_double),
+        ("start_angle", c_double),
+        ("sweep_angle", c_double),
+    ]
+
+
+class CCSurfaceRecognition(ctypes.Structure):
+    _fields_ = [
+        ("kind", c_int),
+        ("residual", c_double),
+        ("origin", c_double * 3),
+        ("axis", c_double * 3),
+        ("x_axis", c_double * 3),
+        ("radius", c_double),
+        ("half_angle", c_double),
+    ]
+
+
 # ── Library discovery ───────────────────────────────────────────────────────
 
 _DYLIB_NAME = {
@@ -437,6 +563,95 @@ def _bind(lib: ctypes.CDLL) -> None:
         # lifecycle
         "cc_shape_release": ([S], None),
     }
+
+    # ── NURBS facade (cc_kernel_nurbs.h) — kept in lockstep with _cffi._NURBS_SIGS
+    CU = cc_curve
+    SU = cc_surface
+    CUP = POINTER(cc_curve)
+    SUP = POINTER(cc_surface)
+    nurbs_sigs: dict[str, tuple[list, object]] = {
+        # J1: construction / lifetime
+        "cc_curve_create": ([I, _DBL_P, I, _DBL_P, I], CU),
+        "cc_surface_create": ([I, I, _DBL_P, I, I, _DBL_P, I, _DBL_P, I], SU),
+        "cc_curve_release": ([CU], None),
+        "cc_surface_release": ([SU], None),
+        # J1: accessors
+        "cc_curve_info": ([CU, POINTER(CCCurveInfo)], I),
+        "cc_surface_info": ([SU, POINTER(CCSurfaceInfo)], I),
+        "cc_curve_knots": ([CU, _DBL_P, I], I),
+        "cc_curve_poles": ([CU, _DBL_P, I], I),
+        "cc_surface_knots_u": ([SU, _DBL_P, I], I),
+        "cc_surface_knots_v": ([SU, _DBL_P, I], I),
+        "cc_surface_poles": ([SU, _DBL_P, I], I),
+        # J1: evaluators
+        "cc_curve_eval": ([CU, D, _DBL_P], I),
+        "cc_surface_eval": ([SU, D, D, _DBL_P], I),
+        # J1: display tessellation bridge
+        "cc_surface_tessellate": ([SU, POINTER(CCTessOptions), POINTER(CCMesh)], I),
+        "cc_curve_polyline": ([CU, I, POINTER(CCEdgePolyline)], I),
+        # J2: fitting / interpolation
+        "cc_nurbs_fit_curve": ([_DBL_P, I, I, I, I], CU),
+        "cc_nurbs_interp_curve": ([_DBL_P, I, I, I], CU),
+        "cc_nurbs_fit_surface": ([_DBL_P, I, I, I, I, I, I, I], SU),
+        "cc_nurbs_estimate_weights_curve": ([_DBL_P, I, I, I, I], CU),
+        "cc_nurbs_estimate_weights_surface": ([_DBL_P, I, I, I, I, I, I, I], SU),
+        "cc_nurbs_fit_curve_constrained": (
+            [_DBL_P, I, POINTER(CCCurveEndConstraint), I, I, I, I],
+            CU,
+        ),
+        "cc_nurbs_fit_surface_constrained": (
+            [_DBL_P, I, I, POINTER(CCSurfacePoleConstraint), I, I, I, I, I, I],
+            SU,
+        ),
+        "cc_nurbs_fair_curve": ([CU, D, I], CU),
+        "cc_nurbs_fair_surface": ([SU, D, I], SU),
+        "cc_nurbs_simplify_curve": ([CU, D], CU),
+        # J2: reverse-engineering
+        "cc_nurbs_detect_primitive": ([_DBL_P, I, D, POINTER(CCPrimitiveDetection)], I),
+        "cc_nurbs_recognize_curve": ([CU, D, POINTER(CCCurveRecognition)], I),
+        "cc_nurbs_recognize_surface": ([SU, D, POINTER(CCSurfaceRecognition)], I),
+        # J2: analytic -> exact rational NURBS
+        "cc_nurbs_circle": ([_DBL_P, _DBL_P, _DBL_P, D], CU),
+        "cc_nurbs_arc": ([_DBL_P, _DBL_P, _DBL_P, D, D, D], CU),
+        "cc_nurbs_ellipse": ([_DBL_P, _DBL_P, _DBL_P, D, D], CU),
+        "cc_nurbs_plane": ([_DBL_P, _DBL_P, _DBL_P, D, D, D, D], SU),
+        "cc_nurbs_cylinder": ([_DBL_P, _DBL_P, _DBL_P, D, D, D], SU),
+        "cc_nurbs_cone": ([_DBL_P, _DBL_P, _DBL_P, D, D, D, D], SU),
+        "cc_nurbs_sphere": ([_DBL_P, _DBL_P, _DBL_P, D], SU),
+        "cc_nurbs_torus": ([_DBL_P, _DBL_P, _DBL_P, D, D], SU),
+        # J3: surfacing
+        "cc_nurbs_skin": ([CUP, I, I], SU),
+        "cc_nurbs_gordon": ([CUP, I, CUP, I, _DBL_P, _DBL_P], SU),
+        "cc_nurbs_coons": ([CU, CU, CU, CU, D], SU),
+        "cc_nurbs_nsided_fill": ([CUP, I, I, D, SUP, I], I),
+        "cc_nurbs_sweep_variable": ([CU, CU, _DBL_P, _DBL_P, _DBL_P, I, I], SU),
+        "cc_nurbs_sweep_two_rail": ([CU, CU, CU, _DBL_P, I, I, I, I], SU),
+        "cc_nurbs_revolve": ([CU, _DBL_P, _DBL_P, D], SU),
+        "cc_nurbs_join": ([SU, SU, I, I, I, I, D, _DBL_P, SUP, SUP], I),
+        # J4: blend + offset / thicken / shell
+        "cc_nurbs_fillet_freeform_g2": (
+            [SU, SU, D, _DBL_P, _DBL_P, D, D, D, I, I],
+            SU,
+        ),
+        "cc_nurbs_vertex_blend": ([SUP, I, _INT_P, _DBL_P, _INT_P, I, SUP, I], I),
+        "cc_nurbs_chamfer_variable": ([_DBL_P, _DBL_P, _DBL_P, I, D, D], SU),
+        "cc_nurbs_chamfer_freeform": ([SU, SU, _DBL_P, I, D], SU),
+        "cc_nurbs_offset_rational": ([SU, D, D], SU),
+        "cc_nurbs_offset_trimmed": ([SU, D, D, _DBL_P, _INT_P], SU),
+        "cc_nurbs_thicken_trimmed": ([SU, D, D, POINTER(CCMesh), _DBL_P, _INT_P], I),
+        "cc_nurbs_shell_trimmed": ([SUP, I, _INT_P, I, D, D, POINTER(CCMesh)], I),
+        # J5: intersection + trim boolean
+        "cc_nurbs_intersect_cc": ([CU, CU, D, POINTER(POINTER(CCCurveHit))], I),
+        "cc_nurbs_hits_cc_free": ([POINTER(CCCurveHit)], None),
+        "cc_nurbs_intersect_cs": ([CU, SU, D, POINTER(POINTER(CCCurveSurfaceHit))], I),
+        "cc_nurbs_hits_cs_free": ([POINTER(CCCurveSurfaceHit)], None),
+        "cc_nurbs_trim_region_boolean": (
+            [CUP, I, CUP, I, I, POINTER(POINTER(CCTrimLoop)), _DBL_P],
+            I,
+        ),
+        "cc_nurbs_trim_loops_free": ([POINTER(CCTrimLoop), I], None),
+    }
+    sigs.update(nurbs_sigs)
 
     for name, (argtypes, restype) in sigs.items():
         fn = getattr(lib, name)

@@ -366,7 +366,12 @@ if(CYBERCAD_BUILD_TESTS)
         # sanity + honest degenerate guards. Also RATIONAL interpolation with PRESCRIBED
         # weights (homogeneous lift): Euclidean pass-through ~1e-9, KNOWN rational
         # circle/half-cylinder recovered POINTWISE, input weights recovered, non-positive/
-        # mismatched-weight guards. Weight ESTIMATION (Ma–Kruth) remains a residual.
+        # mismatched-weight guards. Also rational weight ESTIMATION (Ma–Kruth): the
+        # bilinear rational-fit condition is a homogeneous null-space solve (smallest
+        # eigenvector of MᵀM via inverse iteration) that recovers BOTH poles AND weights
+        # from UNWEIGHTED data — a KNOWN circle/ellipse recovered to ~1e-8 (weights =
+        # cos(45°)), polynomial data yields flat weights (spread ≤ 1e-6 ⇒ non-rational
+        # detected), and under-determined/degenerate/sign-flip inputs HONEST-DECLINE.
         list(APPEND CYBERCAD_TESTS test_native_nurbs_fit)
         set(test_native_nurbs_fit_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_fit.cpp")

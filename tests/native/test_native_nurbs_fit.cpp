@@ -681,6 +681,123 @@ int main() {
                "rational surface: non-positive weight declines");
   }
 
+  // ═══ RATIONAL WEIGHT ESTIMATION (Ma–Kruth) — recover Pᵢ AND wᵢ from unweighted ═
+  //
+  // The estimator recovers BOTH control points and weights from data whose weights
+  // are UNKNOWN, so a conic (circle/ellipse) — a rational shape a polynomial fit
+  // cannot represent — is reconstructed exactly. Airtight oracles:
+  //   (a) CONIC RECOVERY — sample a KNOWN rational circle/ellipse at their own
+  //       projective NURBS parameters; the estimator recovers the middle weight
+  //       cos(45°) and a curve on the true circle/ellipse (deviation ≤ 1e-8).
+  //   (b) POLYNOMIAL DEGENERATE — data from a NON-rational polynomial yields weights
+  //       all ≈ equal (spread ≤ 1e-6): it detects "no rationality needed".
+  //   (c) DE-HOMOGENIZE CONSISTENCY — recovered (Pᵢ,wᵢ) reproduce the input points
+  //       to the fit tolerance (maxError small).
+  //   (d) HONEST GUARDS — under-determined / degenerate / sign-flipping decline.
+  {
+    // (a) CONIC — full unit circle. Sample at the circle's OWN NURBS parameter and
+    // feed those exact params + the circle's knots so the recovery is machine-exact.
+    const BsplineCurveData circle = fullCircle();
+    const int Nc = 40, nCtrlC = 9, degC = 2;
+    std::vector<Point3> cpts(Nc);
+    std::vector<double> cpar(Nc);
+    for (int k = 0; k < Nc; ++k) {
+      const double t = static_cast<double>(k) / (Nc - 1);
+      cpar[k] = t;
+      cpts[k] = evalRationalCurve(circle, t);
+    }
+    RationalFitResult rc = fitRationalCurveEstimateWeightsWithParams(
+        cpts, cpar, circle.knots, nCtrlC, degC);
+    expectTrue(rc.ok, "conic (circle) weight estimation ok");
+    expectTrue(!rc.curve.weights.empty(), "conic estimation returns a rational curve");
+    expectTrue(rc.rationalityDetected, "conic estimation DETECTS rationality (non-flat weights)");
+    // Middle-of-arc weight equals cos(45°); with w₀=1 gauge every alternate weight is w.
+    const double wtrue = std::sqrt(2.0) / 2.0;
+    double worstW = 0.0;
+    for (std::size_t i = 1; i < rc.curve.weights.size(); i += 2)
+      worstW = std::max(worstW, std::fabs(rc.curve.weights[i] - wtrue));
+    expectLE(worstW, 1e-8, "circle: recovered middle weights == cos(45°) to 1e-8");
+    // Curve lies on the true unit circle everywhere (the strongest oracle).
+    double worstRad = 0.0;
+    for (int i = 0; i <= 800; ++i) {
+      const Point3 p = evalRationalCurve(rc.curve, static_cast<double>(i) / 800);
+      worstRad = std::max(worstRad, std::fabs(std::sqrt(p.x * p.x + p.y * p.y) - 1.0));
+    }
+    expectLE(worstRad, 1e-8, "circle: recovered curve on the true unit circle to 1e-8");
+    expectLE(rc.maxError, 1e-8, "circle: de-homogenize reproduces the data to 1e-8");
+    std::printf("INFO conic weight-est: worst |w-cos45|=%.3e radius dev=%.3e maxErr=%.3e\n",
+                worstW, worstRad, rc.maxError);
+
+    // (a') ELLIPSE — the circle stretched (x·2), still an exact rational quadratic.
+    BsplineCurveData ell = fullCircle();
+    for (auto& p : ell.poles) p.x *= 2.0;
+    std::vector<Point3> epts(Nc);
+    for (int k = 0; k < Nc; ++k) epts[k] = evalRationalCurve(ell, cpar[k]);
+    RationalFitResult re = fitRationalCurveEstimateWeightsWithParams(
+        epts, cpar, ell.knots, nCtrlC, degC);
+    expectTrue(re.ok && re.rationalityDetected, "ellipse weight estimation ok + rational");
+    double worstEll = 0.0;
+    for (int i = 0; i <= 800; ++i) {
+      const Point3 p = evalRationalCurve(re.curve, static_cast<double>(i) / 800);
+      worstEll = std::max(worstEll, std::fabs((p.x * p.x) / 4.0 + p.y * p.y - 1.0));
+    }
+    expectLE(worstEll, 1e-8, "ellipse: recovered curve on the true ellipse to 1e-8");
+
+    // (b) POLYNOMIAL DEGENERATE — sample a NON-rational cubic at its own params and
+    // fit with its own knots: recovered weights must be all ≈ equal (no rationality).
+    BsplineCurveData poly;
+    poly.degree = 3;
+    poly.poles = {{0, 0, 0}, {1, 2, 0}, {2, -1, 1}, {4, 1, 2}, {5, 3, 0}, {6, 0, 1}};
+    poly.knots = {0, 0, 0, 0, 0.33, 0.66, 1, 1, 1, 1};
+    const int Mp = 30, nCtrlP = 6;
+    std::vector<Point3> ppts(Mp);
+    std::vector<double> ppar(Mp);
+    for (int k = 0; k < Mp; ++k) {
+      const double t = static_cast<double>(k) / (Mp - 1);
+      ppar[k] = t;
+      ppts[k] = evalCurve(poly, t);
+    }
+    RationalFitResult rp = fitRationalCurveEstimateWeightsWithParams(
+        ppts, ppar, poly.knots, nCtrlP, 3);
+    expectTrue(rp.ok, "polynomial-degenerate estimation ok");
+    expectLE(rp.weightSpread, 1e-6, "polynomial data → weights all ≈ equal (spread ≤ 1e-6)");
+    expectTrue(!rp.rationalityDetected, "polynomial data → rationality NOT detected (no rationality needed)");
+    expectLE(rp.maxError, 1e-8, "polynomial de-homogenize reproduces the data to 1e-8");
+    std::printf("INFO polynomial-degenerate weight-est: spread=%.3e (rationality=%d)\n",
+                rp.weightSpread, rp.rationalityDetected);
+
+    // (c) DE-HOMOGENIZE CONSISTENCY — the pass-through at the data nodes for the
+    // circle case (recovered curve interpolates every sample it was built from).
+    double worstNode = 0.0;
+    for (int k = 0; k < Nc; ++k)
+      worstNode = std::max(worstNode, distance(evalRationalCurve(rc.curve, cpar[k]), cpts[k]));
+    expectLE(worstNode, 1e-8, "de-homogenize: recovered (Pᵢ,wᵢ) reproduce every input point");
+
+    // (d) HONEST GUARDS.
+    // Under-determined: 3·nData must exceed 4·nCtrl. Here nData=nCtrl=degree+1.
+    std::vector<Point3> tiny = {{0, 0, 0}, {1, 1, 0}, {2, 0, 0}};
+    RationalFitResult ru = fitRationalCurveEstimateWeights(tiny, 3, 2);
+    expectTrue(!ru.ok, "weight-est: under-determined declines honestly");
+    // Degenerate parametrization (all-coincident).
+    std::vector<Point3> same = {{2, 2, 2}, {2, 2, 2}, {2, 2, 2}, {2, 2, 2},
+                                {2, 2, 2}, {2, 2, 2}, {2, 2, 2}, {2, 2, 2}};
+    RationalFitResult rd = fitRationalCurveEstimateWeights(same, 3, 2);
+    expectTrue(!rd.ok, "weight-est: all-coincident data declines honestly");
+    // Mismatched params length (explicit overload).
+    std::vector<double> shortPar = {0.0, 0.5};
+    RationalFitResult rm = fitRationalCurveEstimateWeightsWithParams(
+        cpts, shortPar, circle.knots, nCtrlC, degC);
+    expectTrue(!rm.ok, "weight-est: mismatched params length declines honestly");
+    // Wrong knot length.
+    std::vector<double> badKnots = {0, 0, 1, 1};
+    RationalFitResult rk = fitRationalCurveEstimateWeightsWithParams(
+        cpts, cpar, badKnots, nCtrlC, degC);
+    expectTrue(!rk.ok, "weight-est: wrong knot length declines honestly");
+    // A declined fit returns no curve.
+    expectTrue(ru.curve.weights.empty() && rd.curve.weights.empty(),
+               "declined weight-est returns no curve");
+  }
+
   // ── report ──
   if (g_failures == 0)
     std::printf("OK  test_native_nurbs_fit: %d checks passed\n", g_checks);

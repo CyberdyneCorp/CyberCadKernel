@@ -135,6 +135,82 @@ CurveFitResult interpolateRationalCurve(std::span<const Point3> points,
                                         std::span<const double> weights, int degree,
                                         ParamMethod method = ParamMethod::ChordLength);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Rational weight ESTIMATION (Ma–Kruth) — recover BOTH control points AND weights
+// from UNWEIGHTED data, so a fitted rational curve can exactly represent conics
+// (circle / ellipse) that a polynomial fit cannot. This is the harder inverse that
+// interpolateRationalCurve does NOT do (there the weights are prescribed).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Result of a rational weight-estimating fit.
+///
+/// The estimator lifts the rational interpolation condition C(uₖ)=Qₖ to its
+/// bilinear form Σᵢ Nᵢ(uₖ)·wᵢ·(Pᵢ − Qₖ) = 0. Writing the WEIGHTED control points
+/// Hᵢ = wᵢ·Pᵢ this is LINEAR and HOMOGENEOUS in the unknown vector z = (H₀..Hₙ,
+/// w₀..wₙ): one 3-vector equation per datum, stacked into M·z = 0. The nontrivial
+/// null-space direction (smallest-singular-vector, gauge = overall scale) is the
+/// least-squares rational fit; recovered by shifted inverse iteration on MᵀM
+/// through numerics::lin_solve (no external SVD). After solving, Pᵢ = Hᵢ/wᵢ and the
+/// weights are normalized to the gauge w₀ = 1. See Ma & Kruth, "NURBS curve and
+/// surface fitting for reverse engineering" (Computer-Aided Design 1998) and Piegl
+/// & Tiller §9 — the classic weight-recovery/eigenproblem formulation.
+struct RationalFitResult {
+  bool ok = false;               ///< true ⇔ a VALID positive-weight rational fit was recovered
+  BsplineCurveData curve;        ///< fitted rational curve (poles + positive weights)
+  double maxError = 0.0;         ///< max ‖C(uₖ) − Qₖ‖ over the data
+  double rmsError = 0.0;         ///< RMS of ‖C(uₖ) − Qₖ‖ over the data
+  double weightSpread = 0.0;     ///< max wᵢ − min wᵢ after w₀=1 gauge (≈0 ⇒ non-rational)
+  bool rationalityDetected = false;  ///< true ⇔ weightSpread exceeds the flatness threshold
+  const char* diagnostic = "";   ///< on decline: WHY (rank-deficient / sign-flip / degenerate)
+};
+
+/// Estimate BOTH the `nCtrl` control points AND their weights of a degree-`degree`
+/// rational B-spline that fits the data — the weights are UNKNOWN and recovered
+/// (Ma–Kruth), not prescribed. Uses `method` for the parameters and approximation
+/// knots (Eq 9.68/9.69), exactly like approximateCurve. The estimation is a
+/// HOMOGENEOUS null-space solve, so it must be OVER-determined: pass MORE data than
+/// unknowns — a conic (circle/ellipse) arc is a rational quadratic with nCtrl=3,
+/// so sample it at ≫3 points and fit with nCtrl=3, degree=2. Requires
+/// degree+1 ≤ nCtrl and 3·points.size() > 4·nCtrl (enough data to pin the weights).
+///
+/// The bilinear fit condition Σᵢ Nᵢ(uₖ)·wᵢ·(Pᵢ − Qₖ) = 0 is linear in z = (Hᵢ, wᵢ)
+/// with Hᵢ = wᵢ·Pᵢ (see RationalFitResult): one 3-vector row per datum, stacked into
+/// M·z = 0. The nontrivial null-space direction (smallest-singular-vector of M,
+/// equivalently the smallest-eigenvalue eigenvector of MᵀM) is the least-squares
+/// rational fit, recovered by shifted inverse iteration on MᵀM through
+/// numerics::lin_solve (no external SVD). Then Pᵢ = Hᵢ/wᵢ.
+///
+/// GAUGE — weights are defined only up to a common scale; the result is normalized
+/// so w₀ = 1 (the null vector is also sign-normalized so the shared sign is +).
+/// GUARDS (HONEST-DECLINE, never a faked rational): declines with a `diagnostic`
+/// when the data is degenerate/all-coincident, when the system is not over-
+/// determined, when the null space is not cleanly one-dimensional (the two smallest
+/// eigenvalues are comparable — rank-deficient, no stable weights), or when the
+/// recovered weights do not all share one sign (a sign-flipping weight makes the
+/// rational denominator vanish inside the domain — an INVALID NURBS). On success
+/// every weight is strictly positive after the gauge fix.
+///
+/// Detects the POLYNOMIAL (non-rational) case: if the recovered weights are all
+/// ≈ equal (weightSpread ≤ `flatTol`, default 1e-6) the data needs no rationality;
+/// rationalityDetected is false (the fit is still returned, with ≈unit weights).
+RationalFitResult fitRationalCurveEstimateWeights(
+    std::span<const Point3> points, int nCtrl, int degree,
+    ParamMethod method = ParamMethod::ChordLength, double flatTol = 1e-6);
+
+/// Weight-estimating fit with EXPLICIT parameters and knots — the airtight form for
+/// exact conic recovery. Same homogeneous Ma–Kruth null-space solve as the
+/// method-based overload, but the caller supplies the parameter uₖ for every datum
+/// and the flat knot vector directly. This matters because a rational shape's
+/// projective parameter is NOT its chord length: an exact circular/elliptical arc is
+/// recovered to MACHINE precision only when the data carries its own NURBS parameter
+/// (feed the arc's evaluation parameters). Requires params.size()==points.size(),
+/// knots.size()==nCtrl+degree+1, degree+1 ≤ nCtrl ≤ points.size(), and
+/// 3·points.size() > 4·nCtrl. Same gauge (w₀=1), positivity, rank and non-rationality
+/// handling as the other overload.
+RationalFitResult fitRationalCurveEstimateWeightsWithParams(
+    std::span<const Point3> points, std::span<const double> params,
+    std::span<const double> knots, int nCtrl, int degree, double flatTol = 1e-6);
+
 /// A9.4/9.6 — least-squares curve APPROXIMATION: fit a degree-`degree` B-spline
 /// with exactly `nCtrl` control points (nCtrl < points.size()) minimizing the
 /// summed squared distance to the data, with the FIRST and LAST control points

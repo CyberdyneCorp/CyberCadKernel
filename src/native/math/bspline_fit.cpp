@@ -278,6 +278,231 @@ CurveFitResult interpolateRationalCurve(std::span<const Point3> points,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Rational weight ESTIMATION (Ma–Kruth) — recover control points AND weights from
+// UNWEIGHTED data. The rational fit C(uₖ)=Qₖ is BILINEAR: writing the weighted
+// control points Hᵢ = wᵢ·Pᵢ, the condition Σᵢ Nᵢ(uₖ)·wᵢ·(Pᵢ − Qₖ)=0 becomes
+//   Σᵢ Nᵢ(uₖ)·Hᵢ − Qₖ·(Σᵢ Nᵢ(uₖ)·wᵢ) = 0
+// which is LINEAR and HOMOGENEOUS in the unknown z = (H₀..Hₘ, w₀..wₘ). Each datum
+// contributes 3 scalar rows (x/y/z), each coupling the H-block of that axis with the
+// shared w-block. Over-determined (3·nData > 4·nCtrl) ⇒ the fit is the 1-D null
+// space of M, found as the smallest eigenvector of MᵀM by shifted inverse iteration
+// through lin_solve (no external SVD). Then Pᵢ=Hᵢ/wᵢ, gauge-normalized to w₀=1.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+
+// Symmetric-matrix vector product y = A·x, A row-major size×size.
+std::vector<double> matVec(const std::vector<double>& A, int size,
+                           const std::vector<double>& x) {
+  std::vector<double> y(size, 0.0);
+  for (int i = 0; i < size; ++i) {
+    double s = 0.0;
+    const double* row = &A[static_cast<std::size_t>(i) * size];
+    for (int j = 0; j < size; ++j) s += row[j] * x[j];
+    y[i] = s;
+  }
+  return y;
+}
+
+double dot(const std::vector<double>& a, const std::vector<double>& b) {
+  double s = 0.0;
+  for (std::size_t i = 0; i < a.size(); ++i) s += a[i] * b[i];
+  return s;
+}
+
+// Smallest-eigenvalue eigenvector of the symmetric PSD matrix A (size×size) by
+// shifted inverse iteration: repeatedly solve (A + shift·I)·y = z, normalize.
+// `deflate` (optional, unit-norm) is projected out each step so a second call finds
+// the SECOND-smallest eigenvector (for the null-space-gap rank test). Returns the
+// eigenvector and, in `outEig`, its Rayleigh quotient zᵀAz (the eigenvalue).
+std::vector<double> smallestEigvec(const std::vector<double>& A, int size, double shift,
+                                   const std::vector<double>* deflate, double& outEig) {
+  std::vector<double> shifted = A;
+  for (int i = 0; i < size; ++i) shifted[static_cast<std::size_t>(i) * size + i] += shift;
+
+  // Deterministic non-degenerate start.
+  std::vector<double> z(size);
+  for (int i = 0; i < size; ++i) z[i] = 1.0 + 0.1 * std::sin(0.3 * i + 1.0);
+  auto normalize = [](std::vector<double>& v) {
+    double nrm = std::sqrt(dot(v, v));
+    if (nrm > 0.0) for (double& e : v) e /= nrm;
+    return nrm;
+  };
+  auto orthoDeflate = [&](std::vector<double>& v) {
+    if (deflate) {
+      const double c = dot(v, *deflate);
+      for (int i = 0; i < size; ++i) v[i] -= c * (*deflate)[i];
+    }
+  };
+  orthoDeflate(z);
+  normalize(z);
+
+  for (int it = 0; it < 200; ++it) {
+    std::vector<double> y = lin_solve(shifted, size, z);
+    if (static_cast<int>(y.size()) != size) { outEig = -1.0; return {}; }
+    orthoDeflate(y);
+    if (normalize(y) == 0.0) { outEig = -1.0; return {}; }
+    const double change = std::fabs(std::fabs(dot(y, z)) - 1.0);
+    z.swap(y);
+    if (change < 1e-14) break;
+  }
+  outEig = dot(z, matVec(A, size, z));  // Rayleigh quotient (unshifted eigenvalue)
+  return z;
+}
+
+// Assemble MᵀM (size 4·nCtrl) for the homogeneous weight-estimation system over the
+// given data/params/knots. Unknown layout: [Hx | Hy | Hz | w], each block nCtrl long.
+std::vector<double> buildWeightEstNormalMatrix(std::span<const Point3> points,
+                                               std::span<const double> u,
+                                               std::span<const double> U, int nCtrl,
+                                               int degree) {
+  const int nUnknown = 4 * nCtrl;
+  const int W0 = 3 * nCtrl;  // weight-block offset
+  const int lastPole = nCtrl - 1;
+  std::vector<double> AtA(static_cast<std::size_t>(nUnknown) * nUnknown, 0.0);
+  std::vector<double> N(degree + 1);
+  std::vector<std::pair<int, double>> terms;
+  terms.reserve(2 * (degree + 1));
+  const int nData = static_cast<int>(points.size());
+  for (int k = 0; k < nData; ++k) {
+    const int span = findSpan(lastPole, degree, u[k], U);
+    basisFuns(span, u[k], degree, U, N);
+    const double qd[3] = {points[k].x, points[k].y, points[k].z};
+    for (int axis = 0; axis < 3; ++axis) {
+      // Row for axis d: +Nᵢ at H_d[i], −Qₖ_d·Nᵢ at w[i]. MᵀM += row ⊗ row.
+      terms.clear();
+      for (int j = 0; j <= degree; ++j) {
+        const int i = span - degree + j;
+        terms.emplace_back(axis * nCtrl + i, N[j]);
+        terms.emplace_back(W0 + i, -qd[axis] * N[j]);
+      }
+      for (const auto& [ci, cv] : terms)
+        for (const auto& [cj, cw] : terms)
+          AtA[static_cast<std::size_t>(ci) * nUnknown + cj] += cv * cw;
+    }
+  }
+  return AtA;
+}
+
+}  // namespace
+
+RationalFitResult fitRationalCurveEstimateWeightsWithParams(std::span<const Point3> points,
+                                                           std::span<const double> params,
+                                                           std::span<const double> knots,
+                                                           int nCtrl, int degree,
+                                                           double flatTol) {
+  RationalFitResult r;
+  const int nData = static_cast<int>(points.size());
+  if (degree < 1 || nCtrl < degree + 1 || nData < nCtrl) {
+    r.diagnostic = "invalid dimensions (need degree+1 <= nCtrl <= nData)";
+    return r;
+  }
+  if (static_cast<int>(params.size()) != nData) {
+    r.diagnostic = "params.size() must equal points.size()";
+    return r;
+  }
+  if (static_cast<int>(knots.size()) != nCtrl + degree + 1) {
+    r.diagnostic = "knots.size() must equal nCtrl+degree+1";
+    return r;
+  }
+  // Over-determination: 3 rows/datum, 4 unknowns/control point. Need a clean 1-D
+  // null space, so demand strictly more rows than unknowns.
+  const int nUnknown = 4 * nCtrl;   // Hx,Hy,Hz,w per control point
+  if (3 * nData <= nUnknown) {
+    r.diagnostic = "under-determined: need 3*nData > 4*nCtrl to pin the weights";
+    return r;
+  }
+
+  const std::span<const double> u = params;
+  const std::span<const double> U = knots;
+  const int W0 = 3 * nCtrl;  // offset of the weight block in the unknown vector
+
+  // Assemble MᵀM for the homogeneous bilinear system (see comment block above).
+  const std::vector<double> AtA = buildWeightEstNormalMatrix(points, u, U, nCtrl, degree);
+
+  // Scale-invariant shift for inverse iteration (trace-relative).
+  double trace = 0.0;
+  for (int i = 0; i < nUnknown; ++i) trace += AtA[static_cast<std::size_t>(i) * nUnknown + i];
+  const double shift = (trace > 0.0 ? trace / nUnknown : 1.0) * 1e-12;
+
+  double eig0 = 0.0, eig1 = 0.0;
+  std::vector<double> z = smallestEigvec(AtA, nUnknown, shift, nullptr, eig0);
+  if (static_cast<int>(z.size()) != nUnknown) {
+    r.diagnostic = "eigen solve failed (singular shifted system)";
+    return r;
+  }
+  const std::vector<double> z1 = smallestEigvec(AtA, nUnknown, shift, &z, eig1);
+  if (static_cast<int>(z1.size()) == nUnknown) {
+    // Rank test: the smallest eigenvalue must be well SEPARATED from the next — a
+    // clean 1-D null space means eig0 ≪ eig1 (large relative GAP). The absolute eig0
+    // is NOT required to be machine-zero: the chord-length parametrization differs
+    // from the datum's projective parameter, so an exact conic still leaves a small
+    // fit residual (eig0 ~ 1e-6·trace). A comparable eig1 (small gap) means the null
+    // space is not one-dimensional (rank-deficient) — weights not unique, decline.
+    const double gap = eig1 / std::max(eig0, 1e-300);
+    if (!(gap > 50.0)) {
+      r.diagnostic = "rank-deficient: null space not one-dimensional (weights not unique)";
+      return r;
+    }
+  }
+
+  // Extract weights; enforce a single shared sign (flip the whole vector if needed).
+  std::vector<double> w(nCtrl);
+  double sumW = 0.0;
+  for (int i = 0; i < nCtrl; ++i) { w[i] = z[W0 + i]; sumW += w[i]; }
+  if (sumW < 0.0) for (double& e : z) e = -e;   // gauge the shared sign to +
+  for (int i = 0; i < nCtrl; ++i) w[i] = z[W0 + i];
+
+  // Sign-flip guard: a valid rational needs all weights strictly the SAME sign.
+  double wmin = w[0], wmax = w[0];
+  for (int i = 0; i < nCtrl; ++i) { wmin = std::min(wmin, w[i]); wmax = std::max(wmax, w[i]); }
+  const double wref = std::fabs(w[0]) > 0.0 ? std::fabs(w[0]) : 1.0;
+  if (!(wmin > 1e-9 * wref)) {
+    r.diagnostic = "sign-flipping / near-zero weight recovered (invalid rational)";
+    return r;
+  }
+
+  // De-homogenize: Pᵢ = Hᵢ/wᵢ, then normalize weights to the w₀ = 1 gauge.
+  const double g = w[0];
+  r.curve.degree = degree;
+  r.curve.knots.assign(U.begin(), U.end());
+  r.curve.poles.resize(nCtrl);
+  r.curve.weights.resize(nCtrl);
+  for (int i = 0; i < nCtrl; ++i) {
+    const double wi = w[i];
+    r.curve.poles[i] = {z[i] / wi, z[nCtrl + i] / wi, z[2 * nCtrl + i] / wi};
+    r.curve.weights[i] = wi / g;  // gauge w₀ = 1
+  }
+
+  // Weight spread after the gauge fix — the non-rationality detector.
+  double gmin = r.curve.weights[0], gmax = r.curve.weights[0];
+  for (double wi : r.curve.weights) { gmin = std::min(gmin, wi); gmax = std::max(gmax, wi); }
+  r.weightSpread = gmax - gmin;
+  r.rationalityDetected = (r.weightSpread > flatTol);
+
+  rationalCurveErrors(r.curve, points, u, r.maxError, r.rmsError);
+  r.ok = true;
+  return r;
+}
+
+RationalFitResult fitRationalCurveEstimateWeights(std::span<const Point3> points, int nCtrl,
+                                                  int degree, ParamMethod method,
+                                                  double flatTol) {
+  RationalFitResult r;
+  const int nData = static_cast<int>(points.size());
+  if (degree < 1 || nCtrl < degree + 1 || nData < nCtrl) {
+    r.diagnostic = "invalid dimensions (need degree+1 <= nCtrl <= nData)";
+    return r;
+  }
+  const std::vector<double> u = paramsImpl(points, method);
+  if (static_cast<int>(u.size()) != nData) {
+    r.diagnostic = "degenerate parametrization (all-coincident points)";
+    return r;
+  }
+  const std::vector<double> U = approxKnotsImpl(u, degree, nCtrl);
+  return fitRationalCurveEstimateWeightsWithParams(points, u, U, nCtrl, degree, flatTol);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Curve least-squares approximation (A9.4/9.6), endpoints pinned.
 // ─────────────────────────────────────────────────────────────────────────────
 

@@ -106,11 +106,13 @@ def test_interp_curve_reproduces_samples(kernel):
         # endpoints are pinned exactly
         assert np.linalg.norm(c.eval(kn[0]) - pts[0]) <= 1e-9
         assert np.linalg.norm(c.eval(kn[-1]) - pts[-1]) <= 1e-9
-        # every sample lies on the curve (dense min-distance well under the
-        # sample spacing — an interpolation, not a smoothing approximation)
-        dense = np.array([c.eval(t) for t in np.linspace(kn[0], kn[-1], 600)])
+        # every sample lies on the curve: the dense min-distance -> 0 as the
+        # sampling refines (an interpolation, not a smoothing approximation). At
+        # 20k samples the residual is a pure discretization artifact (~5e-5),
+        # orders of magnitude below the ~0.55 inter-sample spacing.
+        dense = np.array([c.eval(t) for t in np.linspace(kn[0], kn[-1], 20000)])
         worst = max(np.min(np.linalg.norm(dense - p, axis=1)) for p in pts)
-        assert worst <= 1e-3
+        assert worst <= 1e-4
 
 
 def test_fit_curve_approximates_samples(kernel):

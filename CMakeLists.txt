@@ -415,6 +415,24 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_reverse_engineer)
         set(test_native_reverse_engineer_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_reverse_engineer.cpp")
+        # NURBS roadmap Layer 7 reverse-engineering ROBUSTNESS — segmentAndFitRobust over
+        # NOISY / OUTLIER-LADEN scans (src/native/math/reverse_engineer). Additive to the
+        # noise-free segmentAndFit: an outlier-rejecting primitive fit (RANSAC consensus +
+        # IRLS/Huber trimmed refine) inside region growing, a NOISE-RELATIVE membership band
+        # (base.tol floored, scaled by the estimated σ = 1.4826·MAD of local residuals), and
+        # an explicit OUTLIER set for points consistent with no region. Reuses the same
+        # numsci-facade fitters (primitive_fit / approximateSurface), so the gate builds only
+        # under CYBERCAD_HAS_NUMSCI. Airtight oracles (deterministic synthetic data, RNG
+        # seeded by index): NOISY plane/sphere/cylinder recovery + 5% gross outliers → correct
+        # TYPE, params within the noise band (≈σ, NOT claimed exact), ≥90% outliers isolated
+        # with ≤5% false-positive, inlier RMS ≈ σ reported honestly; NOISE-FREE REDUCTION
+        # (clean cloud → reproduces the noise-free segmentAndFit, params ≤1e-6, no outliers);
+        # COMPOSITE + noise (plane+cyl+sphere → 3 correct regions, outliers isolated); and
+        # OVER-NOISE HONEST (catastrophic noise → no fabricated near-exact primitive; any
+        # accepted primitive carries an HONEST large RMS, never a widened claim).
+        list(APPEND CYBERCAD_TESTS test_native_reverse_engineer_robust)
+        set(test_native_reverse_engineer_robust_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_reverse_engineer_robust.cpp")
         # NURBS roadmap Layer 1 — exact analytic↔NURBS conversion (src/native/math/
         # analytic_nurbs). Analytic→NURBS builds the EXACT rational forms (P&T Ch.7):
         # circle/arc/ellipse/line as rational-quadratic curves (weight cos(halfSweep),
@@ -1587,6 +1605,14 @@ if(CYBERCAD_BUILD_TESTS)
     # substrate include trees, exactly like the Layer-7 primitive-fit gate above.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_reverse_engineer)
         target_compile_definitions(test_native_reverse_engineer PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+
+    # The Layer-7 reverse-engineering ROBUSTNESS gate includes reverse_engineer.h (same
+    # transitive include tree as the noise-free gate above — primitive_fit.h + bspline_fit.h
+    # → numerics.h, vec.h + std only), so its TU needs the macro but NOT the substrate
+    # include trees, exactly like the reverse-engineering-pipeline gate above.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_reverse_engineer_robust)
+        target_compile_definitions(test_native_reverse_engineer_robust PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     # The Layer-1 analytic↔NURBS gate includes analytic_nurbs.h, which under

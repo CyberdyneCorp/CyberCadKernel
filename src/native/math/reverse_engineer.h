@@ -98,10 +98,21 @@ struct SegmentRegion {
 /// input index appears in exactly one region's `inliers` (a Declined region collects
 /// the honestly-unassignable points). `regions` is deterministic (seed order = ascending
 /// index), so the output is reproducible.
+///
+/// The ROBUST path (segmentAndFitRobust) additionally populates `outliers` /
+/// `outlierCount` (points consistent with no region within the robust tolerance —
+/// isolated, NEVER force-assigned) and `noiseSigma` (the estimated scan noise level used
+/// to scale the residual band). The noise-free path (segmentAndFit) leaves these at their
+/// defaults (empty / 0), so its result is byte-compatible.
 struct SegmentationResult {
   std::vector<SegmentRegion> regions;
   int assignedCount = 0;   ///< points in a NON-Declined region
   int declinedCount = 0;   ///< points in a Declined region (honestly unassigned)
+
+  // ── Robust-path-only fields (defaulted; unused by the noise-free segmentAndFit) ──
+  std::vector<int> outliers;   ///< indices consistent with NO region (gross outliers), isolated
+  int outlierCount = 0;        ///< == outliers.size(); points that fit no region robustly
+  double noiseSigma = 0.0;     ///< estimated scan noise σ (0 when not estimated / noise-free)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -118,6 +129,42 @@ struct SegmentParams {
   int minRegion = 6;    ///< smallest region that may be classified (else Declined) — matches
                         ///< the largest primitive minimum (cylinder/cone need ≥ 6 points)
   int freeformCtrl = 4; ///< control points per direction for a freeform patch fit (degree 3)
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Robust (noisy / outlier-laden scan) tunables. The noise-free segmentAndFit grows on
+// EXACT residuals; a real scan has Gaussian noise σ and gross outliers, so region
+// membership on an exact `tol` frontier either over-segments (noise splits a face) or
+// swallows outliers. segmentAndFitRobust addresses that with:
+//   • a noise-RELATIVE residual band  band = max(tol, bandSigma·σ)  where σ is ESTIMATED
+//     from the data (robust MAD of local residuals), so the frontier scales with noise;
+//   • an outlier-REJECTING primitive fit inside region growing (RANSAC-style consensus
+//     over deterministically-seeded minimal subsets + a Huber/IRLS refine on the
+//     consensus inliers), so a few gross outliers never corrupt the plane/sphere/cyl/cone;
+//   • an explicit OUTLIER set — points consistent with NO region within `band` are
+//     isolated, never force-assigned to the nearest region.
+// The reported RMS is always the TRUE robust inlier RMS (≈ σ on clean-inlier data); it is
+// NEVER clamped to claim exactness on noisy input.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Tunables for segmentAndFitRobust. `base` carries the shared knobs (kNeighbors,
+/// minRegion, freeformCtrl and the FLOOR tolerance `base.tol`); the robust knobs below
+/// govern noise handling. Defaults segment the airtight noisy oracles (a plane/sphere/cyl
+/// cloud + Gaussian σ + 5% gross outliers) correctly without per-case widening.
+struct RobustSegmentParams {
+  SegmentParams base{};    ///< shared region-growing knobs; base.tol is the ABSOLUTE floor band
+  double sigma = 0.0;      ///< known noise σ; when ≤0 it is ESTIMATED from the data (MAD)
+  double bandSigma = 3.0;  ///< region membership band = max(base.tol, bandSigma·σ) (3σ inliers)
+  double outlierSigma = 4.0;  ///< a point beyond outlierSigma·σ of EVERY region → OUTLIER set
+  int ransacIters = 64;    ///< RANSAC consensus trials per candidate fit (deterministic RNG)
+  int huberIters = 6;      ///< IRLS/Huber refine passes after consensus (Huber k = bandSigma·σ)
+  double minInlierFrac = 0.6;  ///< a robust primitive must explain ≥ this fraction of its region
+  int robustMinRegion = 12;    ///< floor on a robust region's size: a higher-DOF primitive
+                               ///< (cone/cylinder, 6-7 DOF) fits ANY 6 points EXACTLY, so a
+                               ///< handful of gross outliers would otherwise fabricate a
+                               ///< near-zero-RMS spurious primitive. Requiring well more
+                               ///< points than the DOF makes an exact fit of random outliers
+                               ///< statistically implausible → they stay OUTLIERS, not a region.
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -143,6 +190,30 @@ SegmentationResult segmentAndFit(std::span<const Point3> points,
 inline SegmentationResult segmentAndFit(std::span<const Point3> points,
                                         const SegmentParams& params = {}) {
   return segmentAndFit(points, std::span<const Vec3>{}, params);
+}
+
+/// ROBUST segmentation for NOISY / OUTLIER-LADEN scans. Same partition semantics as
+/// segmentAndFit — every region carries its type + params + TRUE achieved RMS — but:
+///   • each candidate primitive is fitted with an OUTLIER-REJECTING estimator (RANSAC
+///     consensus over deterministically-seeded minimal subsets, then a Huber/IRLS refine
+///     on the consensus inliers), so a few gross outliers never corrupt the fit;
+///   • region membership uses a NOISE-RELATIVE band (base.tol floored, scaled by the
+///     estimated σ), so noise does not over/under-segment a face;
+///   • points consistent with NO region within the robust band become an explicit OUTLIER
+///     set (`result.outliers`), isolated rather than force-assigned;
+///   • the reported RMS is the honest robust inlier RMS (≈ σ), NEVER claimed exact.
+/// On a CLEAN cloud (no injected noise, σ estimated ≈ 0) the band collapses to base.tol
+/// and this REPRODUCES segmentAndFit (same region count + types, params ≤ 1e-6). When no
+/// stable primitive survives the noise, the region HONEST-DECLINES to Freeform or Declined
+/// — never a fabricated primitive. Deterministic (seeded RNG by index; no global state).
+SegmentationResult segmentAndFitRobust(std::span<const Point3> points,
+                                       std::span<const Vec3> normals,
+                                       const RobustSegmentParams& params = {});
+
+/// Convenience overload without normals.
+inline SegmentationResult segmentAndFitRobust(std::span<const Point3> points,
+                                              const RobustSegmentParams& params = {}) {
+  return segmentAndFitRobust(points, std::span<const Vec3>{}, params);
 }
 
 }  // namespace cybercad::native::math

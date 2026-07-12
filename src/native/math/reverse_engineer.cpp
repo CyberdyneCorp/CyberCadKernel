@@ -21,6 +21,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <vector>
 
@@ -407,6 +408,371 @@ void commit(SegmentationResult& out, SegmentRegion&& sr) {
   out.regions.push_back(std::move(sr));
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// ROBUST PATH — noisy / outlier-laden scans.
+//
+// The noise-free machinery above grows regions on EXACT residuals. Real scans carry
+// Gaussian noise σ and gross outliers, so an exact frontier both over-segments (noise
+// splits a face) and swallows outliers into the fit. The robust path replaces the
+// primitive fit inside region growing with an OUTLIER-REJECTING estimator and grows on a
+// noise-RELATIVE band, then isolates points that fit no region into an OUTLIER set.
+// Everything here is deterministic: the RNG is seeded by the region's own smallest index,
+// never a global clock — the output is byte-reproducible.
+// ═════════════════════════════════════════════════════════════════════════════
+namespace robust {
+
+// Deterministic xorshift64* — seeded by a data-derived value (never a clock). Yields a
+// bounded index for RANSAC subset selection.
+struct Rng {
+  std::uint64_t s;
+  explicit Rng(std::uint64_t seed) : s(seed ? seed : 0x9e3779b97f4a7c15ULL) {}
+  std::uint64_t next() {
+    s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+    return s * 0x2545f4914f6cdd1dULL;
+  }
+  int index(int n) { return static_cast<int>(next() % static_cast<std::uint64_t>(n)); }
+};
+
+// Median of a scratch vector (mutates it via nth_element). Empty → 0.
+double medianOf(std::vector<double>& v) {
+  if (v.empty()) return 0.0;
+  const std::size_t mid = v.size() / 2;
+  std::nth_element(v.begin(), v.begin() + mid, v.end());
+  const double hi = v[mid];
+  if (v.size() % 2 == 1) return hi;
+  std::nth_element(v.begin(), v.begin() + (mid - 1), v.end());
+  return 0.5 * (hi + v[mid - 1]);
+}
+
+// Robust noise σ from a set of signed residuals: σ ≈ 1.4826 · MAD (median absolute
+// deviation), the standard consistent Gaussian-σ estimator, immune to the outlier tail.
+double sigmaFromResiduals(std::vector<double> resid) {
+  if (resid.empty()) return 0.0;
+  std::vector<double> a = resid;
+  const double med = medianOf(a);
+  std::vector<double> dev;
+  dev.reserve(resid.size());
+  for (double r : resid) dev.push_back(std::fabs(r - med));
+  return 1.4826 * medianOf(dev);
+}
+
+// RMS of the residuals of an index subset to a detected primitive (inlier RMS: caller
+// passes only the inliers). Empty → 0.
+double subsetRms(std::span<const Point3> pts, const std::vector<int>& idx,
+                 const PrimitiveDetection& d) {
+  if (idx.empty()) return 0.0;
+  double s2 = 0.0;
+  for (int i : idx) {
+    const double r = residualToPrimitive(pts[i], d);
+    s2 += r * r;
+  }
+  return std::sqrt(s2 / static_cast<double>(idx.size()));
+}
+
+// Outcome of a robust fit over one region: the winning primitive, its consensus inliers
+// (region-local absorbed into ORIGINAL indices), and the honest inlier RMS.
+struct RobustFit {
+  PrimitiveDetection det{};
+  std::vector<int> inliers;   ///< ORIGINAL indices consistent with `det` within band
+  double inlierRms = 0.0;     ///< TRUE RMS over the inliers (≈ σ), never claimed exact
+  bool ok = false;
+};
+
+// detectPrimitive on an ORIGINAL-index subset, RELATIVE tolerance derived from the subset
+// extent and an ABSOLUTE band (mirrors detectOnSubset but with an explicit band so the
+// robust path can pass a noise-scaled tolerance).
+PrimitiveDetection detectOnSubsetBand(std::span<const Point3> pts,
+                                      const std::vector<int>& idx, double band) {
+  const std::vector<Point3> sub = gather(pts, idx);
+  const double extent = subsetExtent(pts, idx);
+  return detectPrimitive(sub, band / extent);
+}
+
+// Inliers of a detected primitive over a candidate index set, within an absolute band.
+std::vector<int> inliersWithin(std::span<const Point3> pts, const std::vector<int>& cand,
+                               const PrimitiveDetection& d, double band) {
+  std::vector<int> in;
+  in.reserve(cand.size());
+  for (int i : cand)
+    if (residualToPrimitive(pts[i], d) <= band) in.push_back(i);
+  return in;
+}
+
+// RANSAC-style consensus + IRLS/Huber (trimmed) refine over one candidate index set.
+//
+// CONSENSUS: draw `ransacIters` deterministic minimal-ish subsets, fit each with
+// detectPrimitive, score by the number of inliers within `band`; keep the maximal-
+// consensus fit. This rejects gross outliers — a subset polluted by an outlier scores
+// poorly and loses. REFINE (IRLS/Huber): re-fit detectPrimitive on the consensus inliers,
+// recompute residuals, re-select inliers at the Huber threshold `band`, and iterate; this
+// is hard-weight IRLS (weights 1 inside band, 0 outside) and converges to the robust fit.
+// Reports the TRUE inlier RMS. HONEST-DECLINE (ok=false) when no fit explains ≥
+// minInlierFrac of the candidate set.
+RobustFit robustFit(std::span<const Point3> pts, const std::vector<int>& cand,
+                    double band, const RobustSegmentParams& prm, std::uint64_t seed,
+                    double sigma) {
+  RobustFit out;
+  const int m = static_cast<int>(cand.size());
+  // Robust floor: a higher-DOF primitive fits ANY 6 points exactly, so require enough
+  // points that an exact fit of gross outliers is statistically implausible.
+  const int minReg = std::max(prm.base.minRegion, prm.robustMinRegion);
+  if (m < minReg) return out;
+
+  // Subset size: enough to define any primitive robustly (≥ 6 for cyl/cone) with a small
+  // margin, capped at the candidate size. Larger subsets are more stable than strictly
+  // minimal ones and keep detectPrimitive's type discrimination reliable.
+  const int subSize = std::min(m, std::max(prm.base.minRegion + 2, 8));
+
+  Rng rng(seed);
+  std::vector<int> bestInliers;
+  PrimitiveDetection bestDet;
+  std::size_t bestCount = 0;
+
+  for (int it = 0; it < prm.ransacIters; ++it) {
+    // Draw a DISTINCT random subset of `cand` (deterministic).
+    std::vector<int> pick;
+    pick.reserve(static_cast<std::size_t>(subSize));
+    std::vector<char> taken(static_cast<std::size_t>(m), 0);
+    int guard = 0;
+    while (static_cast<int>(pick.size()) < subSize && guard < 20 * subSize) {
+      const int r = rng.index(m);
+      ++guard;
+      if (!taken[r]) { taken[r] = 1; pick.push_back(cand[r]); }
+    }
+    if (static_cast<int>(pick.size()) < prm.base.minRegion) continue;
+
+    const PrimitiveDetection d = detectOnSubsetBand(pts, pick, band);
+    if (!d.ok) continue;
+    const std::vector<int> in = inliersWithin(pts, cand, d, band);
+    if (in.size() > bestCount) {
+      bestCount = in.size();
+      bestInliers = in;
+      bestDet = d;
+    }
+  }
+
+  if (bestInliers.size() < static_cast<std::size_t>(minReg)) return out;
+
+  // IRLS / Huber (hard-weight) refine on the consensus inliers.
+  std::vector<int> inl = bestInliers;
+  PrimitiveDetection det = bestDet;
+  for (int it = 0; it < prm.huberIters; ++it) {
+    const PrimitiveDetection refit = detectOnSubsetBand(pts, inl, band);
+    if (!refit.ok) break;
+    std::vector<int> reIn = inliersWithin(pts, cand, refit, band);
+    if (reIn.size() < static_cast<std::size_t>(minReg)) break;
+    det = refit;
+    const bool converged = (reIn.size() == inl.size());
+    inl = std::move(reIn);
+    if (converged) break;
+  }
+
+  // Must explain a real majority of the candidate set AND meet the robust size floor —
+  // else this is not a coherent region (honest decline; the caller then falls to freeform
+  // / outliers). Requiring more points than the primitive DOF prevents a handful of gross
+  // outliers from being fitted EXACTLY by a high-DOF cone/cylinder.
+  if (static_cast<int>(inl.size()) < minReg) return out;
+  if (static_cast<double>(inl.size()) <
+      prm.minInlierFrac * static_cast<double>(m))
+    return out;
+
+  std::sort(inl.begin(), inl.end());
+  out.det = det;
+  out.inliers = std::move(inl);
+  out.inlierRms = subsetRms(pts, out.inliers, det);
+
+  // HONESTY: a genuine noisy surface has RMS commensurate with the noise (≈ σ). An
+  // implausibly-perfect fit (RMS ≪ σ) over a set this size is OVERFITTING a coincidental
+  // configuration (e.g. a cone threaded through near-collinear outliers). When σ is known/
+  // estimated > 0, reject a primitive whose RMS is a tiny fraction of σ — decline rather
+  // than report a fabricated near-exact primitive. (On truly clean data σ≈0 and this guard
+  // is inert, so the noise-free reduction is preserved.)
+  if (sigma > 0.0 && out.inlierRms < 1e-3 * sigma) return {};
+
+  out.ok = true;
+  return out;
+}
+
+// Solve a small symmetric positive-(semi)definite normal system A x = b (A is c×c, row-
+// major) by Gaussian elimination with partial pivoting. Self-contained (no facade), used
+// only for the tiny 6×6 local-quadric fit in the σ estimator. Returns false if singular.
+bool solveSmall(std::vector<double> A, std::vector<double> b, int c, std::vector<double>& x) {
+  for (int col = 0; col < c; ++col) {
+    int piv = col;
+    double best = std::fabs(A[col * c + col]);
+    for (int r = col + 1; r < c; ++r) {
+      const double v = std::fabs(A[r * c + col]);
+      if (v > best) { best = v; piv = r; }
+    }
+    if (best < 1e-300) return false;
+    if (piv != col) {
+      for (int k = 0; k < c; ++k) std::swap(A[col * c + k], A[piv * c + k]);
+      std::swap(b[col], b[piv]);
+    }
+    const double d = A[col * c + col];
+    for (int r = 0; r < c; ++r) {
+      if (r == col) continue;
+      const double f = A[r * c + col] / d;
+      if (f == 0.0) continue;
+      for (int k = col; k < c; ++k) A[r * c + k] -= f * A[col * c + k];
+      b[r] -= f * b[col];
+    }
+  }
+  x.assign(static_cast<std::size_t>(c), 0.0);
+  for (int i = 0; i < c; ++i) x[i] = b[i] / A[i * c + i];
+  return true;
+}
+
+// Estimate the scan noise σ from LOCAL QUADRIC residuals. A plane residual over a k-NN
+// patch CANNOT separate noise from curvature (the sagitta of a curved surface looks like
+// roughness), so on a CLEAN cylinder/sphere a plane estimator reports a spurious σ and the
+// band no longer collapses to base.tol. Instead, over each point's neighbourhood we fit a
+// local QUADRIC height field z = a + b·u + c·w + d·u² + e·uw + f·w² in the point's tangent
+// frame; the quadric ABSORBS the local curvature, so the fit residual is the pure noise.
+// σ ≈ 1.4826·MAD of those residuals — the consistent Gaussian estimator, immune to the
+// outlier tail. On CLEAN data (curved or flat) the residuals are ~0 so σ≈0 and the band
+// collapses to base.tol, reproducing the noise-free path; on noisy data σ ≈ the true noise.
+double estimateSigma(std::span<const Point3> pts,
+                     const std::vector<std::vector<int>>& adj,
+                     const RobustSegmentParams& prm) {
+  if (prm.sigma > 0.0) return prm.sigma;
+  const int n = static_cast<int>(pts.size());
+  if (n < 8) return 0.0;
+
+  std::vector<double> resids;
+  resids.reserve(static_cast<std::size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    // Neighbourhood: i plus its k-NN. Need ≥ 6 points to fit the 6-term quadric.
+    std::vector<int> ball{i};
+    for (int nb : adj[i]) ball.push_back(nb);
+    const int m = static_cast<int>(ball.size());
+    if (m < 8) continue;  // enough over-determination for a stable quadric
+
+    // Local tangent frame from the neighbourhood's TLS plane.
+    const std::vector<Point3> sub = gather(pts, ball);
+    const PlaneFit pf = fitPlane(sub);
+    if (!pf.ok) continue;
+    const Vec3 nrm = pf.normal.vec();
+    Vec3 t = (std::fabs(nrm.x) < 0.9) ? Vec3{1, 0, 0} : Vec3{0, 1, 0};
+    Vec3 uu = cross(nrm, t);
+    uu = uu / norm(uu);
+    const Vec3 ww = cross(nrm, uu);
+
+    // Assemble the 6×6 normal equations for z(u,w) = θ·[1,u,w,u²,uw,w²].
+    std::vector<double> AtA(36, 0.0), Atb(6, 0.0);
+    for (int k = 0; k < m; ++k) {
+      const Vec3 rel = sub[k] - pf.centroid;
+      const double u = dot(rel, uu), w = dot(rel, ww), z = dot(rel, nrm);
+      const double phi[6] = {1.0, u, w, u * u, u * w, w * w};
+      for (int a = 0; a < 6; ++a) {
+        Atb[a] += phi[a] * z;
+        for (int b = 0; b < 6; ++b) AtA[a * 6 + b] += phi[a] * phi[b];
+      }
+    }
+    std::vector<double> theta;
+    if (!solveSmall(AtA, Atb, 6, theta)) continue;
+
+    // Residual of the CENTER point (k for i is index 0 in `ball`/`sub`).
+    const Vec3 rel0 = sub[0] - pf.centroid;
+    const double u0 = dot(rel0, uu), w0 = dot(rel0, ww), z0 = dot(rel0, nrm);
+    const double pred = theta[0] + theta[1] * u0 + theta[2] * w0 + theta[3] * u0 * u0 +
+                        theta[4] * u0 * w0 + theta[5] * w0 * w0;
+    resids.push_back(std::fabs(z0 - pred));
+  }
+  if (resids.empty()) return 0.0;
+  return sigmaFromResiduals(std::move(resids));
+}
+
+// Build a SegmentRegion from a robust fit's winning primitive + inliers.
+SegmentRegion regionFromRobustFit(const RobustFit& rf) {
+  SegmentRegion sr;
+  sr.inliers = rf.inliers;
+  switch (rf.det.type) {
+    case PrimitiveType::Plane:    sr.kind = RegionKind::Plane;    sr.plane = rf.det.plane;       break;
+    case PrimitiveType::Sphere:   sr.kind = RegionKind::Sphere;   sr.sphere = rf.det.sphere;     break;
+    case PrimitiveType::Cylinder: sr.kind = RegionKind::Cylinder; sr.cylinder = rf.det.cylinder; break;
+    case PrimitiveType::Cone:     sr.kind = RegionKind::Cone;     sr.cone = rf.det.cone;         break;
+    default:                      sr.kind = RegionKind::Declined;                                break;
+  }
+  sr.rms = rf.inlierRms;  // TRUE robust inlier RMS — never claimed exact
+  return sr;
+}
+
+// Robust seeded region growing over one component. Seed generously, robust-fit a
+// primitive (RANSAC+IRLS) on the seed ball, then grow the CONSENSUS inlier set outward by
+// the noise band, re-fitting robustly so the primitive tracks the whole face. Returns the
+// grown inlier set (ORIGINAL indices) plus the winning fit. `avail` marks component points
+// not yet claimed. Grows only within `avail`.
+RobustFit growRobustRegion(std::span<const Point3> pts,
+                           const std::vector<std::vector<int>>& adj, int seed,
+                           const std::vector<char>& avail, double band,
+                           const RobustSegmentParams& prm, double sigma) {
+  const int n = static_cast<int>(pts.size());
+  const int seedTarget =
+      std::max(4 * prm.base.minRegion, 2 * prm.base.kNeighbors);
+
+  std::vector<char> inBall(static_cast<std::size_t>(n), 0);
+  std::vector<int> ball{seed};
+  inBall[seed] = 1;
+  std::vector<int> frontier{seed};
+  while (!frontier.empty() && static_cast<int>(ball.size()) < seedTarget) {
+    const int cur = frontier.front();
+    frontier.erase(frontier.begin());
+    for (int nb : adj[cur])
+      if (avail[nb] && !inBall[nb]) {
+        inBall[nb] = 1;
+        ball.push_back(nb);
+        frontier.push_back(nb);
+        if (static_cast<int>(ball.size()) >= seedTarget) break;
+      }
+  }
+  if (static_cast<int>(ball.size()) < prm.base.minRegion) return {};
+
+  RobustFit rf = robustFit(pts, ball, band, prm, static_cast<std::uint64_t>(seed) + 1, sigma);
+  if (!rf.ok) return rf;
+
+  // Mark the current region membership and grow the frontier under the (robust) fit.
+  std::vector<char> inRegion(static_cast<std::size_t>(n), 0);
+  for (int i : rf.inliers) inRegion[i] = 1;
+
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    std::vector<int> front;
+    for (int r : rf.inliers)
+      for (int nb : adj[r])
+        if (avail[nb] && !inRegion[nb]) front.push_back(nb);
+    std::sort(front.begin(), front.end());
+    front.erase(std::unique(front.begin(), front.end()), front.end());
+
+    std::vector<int> grow = rf.inliers;
+    for (int cand : front)
+      if (residualToPrimitive(pts[cand], rf.det) <= band) {
+        grow.push_back(cand);
+        inRegion[cand] = 1;
+        changed = true;
+      }
+    if (changed) {
+      std::sort(grow.begin(), grow.end());
+      RobustFit refit = robustFit(pts, grow, band, prm,
+                                  static_cast<std::uint64_t>(seed) + 1, sigma);
+      if (refit.ok) {
+        // Adopt the refit; sync region membership to its (possibly trimmed) inliers.
+        std::fill(inRegion.begin(), inRegion.end(), static_cast<char>(0));
+        for (int i : refit.inliers) inRegion[i] = 1;
+        rf = std::move(refit);
+      } else {
+        // Refit collapsed — keep the grown set under the previous fit.
+        rf.inliers = std::move(grow);
+        rf.inlierRms = subsetRms(pts, rf.inliers, rf.det);
+      }
+    }
+  }
+  return rf;
+}
+
+}  // namespace robust
+
 }  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -470,6 +836,140 @@ SegmentationResult segmentAndFit(std::span<const Point3> points,
     }
   }
 
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Robust entry point — noisy / outlier-laden scans.
+//
+// Same connectivity-first structure as segmentAndFit, but every classification goes
+// through the robust (RANSAC + IRLS) fitter on a noise-scaled band, and points that fit
+// no region within the band are collected into an explicit OUTLIER set rather than
+// force-assigned. On a clean cloud (σ estimated ≈ 0) the band collapses to base.tol and
+// the robust path reproduces the noise-free result.
+// ─────────────────────────────────────────────────────────────────────────────
+SegmentationResult segmentAndFitRobust(std::span<const Point3> points,
+                                       std::span<const Vec3> /*normals*/,
+                                       const RobustSegmentParams& params) {
+  SegmentationResult out;
+  const int n = static_cast<int>(points.size());
+  if (n == 0) return out;
+
+  const std::vector<std::vector<int>> adj = buildAdjacency(points, params.base.kNeighbors);
+
+  // Estimate the scan noise σ (or use the caller-supplied σ), then derive the region-
+  // membership band and the outlier threshold. The band is FLOORED by base.tol so a clean
+  // cloud (σ≈0) reproduces the noise-free frontier exactly.
+  const double sigma = robust::estimateSigma(points, adj, params);
+  out.noiseSigma = sigma;
+  const double band = std::max(params.base.tol, params.bandSigma * sigma);
+  const double outlierBand = std::max(params.base.tol, params.outlierSigma * sigma);
+
+  const std::vector<std::vector<int>> comps = connectedComponents(n, adj);
+
+  // Track final assignment so leftover points become OUTLIERS (never force-assigned).
+  std::vector<char> assigned(static_cast<std::size_t>(n), 0);
+
+  for (const std::vector<int>& comp : comps) {
+    if (static_cast<int>(comp.size()) < params.base.minRegion) {
+      // Too small to fit anything robustly → outliers (honest; not a forced region).
+      for (int i : comp) { out.outliers.push_back(i); assigned[i] = 1; }
+      continue;
+    }
+
+    // NOISE-FREE REDUCTION (byte-compatible): try the EXACT noise-free classification at
+    // base.tol first. If the whole component is cleanly a single primitive / freeform patch
+    // within the tight tolerance, commit it verbatim (identical to segmentAndFit) and skip
+    // the robust machinery — a clean component is never re-fitted through RANSAC, so its
+    // params match the noise-free path to ≤1e-6 and it contributes NO outliers.
+    {
+      SegmentRegion exact = classifyRegion(points, comp, params.base);
+      if (exact.kind != RegionKind::Declined &&
+          exact.inliers.size() == comp.size()) {
+        for (int i : exact.inliers) assigned[i] = 1;
+        commit(out, std::move(exact));
+        continue;
+      }
+    }
+
+    // Whole-component robust fit first (the common case: one component = one noisy face).
+    const robust::RobustFit whole = robust::robustFit(
+        points, comp, band, params, static_cast<std::uint64_t>(comp[0]) + 1, sigma);
+    if (whole.ok && whole.det.type != PrimitiveType::Freeform) {
+      SegmentRegion sr = robust::regionFromRobustFit(whole);
+      if (sr.kind != RegionKind::Declined) {
+        for (int i : sr.inliers) assigned[i] = 1;
+        commit(out, std::move(sr));
+        // Component points NOT in the winning consensus: try to sub-segment (below) via
+        // the leftover loop; anything still unassigned there becomes an outlier.
+      }
+    }
+
+    // Sub-segment the component's still-unassigned points by robust seeded growing. This
+    // handles heterogeneous components (multiple faces) AND the residual of a whole-fit
+    // (the outlier tail / a second face). `avail` marks component points not yet claimed.
+    std::vector<char> avail(static_cast<std::size_t>(n), 0);
+    for (int i : comp)
+      if (!assigned[i]) avail[i] = 1;
+
+    for (int seed : comp) {
+      if (!avail[seed]) continue;
+      robust::RobustFit rf =
+          robust::growRobustRegion(points, adj, seed, avail, band, params, sigma);
+      // Restrict to still-available points (defensive; growth respects avail already).
+      rf.inliers.erase(std::remove_if(rf.inliers.begin(), rf.inliers.end(),
+                                      [&](int i) { return avail[i] == 0; }),
+                       rf.inliers.end());
+
+      if (!rf.ok || static_cast<int>(rf.inliers.size()) < params.base.minRegion) {
+        avail[seed] = 0;  // this seed cannot anchor a region; leave for outlier collection
+        continue;
+      }
+      SegmentRegion sr = robust::regionFromRobustFit(rf);
+      if (sr.kind == RegionKind::Declined) { avail[seed] = 0; continue; }
+      for (int i : rf.inliers) { avail[i] = 0; assigned[i] = 1; }
+      commit(out, std::move(sr));
+    }
+  }
+
+  // Everything not assigned to a region is an OUTLIER (consistent with no region within
+  // the robust band) — isolated, never shoe-horned into the nearest region. A point is
+  // additionally confirmed as an outlier only if it is beyond the (wider) outlier band of
+  // EVERY committed primitive region; if it happens to sit within a committed region's
+  // outlierBand it is folded back into that region's inliers (a genuine inlier the
+  // consensus missed), keeping the false-positive rate low.
+  for (int i = 0; i < n; ++i) {
+    if (assigned[i]) continue;
+    int host = -1;
+    double bestR = outlierBand;
+    for (int r = 0; r < static_cast<int>(out.regions.size()); ++r) {
+      const SegmentRegion& reg = out.regions[r];
+      PrimitiveDetection d;
+      d.ok = true;
+      switch (reg.kind) {
+        case RegionKind::Plane:    d.type = PrimitiveType::Plane;    d.plane = reg.plane;       break;
+        case RegionKind::Sphere:   d.type = PrimitiveType::Sphere;   d.sphere = reg.sphere;     break;
+        case RegionKind::Cylinder: d.type = PrimitiveType::Cylinder; d.cylinder = reg.cylinder; break;
+        case RegionKind::Cone:     d.type = PrimitiveType::Cone;     d.cone = reg.cone;         break;
+        default: continue;  // Freeform / Declined regions do not adopt stray points here
+      }
+      const double res = residualToPrimitive(points[i], d);
+      if (res <= bestR) { bestR = res; host = r; }
+    }
+    if (host >= 0) {
+      out.regions[host].inliers.push_back(i);
+      assigned[i] = 1;
+      ++out.assignedCount;
+    } else {
+      out.outliers.push_back(i);
+    }
+  }
+
+  std::sort(out.outliers.begin(), out.outliers.end());
+  out.outlierCount = static_cast<int>(out.outliers.size());
+  // Keep each region's inliers sorted after any late adoptions.
+  for (SegmentRegion& reg : out.regions)
+    std::sort(reg.inliers.begin(), reg.inliers.end());
   return out;
 }
 

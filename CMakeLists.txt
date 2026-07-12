@@ -937,6 +937,20 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_freeform_freeform_cut)
         set(test_native_freeform_freeform_cut_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_freeform_freeform_cut.cpp")
+        # L3-d STAGE 5 — the MULTI-SEAM freeform↔freeform watertight sew (host GATE a),
+        # the N-seam generalisation of track W's single-transversal-seam curved↔curved weld.
+        # Two coaxial degree-4 mirror cups (a valley cup + its z-mirror dome cup) whose walls
+        # meet in TWO closed circular seams; the SSI returns 2 loops, and each wall is split
+        # by BOTH (nesting-aware, tiling gap 0) before the survivors are sewn. The OUTER seam
+        # welds watertight; the INNER seam (seam-as-hole on both annuli) hits the frozen M0
+        # mesher's holed-curved-annulus gap, so the verb HONEST-DECLINES to NULL with a
+        # sharpened residual map (never leaky). Its seams are the real S3 trace, so this host
+        # suite builds only under CYBERCAD_HAS_NUMSCI. Additive header-only verb
+        # (freeform_freeform_multiseam.h; freeform_freeform_cut.h byte-unchanged); no lib
+        # change, no cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_freeform_freeform_multiseam)
+        set(test_native_freeform_freeform_multiseam_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_freeform_freeform_multiseam.cpp")
         # NURBS roadmap LAYER 3, SLICE 3 (L3-S3) — host GATE (a), the OCCT-free closed-
         # form proof of the THIRD (deepest) exact-NURBS B-rep boolean: a genuine NURBS
         # (Kind::BSpline) face SPLIT BY ANOTHER FREEFORM NURBS face, welded watertight —

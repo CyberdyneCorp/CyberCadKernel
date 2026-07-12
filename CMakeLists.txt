@@ -433,6 +433,27 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_nurbs_coons)
         set(test_native_nurbs_coons_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_coons.cpp")
+        # NURBS roadmap Layer 6 — N-SIDED boundary-filled surface (src/native/math/
+        # bspline_nsided). Fills a CLOSED N-gon boundary (N ≠ 4 — triangle, pentagon,
+        # hexagon …) by Catmull-Clark-style MIDPOINT subdivision: split each boundary edge
+        # at its midpoint, take the polygon centroid as the single interior hub, and build
+        # one Coons sub-patch per corner (bounded by two boundary half-edges + two straight
+        # spokes to the centroid). The UNION of the N sub-patches reproduces every input
+        # boundary curve pointwise (each Coons patch interpolates its own boundary; the two
+        # boundary halves reconstruct the full edge). Composes the Layer-1 exact splitCurve/
+        # reparamCurve (to halve the edges) + bspline_coons (the per-quad fill) — no linear
+        # solve, but numsci-gated to sit with the rest of the Layer-6 surfacing family (it
+        # composes the numsci-gated bspline_coons). Airtight oracles: boundary containment
+        # (the N sub-patches together contain all N boundary curves pointwise ~1e-9), planar
+        # pentagon/triangle/curved-hexagon → all patches flat on the plane (~1e-12), C0 at
+        # the interior spokes (adjacent patches share the M[i]→C segment + centroid ~1e-12),
+        # N=4 consistency (subdivision union agrees with the single Coons patch on the
+        # boundary), and honest non-closed / rational / N<3 / malformed declines. Non-rational
+        # scope; rational N-sided fill + Gregory/plate G1/G2 across the spokes + curved-N-sided
+        # interior fairing are residuals.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_nsided)
+        set(test_native_nurbs_nsided_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_nsided.cpp")
         # NURBS roadmap Layer 5 — surface OFFSET (src/native/math/bspline_offset).
         # Samples the true offset locus S + d·N and fits a non-rational NURBS surface
         # through it with the Layer-7 fitter (interpolateSurface → lin_solve), refining
@@ -1133,6 +1154,14 @@ if(CYBERCAD_BUILD_TESTS)
     # the Layer-6 skinning gate above (the module is numsci-gated for family uniformity).
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_coons)
         target_compile_definitions(test_native_nurbs_coons PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+    # The Layer-6 N-sided boundary-fill gate includes bspline_nsided.h (which under
+    # CYBERCAD_HAS_NUMSCI pulls bspline_coons.h + bspline_ops.h — no substrate header, no
+    # numerics solve), so its TU needs the macro but NOT the substrate include trees,
+    # exactly like the Layer-6 Coons gate above (the module composes bspline_coons and is
+    # numsci-gated for family uniformity).
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_nsided)
+        target_compile_definitions(test_native_nurbs_nsided PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
     # The Layer-5 offset gate includes bspline_offset.h + numerics.h (numerics.h is
     # vec.h + std only, no NumPP/SciPP headers), so its TU needs the macro but NOT the

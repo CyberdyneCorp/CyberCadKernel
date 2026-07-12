@@ -29,6 +29,10 @@
 //                    CLOSED four-sided boundary with the bilinearly-blended boolean sum
 //                    Coons = L_u ⊕ L_v ⊖ B; interpolates all four boundary curves.
 //                    (numsci-gated for Layer-6 family uniformity; exact Layer-1 ops only.)
+//   * bspline_nsided.h—NURBS N-SIDED boundary-filled surface (NURBS-SCOPE Layer 6): fill a
+//                    CLOSED N-gon (N ≠ 4) by MIDPOINT subdivision into N Coons sub-patches
+//                    meeting at the centroid; the union interpolates all N boundary curves.
+//                    (numsci-gated; composes splitCurve + bspline_coons.)
 //   * bspline_offset.h—NURBS surface offset (NURBS-SCOPE Layer 5): S + d·N sampled on
 //                    an adaptive grid + fitted to a NURBS surface (Layer-7), with a
 //                    curvature-radius self-intersection guard. (numsci-gated; the fit +
@@ -63,6 +67,7 @@
 #include "bspline_sweep.h"
 #include "bspline_gordon.h"
 #include "bspline_coons.h"
+#include "bspline_nsided.h"
 #include "bspline_offset.h"
 #include "bezier.h"
 #include "elementary.h"

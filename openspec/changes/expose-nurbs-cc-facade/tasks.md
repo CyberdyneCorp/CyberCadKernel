@@ -12,22 +12,22 @@ Status: **not started** — this is the scoping change. Boxes are the planned
 delivery; implementation lands as waves J1–J7 (see `design.md` §7).
 
 ## 1. J1 — ABI foundation: NURBS geometry handles
-- [ ] 1.1 Add `cc_kernel_nurbs.h` (included by `cc_kernel.h`) declaring the opaque
+- [x] 1.1 Add `cc_kernel_nurbs.h` (included by `cc_kernel.h`) declaring the opaque
   `cc_curve` / `cc_surface` handle types and the `CCCurveInfo` / `CCSurfaceInfo` /
   `CCTessOptions` POD structs. Existing header + 154 symbols byte-unchanged. (**abi**)
-- [ ] 1.2 Registry-backed handle allocation mirroring `CCShapeId`: create-from-data
+- [x] 1.2 Registry-backed handle allocation mirroring `CCShapeId`: create-from-data
   (`cc_curve_create`, `cc_surface_create` taking degree/knots/poles-in-homogeneous),
   `cc_curve_release` / `cc_surface_release` (idempotent, crash-free double release,
   stale-handle guard). (**host**)
-- [ ] 1.3 Accessors: `cc_curve_info`/`cc_surface_info` + buffer-fill
+- [x] 1.3 Accessors: `cc_curve_info`/`cc_surface_info` + buffer-fill
   `cc_curve_knots`/`_poles`, `cc_surface_knots_u`/`_v`/`_poles` (homogeneous
   x,y,z,w; row-major surface poles; `<0` on too-small buffer). (**host**, **abi**)
-- [ ] 1.4 Evaluators `cc_curve_eval` / `cc_surface_eval` — point on the exact
+- [x] 1.4 Evaluators `cc_curve_eval` / `cc_surface_eval` — point on the exact
   rational geometry (verified against the native evaluator to ≤1e-12). (**host**)
-- [ ] 1.5 Display tessellation bridge `cc_surface_tessellate` → `CCMesh`,
+- [x] 1.5 Display tessellation bridge `cc_surface_tessellate` → `CCMesh`,
   `cc_curve_polyline` → `CCEdgePolyline`. Single-surface display mesh ONLY; carries
   the non-watertight caveat (NOT the curved-seam weld). (**host**)
-- [ ] 1.6 `sizeof` guards for every new struct, cross-checked against a C `sizeof`
+- [x] 1.6 `sizeof` guards for every new struct, cross-checked against a C `sizeof`
   of the header (as `add-python-binding` §8.2). (**abi**)
 
 ## 2. J2 — fitting / reverse-engineering + analytic conversion wrappers

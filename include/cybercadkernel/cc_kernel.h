@@ -976,4 +976,10 @@ void cc_shape_release(CCShapeId body);
 }
 #endif
 
+/* Additive NURBS geometry surface (cc_curve / cc_surface handles + POD accessors +
+ * display tessellation). Included LAST so it can reference the POD structs above
+ * (CCMesh, CCEdgePolyline); it makes NO change to any existing cc_* symbol or
+ * struct. Honours CC_KERNEL_NO_PROTOTYPES exactly as this header does. */
+#include "cybercadkernel/cc_kernel_nurbs.h"
+
 #endif /* CYBERCADKERNEL_CC_KERNEL_H */

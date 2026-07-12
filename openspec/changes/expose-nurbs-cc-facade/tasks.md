@@ -89,9 +89,15 @@ delivery; implementation lands as waves J1–J7 (see `design.md` §7).
   green (existing symbols byte-unchanged); full host ctest + pytest green.
 
 ## 9. Explicit non-goals (out of scope for this change)
-- [ ] 9.1 **Watertight multi-face curved-seam weld** — the frozen-mesher wall.
-  Tessellation here is single-surface display only; a sewn watertight NURBS solid
-  B-rep is NOT claimed.
+- [ ] 9.1 **Watertight multi-face curved-seam weld** — the frozen-mesher wall — is
+  NOT a dependency of this change: the `cc_nurbs_*` exposure and gallery stand on
+  single-surface display tessellation and honest face-sets regardless. It is being
+  attacked **in parallel** as a companion track **W** (measurement-first; see
+  `nurbs-watertight-weld` scoping / the W-wave). If W genuinely lands a watertight
+  curved-seam weld for a case, the facade MAY expose that case as a sewn solid
+  (still bound by the "never claim watertight unless it IS" requirement); if W
+  honest-declines with a sharpened architectural map, the gallery keeps its
+  face-set presentation. Either outcome leaves this change's requirements intact.
 - [ ] 9.2 **iOS Swift binding** — tracked in `add-swift-binding`; it would consume
   these same `cc_*` additions, but the Swift layer is not built here.
 - [ ] 9.3 **Rewiring existing engine-level facade ops** (`cc_solid_sweep`,

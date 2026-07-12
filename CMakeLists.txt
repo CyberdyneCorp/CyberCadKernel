@@ -390,6 +390,24 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_primitive_fit)
         set(test_native_primitive_fit_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_primitive_fit.cpp")
+        # NURBS roadmap Layer 6/7 — minimal-energy FAIRING (src/native/math/bspline_fair).
+        # Smooths a noisy/wiggly B-spline by minimizing the discrete bending energy
+        # (curve Σ|ΔΔP|² ≈ ∫|C''|²; surface thin-plate Σ|S_uu|²+2|S_uv|²+|S_vv|²) over the
+        # interior control points, as the penalized-least-squares system (I+λK)P=P⁰ solved
+        # per coordinate through the numsci facade (lin_solve) with λ swept to the LARGEST
+        # value whose result still honors the HARD deviation bound — so the module + its host
+        # gate build only under CYBERCAD_HAS_NUMSCI (mirroring test_native_nurbs_fit). Airtight
+        # closed-form oracles: an already-fair (affine-net) curve/surface is a NO-OP (energy ~0,
+        # unmoved ≤1e-12); a smooth analytic curve/surface with a high-frequency interior
+        # perturbation is faired so energy drops substantially AND the result is CLOSER to the
+        # ORIGINAL smooth shape than the noisy input was, endpoints/boundary preserved ≤1e-12;
+        # the max deviation from the input NEVER exceeds tol (dense-sample assert, swept over
+        # tolerances); and an over-tight tol HONEST-DECLINES (ok=false, energy unchanged, shape
+        # returned unchanged) — never a widened bound. Non-rational; rational/too-small/non-
+        # positive-tol declines. Rational homogeneous fairing is a documented residual.
+        list(APPEND CYBERCAD_TESTS test_native_nurbs_fair)
+        set(test_native_nurbs_fair_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_nurbs_fair.cpp")
         # NURBS roadmap Layer 6 — skinning / lofting (src/native/math/bspline_skin).
         # Composes Layer 1 (elevate/refine for section compatibility) + Layer 7 (curve
         # interpolation across sections via lin_solve), so the module + its host gate
@@ -1238,6 +1256,13 @@ if(CYBERCAD_BUILD_TESTS)
     # include trees, exactly like the Layer-7 nurbs-fit gate above.
     if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_primitive_fit)
         target_compile_definitions(test_native_primitive_fit PRIVATE CYBERCAD_HAS_NUMSCI=1)
+    endif()
+    # The Layer-6/7 fairing gate includes bspline_fair.h (which under CYBERCAD_HAS_NUMSCI
+    # only pulls bspline_ops.h — no substrate header; the solve goes through the facade in
+    # the .cpp), so its TU needs the macro but NOT the substrate include trees, exactly
+    # like the Layer-7 fitting gate above.
+    if(CYBERCAD_HAS_NUMSCI AND TARGET test_native_nurbs_fair)
+        target_compile_definitions(test_native_nurbs_fair PRIVATE CYBERCAD_HAS_NUMSCI=1)
     endif()
 
     # The Layer-8 trimmed-NURBS gate is ALWAYS built (its containment + fidelity +

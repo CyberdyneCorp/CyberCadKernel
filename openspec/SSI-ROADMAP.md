@@ -576,7 +576,7 @@ S4-f DETECTS + REPORTS + traces-through, it does not repair topology.
 
 Archived change `openspec/changes/archive/2026-07-05-add-native-ssi-s4f-completeness`.
 
-### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g/h/i/j landed + S5-k FIRST TRANSVERSAL (non-coaxial) slice + S5-l/m/n TORUS surface family (CONE surface family opened — coaxial cone∩cylinder, single- AND two-circle cone∩sphere, coaxial cone∩cone (frustum AND apex-to-apex hourglass), AND two-circle cylinder∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; S5-k lands the FIRST non-coaxial pose — the offset cylinder∩sphere COMMON from a NON-PLANAR traced seam; S5-l opens the TORUS family — coaxial torus∩cylinder COMMON/FUSE/CUT COMPLETE 3/3 native; S5-m extends it — coaxial torus∩sphere (sphere at torus centre) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-n extends it again — coaxial torus∩cone (oblique-chord generalisation of S5-l) COMMON/FUSE/CUT COMPLETE 3/3 native; ~months for full coverage)
+### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g/h/i/j landed + S5-k FIRST TRANSVERSAL (non-coaxial) slice + S5-l/m/n/o TORUS surface family (CONE surface family opened — coaxial cone∩cylinder, single- AND two-circle cone∩sphere, coaxial cone∩cone (frustum AND apex-to-apex hourglass), AND two-circle cylinder∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; S5-k lands the FIRST non-coaxial pose — the offset cylinder∩sphere COMMON from a NON-PLANAR traced seam; S5-l opens the TORUS family — coaxial torus∩cylinder COMMON/FUSE/CUT COMPLETE 3/3 native; S5-m extends it — coaxial torus∩sphere (sphere at torus centre) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-n extends it again — coaxial torus∩cone (oblique-chord generalisation of S5-l) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-o closes the family with the FIRST curved∩curved pair where BOTH operands are tori — coaxial torus∩torus COMMON/FUSE/CUT COMPLETE 3/3 native; ~months for full coverage)
 Use SSI curves to **split** the curved faces of two solids, **classify**
 fragments inside/outside (reuse the BSP-CSG classifier + a curved point-in-solid
 test), **assemble** the surviving shell watertight (curved-seam weld from the
@@ -1007,6 +1007,48 @@ harness runs each of the sphere FUSE/CUT as an equal-R AND an unequal-R fixture;
   two-circle crossing), a cone not axially spanning past both seams, and a non-coaxial / off-axis /
   skew cone all decline → NULL → OCCT (honest, never faked). The general TRANSVERSAL (non-coaxial)
   torus∩cone quartic space curve is a later slice.
+- **S5-o — coaxial TORUS(ring)∩TORUS(ring) COMMON / FUSE / CUT** (the FOURTH torus-family pair and
+  the FIRST curved∩curved slice where BOTH operands are tori; op-set COMPLETE 3/3 native). Two
+  COAXIAL ring tori sharing an axis: torus A (major R1, minor r1, tube-centre circle at station zA)
+  and torus B (major R2, minor r2, tube-centre at zB). In the meridian (ρ,z) plane BOTH tubes are
+  DISKS — tube A radius r1 centred (R1,zA), tube B radius r2 centred (R2,zB) — and two circles in a
+  plane meet in up to TWO points, so a proper poke-through gives TWO analytic seam circles at
+  DIFFERENT radii AND stations (like S5-n, but now the second wall is ALSO a tube arc, not a flat
+  cone chord). Seam solve is the classic two-circle intersection: centre distance D, chord offset
+  a = (D²+r1²−r2²)/(2D) from A along the centre line, half-chord h = √(r1²−a²), the two seam points
+  M ± h·û⊥ (M = A + a·û). The `torusTorusSetup` prologue recognises the coaxial torus pair
+  (`CurvedKind::Torus` on both, coaxial gate), solves BOTH seam circles closed-form, and
+  CROSS-CHECKS every S3-traced loop (station + radius) against them (a traced loop matching neither
+  → decline). Every op is a Pappus-exact solid of revolution welded from the S5-l machinery — BOTH
+  boundary walls are revolved tube arcs (`appendTorusTorusTubeArc`, the S5-l tube-arc topology on
+  either tube, oriented by the TRUE tube-outward normal radiating from each tube-centre circle);
+  NO flat chord band, NO caps — through one `VertexPool`.
+  - **COMMON (A∩B)** — `buildTorusTorusCommon`: the revolved LENS (disk A ∩ disk B) — the INNER arc
+    of tube A (inside B) + the INNER arc of tube B (inside A), both outward. A closed watertight
+    ring of revolution.
+  - **FUSE (A∪B)** — `buildTorusTorusFuse`: the revolved UNION (disk A ∪ disk B) — the OUTER arc of
+    tube A (outside B) + the OUTER arc of tube B (outside A), both outward. A GROW; one ring of
+    revolution. `V = V_torusA + V_torusB − V_common`.
+  - **CUT (A−B, TORUS-A minuend, order-sensitive)** — `buildTorusTorusCut`: disk A ∖ lens — the
+    OUTER arc of tube A + the INNER arc of tube B REVERSED (inward normal, bounding the carved
+    bite). A SHRINK, one ring of revolution. `V = V_torusA − V_common`. B−A is a DIFFERENT solid
+    (torus-B minuend) — built by SWAPPING operands (COMMON/FUSE are symmetric, CUT is order-sensitive).
+  Verified vs a **DUAL oracle** — the AIRTIGHT Pappus closed form (engine `ssiCurvedBooleanVerified`
+  S5-o arm for COMMON: the revolved lens = 2π times the sum of the two circular-segment
+  first-moments about the axis; the equal-h segment moment terms CANCEL, leaving
+  `V_common = 2π·(R1·A_segA + R2·A_segB)`, `A_segA = r1²·acos(a/r1) − a·h`,
+  `A_segB = r2²·acos((D−a)/r2) − (D−a)·h`; the generic `booleanResultVerified`
+  `V_torusA + V_torusB − V_common` / `V_torusA − V_common` for FUSE/CUT with `V_torus = 2π²Rr²`)
+  **AND** OCCT `BRepAlgoAPI_{Common,Fuse,Cut}` (sim), all watertight/closed/valid, inside the 1%
+  curved-parity bar, no tolerance weakened. Host+sim fixture (torus A R1=3 r1=1 centre z=0; torus B
+  R2=3.4 r2=0.9 centre z=0.6; both about +Z; D=0.721, seams (ρ,z)=(2.549,0.892) and (3.997,−0.073)):
+  - COMMON: volN≈30.24 vs analytic 30.307 vs OCCT, ΔV≈0.2% (a facet-inscription deficit).
+  - FUSE:   volN≈83.1 vs analytic 83.272 vs OCCT, ΔV≈0.2% (a GROW).
+  - CUT (A−B): volN≈28.85 vs analytic 28.910 vs OCCT, ΔV≈0.2% (a SHRINK); B−A likewise via swap.
+  A SPINDLE torus (R ≤ r) declines at recognition; two tubes that CLEAR each other (D ≥ r1+r2), a
+  CONTAINED tube (D ≤ |r1−r2|), CONCENTRIC-coaxial tubes (same centre, D≈0), a seam ring collapsing
+  on the axis, and a non-coaxial / off-axis / skew torus pair all decline → NULL → OCCT (honest,
+  never faked). The general TRANSVERSAL (non-coaxial) torus∩torus quartic space curve is a later slice.
 
 Honest scope still declining → OCCT (measured NULL fallbacks, never faked):
 - **the TRANSVERSAL (offset) cylinder∩sphere CUT + FUSE** (the sphere-outer-zone weld between two

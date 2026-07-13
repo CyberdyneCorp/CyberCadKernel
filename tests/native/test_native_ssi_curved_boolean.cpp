@@ -127,6 +127,19 @@ ntopo::Shape makeTorus(double R, double r) {
   return ntopo::ShapeBuilder::makeSolid({ntopo::ShapeBuilder::makeShell({face})});
 }
 
+// A full RING TORUS (major R, minor r) about world +Z whose CENTRE sits on the axis at z=zc —
+// a COAXIAL torus offset axially from the origin-centred makeTorus, for the torus∩torus family.
+ntopo::Shape makeTorusAt(double R, double r, double zc) {
+  ntopo::FaceSurface s;
+  s.kind = ntopo::FaceSurface::Kind::Torus;
+  s.frame = nmath::Ax3::fromAxisAndRef(nmath::Point3{0, 0, zc}, nmath::Dir3{0, 0, 1},
+                                       nmath::Dir3{1, 0, 0});
+  s.radius = R;
+  s.minorRadius = r;
+  const ntopo::Shape face = ntopo::ShapeBuilder::makeFace(s, ntopo::Shape{});
+  return ntopo::ShapeBuilder::makeSolid({ntopo::ShapeBuilder::makeShell({face})});
+}
+
 // A full RING TORUS (major R, minor r) about world +Y (its axis aligned with the makeCone /
 // makeSphere +Y revolution axis, so a torus∩cone pair is genuinely coaxial). Same bare
 // doubly-periodic Kind::Torus face as makeTorus, only the frame axis is +Y.
@@ -1941,6 +1954,131 @@ CC_TEST(torus_cone_declines_spindle_and_non_crossing) {
   const ntopo::Shape torZ = makeTorus(3.0, 1.0);               // +Z torus
   const ntopo::Shape coneY = makeCone(2.2, -2.0, 4.2, 2.0);    // +Y cone → axes ⟂
   CC_CHECK(nb::ssi_boolean_solid(torZ, coneY, nb::Op::Common).isNull());
+}
+
+// Airtight Pappus closed form for the COMMON (revolved LENS) of two coaxial ring tori: tube A
+// the meridian disk radius r1 centred (R1,zA), tube B radius r2 centred (R2,zB). D = centre
+// distance, a = (D²+r1²−r2²)/(2D) (chord offset from A along the centre line), h = √(r1²−a²).
+// V = 2π·(R1·A_segA + R2·A_segB), A_segA = r1²·acos(a/r1) − a·h, A_segB = r2²·acos((D−a)/r2) −
+// (D−a)·h (the equal-h segment moment terms cancel). Matches the engine's ssiCurvedBooleanVerified
+// S5-o arm (no OCCT, no fabricated value).
+double torusTorusCommonVolume(double R1, double r1, double zA, double R2, double r2, double zB) {
+  const double cr = R2 - R1, cz = zB - zA;
+  const double D = std::hypot(cr, cz);
+  const double a = (D * D + r1 * r1 - r2 * r2) / (2.0 * D);
+  const double h = std::sqrt(std::max(r1 * r1 - a * a, 0.0));
+  const double aSegA = r1 * r1 * std::acos(std::clamp(a / r1, -1.0, 1.0)) - a * h;
+  const double aSegB = r2 * r2 * std::acos(std::clamp((D - a) / r2, -1.0, 1.0)) - (D - a) * h;
+  return 2.0 * sd::kSsiPi * (R1 * aSegA + R2 * aSegB);
+}
+
+// ── (20) COAXIAL TORUS∩TORUS COMMON / FUSE / CUT (S5-o) — the FOURTH torus-family pair ──
+// Two coaxial ring tori about world +Z: torus A (R1=3, r1=1, centre z=0) and torus B (R2=3.4,
+// r2=0.9, centre z=0.6). Their tubes cross in TWO circle seams at DIFFERENT radii AND stations
+// (D=0.721, |r1−r2|=0.1 < D < r1+r2=1.9 — a proper two-circle poke-through). BOTH boundary walls
+// are TUBE ARCS (reusing appendTubeArc on both tori), no flat chord band, no caps: COMMON = the
+// revolved lens (inner arc of A + inner arc of B); FUSE = the revolved union (outer arc of A +
+// outer arc of B); CUT (A−B) = outer arc of A + reversed inner arc of B. Verified vs the AIRTIGHT
+// Pappus closed forms — no OCCT, no fabricated value (mirrors the engine's S5-o oracle).
+CC_TEST(torus_torus_coaxial_common_fuse_cut_watertight_matches_analytic) {
+  const double R1 = 3.0, r1 = 1.0, zA = 0.0, R2 = 3.4, r2 = 0.9, zB = 0.6;
+  const ntopo::Shape torA = makeTorusAt(R1, r1, zA);
+  const ntopo::Shape torB = makeTorusAt(R2, r2, zB);
+  CC_CHECK(!torA.isNull() && !torB.isNull());
+
+  const auto csA = sd::recogniseCurvedSolid(torA);
+  const auto csB = sd::recogniseCurvedSolid(torB);
+  CC_CHECK(csA && csB);
+  if (csA && csB) {
+    CC_CHECK(csA->kind == sd::CurvedKind::Torus && csB->kind == sd::CurvedKind::Torus);
+    CC_CHECK(std::fabs(csA->radius - R1) < 1e-9 && std::fabs(csA->minorRadius - r1) < 1e-9);
+    CC_CHECK(std::fabs(csB->radius - R2) < 1e-9 && std::fabs(csB->minorRadius - r2) < 1e-9);
+    const ssi::TraceSet tr = ssi::trace_intersection(csA->adapter(), csB->adapter());
+    CC_CHECK(tr.nearTangentGaps == 0);   // fully transversal circle seams
+    CC_CHECK(tr.curveCount() >= 1);      // ≥1 of the two co-resident circles traced
+  }
+
+  // Airtight closed-form ground truth (Pappus).
+  const double vTorA = 2.0 * sd::kSsiPi * sd::kSsiPi * R1 * r1 * r1;   // 2π²R1r1²
+  const double vTorB = 2.0 * sd::kSsiPi * sd::kSsiPi * R2 * r2 * r2;   // 2π²R2r2²
+  const double vCommonTrue = torusTorusCommonVolume(R1, r1, zA, R2, r2, zB);
+  const double vFuseTrue = vTorA + vTorB - vCommonTrue;
+  const double vCutTrue = vTorA - vCommonTrue;         // A − B (torus-A minuend)
+  const double vCutBATrue = vTorB - vCommonTrue;       // B − A (torus-B minuend)
+  CC_CHECK(vCommonTrue > 0.0 && vCommonTrue < std::min(vTorA, vTorB));
+
+  // ── COMMON: the revolved lens (inner arc of A + inner arc of B). ──
+  const ntopo::Shape common = nb::ssi_boolean_solid(torA, torB, nb::Op::Common);
+  CC_CHECK(!common.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  CC_CHECK(vCommon > 0.0);                                          // watertight → engine accepts
+  CC_CHECK(std::fabs(vCommon - vCommonTrue) <= 1e-2 * vCommonTrue);
+  CC_CHECK(vCommon <= std::min(vTorA, vTorB) + 1e-9);              // common ≤ min(A,B)
+  CC_CHECK(!nb::boolean_solid(torA, torB, nb::Op::Common).isNull());
+  // COMMON is symmetric — reversing the operand order builds the same watertight solid.
+  const ntopo::Shape swapped = nb::ssi_boolean_solid(torB, torA, nb::Op::Common);
+  CC_CHECK(!swapped.isNull());
+  const double vSwapped = watertightMeshVolume(swapped);
+  CC_CHECK(vSwapped > 0.0);
+  CC_CHECK(std::fabs(vSwapped - vCommonTrue) <= 1e-2 * vCommonTrue);
+
+  // ── FUSE = A ∪ B: the revolved union (outer arc of A + outer arc of B). A GROW. ──
+  const ntopo::Shape fuse = nb::ssi_boolean_solid(torA, torB, nb::Op::Fuse);
+  CC_CHECK(!fuse.isNull());
+  const double vFuse = watertightMeshVolume(fuse);
+  CC_CHECK(vFuse > 0.0);
+  CC_CHECK(std::fabs(vFuse - vFuseTrue) <= 1e-2 * vFuseTrue);
+  CC_CHECK(vFuse >= std::max(vTorA, vTorB) - 1e-9);               // FUSE grows past either operand
+  CC_CHECK(!nb::boolean_solid(torA, torB, nb::Op::Fuse).isNull());
+
+  // ── CUT = A − B (torus-A minuend): outer arc of A + reversed inner arc of B. A SHRINK. ──
+  const ntopo::Shape cut = nb::ssi_boolean_solid(torA, torB, nb::Op::Cut);
+  CC_CHECK(!cut.isNull());
+  const double vCut = watertightMeshVolume(cut);
+  CC_CHECK(vCut > 0.0);
+  CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
+  CC_CHECK(vCut <= vTorA + 1e-9);                                 // CUT shrinks below the minuend
+  CC_CHECK(!nb::boolean_solid(torA, torB, nb::Op::Cut).isNull());
+  // CUT is order-sensitive: B − A is a DIFFERENT solid (torus-B the minuend) — swapping operands
+  // builds it (torus-B outer arc + reversed torus-A inner arc), matching vTorB − vCommon.
+  const ntopo::Shape cutBA = nb::ssi_boolean_solid(torB, torA, nb::Op::Cut);
+  CC_CHECK(!cutBA.isNull());
+  const double vCutBA = watertightMeshVolume(cutBA);
+  CC_CHECK(vCutBA > 0.0);
+  CC_CHECK(std::fabs(vCutBA - vCutBATrue) <= 1e-2 * vCutBATrue);
+}
+
+// ── (21) TORUS∩TORUS HONEST DECLINES: spindle / contained / clear / concentric / off-axis → OCCT ──
+// The S5-o assembler is the strict coaxial RING-torus two-circle poke-through only. A spindle
+// torus is not recognised; two tubes that clear each other, one tube contained in the other,
+// concentric coaxial tubes (same centre), and a non-coaxial / off-axis torus pair all decline
+// → NULL → OCCT (never faked).
+CC_TEST(torus_torus_declines_spindle_contained_clear_and_offaxis) {
+  // (a) Spindle torus (R < r) — self-intersecting → not recognised as a CurvedSolid.
+  CC_CHECK(!sd::recogniseCurvedSolid(makeTorusAt(0.5, 1.0, 0.0)));
+
+  const ntopo::Shape torA = makeTorusAt(3.0, 1.0, 0.0);
+
+  // (b) A coaxial torus whose tube CLEARS torus A (centre distance D ≥ r1+r2): major-radius gap
+  //     far exceeds the two minor radii → no wall crossing → declines all ops.
+  const ntopo::Shape clear = makeTorusAt(6.0, 1.0, 0.0);  // D = 3 ≥ r1+r2 = 2
+  CC_CHECK(nb::ssi_boolean_solid(torA, clear, nb::Op::Common).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(torA, clear, nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(torA, clear, nb::Op::Cut).isNull());
+
+  // (c) A coaxial torus whose tube is CONTAINED in torus A (D ≤ |r1−r2|): a fat tube swallowing
+  //     the thin one at the same centre → no proper two-circle crossing → declines.
+  const ntopo::Shape contained = makeTorusAt(3.0, 0.3, 0.0);  // D = 0 ≤ |r1−r2| = 0.7
+  CC_CHECK(nb::ssi_boolean_solid(torA, contained, nb::Op::Common).isNull());
+
+  // (d) CONCENTRIC-coaxial tubes (identical centre + radii): D ≈ 0, tubes coincide → declines
+  //     (the seam solve needs a positive centre distance).
+  const ntopo::Shape concentric = makeTorusAt(3.0, 1.0, 0.0);
+  CC_CHECK(nb::ssi_boolean_solid(torA, concentric, nb::Op::Common).isNull());
+
+  // (e) Off-AXIS torus pair: torus A about +Z, torus B about +Y → axes ⟂ (non-coaxial) → declines.
+  const ntopo::Shape torY = makeTorusY(3.4, 0.9);   // +Y torus
+  CC_CHECK(nb::ssi_boolean_solid(torA, torY, nb::Op::Common).isNull());
 }
 
 int main() { return cctest::run_all(); }

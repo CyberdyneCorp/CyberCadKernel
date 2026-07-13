@@ -586,6 +586,39 @@ CurvedCheck ssiCurvedBooleanVerified(const ntopo::Shape& result, const ntopo::Sh
         const double tol = std::max(1e-2 * expected, 1e-6);  // deflection-bounded curved mesh
         return {true, std::fabs(vr - expected) <= tol};
     }
+
+    // ── S5-o arm: COAXIAL torus∩torus COMMON (two analytic circle seams). ──
+    // Two coaxial ring tori: tube A the meridian disk radius r1 centred (R1,zA), tube B radius r2
+    // centred (R2,zB). The COMMON is the revolved LENS (disk A ∩ disk B). Two circles meet at the
+    // chord offset a = (D²+r1²−r2²)/(2D) from A along the centre line (D = centre distance),
+    // half-chord h = √(r1²−a²). By Pappus the lens revolves to 2π times the sum of the two
+    // circular-segment first-moments about the axis; the equal-h moment terms cancel, leaving
+    // V = 2π·(R1·A_segA + R2·A_segB), A_segA = r1²acos(a/r1)−a·h, A_segB = r2²acos((D−a)/r2)−(D−a)·h.
+    // Airtight closed form; mirrors the buildTorusTorusCommon geometry.
+    if (csA->kind == CK::Torus && csB->kind == CK::Torus) {
+        const nm::Vec3 zc = csA->frame.z.vec();
+        if (nm::norm(nm::cross(zc, csB->frame.z.vec())) > 1e-6) return {};  // axes not parallel
+        const nm::Vec3 d = csB->frame.origin - csA->frame.origin;
+        if (nm::norm(d - zc * nm::dot(d, zc)) > 1e-6) return {};  // origins not colinear → not coaxial
+        const double R1 = csA->radius, r1 = csA->minorRadius;
+        const double R2 = csB->radius, r2 = csB->minorRadius;
+        if (!(r1 > 1e-9) || !(R1 > r1 + 1e-9)) return {};
+        if (!(r2 > 1e-9) || !(R2 > r2 + 1e-9)) return {};
+        const double cr = R2 - R1, cz = nm::dot(d, zc);   // meridian centre offset (ρ, z)
+        const double D = std::hypot(cr, cz);
+        if (!(D > 1e-9) || !(D < r1 + r2 - 1e-6) || !(D > std::fabs(r1 - r2) + 1e-6)) return {};
+        const double a = (D * D + r1 * r1 - r2 * r2) / (2.0 * D);
+        const double h2 = r1 * r1 - a * a;
+        if (!(h2 > 1e-12)) return {};
+        const double h = std::sqrt(h2);
+        const double aSegA = r1 * r1 * std::acos(std::clamp(a / r1, -1.0, 1.0)) - a * h;
+        const double aSegB = r2 * r2 * std::acos(std::clamp((D - a) / r2, -1.0, 1.0)) - (D - a) * h;
+        const double expected = 2.0 * cv::kPi * (R1 * aSegA + R2 * aSegB);
+        const double vr = watertightVolume(result);
+        if (vr < 0.0) return {true, false};  // not watertight
+        const double tol = std::max(1e-2 * expected, 1e-6);  // deflection-bounded curved mesh
+        return {true, std::fabs(vr - expected) <= tol};
+    }
     return {};
 #else
     (void)result; (void)a; (void)b; (void)op;

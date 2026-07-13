@@ -240,6 +240,19 @@ ntopo::Shape makeTorusY(double R, double r) {
   return ntopo::ShapeBuilder::makeSolid({ntopo::ShapeBuilder::makeShell({face})});
 }
 
+// A native RING TORUS (major R, minor r) about world +Z whose CENTRE sits on the axis at z=zc —
+// a COAXIAL torus offset axially from the origin-centred makeTorus (the S5-o torus∩torus pair).
+ntopo::Shape makeTorusAt(double R, double r, double zc) {
+  ntopo::FaceSurface s;
+  s.kind = ntopo::FaceSurface::Kind::Torus;
+  s.frame = nmath::Ax3::fromAxisAndRef(nmath::Point3{0, 0, zc}, nmath::Dir3{0, 0, 1},
+                                       nmath::Dir3{1, 0, 0});
+  s.radius = R;
+  s.minorRadius = r;
+  const ntopo::Shape face = ntopo::ShapeBuilder::makeFace(s, ntopo::Shape{});
+  return ntopo::ShapeBuilder::makeSolid({ntopo::ShapeBuilder::makeShell({face})});
+}
+
 // ── native mesh self-verify (mimics the engine: watertight + enclosed volume) ──────
 struct NativeMeasure {
   bool present = false;   // native path returned a non-null candidate
@@ -333,6 +346,10 @@ TopoDS_Shape occtTorus(double R, double r) {
 // A ring torus (major R, minor r) about world +Y — matches makeTorusY (coaxial with occtCone).
 TopoDS_Shape occtTorusY(double R, double r) {
   return BRepPrimAPI_MakeTorus(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), R, r).Shape();
+}
+// A ring torus (major R, minor r) about world +Z centred on the axis at z=zc — matches makeTorusAt.
+TopoDS_Shape occtTorusAt(double R, double r, double zc) {
+  return BRepPrimAPI_MakeTorus(gp_Ax2(gp_Pnt(0, 0, zc), gp_Dir(0, 0, 1)), R, r).Shape();
 }
 
 // ── a {pair, op} case ──────────────────────────────────────────────────────────────
@@ -705,6 +722,26 @@ int main() {
     pc.nativeB = makeCone(2.2, -2.0, 4.2, 2.0);   // radius(z)=3.2+0.5z over z∈[−2,2], coaxial (+Y)
     pc.occtA = occtTorusY(3.0, 1.0);
     pc.occtB = occtCone(2.2, -2.0, 4.2, 2.0);
+    pc.relTol = 2e-2;
+    probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
+    runPair(pc);
+  }
+
+  // ── (14) COAXIAL TORUS ∩ TORUS — the FOURTH torus-family pair (S5-o) ───────────────
+  // Two coaxial ring tori about world +Z: torus A (R1=3, r1=1, centre z=0) and torus B (R2=3.4,
+  // r2=0.9, centre z=0.6). In the meridian plane BOTH tubes are DISKS; they cross in TWO circle
+  // seams at DIFFERENT radii AND stations (D=0.721, |r1−r2|=0.1 < D < r1+r2=1.9 — a proper
+  // two-circle poke-through). BOTH boundary walls are TUBE ARCS: COMMON = the revolved lens (inner
+  // arc of A + inner arc of B); FUSE = the revolved union (outer arc of A + outer arc of B); CUT
+  // (torus-A − torus-B) = outer arc of A + reversed inner arc of B. All three match
+  // BRepAlgoAPI_{Common,Fuse,Cut} on volume/area/watertight → NATIVE passes.
+  {
+    PairCase pc;
+    pc.pairName = "torus=torus(coaxial)";
+    pc.nativeA = makeTorusAt(3.0, 1.0, 0.0);
+    pc.nativeB = makeTorusAt(3.4, 0.9, 0.6);
+    pc.occtA = occtTorusAt(3.0, 1.0, 0.0);
+    pc.occtB = occtTorusAt(3.4, 0.9, 0.6);
     pc.relTol = 2e-2;
     probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
     runPair(pc);

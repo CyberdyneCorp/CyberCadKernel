@@ -80,6 +80,15 @@ ntopo::Shape makeCyl(int axis, double r, double lo, double hi) {
   return nb::curved::buildCommonSegment(box, nb::curved::AxisCylinder{axis, 0, 0, r, lo, hi});
 }
 
+// A finite cylinder whose cross-section CENTRE is offset by (c0,c1) in the two perpendicular
+// axes (an OFF-AXIS placement) — for the transversal (non-coaxial) torus∩cylinder family. For a
+// Z-axis (axis=2) cylinder (c0,c1) = (x,y): centring c0=off puts the axis at radius `off` from
+// the world Z-axis, parallel-but-offset from a Z-torus axis.
+ntopo::Shape makeCylOff(int axis, double c0, double c1, double r, double lo, double hi) {
+  nb::curved::AABox box{Point3{-100, -100, -100}, Point3{100, 100, 100}};
+  return nb::curved::buildCommonSegment(box, nb::curved::AxisCylinder{axis, c0, c1, r, lo, hi});
+}
+
 namespace cst = cybercad::native::construct;
 
 // Build a full sphere of radius R centred at (cx,0,0) as a genuine native B-rep: an
@@ -1680,6 +1689,137 @@ CC_TEST(torus_cyl_coaxial_common_fuse_cut_watertight_matches_analytic) {
   // CUT is order-sensitive: cylinder − torus is a DIFFERENT topology; the S5-l CUT builder only
   // handles the TORUS minuend, so cyl − torus declines here → OCCT.
   CC_CHECK(nb::ssi_boolean_solid(cyl, tor, nb::Op::Cut).isNull());
+}
+
+// ── (14b) TRANSVERSAL (NON-COAXIAL) TORUS∩CYLINDER COMMON (S5-p) — the first transversal
+// TORUS slice ─────────────────────────────────────────────────────────────────────────────────
+// A ring torus (major R=3, minor r=1, axis +Z) and a THIN cylinder Rc=0.6 whose axis is PARALLEL
+// to +Z but OFFSET perpendicular by off=3 (sitting over the tube-centre circle on the +X rim),
+// spanning z∈[-2,2] so it pierces fully THROUGH the tube. Because the axes are non-coaxial the
+// cylinder wall crosses the tube in TWO disjoint NON-PLANAR closed loops (the quartic cyl∩torus
+// locus — no analytic circle), so S5-p drives the boolean directly from the S3-traced seams:
+// COMMON = torus lower cap + cylinder band + torus upper cap, every ring the traced non-planar
+// seam. There is no closed-form COMMON volume, so the oracle is a deterministic fine-grid
+// numerical integration of the analytic region (inside the tube AND the offset finite cylinder)
+// — the primary parity oracle for a non-analytic seam. CUT/FUSE honest-decline (the torus-outer-
+// zone weld between two non-planar seams is the transversal residual, exactly as in S5-k).
+CC_TEST(torus_cyl_transversal_offset_common_watertight_matches_numeric) {
+  const double R = 3.0, r = 1.0, Rc = 0.6, off = 3.0, cLo = -2.0, cHi = 2.0;
+  const ntopo::Shape tor = makeTorus(R, r);                       // +Z torus at origin
+  const ntopo::Shape cyl = makeCylOff(/*Z*/ 2, off, 0.0, Rc, cLo, cHi);  // Z-cyl at (off,0)
+  CC_CHECK(!tor.isNull() && !cyl.isNull());
+
+  const auto csTor = sd::recogniseCurvedSolid(tor);
+  const auto csCyl = sd::recogniseCurvedSolid(cyl);
+  CC_CHECK(csTor && csCyl);
+  if (csTor && csCyl) {
+    CC_CHECK(csTor->kind == sd::CurvedKind::Torus);
+    CC_CHECK(csCyl->kind == sd::CurvedKind::Cylinder);
+    // The trace is TWO fully-transversal CLOSED non-planar loops (pierce-through both sheets).
+    const ssi::TraceSet tr = ssi::trace_intersection(csTor->adapter(), csCyl->adapter());
+    CC_CHECK(tr.nearTangentGaps == 0);
+    CC_CHECK(tr.branchPoints == 0);
+    CC_CHECK(tr.lines.size() == 2);
+    int closed = 0;
+    for (const ssi::WLine& w : tr.lines)
+      if (w.isClosed()) ++closed;
+    CC_CHECK(closed == 2);
+  }
+
+  // Deterministic numeric COMMON volume (analytic region: inside the tube AND the offset finite
+  // Z-cylinder). The overlap is a small bore-sized region → a tight AABB grid converges fast.
+  auto inTor = [&](double x, double y, double z) {
+    const double rho = std::sqrt(x * x + y * y);
+    const double dr = rho - R;
+    return dr * dr + z * z <= r * r;
+  };
+  auto inCyl = [&](double x, double y, double z) {
+    const double dx = x - off;
+    return (dx * dx + y * y <= Rc * Rc) && (z >= cLo && z <= cHi);
+  };
+  const int nx = 160, ny = 128, nz = 128;
+  const double x0 = off - Rc - 0.2, x1 = off + Rc + 0.2, y0 = -Rc - 0.2, y1 = Rc + 0.2,
+               z0 = -r - 0.2, z1 = r + 0.2;
+  const double cell = (x1 - x0) / nx * (y1 - y0) / ny * (z1 - z0) / nz;
+  long inside = 0;
+  for (int i = 0; i < nx; ++i) {
+    const double x = x0 + (x1 - x0) * (i + 0.5) / nx;
+    for (int j = 0; j < ny; ++j) {
+      const double y = y0 + (y1 - y0) * (j + 0.5) / ny;
+      for (int k = 0; k < nz; ++k) {
+        const double z = z0 + (z1 - z0) * (k + 0.5) / nz;
+        if (inTor(x, y, z) && inCyl(x, y, z)) ++inside;
+      }
+    }
+  }
+  const double vCommonNumeric = inside * cell;
+  CC_CHECK(vCommonNumeric > 2.0 && vCommonNumeric < 2.3);  // ≈ 2.15
+
+  // ── COMMON: watertight native candidate whose volume matches the numeric oracle. ──
+  const ntopo::Shape common = nb::ssi_boolean_solid(tor, cyl, nb::Op::Common);
+  CC_CHECK(!common.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  CC_CHECK(vCommon > 0.0);                                  // watertight → engine accepts
+  CC_CHECK(std::fabs(vCommon - vCommonNumeric) <= 1e-2 * vCommonNumeric);
+  const double vTorus = 2.0 * sd::kSsiPi * sd::kSsiPi * R * r * r;
+  const double vCyl = cylinderVolume(Rc, cLo, cHi);
+  CC_CHECK(vCommon <= std::min(vTorus, vCyl) + 1e-9);      // COMMON ≤ min(A,B)
+  CC_CHECK(!nb::boolean_solid(tor, cyl, nb::Op::Common).isNull());
+
+  // COMMON is symmetric — reversing the operand order builds the same watertight solid.
+  const ntopo::Shape swapped = nb::ssi_boolean_solid(cyl, tor, nb::Op::Common);
+  CC_CHECK(!swapped.isNull());
+  const double vSwapped = watertightMeshVolume(swapped);
+  CC_CHECK(vSwapped > 0.0);
+  CC_CHECK(std::fabs(vSwapped - vCommonNumeric) <= 1e-2 * vCommonNumeric);
+
+  // CUT / FUSE honest-decline for the transversal pose (the torus-outer-zone weld between two
+  // non-planar seams is the transversal residual) → NULL → OCCT. Never a leaky solid.
+  CC_CHECK(nb::ssi_boolean_solid(tor, cyl, nb::Op::Cut).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(cyl, tor, nb::Op::Cut).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(tor, cyl, nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(cyl, tor, nb::Op::Fuse).isNull());
+}
+
+// ── (14c) TRANSVERSAL torus∩cyl REDUCES TO COAXIAL + skew/single-sheet declines ────────────────
+// As the perpendicular offset → 0 the pose becomes COAXIAL and the S5-l torus∩cylinder assembler
+// (which runs BEFORE S5-p in the dispatch) claims it, reproducing the landed coaxial COMMON; the
+// S5-p transversal setup gates on a strictly-positive offset so it declines the coaxial pose. This
+// pins the reduction hand-off (the same offset→0 guarantee S5-k has), plus the honest declines: a
+// SKEW (perpendicular-axis) cylinder and a cylinder that does NOT pierce both tube sheets (a single
+// loop) both fall through S5-p to OCCT.
+CC_TEST(torus_cyl_transversal_reduces_to_coaxial_and_declines_skew) {
+  const double R = 3.0, r = 1.0;
+  const ntopo::Shape tor = makeTorus(R, r);
+
+  // Coaxial (off=0): S5-l owns it — a Pappus-exact COMMON, distinct from the offset overlap.
+  const double Rc = 3.2, cLo = -2.0, cHi = 2.0;
+  const ntopo::Shape cylCoax = makeCylOff(/*Z*/ 2, 0.0, 0.0, Rc, cLo, cHi);
+  const ntopo::Shape coax = nb::ssi_boolean_solid(tor, cylCoax, nb::Op::Common);
+  CC_CHECK(!coax.isNull());
+  const double vCoax = watertightMeshVolume(coax);
+  CC_CHECK(vCoax > 0.0);
+  const double vCoaxTrue = torusCylCommonVolume(R, r, Rc);
+  CC_CHECK(std::fabs(vCoax - vCoaxTrue) <= 1e-2 * vCoaxTrue);
+
+  // The coaxial COMMON is DISTINCT from a transversal (offset) COMMON — the offset shrinks the
+  // overlap to a bore-sized region — so the reduction is not a trivial identity.
+  const ntopo::Shape off = nb::ssi_boolean_solid(tor, makeCylOff(/*Z*/ 2, 3.0, 0.0, 0.6, cLo, cHi),
+                                                 nb::Op::Common);
+  CC_CHECK(!off.isNull());
+  const double vOff = watertightMeshVolume(off);
+  CC_CHECK(vOff > 0.0);
+  CC_CHECK(vCoax - vOff > 1.0);   // coaxial overlap strictly (much) larger than the offset bore
+
+  // SKEW (perpendicular-axis) cylinder: an X-axis thin cylinder stabbing the +X tube rim. The
+  // S5-p parallel-axis gate rejects it → NULL → OCCT (no faked skew handling).
+  const ntopo::Shape skew = makeCylOff(/*X*/ 0, 0.0, 0.0, 0.6, 2.0, 4.0);
+  CC_CHECK(nb::ssi_boolean_solid(tor, skew, nb::Op::Common).isNull());
+
+  // SINGLE-SHEET grazing cylinder (z∈[0.2,2] misses the lower tube sheet → not two closed loops):
+  // S5-p needs exactly two closed loops, so it declines → OCCT.
+  const ntopo::Shape graze = makeCylOff(/*Z*/ 2, 3.0, 0.0, 0.6, 0.2, 2.0);
+  CC_CHECK(nb::ssi_boolean_solid(tor, graze, nb::Op::Common).isNull());
 }
 
 // ── (15) TORUS∩CYLINDER HONEST DECLINES: spindle torus + clear/tangent cylinder → OCCT ──

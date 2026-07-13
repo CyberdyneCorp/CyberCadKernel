@@ -2992,6 +2992,255 @@ topo::Shape buildTransCylSphereFuse(const CurvedSolid& A, const CurvedSolid& B,
   return {};  // sphere-outer-zone weld is the transversal residual → OCCT (never faked)
 }
 
+// ═══ S5-p — TRANSVERSAL (NON-COAXIAL) TORUS ∩ CYLINDER COMMON (CUT/FUSE decline) ══════
+// The SECOND transversal (non-coaxial) curved-boolean slice (after S5-k offset cyl∩sphere),
+// and the FIRST transversal TORUS pair. Where S5-l handles the COAXIAL torus∩cylinder pose
+// (cylinder axis colinear with the torus axis → two ANALYTIC circle seams, a Pappus solid of
+// revolution), S5-p handles the OFFSET pose: the cylinder axis is PARALLEL to the torus axis
+// but DISPLACED perpendicular from it, sitting over the tube's rim so a thin cylinder pierces
+// the tube like a vertical rod through the ring. Because the axes are non-coaxial the two
+// seams are NON-PLANAR closed space curves (the cylinder∩torus quartic locus — no analytic
+// circle exists), consumed DIRECTLY from the S3 TraceSet (the general SSI machinery), not a
+// closed form. This is the natural torus sibling of the S5-k Viviani slice.
+//
+// SCOPE (the clean, robustly-handleable transversal pose): a THIN cylinder whose axis is
+// parallel to the torus axis, offset perpendicular so the cylinder crosses ONE side of the
+// ring, and long enough (axially) that it pokes fully THROUGH the tube — entering the tube's
+// lower sheet and exiting its upper sheet — so the cylinder wall crosses the tube at exactly
+// TWO disjoint closed loops (a lower loop + an upper loop along the cylinder axis), both fully
+// transversal (nearTangentGaps==0, branchPoints==0, both Closed). The COMMON is then the same
+// TOPOLOGY as the coaxial S5-l COMMON — a cylinder mid-band capped by two TUBE-surface caps —
+// but every ring is the traced NON-PLANAR seam:
+//   COMMON = torus lower cap (the tube sheet inside the cylinder) + cylinder band (seamLo→
+//     seamHi, inside the tube) + torus upper cap (the tube sheet inside the cylinder). Its
+//     boundary rings are the two traced seams (shared VertexPool weld). Every fragment is
+//     seam-driven + verified. This is the landed transversal-torus slice.
+//
+// Each torus cap is a radial fan from the tube-surface CENTRE point of the cap patch (evaluated
+// ON the torus at the mean seam (u,v)) out through concentric rings to the exact traced seam
+// nodes, each interior ring node placed ON the torus surface by lerping the torus (u,v) from the
+// centre to the boundary node (the S5-a appendMouthCap discipline generalised to the torus, and
+// oriented by the TRUE tube-outward normal — not axis-radial — so the sheet welds correctly on
+// both tube halves). The cap follows the true tube bulge to O(1/rings²).
+//
+// CUT / FUSE both additionally need the TORUS OUTER SHELL (the tube surface OUTSIDE the bore,
+// the long way round between the two non-planar seams) — the same unresolved two-non-planar-seam
+// zone weld that made S5-k's CUT/FUSE decline. So CUT/FUSE HONEST-DECLINE → OCCT; COMMON (which
+// needs only the two INNER tube caps + the cylinder band) is the landed slice. Nothing is faked.
+//
+// REDUCTION: as the offset → 0 the pose becomes coaxial and S5-l's `torusCylSetup` claims it
+// FIRST in the dispatch (it runs before S5-p), reproducing the landed coaxial result; S5-p
+// therefore gates on a STRICTLY-POSITIVE offset (else → decline, letting S5-l own it). A skew
+// (non-parallel) cylinder axis, ≠2 closed seams, or a pose failing the inside-the-other survival
+// samples all decline → OCCT. The engine owns the watertight + volume gate + OCCT fallback.
+struct TransTorusCylSetup {
+  bool ok = false;
+  const CurvedSolid* tor = nullptr;
+  const CurvedSolid* cyl = nullptr;
+  bool torIsA = true;         ///< which operand is the torus (picks the seam (u,v) track)
+  math::Point3 O;             ///< cylinder origin
+  math::Vec3 zc;              ///< cylinder axis (unit) — parallel to the torus axis
+  double Rc = 0.0;            ///< cylinder radius
+  double offset = 0.0;        ///< perpendicular distance of the cyl axis from the torus axis
+  int N = 0;                  ///< common azimuth sample count (seam-chord bounded)
+  Seam seamLo{}, seamHi{};    ///< the two traced seams, resampled + ordered lo/hi along zc
+};
+
+// Mean cylinder-axial projection (onto the cyl axis from the cyl origin) of a seam's nodes.
+double transTorusSeamAxialMean(const TransTorusCylSetup& s, const Seam& seam) {
+  double acc = 0.0;
+  for (const auto& p : seam.pts)
+    acc += math::dot(math::Vec3{p.x - s.O.x, p.y - s.O.y, p.z - s.O.z}, s.zc);
+  return acc / static_cast<double>(std::max<size_t>(1, seam.pts.size()));
+}
+
+// The tube-outward reference at a world point near the torus surface: (p − nearest tube-centre
+// point). The tube centre lies on the major circle (radius R about the torus axis) in the plane
+// through p's projection onto that axis. Correct on BOTH tube halves (unlike an axis-radial
+// reference, which inverts on the inner half) — mirrors S5-l tubeCentre's rationale.
+math::Vec3 tubeOutwardAt(const CurvedSolid& tor, const math::Point3& p) {
+  const math::Vec3 zc = tor.frame.z.vec();
+  const math::Vec3 w{p.x - tor.frame.origin.x, p.y - tor.frame.origin.y, p.z - tor.frame.origin.z};
+  const math::Vec3 radial = w - zc * math::dot(w, zc);
+  const double rho = math::norm(radial);
+  if (rho < 1e-12) return w;  // on the axis (degenerate) → any reference
+  const math::Vec3 tubeCtr{tor.frame.origin.x + radial.x / rho * tor.radius,
+                           tor.frame.origin.y + radial.y / rho * tor.radius,
+                           tor.frame.origin.z + radial.z / rho * tor.radius};
+  return math::Vec3{p.x - tubeCtr.x, p.y - tubeCtr.y, p.z - tubeCtr.z};
+}
+
+// A torus-surface CAP bounded by one traced seam loop: a radial fan from the cap's tube-surface
+// CENTRE (evaluated ON the torus at the mean seam (u,v)) through `rings` concentric rings out to
+// the exact traced seam nodes. Every interior node sits ON the torus (lerp the (u,v) centre→
+// boundary, evaluate); the OUTER ring is the shared pooled seam nodes so cap↔band welds. Facets
+// are oriented by the TRUE tube-outward normal at the centroid. `torUv` is the seam's torus
+// (u,v) track (uvA or uvB per operand order). Mirrors appendMouthCap (torus normal, not axis).
+void appendTransTorusCap(const CurvedSolid& tor, const Seam& seam,
+                         const std::vector<std::pair<double, double>>& torUv, int rings,
+                         VertexPool& pool, std::vector<topo::Shape>& faces) {
+  const int n = static_cast<int>(seam.pts.size());
+  if (n < 3 || rings < 1 || static_cast<int>(torUv.size()) != n) return;
+  // Cap centre in (u,v): mean of the boundary track, u unwrapped contiguously around the first
+  // node (torus u is the periodic MAJOR angle) and v around the first node (minor angle).
+  const double u0 = torUv.front().first, v0 = torUv.front().second;
+  double uSum = 0.0, vSum = 0.0;
+  for (const auto& p : torUv) { uSum += nearU(u0, p.first); vSum += nearU(v0, p.second); }
+  const double uc = uSum / n, vc = vSum / n;
+  auto ringPt = [&](int r, int k) -> math::Point3 {
+    if (r == rings) return seam.pts[k];  // outer ring = exact traced seam node
+    const double t = static_cast<double>(r) / rings;
+    const double u = uc + (nearU(u0, torUv[k].first) - uc) * t;
+    const double v = vc + (nearU(v0, torUv[k].second) - vc) * t;
+    return tor.point(u, v);
+  };
+  const math::Point3 centre = tor.point(uc, vc);
+  auto tri = [&](const math::Point3& a, const math::Point3& b, const math::Point3& c) {
+    const math::Point3 ctr{(a.x + b.x + c.x) / 3, (a.y + b.y + c.y) / 3, (a.z + b.z + c.z) / 3};
+    pushPlanarTri(a, b, c, tubeOutwardAt(tor, ctr), pool, faces);
+  };
+  for (int k = 0; k < n; ++k) tri(centre, ringPt(1, k), ringPt(1, (k + 1) % n));
+  for (int r = 2; r <= rings; ++r)
+    for (int k = 0; k < n; ++k) {
+      const int kn = (k + 1) % n;
+      tri(ringPt(r - 1, k), ringPt(r, k), ringPt(r, kn));
+      tri(ringPt(r - 1, k), ringPt(r, kn), ringPt(r - 1, kn));
+    }
+}
+
+// Recognise the transversal (offset, axis-parallel) torus∩cylinder pierce-through pose from the
+// two traced seams. Declines (→ ok=false) for the coaxial pose (offset ≤ tol, owned by S5-l), a
+// skew (non-parallel) axis, ≠2 closed seams, or a pose failing the inside-the-other survival
+// gate. Mirrors transCylSphereSetup: a linear pose-recognition + resample + survival gate.
+TransTorusCylSetup transTorusCylSetup(const CurvedSolid& A, const CurvedSolid& B,
+                                      const std::vector<Seam>& seams) {
+  TransTorusCylSetup st;
+  if (seams.size() != 2) return st;                       // pierce-through → exactly two loops
+  for (const Seam& s : seams)
+    if (!s.closed || s.pts.size() < 8) return st;
+
+  const CurvedSolid* torPtr = nullptr;
+  const CurvedSolid* cylPtr = nullptr;
+  for (const CurvedSolid* s : {&A, &B}) {
+    if (s->kind == CurvedKind::Torus) torPtr = s;
+    else if (s->kind == CurvedKind::Cylinder) cylPtr = s;
+  }
+  if (!torPtr || !cylPtr) return st;
+  const CurvedSolid& tor = *torPtr;
+  const CurvedSolid& cyl = *cylPtr;
+  const bool torIsA = (&A == torPtr);
+  const bool cylIsB = (&B == cylPtr);
+
+  const math::Vec3 zt = tor.frame.z.vec();
+  const math::Vec3 zc = cyl.frame.z.vec();
+  // Cylinder axis must be PARALLEL to the torus axis (axis-parallel offset pose). A skew /
+  // perpendicular cylinder is a different, harder locus → decline → OCCT.
+  if (math::norm(math::cross(zt, zc)) > 1e-6) return st;
+  const math::Point3 O = cyl.frame.origin;
+  const math::Vec3 d{O.x - tor.frame.origin.x, O.y - tor.frame.origin.y, O.z - tor.frame.origin.z};
+  const double offset = math::norm(d - zt * math::dot(d, zt));  // perpendicular cyl-axis offset
+  if (offset <= 1e-4) return st;                          // coaxial → S5-l owns it → decline
+
+  const double R = tor.radius, r = tor.minorRadius, Rc = cyl.radius;
+  if (!(r > 1e-9) || !(R > r + 1e-9) || !(Rc > 1e-9)) return st;
+
+  const double chord = std::sqrt(std::max(8.0 * kCapSagitta * Rc, 1e-12));
+  const int N = std::clamp(static_cast<int>(std::ceil(kSsiTwoPi * Rc / chord)), 24, 200);
+
+  Seam s0 = resampleByAzimuth(seams[0], cylIsB, N);
+  Seam s1 = resampleByAzimuth(seams[1], cylIsB, N);
+
+  st.tor = torPtr; st.cyl = cylPtr; st.torIsA = torIsA; st.O = O; st.zc = zc;
+  st.Rc = Rc; st.offset = offset; st.N = N;
+  const double m0 = transTorusSeamAxialMean(st, s0), m1 = transTorusSeamAxialMean(st, s1);
+  if (std::fabs(m0 - m1) < 1e-4) return st;               // both loops at one station → not two sheets
+  st.seamLo = (m0 <= m1) ? s0 : s1;
+  st.seamHi = (m0 <= m1) ? s1 : s0;
+
+  // SURVIVAL samples (the honest inside-the-other gate, never faked):
+  //  * the cylinder band midpoint (on the cyl axis, half-way between the two seams) must be
+  //    INSIDE the torus tube (the band is a COMMON boundary);
+  //  * each cap centre (the tube-surface point at the mean seam (u,v)) must be INSIDE the
+  //    cylinder (the caps close the COMMON).
+  const double axLo = transTorusSeamAxialMean(st, st.seamLo);
+  const double axHi = transTorusSeamAxialMean(st, st.seamHi);
+  const double axMid = 0.5 * (axLo + axHi);
+  const math::Point3 bandMid{O.x + zc.x * axMid, O.y + zc.y * axMid, O.z + zc.z * axMid};
+  if (classifyPoint(tor, bandMid, kSsiTol) != 1) return st;
+  auto capCentre = [&](const Seam& seam) {
+    const auto& uv = torIsA ? seam.uvA : seam.uvB;
+    const double u0 = uv.front().first, v0 = uv.front().second;
+    double uSum = 0.0, vSum = 0.0;
+    for (const auto& p : uv) { uSum += nearU(u0, p.first); vSum += nearU(v0, p.second); }
+    return tor.point(uSum / uv.size(), vSum / uv.size());
+  };
+  if (classifyPoint(cyl, capCentre(st.seamLo), kSsiTol) != 1) return st;
+  if (classifyPoint(cyl, capCentre(st.seamHi), kSsiTol) != 1) return st;
+
+  st.ok = true;
+  return st;
+}
+
+// Ring count for a transversal torus cap: the cap's angular span (max seam-node distance from the
+// cap centre, over the tube minor radius) × sqrt(r/(2·kCapSagitta)), bounded [4,48] — the S5-k
+// cap-refinement discipline generalised to the tube surface.
+int transTorusCapRings(const TransTorusCylSetup& s, const Seam& seam) {
+  const auto& uv = s.torIsA ? seam.uvA : seam.uvB;
+  const double u0 = uv.front().first, v0 = uv.front().second;
+  double uSum = 0.0, vSum = 0.0;
+  for (const auto& p : uv) { uSum += nearU(u0, p.first); vSum += nearU(v0, p.second); }
+  const double uc = uSum / uv.size(), vc = vSum / uv.size();
+  const math::Point3 centre = s.tor->point(uc, vc);
+  double span = 0.0;
+  for (const auto& p : seam.pts)
+    span = std::max(span, math::norm(math::Vec3{p.x - centre.x, p.y - centre.y, p.z - centre.z}));
+  return std::clamp(
+      static_cast<int>(std::ceil(std::max(span, 1e-6) * std::sqrt(1.0 / (2.0 * kCapSagitta)))), 4,
+      48);
+}
+
+// buildTransTorusCylCommon(A,B) = COMMON of the TRANSVERSAL (offset) torus∩cylinder: the torus
+// lower cap (the tube sheet inside the cylinder, toward −zc) + the cylinder band between the two
+// traced seams (inside the tube) + the torus upper cap (toward +zc). All three share the two
+// traced seam rings through one VertexPool → watertight. The first transversal-torus slice.
+topo::Shape buildTransTorusCylCommon(const CurvedSolid& A, const CurvedSolid& B,
+                                     const std::vector<Seam>& seams) {
+  const TransTorusCylSetup s = transTorusCylSetup(A, B, seams);
+  if (!s.ok) return {};
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const auto& uvLo = s.torIsA ? s.seamLo.uvA : s.seamLo.uvB;
+  const auto& uvHi = s.torIsA ? s.seamHi.uvA : s.seamHi.uvB;
+  appendTransTorusCap(*s.tor, s.seamLo, uvLo, transTorusCapRings(s, s.seamLo), pool, faces);
+  appendRevolvedBand(s.seamLo.pts, s.seamHi.pts, s.O, s.zc, pool, faces, 1.0);  // cylinder band
+  appendTransTorusCap(*s.tor, s.seamHi, uvHi, transTorusCapRings(s, s.seamHi), pool, faces);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildTransTorusCylCut / buildTransTorusCylFuse — the transversal CUT / FUSE of the offset
+// torus∩cylinder. Both need the TORUS OUTER SHELL: the tube surface OUTSIDE the cylinder bore,
+// i.e. the tube ZONE between the two NON-PLANAR traced seams taken the LONG way round (away from
+// the bore). Like the S5-k transversal cyl∩sphere residual, this zone is bounded by two non-planar
+// space curves that do NOT lie on a common tube latitude, so no revolved-band / single-apex fan
+// tiles it watertight. Assembling it as a shared-pool planar-facet shell that welds byte-clean to
+// both seams is the UNRESOLVED transversal residual (the same class as S5-k). So CUT/FUSE HONEST-
+// DECLINE (→ NULL → OCCT); COMMON is the landed slice. Nothing is faked.
+topo::Shape buildTransTorusCylCut(const CurvedSolid& A, const CurvedSolid& B,
+                                  const std::vector<Seam>& seams) {
+  const TransTorusCylSetup s = transTorusCylSetup(A, B, seams);
+  if (!s.ok) return {};
+  return {};  // torus-outer-zone weld is the transversal residual → OCCT (never faked)
+}
+
+topo::Shape buildTransTorusCylFuse(const CurvedSolid& A, const CurvedSolid& B,
+                                   const std::vector<Seam>& seams) {
+  const TransTorusCylSetup s = transTorusCylSetup(A, B, seams);
+  if (!s.ok) return {};
+  return {};  // torus-outer-zone weld is the transversal residual → OCCT (never faked)
+}
+
 // ═══ S5-l — COAXIAL TORUS ∩ CYLINDER (COMMON / FUSE / CUT) ══════════════════════
 // The TORUS surface family opened. A ring torus (major R, minor r, axis = frame Z) and a
 // coaxial cylinder (radius Rc, same axis) whose wall crosses the torus TUBE at TWO
@@ -4813,6 +5062,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-k: TRANSVERSAL (offset/non-coaxial) cylinder∩sphere COMMON (traced non-planar seams).
       const topo::Shape transCS = buildTransCylSphereCommon(*csA, *csB, seams);
       if (!transCS.isNull()) return transCS;
+      // S5-p: TRANSVERSAL (offset/non-coaxial) torus∩cylinder COMMON (traced non-planar seams).
+      const topo::Shape transTC = buildTransTorusCylCommon(*csA, *csB, seams);
+      if (!transTC.isNull()) return transTC;
       // S5-l: COAXIAL torus∩cylinder COMMON (inner tube arc + cylinder chord band).
       const topo::Shape torCyl = buildTorusCylCommon(*csA, *csB, seams);
       if (!torCyl.isNull()) return torCyl;
@@ -4853,6 +5105,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-k: TRANSVERSAL (offset) cylinder∩sphere FUSE (sphere outer shell + two cyl end stubs).
       const topo::Shape transCS = buildTransCylSphereFuse(*csA, *csB, seams);
       if (!transCS.isNull()) return transCS;
+      // S5-p: TRANSVERSAL torus∩cylinder FUSE (honest-decline — torus-outer-zone residual → OCCT).
+      const topo::Shape transTC = buildTransTorusCylFuse(*csA, *csB, seams);
+      if (!transTC.isNull()) return transTC;
       // S5-l: COAXIAL torus∩cylinder FUSE (outer tube bulge + cyl wall outside the tube + discs).
       const topo::Shape torCyl = buildTorusCylFuse(*csA, *csB, seams);
       if (!torCyl.isNull()) return torCyl;
@@ -4890,6 +5145,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-k: TRANSVERSAL (offset) cylinder∩sphere CUT (sphere − cyl: sphere shell + reversed bore).
       const topo::Shape transCS = buildTransCylSphereCut(*csA, *csB, seams);
       if (!transCS.isNull()) return transCS;
+      // S5-p: TRANSVERSAL torus∩cylinder CUT (honest-decline — torus-outer-zone residual → OCCT).
+      const topo::Shape transTC = buildTransTorusCylCut(*csA, *csB, seams);
+      if (!transTC.isNull()) return transTC;
       // S5-l: COAXIAL torus∩cylinder CUT (torus − cyl: outer tube arc + reversed cylinder bore).
       const topo::Shape torCyl = buildTorusCylCut(*csA, *csB, seams);
       if (!torCyl.isNull()) return torCyl;

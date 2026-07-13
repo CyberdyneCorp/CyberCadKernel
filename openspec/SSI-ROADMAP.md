@@ -576,7 +576,7 @@ S4-f DETECTS + REPORTS + traces-through, it does not repair topology.
 
 Archived change `openspec/changes/archive/2026-07-05-add-native-ssi-s4f-completeness`.
 
-### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g/h/i/j landed + S5-k FIRST TRANSVERSAL (non-coaxial) slice + S5-l/m/n/o TORUS surface family (CONE surface family opened — coaxial cone∩cylinder, single- AND two-circle cone∩sphere, coaxial cone∩cone (frustum AND apex-to-apex hourglass), AND two-circle cylinder∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; S5-k lands the FIRST non-coaxial pose — the offset cylinder∩sphere COMMON from a NON-PLANAR traced seam; S5-l opens the TORUS family — coaxial torus∩cylinder COMMON/FUSE/CUT COMPLETE 3/3 native; S5-m extends it — coaxial torus∩sphere (sphere at torus centre) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-n extends it again — coaxial torus∩cone (oblique-chord generalisation of S5-l) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-o closes the family with the FIRST curved∩curved pair where BOTH operands are tori — coaxial torus∩torus COMMON/FUSE/CUT COMPLETE 3/3 native; ~months for full coverage)
+### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g/h/i/j landed + S5-k FIRST TRANSVERSAL (non-coaxial) slice + S5-l/m/n/o TORUS surface family (CONE surface family opened — coaxial cone∩cylinder, single- AND two-circle cone∩sphere, coaxial cone∩cone (frustum AND apex-to-apex hourglass), AND two-circle cylinder∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; S5-k lands the FIRST non-coaxial pose — the offset cylinder∩sphere COMMON from a NON-PLANAR traced seam; S5-l opens the TORUS family — coaxial torus∩cylinder COMMON/FUSE/CUT COMPLETE 3/3 native; S5-m extends it — coaxial torus∩sphere (sphere at torus centre) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-n extends it again — coaxial torus∩cone (oblique-chord generalisation of S5-l) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-o closes the family with the FIRST curved∩curved pair where BOTH operands are tori — coaxial torus∩torus COMMON/FUSE/CUT COMPLETE 3/3 native; S5-p lands the SECOND transversal (non-coaxial) slice and the FIRST transversal TORUS pair — the offset (axis-parallel) torus∩cylinder COMMON from a NON-PLANAR traced seam (CUT/FUSE honest-decline, the same two-non-planar-seam residual as S5-k); ~months for full coverage)
 Use SSI curves to **split** the curved faces of two solids, **classify**
 fragments inside/outside (reuse the BSP-CSG classifier + a curved point-in-solid
 test), **assemble** the surviving shell watertight (curved-seam weld from the
@@ -1049,12 +1049,47 @@ harness runs each of the sphere FUSE/CUT as an equal-R AND an unequal-R fixture;
   CONTAINED tube (D ≤ |r1−r2|), CONCENTRIC-coaxial tubes (same centre, D≈0), a seam ring collapsing
   on the axis, and a non-coaxial / off-axis / skew torus pair all decline → NULL → OCCT (honest,
   never faked). The general TRANSVERSAL (non-coaxial) torus∩torus quartic space curve is a later slice.
+- **S5-p — TRANSVERSAL (NON-COAXIAL) TORUS(ring)∩CYLINDER COMMON** (the SECOND transversal / non-coaxial
+  slice after S5-k, and the FIRST transversal TORUS pair). Where S5-l handles the COAXIAL torus∩cylinder
+  pose (cylinder axis colinear with the torus axis → two ANALYTIC circle seams, a Pappus solid of
+  revolution), S5-p handles the OFFSET pose: the cylinder axis is PARALLEL to the torus axis but
+  perpendicular-DISPLACED from it, sitting over the tube rim so a THIN cylinder pierces the tube like a
+  vertical rod through the ring. Non-coaxial → the two seams are NON-PLANAR closed space curves (the
+  quartic cyl∩torus locus, NO analytic circle), consumed DIRECTLY from the S3 `TraceSet` — the torus
+  sibling of the S5-k Viviani slice. Pose: a thin Z-parallel cylinder offset so it pokes fully THROUGH
+  the tube (entering the lower sheet, exiting the upper sheet) → the wall crosses the tube in exactly
+  TWO disjoint closed loops (a lower + an upper along the cyl axis), both fully transversal
+  (`nearTangentGaps==0`, `branchPoints==0`, both Closed). COMMON is the SAME TOPOLOGY as the coaxial S5-l
+  COMMON — a cylinder mid-band capped by two TUBE-surface caps — but every ring is the TRACED non-planar
+  seam: `buildTransTorusCylCommon` welds the torus LOWER cap (the tube sheet inside the cyl) + the
+  cylinder BAND (seamLo→seamHi, inside the tube) + the torus UPPER cap through one `VertexPool`. The new
+  prologue `transTorusCylSetup` recognises the axis-parallel offset pierce-through pose (offset > tol,
+  parallel axis, exactly two closed loops + the inside-the-other survival samples) and resamples BOTH
+  seams onto a common cyl-azimuth grid (`resampleByAzimuth`, shared with S5-k) so the band welds
+  ring-to-ring; the band reuses `appendRevolvedBand` (a straight ruling is exact on the cylinder). The
+  new cap builder `appendTransTorusCap` fans from the cap's tube-surface centre (the mean seam torus
+  (u,v)) out to the exact traced seam nodes, each interior node placed ON the torus by lerping the torus
+  (u,v) (the S5-a `appendMouthCap` discipline generalised to the torus) and oriented by the TRUE
+  tube-outward normal (`tubeOutwardAt`, correct on both tube halves). REDUCTION: as the offset → 0 the
+  pose becomes coaxial and S5-l's `torusCylSetup` claims it FIRST in the dispatch (S5-p gates on a
+  STRICTLY-POSITIVE offset), reproducing the landed coaxial COMMON — a pinned regression. Verified vs a
+  deterministic numerical-integration oracle (no closed form for a non-analytic seam) AND OCCT
+  `BRepAlgoAPI_Common` (sim): host fixture (torus R=3 r=1 about +Z; Z-cylinder Rc=0.6, offset x=3,
+  z∈[−2,2]), COMMON volN≈2.153 vs numeric 2.150, ΔV≈0.1%, watertight, symmetric (both operand orders),
+  inside the 1% curved-parity bar — no tolerance weakened, DISAGREED=0. CUT/FUSE both additionally need
+  the TORUS OUTER SHELL (the tube ZONE between the two NON-PLANAR seams, the long way round outside the
+  bore); welding that two-non-planar-seam zone watertight is the UNRESOLVED transversal residual (the
+  same class as S5-k), so they HONEST-DECLINE → OCCT. A skew (non-parallel) cylinder axis, a single-sheet
+  grazing cylinder (< two closed loops), and the coaxial pose (offset ≤ tol, owned by S5-l) all decline
+  → NULL → OCCT (honest, never faked).
 
 Honest scope still declining → OCCT (measured NULL fallbacks, never faked):
 - **the TRANSVERSAL (offset) cylinder∩sphere CUT + FUSE** (the sphere-outer-zone weld between two
   non-planar seams — the S5-k residual) and the LARGER-offset transversal cyl∩sphere COMMON (offset
   ≳ 0.5·Rc, where the S2 co-resident seeding recall returns only ONE of the two loops); the SMALL-
-  offset pierce-both-poles COMMON is now native — S5-k. Plus **oblique / multi-tube cyl∩cyl**, and
+  offset pierce-both-poles COMMON is now native — S5-k. Likewise **the TRANSVERSAL (offset) torus∩cylinder
+  CUT + FUSE** (the torus-outer-zone weld between two non-planar seams — the S5-p residual, same class);
+  the small-offset pierce-through COMMON is now native — S5-p. Plus **oblique / multi-tube cyl∩cyl**, and
   other curved-curved families (sphere∩box, freeform), the TRANSVERSAL (non-coaxial) cone∩cylinder /
   cone∩sphere / cone∩cone quartic space curve, apex-crossing / apex-in-extent frustums, parallel-wall (equal-half-angle)
   coaxial cone∩cone, the APEX-SPANNING / internally-tangent coaxial cone∩sphere crossing (the

@@ -747,6 +747,27 @@ int main() {
     runPair(pc);
   }
 
+  // ── (15) TRANSVERSAL (NON-COAXIAL) TORUS ∩ CYLINDER — the first transversal TORUS slice (S5-p)
+  // A ring torus (R=3, r=1, axis +Z) and a THIN cylinder Rc=0.6 whose axis is PARALLEL to +Z but
+  // OFFSET perpendicular by 3 (over the +X tube rim), spanning z∈[−2,2] so it pierces fully THROUGH
+  // the tube. Non-coaxial → the two seams are NON-PLANAR closed loops (the quartic cyl∩torus locus,
+  // no analytic circle), driven directly from the S3 trace. COMMON (torus caps + cylinder band) is
+  // a NATIVE PASS matching BRepAlgoAPI_Common on volume/area/watertight — the primary OCCT-parity
+  // oracle (DISAGREED=0, watertight, ΔV in band) for the non-analytic seam. CUT / FUSE honest-
+  // decline (the torus-outer-zone weld between two non-planar seams is the transversal residual,
+  // exactly the S5-k class) → OCCT fall-back (a valid, closed shipped solid).
+  {
+    PairCase pc;
+    pc.pairName = "torus=cyl(transversal)";
+    pc.nativeA = makeTorus(3.0, 1.0);
+    pc.nativeB = makeCyl(2, 3.0, 0.0, 0.6, -2.0, 2.0);   // Z axis, offset x=3, Rc=0.6
+    pc.occtA = occtTorus(3.0, 1.0);
+    pc.occtB = occtCyl(2, 3.0, 0.0, 0.6, -2.0, 2.0);
+    pc.relTol = 2e-2;
+    probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
+    runPair(pc);
+  }
+
   std::printf("== %d passed, %d failed, %d fell-back (native-pass=%d) ==\n",
               g_passed, g_failed, g_fellBack, g_nativePass);
   std::fflush(stdout);

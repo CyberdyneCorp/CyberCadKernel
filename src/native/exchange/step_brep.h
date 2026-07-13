@@ -84,6 +84,46 @@ std::string writeStepBrep(const std::vector<topo::TrimmedNurbsFace>& faces);
 /// geometry.
 std::vector<topo::TrimmedNurbsFace> readStepBrep(const std::string& step);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GENERAL (external) AP203/214 IMPORT — readStepBrepExternal.
+//
+// readStepBrep above recovers ONLY the entity forms OUR writer emits (it keys the
+// exact trim off the AP214-extension CC_TRIM records). A STEP file exported by a
+// real CAD system uses the FULL AP203/214 entity set — analytic surfaces
+// (PLANE / CYLINDRICAL_SURFACE / CONICAL_SURFACE / SPHERICAL_SURFACE /
+// TOROIDAL_SURFACE), knotted / rational B-spline surfaces, and a topology graph of
+// ADVANCED_FACE → FACE_OUTER_BOUND / FACE_BOUND → EDGE_LOOP → ORIENTED_EDGE →
+// EDGE_CURVE(→ LINE / CIRCLE / B_SPLINE_CURVE_WITH_KNOTS) → VERTEX_POINT, with NO
+// CC_TRIM and NO PCURVE — the trim is IMPLIED by the 3-D edge geometry lying on the
+// surface. readStepBrepExternal imports that general file into TrimmedNurbsFaces:
+//   * Surfaces are recovered as the native analytic FaceSurface kinds (exact) or a
+//     knotted / rational B-spline surface.
+//   * Each trim loop's 2-D pcurve is DERIVED by inverting the 3-D edge curve into the
+//     surface's (u,v) parameter plane (closed-form analytic inverse for the analytic
+//     surfaces; sampled projection otherwise) and building a 2-D pcurve — so the
+//     imported face carries a correct trim region.
+//   * Robust to arbitrary entity ORDERING, FORWARD `#id` references (two-pass: build
+//     the table, then resolve), comments / whitespace, and unit / context boilerplate
+//     (skipped cleanly).
+//
+// HONEST-DECLINE: a face whose surface or an edge is a kind this importer cannot
+// represent is SKIPPED (never emitted as a wrong face); the skipped-face reasons are
+// reported (optional out-param) so a caller sees exactly what was declined. A file with
+// no importable face returns an EMPTY vector. Geometry is NEVER fabricated.
+struct ExternalImportReport {
+  int facesSeen = 0;              ///< ADVANCED_FACE records encountered
+  int facesImported = 0;         ///< faces successfully converted to a TrimmedNurbsFace
+  int facesSkipped = 0;          ///< faces honestly declined
+  std::vector<std::string> skipReasons;  ///< one human-readable reason per skipped face
+};
+
+/// Import a GENERAL external AP203/214 part21 string into TrimmedNurbsFaces (see above).
+/// `report` (optional) receives the per-face import/skip accounting. Returns the imported
+/// faces; a face whose surface or edge kind is unrepresentable is skipped (honest decline),
+/// not fabricated. An empty / malformed file, or one with no importable face, returns {}.
+std::vector<topo::TrimmedNurbsFace> readStepBrepExternal(const std::string& step,
+                                                         ExternalImportReport* report = nullptr);
+
 }  // namespace cybercad::native::exchange
 
 #endif  // CYBERCAD_NATIVE_EXCHANGE_STEP_BREP_H

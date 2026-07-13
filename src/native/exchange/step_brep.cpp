@@ -17,6 +17,7 @@
 //
 #include "native/exchange/step_brep.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -1107,6 +1108,621 @@ std::vector<TrimmedNurbsFace> readStepBrep(const std::string& step) {
   Parser p(step);
   if (!p.parseTable()) return {};
   Mapper m(p.table());
+  return m.build();
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GENERAL (external) AP203/214 IMPORT — readStepBrepExternal
+//
+// Reuses the Parser table (order-independent, forward-ref-safe, comment-tolerant).
+// A new ExternalMapper walks the FULL topology graph (ADVANCED_FACE → FACE_*_BOUND →
+// EDGE_LOOP → ORIENTED_EDGE → EDGE_CURVE → LINE / CIRCLE / B_SPLINE_CURVE_WITH_KNOTS
+// + VERTEX_POINT), recovers analytic / B-spline surfaces, and DERIVES each edge's 2-D
+// pcurve by inverting the 3-D edge geometry into the surface's (u,v) plane.
+// ═════════════════════════════════════════════════════════════════════════════
+namespace {
+
+using math::Ax3;
+using math::Point3;
+using math::Vec3;
+
+// Local (u,v,w) coordinates of a world point in an analytic frame.
+Vec3 toLocal(const Ax3& f, const Point3& p) {
+  const Vec3 d = p - f.origin;
+  return {math::dot(d, f.x.vec()), math::dot(d, f.y.vec()), math::dot(d, f.z.vec())};
+}
+
+// Invert a world point onto an analytic surface → (u,v). `uHint` disambiguates the
+// angular branch so a swept loop stays continuous. Returns false for a surface kind
+// with no closed-form inverse (a B-spline surface — handled by sampled projection).
+bool inverseSurface(const FaceSurface& s, const Point3& p, double uHint, ParamPoint& out) {
+  using K = FaceSurface::Kind;
+  const Vec3 l = toLocal(s.frame, p);
+  switch (s.kind) {
+    case K::Plane:
+      out = {l.x, l.y};
+      return true;
+    case K::Cylinder:
+      out = {std::atan2(l.y, l.x), l.z};
+      return true;
+    case K::Cone: {
+      // r(v) = radius + v·sin α ; z = v·cos α  ⇒ v from z (α≠90°) else from radius.
+      const double ca = std::cos(s.semiAngle);
+      out.u = std::atan2(l.y, l.x);
+      out.v = std::abs(ca) > 1e-12 ? l.z / ca : (std::hypot(l.x, l.y) - s.radius) /
+                                                    std::max(std::sin(s.semiAngle), 1e-300);
+      return true;
+    }
+    case K::Sphere: {
+      // v ∈ [-π/2, π/2] latitude, u longitude.
+      out.u = std::atan2(l.y, l.x);
+      const double rc = std::hypot(l.x, l.y);
+      out.v = std::atan2(l.z, rc);
+      return true;
+    }
+    case K::Torus: {
+      out.u = std::atan2(l.y, l.x);
+      const double rr = std::hypot(l.x, l.y) - s.radius;  // r·cos v
+      out.v = std::atan2(l.z, rr);                        // z = r·sin v
+      return true;
+    }
+    case K::BSpline:
+    case K::Bezier:
+    default:
+      return false;
+  }
+  (void)uHint;
+}
+
+// Unwrap `angle` to the branch nearest `ref` (keeps a swept angular pcurve continuous
+// across the ±π seam of atan2).
+double unwrapNear(double angle, double ref) {
+  const double twoPi = 2.0 * M_PI;
+  double a = angle;
+  while (a - ref > M_PI) a -= twoPi;
+  while (ref - a > M_PI) a += twoPi;
+  return a;
+}
+
+// ── A resolved 3-D edge curve with a sampler over [t0,t1]. ────────────────────
+struct Edge3d {
+  enum class Kind { Line, Circle, Ellipse, BSpline } kind = Kind::Line;
+  // Analytic.
+  Ax3 frame{};
+  double radius = 0.0, minorRadius = 0.0;
+  Point3 lineOrigin{};
+  Vec3 lineDir{1, 0, 0};
+  // B-spline.
+  int degree = 0;
+  std::vector<Point3> poles;
+  std::vector<double> weights;
+  std::vector<double> knots;
+  // Sample parameter range (set from the bounding vertices).
+  double t0 = 0.0, t1 = 1.0;
+
+  Point3 eval(double t) const {
+    switch (kind) {
+      case Kind::Line:
+        return lineOrigin + lineDir * t;
+      case Kind::Circle:
+        return frame.origin + frame.x.vec() * (radius * std::cos(t)) +
+               frame.y.vec() * (radius * std::sin(t));
+      case Kind::Ellipse:
+        return frame.origin + frame.x.vec() * (radius * std::cos(t)) +
+               frame.y.vec() * (minorRadius * std::sin(t));
+      case Kind::BSpline:
+      default:
+        return weights.empty()
+                   ? math::curvePoint(degree, {poles.data(), poles.size()},
+                                      {knots.data(), knots.size()}, t)
+                   : math::nurbsCurvePoint(degree, {poles.data(), poles.size()},
+                                           {weights.data(), weights.size()},
+                                           {knots.data(), knots.size()}, t);
+    }
+  }
+};
+
+// ── ExternalMapper ────────────────────────────────────────────────────────────
+class ExternalMapper {
+ public:
+  ExternalMapper(const std::map<long, Record>& t, ExternalImportReport* rep)
+      : t_(t), rep_(rep) {}
+
+  std::vector<TrimmedNurbsFace> build() {
+    std::vector<TrimmedNurbsFace> faces;
+    for (const auto& [id, rec] : t_) {
+      if (rec.isComplex || rec.name != "ADVANCED_FACE") continue;
+      if (rep_) ++rep_->facesSeen;
+      std::string why;
+      std::optional<TrimmedNurbsFace> f = mapFace(rec, why);
+      if (f) {
+        faces.push_back(std::move(*f));
+        if (rep_) ++rep_->facesImported;
+      } else {
+        if (rep_) {
+          ++rep_->facesSkipped;
+          rep_->skipReasons.push_back("#" + std::to_string(id) + ": " + why);
+        }
+      }
+    }
+    return faces;
+  }
+
+ private:
+  const std::map<long, Record>& t_;
+  ExternalImportReport* rep_;
+
+  const Record* rec(long id) const {
+    auto it = t_.find(id);
+    return it == t_.end() ? nullptr : &it->second;
+  }
+  static long refOf(const Value& v) { return v.kind == Value::Kind::Ref ? v.ref : 0; }
+  static double num(const Value& v) { return v.number; }
+
+  // ── Primitives ───────────────────────────────────────────────────────────────
+  std::optional<Point3> point(long id) const {
+    const Record* r = rec(id);
+    if (!r || r->isComplex || r->name != "CARTESIAN_POINT" || r->args.size() < 2)
+      return std::nullopt;
+    const Value& c = r->args[1];
+    if (c.kind != Value::Kind::List) return std::nullopt;
+    Point3 p{};
+    if (c.list.size() >= 1) p.x = c.list[0].number;
+    if (c.list.size() >= 2) p.y = c.list[1].number;
+    if (c.list.size() >= 3) p.z = c.list[2].number;
+    return p;
+  }
+  std::optional<Vec3> dir(long id) const {
+    const Record* r = rec(id);
+    if (!r || r->isComplex || r->name != "DIRECTION" || r->args.size() < 2) return std::nullopt;
+    const Value& c = r->args[1];
+    if (c.kind != Value::Kind::List) return std::nullopt;
+    Vec3 d{};
+    if (c.list.size() >= 1) d.x = c.list[0].number;
+    if (c.list.size() >= 2) d.y = c.list[1].number;
+    if (c.list.size() >= 3) d.z = c.list[2].number;
+    return d;
+  }
+  // AXIS2_PLACEMENT_3D('',#loc,#axis,#refDir). axis / refDir OPTIONAL ($) → defaults.
+  std::optional<Ax3> placement(long id) const {
+    const Record* r = rec(id);
+    if (!r || r->isComplex || r->name != "AXIS2_PLACEMENT_3D" || r->args.size() < 2)
+      return std::nullopt;
+    auto o = point(refOf(r->args[1]));
+    if (!o) return std::nullopt;
+    Vec3 z{0, 0, 1}, x{1, 0, 0};
+    if (r->args.size() >= 3 && r->args[2].kind == Value::Kind::Ref)
+      if (auto zz = dir(refOf(r->args[2]))) z = *zz;
+    if (r->args.size() >= 4 && r->args[3].kind == Value::Kind::Ref)
+      if (auto xx = dir(refOf(r->args[3]))) x = *xx;
+    return Ax3::fromAxisAndRef(*o, math::Dir3{z}, math::Dir3{x});
+  }
+  std::optional<Point3> vertexPoint(long id) const {
+    const Record* r = rec(id);
+    if (!r || r->isComplex || r->name != "VERTEX_POINT" || r->args.size() < 2) return std::nullopt;
+    return point(refOf(r->args[1]));
+  }
+
+  // ── Surface ──────────────────────────────────────────────────────────────────
+  std::optional<FaceSurface> surface(long id, std::string& why) const {
+    const Record* r = rec(id);
+    if (!r) { why = "surface ref unresolved"; return std::nullopt; }
+    if (r->isComplex) return rationalBsplineSurface(*r, why);
+    if (r->name == "PLANE") return analytic(*r, FaceSurface::Kind::Plane, 0, why);
+    if (r->name == "CYLINDRICAL_SURFACE") return analytic(*r, FaceSurface::Kind::Cylinder, 1, why);
+    if (r->name == "CONICAL_SURFACE") return analytic(*r, FaceSurface::Kind::Cone, 2, why);
+    if (r->name == "SPHERICAL_SURFACE") return analytic(*r, FaceSurface::Kind::Sphere, 1, why);
+    if (r->name == "TOROIDAL_SURFACE") return analytic(*r, FaceSurface::Kind::Torus, 2, why);
+    if (r->name == "B_SPLINE_SURFACE_WITH_KNOTS") return bsplineSurface(*r, why);
+    why = "unsupported surface kind " + r->name;
+    return std::nullopt;
+  }
+
+  std::optional<FaceSurface> analytic(const Record& r, FaceSurface::Kind k, int nRadii,
+                                      std::string& why) const {
+    if (r.args.size() < 2) { why = "analytic surface missing placement"; return std::nullopt; }
+    auto ax = placement(refOf(r.args[1]));
+    if (!ax) { why = "analytic placement unresolved"; return std::nullopt; }
+    FaceSurface s;
+    s.kind = k;
+    s.frame = *ax;
+    if (nRadii >= 1 && r.args.size() >= 3) s.radius = num(r.args[2]);
+    if (nRadii >= 2 && r.args.size() >= 4) {
+      if (k == FaceSurface::Kind::Cone) s.semiAngle = num(r.args[3]);
+      else s.minorRadius = num(r.args[3]);
+    }
+    // A TOROIDAL_SURFACE carries (major, minor); the writer's Torus.radius = MAJOR.
+    if (k == FaceSurface::Kind::Torus && r.args.size() >= 4) {
+      s.radius = num(r.args[2]);
+      s.minorRadius = num(r.args[3]);
+    }
+    return s;
+  }
+
+  static std::vector<double> flatKnots(const Value& multsV, const Value& knotsV) {
+    std::vector<int> mults;
+    std::vector<double> vals;
+    if (multsV.kind == Value::Kind::List)
+      for (const Value& m : multsV.list) mults.push_back(static_cast<int>(m.number));
+    if (knotsV.kind == Value::Kind::List)
+      for (const Value& k : knotsV.list) vals.push_back(k.number);
+    return expandKnots(vals, mults);
+  }
+
+  bool readGrid(const Value& grid, FaceSurface& s) const {
+    if (grid.kind != Value::Kind::List) return false;
+    s.nPolesU = static_cast<int>(grid.list.size());
+    s.nPolesV = 0;
+    for (const Value& row : grid.list) {
+      if (row.kind != Value::Kind::List) return false;
+      if (s.nPolesV == 0) s.nPolesV = static_cast<int>(row.list.size());
+      if (static_cast<int>(row.list.size()) != s.nPolesV) return false;
+      for (const Value& pref : row.list) {
+        auto p = point(refOf(pref));
+        if (!p) return false;
+        s.poles.push_back(*p);
+      }
+    }
+    return s.nPolesU > 0 && s.nPolesV > 0;
+  }
+
+  std::optional<FaceSurface> bsplineSurface(const Record& r, std::string& why) const {
+    if (r.args.size() < 12) { why = "B_SPLINE_SURFACE_WITH_KNOTS too few args"; return std::nullopt; }
+    FaceSurface s;
+    s.kind = FaceSurface::Kind::BSpline;
+    s.degreeU = static_cast<int>(num(r.args[1]));
+    s.degreeV = static_cast<int>(num(r.args[2]));
+    if (!readGrid(r.args[3], s)) { why = "B_SPLINE_SURFACE grid unresolved"; return std::nullopt; }
+    s.knotsU = flatKnots(r.args[8], r.args[10]);
+    s.knotsV = flatKnots(r.args[9], r.args[11]);
+    return s;
+  }
+
+  std::optional<FaceSurface> rationalBsplineSurface(const Record& r, std::string& why) const {
+    const ValueList* base = nullptr;
+    const ValueList* knots = nullptr;
+    const ValueList* rat = nullptr;
+    for (const auto& [name, args] : r.complex) {
+      if (name == "B_SPLINE_SURFACE") base = &args;
+      else if (name == "B_SPLINE_SURFACE_WITH_KNOTS") knots = &args;
+      else if (name == "RATIONAL_B_SPLINE_SURFACE") rat = &args;
+    }
+    if (!base || !knots || !rat) { why = "complex surface not a rational B-spline"; return std::nullopt; }
+    if (base->size() < 3 || knots->size() < 4 || rat->empty()) {
+      why = "rational B-spline surface malformed"; return std::nullopt;
+    }
+    FaceSurface s;
+    s.kind = FaceSurface::Kind::BSpline;
+    s.degreeU = static_cast<int>((*base)[0].number);
+    s.degreeV = static_cast<int>((*base)[1].number);
+    if (!readGrid((*base)[2], s)) { why = "rational B-spline grid unresolved"; return std::nullopt; }
+    s.knotsU = flatKnots((*knots)[0], (*knots)[2]);
+    s.knotsV = flatKnots((*knots)[1], (*knots)[3]);
+    const Value& wg = (*rat)[0];
+    if (wg.kind != Value::Kind::List) { why = "weights not a list"; return std::nullopt; }
+    for (const Value& row : wg.list) {
+      if (row.kind != Value::Kind::List) { why = "weights row not a list"; return std::nullopt; }
+      for (const Value& w : row.list) s.weights.push_back(w.number);
+    }
+    if (static_cast<int>(s.weights.size()) != s.nPolesU * s.nPolesV) {
+      why = "weight count != pole count"; return std::nullopt;
+    }
+    return s;
+  }
+
+  // ── 3-D edge curve ────────────────────────────────────────────────────────────
+  std::optional<Edge3d> curve3d(long id, std::string& why) const {
+    const Record* r = rec(id);
+    if (!r) { why = "3-D curve ref unresolved"; return std::nullopt; }
+    if (r->isComplex) return rationalCurve3d(*r, why);
+    if (r->name == "LINE") return line3d(*r, why);
+    if (r->name == "CIRCLE") return circle3d(*r, why);
+    if (r->name == "ELLIPSE") return ellipse3d(*r, why);
+    if (r->name == "B_SPLINE_CURVE_WITH_KNOTS") return bspline3d(*r, why);
+    why = "unsupported edge curve kind " + r->name;
+    return std::nullopt;
+  }
+  // LINE('',#origin,#VECTOR('',#dir,mag)).
+  std::optional<Edge3d> line3d(const Record& r, std::string& why) const {
+    if (r.args.size() < 3) { why = "LINE too few args"; return std::nullopt; }
+    auto o = point(refOf(r.args[1]));
+    const Record* vec = rec(refOf(r.args[2]));
+    if (!o || !vec || vec->isComplex || vec->name != "VECTOR" || vec->args.size() < 3) {
+      why = "LINE vector unresolved"; return std::nullopt;
+    }
+    auto d = dir(refOf(vec->args[1]));
+    if (!d) { why = "LINE direction unresolved"; return std::nullopt; }
+    Edge3d e;
+    e.kind = Edge3d::Kind::Line;
+    e.lineOrigin = *o;
+    e.lineDir = *d * vec->args[2].number;
+    return e;
+  }
+  // CIRCLE('',#AXIS2_PLACEMENT_3D,radius).
+  std::optional<Edge3d> circle3d(const Record& r, std::string& why) const {
+    if (r.args.size() < 3) { why = "CIRCLE too few args"; return std::nullopt; }
+    auto ax = placement(refOf(r.args[1]));
+    if (!ax) { why = "CIRCLE placement unresolved"; return std::nullopt; }
+    Edge3d e;
+    e.kind = Edge3d::Kind::Circle;
+    e.frame = *ax;
+    e.radius = num(r.args[2]);
+    return e;
+  }
+  std::optional<Edge3d> ellipse3d(const Record& r, std::string& why) const {
+    if (r.args.size() < 4) { why = "ELLIPSE too few args"; return std::nullopt; }
+    auto ax = placement(refOf(r.args[1]));
+    if (!ax) { why = "ELLIPSE placement unresolved"; return std::nullopt; }
+    Edge3d e;
+    e.kind = Edge3d::Kind::Ellipse;
+    e.frame = *ax;
+    e.radius = num(r.args[2]);       // semi-major
+    e.minorRadius = num(r.args[3]);  // semi-minor
+    return e;
+  }
+  std::optional<Edge3d> bspline3d(const Record& r, std::string& why) const {
+    if (r.args.size() < 8) { why = "B_SPLINE_CURVE_WITH_KNOTS too few args"; return std::nullopt; }
+    Edge3d e;
+    e.kind = Edge3d::Kind::BSpline;
+    e.degree = static_cast<int>(num(r.args[1]));
+    const Value& poles = r.args[2];
+    if (poles.kind != Value::Kind::List) { why = "B_SPLINE_CURVE poles not a list"; return std::nullopt; }
+    for (const Value& pref : poles.list) {
+      auto p = point(refOf(pref));
+      if (!p) { why = "B_SPLINE_CURVE pole unresolved"; return std::nullopt; }
+      e.poles.push_back(*p);
+    }
+    e.knots = flatKnots(r.args[6], r.args[7]);
+    return e;
+  }
+  std::optional<Edge3d> rationalCurve3d(const Record& r, std::string& why) const {
+    const ValueList* base = nullptr;
+    const ValueList* knots = nullptr;
+    const ValueList* rat = nullptr;
+    for (const auto& [name, args] : r.complex) {
+      if (name == "B_SPLINE_CURVE") base = &args;
+      else if (name == "B_SPLINE_CURVE_WITH_KNOTS") knots = &args;
+      else if (name == "RATIONAL_B_SPLINE_CURVE") rat = &args;
+    }
+    if (!base || !knots || !rat) { why = "complex curve not a rational B-spline"; return std::nullopt; }
+    if (base->size() < 2 || knots->size() < 2 || rat->empty()) {
+      why = "rational B-spline curve malformed"; return std::nullopt;
+    }
+    Edge3d e;
+    e.kind = Edge3d::Kind::BSpline;
+    e.degree = static_cast<int>((*base)[0].number);
+    const Value& poles = (*base)[1];
+    if (poles.kind != Value::Kind::List) { why = "rational curve poles not a list"; return std::nullopt; }
+    for (const Value& pref : poles.list) {
+      auto p = point(refOf(pref));
+      if (!p) { why = "rational curve pole unresolved"; return std::nullopt; }
+      e.poles.push_back(*p);
+    }
+    e.knots = flatKnots((*knots)[0], (*knots)[1]);
+    const Value& w = (*rat)[0];
+    if (w.kind != Value::Kind::List) { why = "rational curve weights not a list"; return std::nullopt; }
+    for (const Value& wi : w.list) e.weights.push_back(wi.number);
+    if (e.weights.size() != e.poles.size()) { why = "rational curve weight count"; return std::nullopt; }
+    return e;
+  }
+
+  // Set the edge's [t0,t1] sampling range from the bounding vertices (for the analytic
+  // forms the natural parameter is angular / signed length; the vertices pin the arc).
+  void setEdgeRange(Edge3d& e, const Point3& v0, const Point3& v1) const {
+    switch (e.kind) {
+      case Edge3d::Kind::Line: {
+        const double len2 = math::normSquared(e.lineDir);
+        if (len2 <= 0) { e.t0 = 0; e.t1 = 1; break; }
+        e.t0 = math::dot(v0 - e.lineOrigin, e.lineDir) / len2;
+        e.t1 = math::dot(v1 - e.lineOrigin, e.lineDir) / len2;
+        break;
+      }
+      case Edge3d::Kind::Circle:
+      case Edge3d::Kind::Ellipse: {
+        const Vec3 d0 = v0 - e.frame.origin, d1 = v1 - e.frame.origin;
+        double a0 = std::atan2(math::dot(d0, e.frame.y.vec()), math::dot(d0, e.frame.x.vec()));
+        double a1 = std::atan2(math::dot(d1, e.frame.y.vec()), math::dot(d1, e.frame.x.vec()));
+        // Full-circle edge: the two vertices coincide → sweep the whole 2π (CCW).
+        if (math::distance(v0, v1) < 1e-9) { a0 = 0.0; a1 = 2.0 * M_PI; }
+        else a1 = unwrapNear(a1, a0 + 1e-12) < a0 ? unwrapNear(a1, a0) + 2.0 * M_PI
+                                                  : unwrapNear(a1, a0);
+        e.t0 = a0;
+        e.t1 = a1;
+        break;
+      }
+      case Edge3d::Kind::BSpline:
+      default:
+        e.t0 = e.knots.empty() ? 0.0 : e.knots.front();
+        e.t1 = e.knots.empty() ? 1.0 : e.knots.back();
+        break;
+    }
+  }
+
+  // ── Derive a 2-D pcurve for one edge on the surface. ──────────────────────────
+  // Sample the 3-D edge over [t0,t1], invert each point into (u,v) (closed-form for the
+  // analytic surfaces; sampled projection for a B-spline surface via a coarse grid
+  // nearest-point) and build a degree-1 (polyline) pcurve through the (u,v) samples.
+  // Region-correct: the flattened trim classification ray-casts exactly this polyline.
+  std::optional<PCurve> derivePcurve(const FaceSurface& s, const Edge3d& e, bool reversed,
+                                     std::string& why) const {
+    const int n = 24;
+    std::vector<ParamPoint> uv;
+    uv.reserve(n + 1);
+    double uHint = 0.0;
+    bool haveHint = false;
+    for (int i = 0; i <= n; ++i) {
+      const double frac = double(i) / n;
+      const double t = e.t0 + (e.t1 - e.t0) * frac;
+      const Point3 p = e.eval(t);
+      ParamPoint q;
+      if (s.kind == FaceSurface::Kind::BSpline) {
+        if (!invertBspline(s, p, q)) { why = "edge point off B-spline surface"; return std::nullopt; }
+      } else {
+        if (!inverseSurface(s, p, uHint, q)) { why = "no analytic inverse"; return std::nullopt; }
+        // Keep the angular u continuous along the edge.
+        if (haveHint) q.u = unwrapNear(q.u, uHint);
+        uHint = q.u;
+        haveHint = true;
+      }
+      uv.push_back(q);
+    }
+    if (reversed) std::reverse(uv.begin(), uv.end());
+
+    PCurve c;
+    c.kind = EdgeCurve::Kind::BSpline;
+    c.degree = 1;
+    for (const ParamPoint& q : uv) c.poles2d.push_back(Point3{q.u, q.v, 0.0});
+    // Clamped degree-1 interpolating polyline: for m poles the knot vector is
+    // length m+2 = {0, 0, 1, 2, ..., m-2, m-1, m-1} (first/last doubled).
+    const int m = static_cast<int>(c.poles2d.size());
+    if (m < 2) { why = "degenerate edge (<2 samples)"; return std::nullopt; }
+    c.knots.push_back(0.0);
+    for (int i = 0; i < m; ++i) c.knots.push_back(double(i));
+    c.knots.back() = double(m - 1);  // clamp the trailing knot
+    c.knots.push_back(double(m - 1));
+    return c;
+  }
+
+  // Coarse nearest-(u,v) inverse for a B-spline surface (grid search + local refine).
+  // Returns the nearest (u,v); accepts iff the residual is within a SCALE-RELATIVE
+  // band of the surface's own size (so a point genuinely OFF the surface is declined,
+  // but the chord of an interpolating-polyline EDGE_CURVE lying between two on-surface
+  // samples — which sags off a curved patch — is still accepted as on-surface).
+  bool invertBspline(const FaceSurface& s, const Point3& p, ParamPoint& out) const {
+    if (s.knotsU.empty() || s.knotsV.empty() || s.poles.empty()) return false;
+    // Surface length scale = pole bounding-box diagonal.
+    Point3 lo = s.poles[0], hi = s.poles[0];
+    for (const Point3& q : s.poles) {
+      lo.x = std::min(lo.x, q.x); lo.y = std::min(lo.y, q.y); lo.z = std::min(lo.z, q.z);
+      hi.x = std::max(hi.x, q.x); hi.y = std::max(hi.y, q.y); hi.z = std::max(hi.z, q.z);
+    }
+    const double scale = std::max(math::distance(lo, hi), 1e-12);
+    const double u0 = s.knotsU.front(), u1 = s.knotsU.back();
+    const double v0 = s.knotsV.front(), v1 = s.knotsV.back();
+    const int gu = 32, gv = 32;
+    double best = 1e300, bu = u0, bv = v0;
+    for (int i = 0; i <= gu; ++i) {
+      for (int j = 0; j <= gv; ++j) {
+        const double u = u0 + (u1 - u0) * i / gu;
+        const double v = v0 + (v1 - v0) * j / gv;
+        const double d = math::normSquared(surfaceLocalWorld(s, u, v) - p);
+        if (d < best) { best = d; bu = u; bv = v; }
+      }
+    }
+    // Local refine on a shrinking window.
+    double hu = (u1 - u0) / gu, hv = (v1 - v0) / gv;
+    for (int it = 0; it < 60; ++it) {
+      bool improved = false;
+      const double cand_u[3] = {bu - hu, bu, bu + hu};
+      const double cand_v[3] = {bv - hv, bv, bv + hv};
+      for (double u : cand_u) {
+        for (double v : cand_v) {
+          const double uu = std::clamp(u, u0, u1), vv = std::clamp(v, v0, v1);
+          const double d = math::normSquared(surfaceLocalWorld(s, uu, vv) - p);
+          if (d < best - 1e-24) { best = d; bu = uu; bv = vv; improved = true; }
+        }
+      }
+      if (!improved) { hu *= 0.5; hv *= 0.5; }
+      if (hu < 1e-13 && hv < 1e-13) break;
+    }
+    out = {bu, bv};
+    // Accept the nearest (u,v) unless the residual is a LARGE fraction of the surface
+    // size (a genuinely-off-surface point — e.g. an edge that does not lie on S).
+    return std::sqrt(best) <= 0.05 * scale;
+  }
+
+  static Point3 surfaceLocalWorld(const FaceSurface& s, double u, double v) {
+    return surfaceLocal(s, u, v);
+  }
+
+  // ── Loop / bound / face ────────────────────────────────────────────────────────
+  std::optional<TrimLoop> loop(const FaceSurface& s, long edgeLoopId, std::string& why) const {
+    const Record* r = rec(edgeLoopId);
+    if (!r || r->isComplex || r->name != "EDGE_LOOP" || r->args.size() < 2) {
+      why = "EDGE_LOOP unresolved"; return std::nullopt;
+    }
+    const Value& edges = r->args[1];
+    if (edges.kind != Value::Kind::List) { why = "EDGE_LOOP edge list malformed"; return std::nullopt; }
+    TrimLoop tl;
+    for (const Value& oe : edges.list) {
+      auto seg = segment(s, refOf(oe), why);
+      if (!seg) return std::nullopt;
+      tl.push_back(std::move(*seg));
+    }
+    if (tl.empty()) { why = "empty loop"; return std::nullopt; }
+    return tl;
+  }
+
+  // ORIENTED_EDGE('',*,*,#EDGE_CURVE,orient).
+  std::optional<PcurveSegment> segment(const FaceSurface& s, long orientedEdgeId,
+                                       std::string& why) const {
+    const Record* oe = rec(orientedEdgeId);
+    if (!oe || oe->isComplex || oe->name != "ORIENTED_EDGE" || oe->args.size() < 5) {
+      why = "ORIENTED_EDGE unresolved"; return std::nullopt;
+    }
+    const bool oeReversed = oe->args[4].kind == Value::Kind::Enum && oe->args[4].text == "F";
+    const Record* ec = rec(refOf(oe->args[3]));
+    if (!ec || ec->isComplex || ec->name != "EDGE_CURVE" || ec->args.size() < 5) {
+      why = "EDGE_CURVE unresolved"; return std::nullopt;
+    }
+    // EDGE_CURVE('',#v0,#v1,#curve,same_sense).
+    auto v0 = vertexPoint(refOf(ec->args[1]));
+    auto v1 = vertexPoint(refOf(ec->args[2]));
+    auto curve = curve3d(refOf(ec->args[3]), why);
+    if (!curve) return std::nullopt;
+    const bool sameSense = !(ec->args[4].kind == Value::Kind::Enum && ec->args[4].text == "F");
+    // Orient the geometric sense of the edge: EDGE_CURVE.same_sense flips the 3-D
+    // curve vs the topological edge; ORIENTED_EDGE.orientation flips the edge in loop.
+    Point3 a = v0.value_or(curve->eval(0.0));
+    Point3 b = v1.value_or(curve->eval(1.0));
+    setEdgeRange(*curve, a, b);
+    const bool reversed = oeReversed ^ (!sameSense);
+    auto pc = derivePcurve(s, *curve, reversed, why);
+    if (!pc) return std::nullopt;
+    PcurveSegment seg;
+    seg.curve = std::move(*pc);
+    seg.first = seg.curve.knots.front();
+    seg.last = seg.curve.knots.back();
+    seg.reversed = false;  // orientation already baked into the pcurve pole order
+    return seg;
+  }
+
+  std::optional<TrimmedNurbsFace> mapFace(const Record& r, std::string& why) const {
+    if (r.args.size() < 3) { why = "ADVANCED_FACE too few args"; return std::nullopt; }
+    const Value& boundsV = r.args[1];
+    auto surf = surface(refOf(r.args[2]), why);
+    if (!surf) return std::nullopt;
+    if (boundsV.kind != Value::Kind::List) { why = "ADVANCED_FACE bounds not a list"; return std::nullopt; }
+    TrimmedNurbsFace f;
+    f.surface = *surf;
+    for (const Value& bref : boundsV.list) {
+      const Record* b = rec(refOf(bref));
+      if (!b || b->isComplex) { why = "face bound unresolved"; return std::nullopt; }
+      const bool isOuter = b->name == "FACE_OUTER_BOUND";
+      if (!isOuter && b->name != "FACE_BOUND") { why = "unexpected bound " + b->name; return std::nullopt; }
+      if (b->args.size() < 2) { why = "bound too few args"; return std::nullopt; }
+      auto tl = loop(*surf, refOf(b->args[1]), why);
+      if (!tl) return std::nullopt;
+      if (isOuter) f.outer = std::move(*tl);
+      else f.holes.push_back(std::move(*tl));
+    }
+    if (!f.hasOuter() && f.holes.empty()) { why = "face has no bounds"; return std::nullopt; }
+    // If no FACE_OUTER_BOUND was present but a single FACE_BOUND was, treat it as outer.
+    if (!f.hasOuter() && f.holes.size() == 1) {
+      f.outer = std::move(f.holes[0]);
+      f.holes.clear();
+    }
+    return f;
+  }
+};
+
+}  // namespace
+
+std::vector<TrimmedNurbsFace> readStepBrepExternal(const std::string& step,
+                                                   ExternalImportReport* report) {
+  Parser p(step);
+  if (!p.parseTable()) return {};
+  ExternalMapper m(p.table(), report);
   return m.build();
 }
 

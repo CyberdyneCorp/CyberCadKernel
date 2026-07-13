@@ -341,6 +341,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_step_writer
         test_native_step_reader
         test_native_step_brep
+        test_native_step_import
         test_native_step_pmi
         test_native_stl
         test_native_gltf
@@ -1461,6 +1462,17 @@ if(CYBERCAD_BUILD_TESTS)
     # refs resolve), honest-decline (out-of-scope surface → empty string, never invalid STEP).
     set(test_native_step_brep_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step_brep.cpp")
+    # L8-EXCHANGE — GENERAL external AP203/214 STEP IMPORT (readStepBrepExternal, in
+    # src/native/exchange/step_brep.{h,cpp}). Imports a real-CAD-shaped part21 (analytic
+    # PLANE / CYLINDRICAL / TOROIDAL surfaces + rational B-spline face, forward refs,
+    # reordered entities, comments) into TrimmedNurbsFaces, deriving each trim pcurve by
+    # inverting the 3-D EDGE_CURVE geometry into the surface (u,v) plane. Always-on
+    # (string parse + native math over always-visible topology decls; no numsci link).
+    # Airtight oracles: real-CAD import (surface eval ≤ 1e-9 + non-empty trims), analytic
+    # → surface (points on the true torus ≤ 1e-9), round-trip through our own writer,
+    # robustness (reordered/commented identical; unsupported entity honestly skipped).
+    set(test_native_step_import_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step_import.cpp")
     set(test_native_step_pmi_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_step_pmi.cpp")
     set(test_native_stl_SRC

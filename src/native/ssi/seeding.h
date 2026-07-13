@@ -126,6 +126,35 @@ struct SeedOptions {
   bool splitDistinctBranches = true;  ///< emit every spatially-distinct refined locus per cluster
   double splitDistinctFrac = 1.0 / 16.0;  ///< distinct-locus 3D separation as a fraction of modelScale
   int splitMaxPerCluster = 8;         ///< hard cap on distinct seeds emitted from one cluster (cost bound)
+
+  // ── LOOP-STRUCTURE-AWARE CAP RETENTION — keep BOTH co-resident loci under the cap ─────
+  // A single param-adjacency cluster on an ULTRA-DENSE freeform pair can host FAR MORE
+  // refined transversal crossings than the per-cluster retention budget (measured:
+  // 272 847 / 215 834 candidates on ONE cluster, seeds > 65 536). The previous FIFO
+  // truncation appended refined seeds in candidate-iteration order until the cap, so one
+  // dense locus's leaves FILLED the budget and the CO-RESIDENT locus's later leaves were
+  // dropped BEFORE the distinct-locus split ever saw them → the split emitted one seed
+  // for a twice-piercing pose (the residual co-resident miss the split-linkage lever
+  // could not reach — the miss is UPSTREAM of the split).
+  //
+  // The fix is to make the cap retention LOOP-STRUCTURE-AWARE. When a cluster's refined
+  // pile exceeds the budget, FIRST partition it into distinct co-resident SUB-LOCI (the
+  // SAME spatial connected components the distinct-locus split uses — 3D single-linkage at
+  // the split separation `sep`), THEN retain a per-sub-locus UNIFORM STRIDE so EACH locus
+  // keeps FULL arc coverage (evenly-spaced leaves, no gaps) and BOTH survive to the split.
+  // This is NOT plain thinning (rejected by E1: a flat stride over a merged pile leaves arc
+  // gaps that spuriously OVER-SPLIT one loop) — the partition happens BEFORE the stride, so
+  // a stride is applied WITHIN each connected locus, never across the gap between two loci.
+  //
+  // DISAGREED-SAFE / RECALL-ONLY. Every retained seed is still a real refined
+  // on-both-surfaces transversal crossing (`refineRegion` gates point-on-both ≤ `onSurfTol`
+  // and ‖n₁×n₂‖ ≥ `tangentSinTol`); retention only changes WHICH real seeds reach the split,
+  // never widens a tolerance nor fabricates a locus. It only fires when the pile exceeds the
+  // budget on the freeform↔freeform split path; smaller piles and the elementary/mixed path
+  // are byte-identical (no partition, no stride). Uniform stride within a locus preserves the
+  // dense chain that keeps ONE physical loop connected, so it does NOT introduce the arc gaps
+  // that would over-split a single loop.
+  int capRetentionBudget = 65536;    ///< target refined seeds retained per cluster after loop-aware decimation
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -683,19 +683,22 @@ struct ClusterAcc {
       : xversal(k), haveSeed(k, 0), sawTangent(k, 0), ntBest(k) {}
 };
 
-// Hard SAFETY ceiling on transversal seeds retained per cluster for the distinct-locus split.
-// This is NOT the recall knob any more — it is a pure memory guard. The starving bug was a
-// FLAT-FIFO cap SO SMALL (256) that one dense locus's leaves filled it in candidate-iteration
-// order and DROPPED a co-resident locus's later leaves (measured multi-branch decline: the
-// seeder handed the marcher ONE seed for a twice-piercing pose, seeded=1 occtComp=2). The fix is
-// two-fold: (1) keep the FULL refined-seed density per cluster (so the single-linkage split still
-// sees the dense chain that keeps ONE physical loop connected — a thinned set can leave arc gaps
-// that spuriously split one loop); (2) make that split O(m) via a spatial grid hash (see
-// splitDistinctLoci) so full density is affordable. The ceiling is now high enough that a real
-// intersection field never reaches it, and if it ever did the tail is dropped uniformly (no
-// per-locus bias). DISAGREED-safe: every retained seed is a real refined on-both-surfaces
-// transversal crossing; density only changes WHICH real seeds reach the split, never fabricates.
-constexpr std::size_t kMaxSeedsPerCluster = 65536;
+// Hard SAFETY ceiling on transversal seeds ACCUMULATED per cluster before decimation. This is a
+// pure MEMORY guard (an intersection field this dense on one cluster is pathological) — the
+// RECALL-relevant retention is now `opts.capRetentionBudget` applied LOOP-AWARE (retainLoopAware)
+// AFTER the whole pile is accumulated, not a FIFO drop DURING accumulation. The original bug was a
+// FLAT-FIFO cap so small (256, then 65 536) that one dense locus's leaves filled it in
+// candidate-iteration order and DROPPED a co-resident locus's later leaves before the
+// distinct-locus split ever saw them (measured: 272 847 / 215 834 candidates on ONE cluster, the
+// second/third locus cap-starved → the split emitted one seed for a twice-piercing pose). The fix:
+// (1) accumulate the pile up to this generous ceiling (measured worst case ≈ 273 k ≪ this, so a
+// real field is never FIFO-truncated); (2) partition it into distinct co-resident SUB-LOCI FIRST
+// and retain a per-sub-locus UNIFORM STRIDE (retainLoopAware) so EACH locus keeps full arc coverage
+// and BOTH survive to the split; (3) the split is O(m) via a uniform 3D grid hash (linkBySep) so
+// full density is affordable. FIFO drop at this ceiling remains only as the ultimate memory bound.
+// DISAGREED-safe: every retained seed is a real refined on-both-surfaces transversal crossing;
+// retention only changes WHICH real seeds reach the split, never fabricates a locus.
+constexpr std::size_t kMaxSeedsPerCluster = 1u << 20;  // 1 048 576 — pure memory guard, not the recall knob
 
 // Fold one refined region into its cluster's accumulator: append the transversal seed at FULL
 // density (for the distinct-locus split), else keep the flattest (most degenerate) near-tangent
@@ -725,27 +728,15 @@ void accumulateRegion(const SurfaceAdapter& A, const SurfaceAdapter& B,
   }
 }
 
-// Split a cluster's accepted transversal seeds into SPATIALLY-DISTINCT 3D loci by
-// single-linkage on the 3D seed points: two seeds are in the same locus iff a chain of
-// seeds connects them with every hop ≤ `sep`. A single physical loop's refined points tile
-// it densely (consecutive candidate leaves are ~leaf-size apart, far below `sep`), so they
-// chain into ONE component and the cluster still collapses to one seed. Two co-resident loops
-// separated in 3D by more than `sep` form TWO components → a seed per loop. Emits the TIGHTEST
-// seed of each component into `outSeeds`, deterministic in seed-append order, capped at
-// `maxOut`. An over-split (same loop, two components) only re-traces the loop — the S3 marcher's
-// per-branch locus-dedup collapses it, so this is recall-only and never a wrong result.
-//
-// LINKAGE IS SPATIAL-HASHED (O(m), not O(m²)): the seeds are binned into a uniform 3D grid of
-// cell size `sep`, and each seed is only unite-tested against seeds in its own and the 26
-// neighbouring cells — every pair within `sep` shares such a neighbourhood, so the linkage is
-// EXACT while the cost is linear in the seed count. This is what lets the accumulator keep the
-// FULL refined-seed density (needed to keep one physical loop connected) without the old O(m²)
-// blow-up that forced the small starving cap. Deterministic (integer cell keys, stable order).
-void splitDistinctLoci(const std::vector<Seed>& seeds, double sep, std::size_t maxOut,
-                       std::vector<Seed>& outSeeds) {
+// SPATIAL-HASHED 3D SINGLE-LINKAGE (O(m), not O(m²)) — the shared connected-components
+// primitive for BOTH the distinct-locus split and the loop-aware cap retention. Two seeds
+// are in the same component iff a chain connects them with every hop ≤ `sep`. Seeds are
+// binned into a uniform 3D grid of cell size `sep`; each seed is only unite-tested against
+// seeds in its own + 26 neighbouring cells — every pair within `sep` shares such a
+// neighbourhood, so the linkage is EXACT while the cost is linear. Fills `ds` (deterministic,
+// integer cell keys, stable order) — the caller derives component labels/reps from `ds.find`.
+void linkBySep(const std::vector<Seed>& seeds, double sep, DisjointSet& ds) {
   const std::size_t m = seeds.size();
-  if (m == 0) return;
-  DisjointSet ds(static_cast<int>(m));
   const double sep2 = sep * sep;
   const double inv = 1.0 / (sep > 0.0 ? sep : 1.0);
   // Integer cell key per seed (floor(coord/sep)); bucket seed indices by key in a hash map.
@@ -781,6 +772,95 @@ void splitDistinctLoci(const std::vector<Seed>& seeds, double sep, std::size_t m
               ds.unite(static_cast<int>(i), j);
         }
   }
+}
+
+// LOOP-STRUCTURE-AWARE CAP RETENTION. When a cluster's refined pile exceeds `budget`, decimate
+// it to ≤ `budget` seeds WITHOUT starving any co-resident locus. Plain (flat) thinning of the
+// whole merged pile was REJECTED (E1): a uniform stride across two loci leaves ARC GAPS that
+// spuriously over-split a SINGLE loop. The fix partitions FIRST, strides SECOND:
+//   1. PARTITION the pile into distinct co-resident SUB-LOCI — the SAME 3D single-linkage
+//      components (at the split separation `sep`) the distinct-locus split will use, so a
+//      retained seed set maps EXACTLY onto the split's future components.
+//   2. Give each sub-locus a share of the budget proportional to its size (so the dense locus
+//      is thinned MORE and the sparse co-resident locus is thinned LESS — never starved), with
+//      a floor of `kMinRetainedPerLocus` so a small locus always survives with enough leaves to
+//      stay connected under the subsequent split.
+//   3. Retain a UNIFORM STRIDE within each sub-locus (evenly-spaced leaves in append order — the
+//      candidate-iteration order tiles the arc, so a stride keeps FULL arc coverage with no gap),
+//      and force-keep each locus's TIGHTEST seed (the split's representative is unaffected).
+// The stride is applied WITHIN a connected locus, never across the gap between two loci, so it
+// preserves the dense chain that keeps one physical loop connected (no over-split) while
+// guaranteeing BOTH co-resident loci reach the split. DISAGREED-safe / recall-only: every
+// retained seed is a real refined on-both-surfaces transversal crossing; retention only changes
+// WHICH real seeds reach the split, never a tolerance nor a fabricated locus. Deterministic.
+constexpr std::size_t kMinRetainedPerLocus = 256;  ///< floor so a small co-resident locus is never starved
+
+void retainLoopAware(std::vector<Seed>& seeds, double sep, std::size_t budget) {
+  const std::size_t m = seeds.size();
+  if (m <= budget) return;  // no decimation needed — byte-identical
+  DisjointSet ds(static_cast<int>(m));
+  linkBySep(seeds, sep, ds);
+  // Group seed indices by connected component (append order preserved within each component,
+  // so a per-component stride keeps evenly-spaced leaves along the arc).
+  std::vector<int> compOf(m, -1);
+  std::vector<std::vector<int>> comps;
+  for (std::size_t i = 0; i < m; ++i) {
+    const int root = ds.find(static_cast<int>(i));
+    if (compOf[static_cast<std::size_t>(root)] < 0) {
+      compOf[static_cast<std::size_t>(root)] = static_cast<int>(comps.size());
+      comps.emplace_back();
+    }
+    comps[static_cast<std::size_t>(compOf[static_cast<std::size_t>(root)])].push_back(static_cast<int>(i));
+  }
+  // Per-locus budget: proportional to size (dense locus thinned more), floored so a small
+  // co-resident locus keeps enough leaves to stay connected under the split. The floor total
+  // can exceed `budget` when there are many components; that is acceptable — the guarantee is
+  // "no locus starved", and the hard memory ceiling still bounds the pile (kMaxSeedsPerCluster).
+  const std::size_t nComp = comps.size();
+  std::vector<Seed> kept;
+  kept.reserve(budget + nComp * kMinRetainedPerLocus);
+  for (const auto& comp : comps) {
+    const std::size_t cm = comp.size();
+    // Proportional share of the budget for this locus, floored.
+    std::size_t share = static_cast<std::size_t>(
+        (static_cast<double>(cm) / static_cast<double>(m)) * static_cast<double>(budget));
+    if (share < kMinRetainedPerLocus) share = kMinRetainedPerLocus;
+    if (share >= cm) {  // keep the whole locus (already under its share)
+      for (const int idx : comp) kept.push_back(seeds[static_cast<std::size_t>(idx)]);
+      continue;
+    }
+    // Uniform stride over the locus's seeds (append order = arc order), plus its tightest seed.
+    int tightest = comp[0];
+    for (const int idx : comp)
+      if (seeds[static_cast<std::size_t>(idx)].onSurfResidual <
+          seeds[static_cast<std::size_t>(tightest)].onSurfResidual)
+        tightest = idx;
+    const double step = static_cast<double>(cm) / static_cast<double>(share);
+    bool tightestKept = false;
+    for (std::size_t k = 0; k < share; ++k) {
+      const std::size_t pick = static_cast<std::size_t>(static_cast<double>(k) * step);
+      const int idx = comp[std::min(pick, cm - 1)];
+      if (idx == tightest) tightestKept = true;
+      kept.push_back(seeds[static_cast<std::size_t>(idx)]);
+    }
+    if (!tightestKept) kept.push_back(seeds[static_cast<std::size_t>(tightest)]);
+  }
+  seeds.swap(kept);
+}
+
+// Split a cluster's accepted transversal seeds into SPATIALLY-DISTINCT 3D loci by
+// single-linkage on the 3D seed points (see linkBySep): a single physical loop's refined
+// points tile it densely and chain into ONE component (the cluster collapses to one seed);
+// two co-resident loops separated by more than `sep` form TWO components → a seed per loop.
+// Emits the TIGHTEST seed of each component into `outSeeds`, deterministic in seed-append
+// order, capped at `maxOut`. An over-split (same loop, two components) only re-traces the loop
+// — the S3 marcher's per-branch locus-dedup collapses it, so this is recall-only.
+void splitDistinctLoci(const std::vector<Seed>& seeds, double sep, std::size_t maxOut,
+                       std::vector<Seed>& outSeeds) {
+  const std::size_t m = seeds.size();
+  if (m == 0) return;
+  DisjointSet ds(static_cast<int>(m));
+  linkBySep(seeds, sep, ds);
   // Tightest seed per connected component, in first-appearance order of the component root.
   std::vector<int> compOf(m, -1);
   std::vector<int> order;          // component-id → index of its current tightest seed
@@ -837,6 +917,11 @@ void refineClusters(const SurfaceAdapter& A, const SurfaceAdapter& B,
   // no behaviour change.
   const bool diag = std::getenv("CYBERCAD_SSI_SEED_DIAG") != nullptr;
 
+  // Loop-aware cap-retention budget: only decimates a pile larger than this, and only on the
+  // freeform split path (elementary/mixed keep a single tightest seed, never a large pile).
+  const std::size_t retainBudget =
+      static_cast<std::size_t>(std::max(1, opts.capRetentionBudget));
+
   int branchId = 0;
   for (int cid = 0; cid < numClusters; ++cid) {
     if (acc.haveSeed[cid]) {
@@ -844,12 +929,17 @@ void refineClusters(const SurfaceAdapter& A, const SurfaceAdapter& B,
       // When the gate is off, accumulateRegion retained exactly ONE (tightest) seed per cluster,
       // so this splits into one component and emits it — byte-identical to the pre-split path.
       const double effSep = doSplit ? sep : std::numeric_limits<double>::infinity();
-      splitDistinctLoci(acc.xversal[static_cast<std::size_t>(cid)], effSep, maxPer, emit);
+      auto& pile = acc.xversal[static_cast<std::size_t>(cid)];
+      const std::size_t pileRaw = pile.size();
+      // LOOP-AWARE CAP RETENTION (split path only): when the pile exceeds the budget, partition
+      // it into distinct co-resident sub-loci and retain a per-sub-locus uniform stride FIRST, so
+      // no locus is FIFO-starved before the split sees it. No-op when the pile is under budget.
+      if (doSplit) retainLoopAware(pile, sep, retainBudget);
+      splitDistinctLoci(pile, effSep, maxPer, emit);
       if (diag)
         std::fprintf(stderr,
-            "[SEED-DIAG] cid=%d xversalSeeds=%zu emitted=%zu sep=%.4e doSplit=%d scale=%.4e\n",
-            cid, acc.xversal[static_cast<std::size_t>(cid)].size(), emit.size(), sep,
-            doSplit ? 1 : 0, scale);
+            "[SEED-DIAG] cid=%d xversalSeeds=%zu retained=%zu emitted=%zu sep=%.4e doSplit=%d scale=%.4e\n",
+            cid, pileRaw, pile.size(), emit.size(), sep, doSplit ? 1 : 0, scale);
       for (Seed& s : emit) {
         ++out.refinedAccepted;
         s.branchId = branchId++;

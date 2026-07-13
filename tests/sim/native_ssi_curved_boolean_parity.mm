@@ -226,6 +226,20 @@ ntopo::Shape makeTorus(double R, double r) {
   return ntopo::ShapeBuilder::makeSolid({ntopo::ShapeBuilder::makeShell({face})});
 }
 
+// A native RING TORUS (major R, minor r) about world +Y — coaxial with the makeCone/makeSphere +Y
+// revolution axis (used for the S5-n coaxial torus∩cone pair). Same bare Kind::Torus face as
+// makeTorus, only the frame axis is +Y.
+ntopo::Shape makeTorusY(double R, double r) {
+  ntopo::FaceSurface s;
+  s.kind = ntopo::FaceSurface::Kind::Torus;
+  s.frame = nmath::Ax3::fromAxisAndRef(nmath::Point3{0, 0, 0}, nmath::Dir3{0, 1, 0},
+                                       nmath::Dir3{1, 0, 0});
+  s.radius = R;
+  s.minorRadius = r;
+  const ntopo::Shape face = ntopo::ShapeBuilder::makeFace(s, ntopo::Shape{});
+  return ntopo::ShapeBuilder::makeSolid({ntopo::ShapeBuilder::makeShell({face})});
+}
+
 // ── native mesh self-verify (mimics the engine: watertight + enclosed volume) ──────
 struct NativeMeasure {
   bool present = false;   // native path returned a non-null candidate
@@ -315,6 +329,10 @@ TopoDS_Shape occtCone(double r0, double y0, double r1, double y1) {
 // A ring torus (major R, minor r) about world +Z, centred at the origin — matches makeTorus.
 TopoDS_Shape occtTorus(double R, double r) {
   return BRepPrimAPI_MakeTorus(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), R, r).Shape();
+}
+// A ring torus (major R, minor r) about world +Y — matches makeTorusY (coaxial with occtCone).
+TopoDS_Shape occtTorusY(double R, double r) {
+  return BRepPrimAPI_MakeTorus(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), R, r).Shape();
 }
 
 // ── a {pair, op} case ──────────────────────────────────────────────────────────────
@@ -666,6 +684,27 @@ int main() {
     pc.nativeB = makeSphere(3.0, 0.0);   // Rs=3.0, centre origin (= torus centre), coaxial
     pc.occtA = occtTorus(3.0, 1.0);
     pc.occtB = occtSphere(3.0, 0.0);
+    pc.relTol = 2e-2;
+    probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
+    runPair(pc);
+  }
+
+  // ── (13) COAXIAL TORUS ∩ CONE — the THIRD torus-family pair (S5-n) ─────────────────
+  // A ring torus (major R=3, minor r=1, axis +Y, centre O) and a COAXIAL cone (about +Y) whose
+  // SLANTED wall radius(z)=3.2+0.5·z crosses the tube at TWO latitudes — the oblique-chord
+  // generalisation of the S5-l vertical-chord cylinder. The chord cuts the tube disk at z1=−0.96
+  // (ρ=2.72) and z2=0.8 (ρ=3.6), two analytic circle seams at DIFFERENT radii and stations. Every
+  // op is a Pappus-exact solid of revolution: COMMON = the ρ≤line tube part (inner arc + slanted
+  // cone chord band); CUT (torus−cone) = the ρ>line outer ring; FUSE = the union (cone frustum
+  // fills the hole + outer bulge + cone discs). All three match BRepAlgoAPI_{Common,Fuse,Cut} on
+  // volume/area/watertight → NATIVE passes.
+  {
+    PairCase pc;
+    pc.pairName = "torus=cone(coaxial)";
+    pc.nativeA = makeTorusY(3.0, 1.0);
+    pc.nativeB = makeCone(2.2, -2.0, 4.2, 2.0);   // radius(z)=3.2+0.5z over z∈[−2,2], coaxial (+Y)
+    pc.occtA = occtTorusY(3.0, 1.0);
+    pc.occtB = occtCone(2.2, -2.0, 4.2, 2.0);
     pc.relTol = 2e-2;
     probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
     runPair(pc);

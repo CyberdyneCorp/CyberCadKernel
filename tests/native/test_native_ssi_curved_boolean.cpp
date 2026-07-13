@@ -127,6 +127,20 @@ ntopo::Shape makeTorus(double R, double r) {
   return ntopo::ShapeBuilder::makeSolid({ntopo::ShapeBuilder::makeShell({face})});
 }
 
+// A full RING TORUS (major R, minor r) about world +Y (its axis aligned with the makeCone /
+// makeSphere +Y revolution axis, so a torus∩cone pair is genuinely coaxial). Same bare
+// doubly-periodic Kind::Torus face as makeTorus, only the frame axis is +Y.
+ntopo::Shape makeTorusY(double R, double r) {
+  ntopo::FaceSurface s;
+  s.kind = ntopo::FaceSurface::Kind::Torus;
+  s.frame = nmath::Ax3::fromAxisAndRef(nmath::Point3{0, 0, 0}, nmath::Dir3{0, 1, 0},
+                                       nmath::Dir3{1, 0, 0});
+  s.radius = R;
+  s.minorRadius = r;
+  const ntopo::Shape face = ntopo::ShapeBuilder::makeFace(s, ntopo::Shape{});
+  return ntopo::ShapeBuilder::makeSolid({ntopo::ShapeBuilder::makeShell({face})});
+}
+
 // Pappus-exact volume of the COMMON (torus ρ ≤ Rc part) of a coaxial torus∩cylinder: the
 // vertical-chord circular segment {ρ ≤ Rc} of the tube disk (radius r, centre ρ=R), revolved.
 // V = 2π·(R·A_seg + M), A_seg = πr² − (r²·acos(d/r) − d·√(r²−d²)), M = −(2/3)(r²−d²)^{3/2},
@@ -1799,6 +1813,134 @@ CC_TEST(torus_sphere_declines_offcentre_offaxis_and_non_crossing) {
   //     so |ρ*−R|=1.27 > r=1 → no two-circle crossing → declines.
   const ntopo::Shape big = makeSphere(0.0, 4.2);
   CC_CHECK(nb::ssi_boolean_solid(tor, big, nb::Op::Common).isNull());
+}
+
+// Airtight Pappus closed form for the COMMON (tube ∩ cone-solid) of a coaxial torus∩cone whose
+// meridian cone chord is ρ = a + b·z (b = ±tanα) in the torus frame (torus major R, minor r).
+// The COMMON is the ρ ≤ a+b·z tube segment revolved. About the tube centre (ρ'=ρ−R): the chord
+// has unit normal m̂=(1,−b)/√(1+b²) into the discarded (ρ>line) region and signed offset
+// t0=(a−R)/√(1+b²); discarded area A_d=r²acos(t0/r)−t0√(r²−t0²), discarded ρ'-moment
+// (1/√(1+b²))(2/3)(r²−t0²)^{3/2}. Kept area A_seg=πr²−A_d, kept moment M=−(1/√(1+b²))(2/3)(r²−t0²)^{3/2}.
+//   V = 2π·(R·A_seg + M).
+// Matches the engine's ssiCurvedBooleanVerified S5-n arm; reduces to torusCylCommonVolume at b=0.
+double torusConeCommonVolume(double R, double r, double a, double b) {
+  const double invN = 1.0 / std::sqrt(1.0 + b * b);
+  const double t0 = (a - R) * invN;
+  const double root = std::sqrt(std::max(r * r - t0 * t0, 0.0));
+  const double aCap = r * r * std::acos(std::clamp(t0 / r, -1.0, 1.0)) - t0 * root;
+  const double aSeg = sd::kSsiPi * r * r - aCap;
+  const double mom = -invN * (2.0 / 3.0) * root * root * root;
+  return 2.0 * sd::kSsiPi * (R * aSeg + mom);
+}
+
+// Exact volume of a conical frustum about its axis: (π Δh/3)(ra²+ra·rb+rb²) — the makeCone
+// frustum volume (the axis edge is at ρ=0, so it is a genuine truncated cone / frustum).
+double coneFrustumVolume(double ra, double rb, double dh) {
+  return sd::kSsiPi * dh / 3.0 * (ra * ra + ra * rb + rb * rb);
+}
+
+// ── (18) COAXIAL TORUS∩CONE COMMON / FUSE / CUT (S5-n) — the THIRD torus-family pair ──
+// A ring torus (major R=3, minor r=1, axis +Y, centre O) and a COAXIAL cone (about +Y) whose
+// SLANTED wall ρ = a + b·z (a=3.2 at z=0, b=0.5 = the meridian slope) crosses the tube at TWO
+// latitudes — the oblique-chord generalisation of the S5-l vertical-chord cylinder. The chord
+// cuts the tube disk at z1=−0.96 (ρ=2.72) and z2=0.8 (ρ=3.6), two analytic circle seams at
+// DIFFERENT radii and stations. Every op is a Pappus-exact solid of revolution: COMMON = the
+// ρ≤line tube part (inner arc + slanted cone chord band); CUT (torus−cone) = the ρ>line outer
+// ring; FUSE = the union (outer bulge + cone wall outside the tube + cone discs). Verified vs
+// the AIRTIGHT closed forms — no OCCT, no fabricated value (mirrors the engine's S5-n oracle).
+CC_TEST(torus_cone_coaxial_common_fuse_cut_watertight_matches_analytic) {
+  const double R = 3.0, r = 1.0, aLine = 3.2, bSlope = 0.5;
+  const ntopo::Shape tor = makeTorusY(R, r);
+  // makeCone(r0,y0,r1,y1) about +Y: radius(y)=r0+(r1−r0)/(y1−y0)(y−y0). For radius=3.2+0.5·y
+  // over y∈[−2,2]: r0=3.2−1=2.2 at y=−2, r1=3.2+1=4.2 at y=+2 → slope 0.5, radius(0)=3.2.
+  const ntopo::Shape cone = makeCone(2.2, -2.0, 4.2, 2.0);
+  CC_CHECK(!tor.isNull() && !cone.isNull());
+
+  const auto csTor = sd::recogniseCurvedSolid(tor);
+  const auto csCone = sd::recogniseCurvedSolid(cone);
+  CC_CHECK(csTor && csCone);
+  if (csTor && csCone) {
+    CC_CHECK(csTor->kind == sd::CurvedKind::Torus);
+    CC_CHECK(csCone->kind == sd::CurvedKind::Cone);
+    CC_CHECK(std::fabs(csTor->radius - R) < 1e-9 && std::fabs(csTor->minorRadius - r) < 1e-9);
+    const ssi::TraceSet tr = ssi::trace_intersection(csTor->adapter(), csCone->adapter());
+    CC_CHECK(tr.nearTangentGaps == 0);   // fully transversal circle seams
+    CC_CHECK(tr.curveCount() >= 1);      // ≥1 of the two co-resident circles traced
+  }
+
+  // Airtight closed-form ground truth (Pappus).
+  const double vTorus = 2.0 * sd::kSsiPi * sd::kSsiPi * R * r * r;   // 2π²Rr²
+  const double vConeFull = coneFrustumVolume(2.2, 4.2, 4.0);         // frustum over y∈[−2,2]
+  const double vCommonTrue = torusConeCommonVolume(R, r, aLine, bSlope);
+  const double vFuseTrue = vTorus + vConeFull - vCommonTrue;
+  const double vCutTrue = vTorus - vCommonTrue;
+  CC_CHECK(vCommonTrue > 0.0 && vCommonTrue < vTorus);
+
+  // ── COMMON: the ρ≤line tube part (inner arc + slanted cone chord band). ──
+  const ntopo::Shape common = nb::ssi_boolean_solid(tor, cone, nb::Op::Common);
+  CC_CHECK(!common.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  CC_CHECK(vCommon > 0.0);                                          // watertight → engine accepts
+  CC_CHECK(std::fabs(vCommon - vCommonTrue) <= 1e-2 * vCommonTrue);
+  CC_CHECK(vCommon <= std::min(vTorus, vConeFull) + 1e-9);         // common ≤ min(A,B)
+  CC_CHECK(!nb::boolean_solid(tor, cone, nb::Op::Common).isNull());
+  // COMMON is symmetric — reversing the operand order builds the same watertight solid.
+  const ntopo::Shape swapped = nb::ssi_boolean_solid(cone, tor, nb::Op::Common);
+  CC_CHECK(!swapped.isNull());
+  const double vSwapped = watertightMeshVolume(swapped);
+  CC_CHECK(vSwapped > 0.0);
+  CC_CHECK(std::fabs(vSwapped - vCommonTrue) <= 1e-2 * vCommonTrue);
+
+  // ── FUSE = A ∪ B: cone frustum fills the hole + outer tube bulge + cone discs. A GROW. ──
+  const ntopo::Shape fuse = nb::ssi_boolean_solid(tor, cone, nb::Op::Fuse);
+  CC_CHECK(!fuse.isNull());
+  const double vFuse = watertightMeshVolume(fuse);
+  CC_CHECK(vFuse > 0.0);
+  CC_CHECK(std::fabs(vFuse - vFuseTrue) <= 1e-2 * vFuseTrue);
+  CC_CHECK(vFuse >= std::max(vTorus, vConeFull) - 1e-9);           // FUSE grows past either operand
+  CC_CHECK(!nb::boolean_solid(tor, cone, nb::Op::Fuse).isNull());
+
+  // ── CUT = A − B (torus minuend): the ρ>line outer tube ring (a SHRINK). ──
+  const ntopo::Shape cut = nb::ssi_boolean_solid(tor, cone, nb::Op::Cut);
+  CC_CHECK(!cut.isNull());
+  const double vCut = watertightMeshVolume(cut);
+  CC_CHECK(vCut > 0.0);
+  CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
+  CC_CHECK(vCut <= vTorus + 1e-9);                                // CUT shrinks below the minuend
+  CC_CHECK(!nb::boolean_solid(tor, cone, nb::Op::Cut).isNull());
+  // CUT is order-sensitive: cone − torus is a DIFFERENT topology; the S5-n CUT builder only
+  // handles the TORUS minuend, so cone − torus declines here → OCCT.
+  CC_CHECK(nb::ssi_boolean_solid(cone, tor, nb::Op::Cut).isNull());
+}
+
+// ── (19) TORUS∩CONE HONEST DECLINES: spindle / near-cylindrical / non-crossing / off-axis → OCCT ──
+// The S5-n assembler is the strict RING-torus + coaxial-cone two-circle poke-through only. A
+// spindle torus is not recognised; a near-cylindrical cone (tanα≈0) routes to the S5-l cylinder
+// path (declined here as a cone); a cone whose slant chord clears the tube, and a non-coaxial /
+// off-axis cone all decline → NULL → OCCT (never faked).
+CC_TEST(torus_cone_declines_spindle_and_non_crossing) {
+  // (a) Spindle torus (R < r) — self-intersecting → not recognised as a CurvedSolid.
+  CC_CHECK(!sd::recogniseCurvedSolid(makeTorusY(0.5, 1.0)));
+
+  const ntopo::Shape tor = makeTorusY(3.0, 1.0);
+
+  // (b) A cone whose slant chord sits entirely inside the donut hole (radius ~1.5 near the tube,
+  //     |ρ−R| ≥ r everywhere on z∈[−1,1]) — no wall crossing of the tube → declines all ops.
+  const ntopo::Shape clear = makeCone(1.0, -2.0, 2.0, 2.0);  // radius(y)=1.5+0.25y, near ρ≈1.5 ≪ R−r
+  CC_CHECK(nb::ssi_boolean_solid(tor, clear, nb::Op::Common).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(tor, clear, nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(tor, clear, nb::Op::Cut).isNull());
+
+  // (c) A cone that does not axially span the tube (its extent misses the lower seam z1=−0.96):
+  //     the seams are not both interior to the cone frustum → declines.
+  const ntopo::Shape shortCone = makeCone(3.45, 0.5, 4.2, 2.0);  // y∈[0.5,2] misses z1=−0.96
+  CC_CHECK(nb::ssi_boolean_solid(tor, shortCone, nb::Op::Common).isNull());
+
+  // (d) Off-AXIS cone: shift the whole torus to a +Z torus while the cone stays +Y → the axes are
+  //     perpendicular (non-coaxial) → declines (never faked).
+  const ntopo::Shape torZ = makeTorus(3.0, 1.0);               // +Z torus
+  const ntopo::Shape coneY = makeCone(2.2, -2.0, 4.2, 2.0);    // +Y cone → axes ⟂
+  CC_CHECK(nb::ssi_boolean_solid(torZ, coneY, nb::Op::Common).isNull());
 }
 
 int main() { return cctest::run_all(); }

@@ -541,6 +541,51 @@ CurvedCheck ssiCurvedBooleanVerified(const ntopo::Shape& result, const ntopo::Sh
         const double tol = std::max(1e-2 * expected, 1e-6);  // deflection-bounded curved mesh
         return {true, std::fabs(vr - expected) <= tol};
     }
+
+    // ── S5-n arm: COAXIAL torus∩cone COMMON (two analytic circle seams). ──
+    // The cone is a COAXIAL frustum whose OBLIQUE wall ρ = a + b·z (b = ±tanα) crosses the tube
+    // in a SLANTED chord (the S5-l cylinder is the b=0 vertical-chord special case). In the
+    // meridian (ρ,z) plane the tube is the disk of radius r centred at (R,0). The COMMON is the
+    // ρ ≤ a+b·z part of the tube revolved. Working about the tube centre (ρ'=ρ−R), the chord has
+    // unit normal m̂=(1,−b)/√(1+b²) into the DISCARDED (ρ>line) region and signed offset
+    // t0=(a−R)/√(1+b²). The discarded circular segment has area A_d = r²acos(t0/r)−t0√(r²−t0²)
+    // and ρ'-moment (1/√(1+b²))·(2/3)(r²−t0²)^{3/2}, so the KEPT segment has area A_seg=πr²−A_d
+    // and ρ'-moment M=−(1/√(1+b²))·(2/3)(r²−t0²)^{3/2}, and by Pappus V=2π(R·A_seg+M). Airtight
+    // closed form; REDUCES to the S5-l torus∩cylinder formula at b=0. Mirrors buildTorusConeCommon.
+    if (tor && cone) {
+        const nm::Vec3 zc = tor->frame.z.vec();
+        if (nm::norm(nm::cross(zc, cone->frame.z.vec())) > 1e-6) return {};  // axes not parallel
+        const nm::Vec3 d = cone->frame.origin - tor->frame.origin;
+        if (nm::norm(d - zc * nm::dot(d, zc)) > 1e-6) return {};  // origins not colinear → not coaxial
+        const double R = tor->radius, r = tor->minorRadius;
+        if (!(r > 1e-9) || !(R > r + 1e-9)) return {};
+        const double tanA = std::tan(cone->semiAngle);
+        if (std::fabs(tanA) < 1e-6) return {};  // near-cylindrical → S5-l owns it
+        const double base = nm::dot(d, zc);
+        const double sgn = nm::dot(cone->frame.z.vec(), zc) >= 0.0 ? 1.0 : -1.0;
+        const double b = sgn * tanA;
+        const double a = cone->radius - sgn * base * tanA;
+        // Proper two-circle poke-through: two distinct real roots strictly inside the tube.
+        const double Aq = 1.0 + b * b, Bq = 2.0 * b * (a - R), Cq = (a - R) * (a - R) - r * r;
+        const double disc = Bq * Bq - 4.0 * Aq * Cq;
+        if (!(disc > 1e-9)) return {};
+        const double sq = std::sqrt(disc);
+        double z1 = (-Bq - sq) / (2.0 * Aq), z2 = (-Bq + sq) / (2.0 * Aq);
+        if (z1 > z2) std::swap(z1, z2);
+        if (!(z2 - z1 > 1e-6) || !(a + b * z1 > 1e-9) || !(a + b * z2 > 1e-9)) return {};
+        const double invNorm = 1.0 / std::sqrt(1.0 + b * b);
+        const double t0 = (a - R) * invNorm;
+        if (!(std::fabs(t0) < r - 1e-9)) return {};
+        const double root = std::sqrt(std::max(r * r - t0 * t0, 0.0));
+        const double aCap = r * r * std::acos(std::clamp(t0 / r, -1.0, 1.0)) - t0 * root;  // discarded
+        const double aSeg = cv::kPi * r * r - aCap;                                         // kept (ρ≤line)
+        const double mom = -invNorm * (2.0 / 3.0) * root * root * root;                     // kept ρ'-moment
+        const double expected = 2.0 * cv::kPi * (R * aSeg + mom);
+        const double vr = watertightVolume(result);
+        if (vr < 0.0) return {true, false};  // not watertight
+        const double tol = std::max(1e-2 * expected, 1e-6);  // deflection-bounded curved mesh
+        return {true, std::fabs(vr - expected) <= tol};
+    }
     return {};
 #else
     (void)result; (void)a; (void)b; (void)op;

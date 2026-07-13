@@ -405,4 +405,84 @@ CC_TEST(seed_freeform_two_coresident_loci_recovered) {
     CC_CHECK(ss.seeds[0].point.x * ss.seeds[1].point.x < 0.0);
 }
 
+// FEATURE-ADAPTIVE INITIAL SUBDIVISION — the idx=43 placement-miss recovery (roadmap
+// SSI-SUBDIV). The verbatim freeform-fuzzer pose seed=0x5515D1FF0F0F case 43 (family
+// multi-branch): a B-spline (A: degU=2 degV=3, 6x5) cap rational NURBS (B: degU=2 degV=3,
+// 6x6) that host THREE co-resident transversal loci. OCCT (GeomAPI_IntSS) finds 3 lines;
+// the old S2 uniform leaf produced only 2 clustered candidates -> 2 seeds (a placement miss
+// UPSTREAM of clustering — the third locus never got its own clustered candidate at the
+// coarse leaf). Feature-adaptive subdivision refines the overlapping (feature) leaves one
+// level below the uniform leaf, so the third locus gets its own candidate -> cluster -> seed.
+// Regression guard: adaptive OFF => 2 seeds (the old miss), adaptive ON (default) => 3 seeds,
+// each a GENUINE on-both-surfaces transversal crossing. Recall-only, DISAGREED-safe.
+CC_TEST(seed_freeform_adaptive_subdivision_recovers_third_locus) {
+  const std::vector<Point3> polesA = {
+      {-1.21747171,-1.19581425,0.0404234124},{-1.22394476,-0.568013867,0.177951072},{-1.20212802,-0.00704172766,-0.0128882773},{-1.16455049,0.63913965,-0.190524012},{-1.20907242,1.1678284,-0.100048088},
+      {-0.69437808,-1.19491772,0.137331508},{-0.702030995,-0.635562432,0.541271282},{-0.717979475,-0.0212440509,-0.0118285806},{-0.728313142,0.563135225,-0.495581903},{-0.724875778,1.20918738,-0.11223509},
+      {-0.226313637,-1.20284829,0.0848490612},{-0.233764958,-0.616441804,0.285612734},{-0.202500166,0.00655340758,-0.0340870289},{-0.263350588,0.591628856,-0.32908772},{-0.214788328,1.19766228,-0.0557698191},
+      {0.274251504,-1.19821973,-0.0785242547},{0.260068915,-0.617159084,-0.321295145},{0.240650532,-0.0191590171,0.0267992762},{0.244400034,0.574770134,0.351639096},{0.211181933,1.16561442,0.0910835631},
+      {0.688750703,-1.18807586,-0.16322818},{0.757713441,-0.591585346,-0.511398266},{0.706952744,0.0141144332,-0.00309705817},{0.75148157,0.582230194,0.585586112},{0.688743644,1.23776618,0.10515734},
+      {1.22394647,-1.18016884,-0.00594362178},{1.23342871,-0.631672772,-0.0840379363},{1.19898838,0.0290960442,0.00356994585},{1.16509161,0.6155148,0.231641848},{1.23742606,1.16555351,0.0804823041},
+  };
+  const std::vector<double> kUA = {0,0,0,0.25,0.5,0.75,1,1,1};
+  const std::vector<double> kVA = {0,0,0,0,0.5,1,1,1,1};
+  const int degUA = 2, degVA = 3, nUA = 6, nVA = 5;
+
+  const std::vector<Point3> polesB = {
+      {-1.16430761,-1.17937249,-0.0147624625},{-1.22030726,-0.712158903,0.0640965485},{-1.2125237,-0.266536117,0.132870816},{-1.23063822,0.229748186,0.193287329},{-1.21683875,0.692231599,0.101825002},{-1.20760091,1.21819648,0.0265777438},
+      {-0.714165717,-1.20907637,-0.0804500009},{-0.734458071,-0.74175132,0.0234783157},{-0.74609727,-0.212796604,0.0420068429},{-0.755138933,0.202537706,0.0106858884},{-0.744190591,0.713637142,-0.0342293719},{-0.735335206,1.20228443,-0.0875726089},
+      {-0.228918842,-1.18118996,-0.0987423564},{-0.243417269,-0.733899789,-0.0435023586},{-0.265567658,-0.264311152,-0.046979612},{-0.26001166,0.259697153,0.00503948117},{-0.279533096,0.744570018,-0.0762688304},{-0.27006795,1.18334064,-0.151188119},
+      {0.248298554,-1.17187077,-0.1833745},{0.225243237,-0.744096963,-0.0584970012},{0.260204835,-0.238644718,-0.0419381021},{0.202980282,0.277442681,0.0438023268},{0.271240899,0.74509685,-0.0918828181},{0.27682113,1.20901841,-0.143127858},
+      {0.69387993,-1.17022034,-0.0511153818},{0.739499136,-0.697536776,-0.0369703049},{0.71707016,-0.241069073,0.0177233554},{0.687268956,0.255884949,0.0113189055},{0.68850246,0.686339473,-0.047925612},{0.7599325,1.1982825,-0.0436081288},
+      {1.23774437,-1.2210962,-0.0125380279},{1.17330841,-0.71608189,0.0441821456},{1.21031965,-0.21570609,0.139604201},{1.18024948,0.273877391,0.145518972},{1.1893667,0.751659509,0.135801938},{1.17076798,1.16170791,-0.0456641623},
+  };
+  const std::vector<double> wtsB = {
+      0.752362917,0.43172777,1.5012661,1.1091207,2.37431704,1.68883422,0.894550815,0.756718124,0.737513747,1.64071124,1.2988382,2.41607334,
+      1.14013995,2.10231903,1.02414992,0.841387008,1.21218814,1.84099706,1.90525699,2.19559779,1.65359934,1.89193174,1.77326639,1.67906372,
+      0.721094879,1.90497118,1.44038209,1.43976424,1.92020345,2.24487957,1.51411009,0.850511283,1.10507314,1.39493758,1.64299105,1.43417264};
+  const std::vector<double> kUB = {0,0,0,0.25,0.5,0.75,1,1,1};
+  const std::vector<double> kVB = {0,0,0,0,0.333333333,0.666666667,1,1,1,1};
+  const int degUB = 2, degVB = 3, nUB = 6, nVB = 6;
+
+  auto A = ssi::makeBSplineAdapter(degUA, degVA, polesA, nUA, nVA, kUA, kVA);
+  auto B = ssi::makeNurbsAdapter(degUB, degVB, polesB, wtsB, nUB, nVB, kUB, kVB);
+
+  // Same grid/leaf the fuzzer runs (the pose is that harness config).
+  ssi::SeedOptions o;
+  o.initialGridU = 6;
+  o.initialGridV = 6;
+  o.minPatchFrac = 1.0 / 32.0;
+
+  // Adaptive OFF: the OLD placement miss — the uniform leaf produces only 2 clustered
+  // candidates, so the third co-resident locus is never seeded.
+  o.adaptiveSubdivision = false;
+  auto off = ssi::seed_intersection(A, B, o);
+  CC_CHECK(off.branchCount() == 2);
+
+  // Adaptive ON (default): the third locus's overlapping leaf is refined one level finer, so
+  // it gets its own candidate -> cluster -> seed. All three loci recovered, none fabricated.
+  o.adaptiveSubdivision = true;
+  auto on = ssi::seed_intersection(A, B, o);
+  CC_CHECK(on.branchCount() == 3);
+  CC_CHECK(on.deferredTangent == 0);  // all three loci transversal — no fabricated tangent
+
+  // Every seed is a GENUINE crossing: on both surfaces <= 1e-7 and transversal. Never faked.
+  nmath::SurfaceGrid gA{polesA, nUA, nVA};
+  nmath::SurfaceGrid gB{polesB, nUB, nVB};
+  for (const auto& s : on.seeds) {
+    CC_CHECK(s.onSurfResidual < 1e-7);
+    CC_CHECK(s.crossingSine > 0.1);
+    const Point3 pa = nmath::surfacePoint(degUA, degVA, gA, kUA, kVA, s.u1, s.v1);
+    const Point3 pb = nmath::nurbsSurfacePoint(degUB, degVB, gB, wtsB, kUB, kVB, s.u2, s.v2);
+    CC_CHECK(nmath::distance(pa, s.point) < 1e-7);  // on surface A (B-spline)
+    CC_CHECK(nmath::distance(pb, s.point) < 1e-7);  // on surface B (rational)
+  }
+  // The three seeds are on genuinely DISTINCT loci (spread across x), not one loop over-split.
+  if (on.seeds.size() == 3) {
+    double xmin = on.seeds[0].point.x, xmax = xmin;
+    for (const auto& s : on.seeds) { xmin = std::min(xmin, s.point.x); xmax = std::max(xmax, s.point.x); }
+    CC_CHECK(xmax - xmin > 1.0);  // recovered locus sits well apart (x~-1.1 vs x~+1.2)
+  }
+}
+
 int main() { return cctest::run_all(); }

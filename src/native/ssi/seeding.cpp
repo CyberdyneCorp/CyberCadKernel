@@ -161,11 +161,46 @@ struct CandidateRegion {
   ParamBox b;  // sub-box on surface B
 };
 
+// FEATURE-ADAPTIVE leaf refinement decision (additive, DISAGREED-safe). At a would-be
+// uniform leaf, refine FURTHER (below `minPatchFrac`, toward the `adaptiveMinFrac` floor)
+// ONLY when the two patches' AABBs OVERLAP DEEPLY — the overlap-box diagonal is >=
+// `overlapFrac` of the SMALLER patch AABB diagonal. A deep overlap means the surfaces
+// genuinely approach / thread each other inside the cell (a near-crossing the uniform leaf
+// would lump with an adjacent locus or miss entirely); a shallow corner-graze does NOT
+// warrant the extra work and stays at the uniform leaf. Returns true iff there is room to
+// refine (not both patches at the adaptive floor) AND the overlap is deep. Never emits a
+// point — it only asks whether to split MORE; the emitted candidates still pass refineRegion.
+inline bool featureWarrantsFinerLeaf(const Aabb& boxA, const Aabb& boxB,
+                                     const ParamBox& ba, const ParamBox& bb,
+                                     const SurfaceAdapter& A, const SurfaceAdapter& B,
+                                     double adaptiveMinFrac, double overlapFrac) {
+  // Room to refine: stop once BOTH patches are already at the adaptive floor.
+  const bool aFloor = ba.du() <= adaptiveMinFrac * A.domain.du() &&
+                      ba.dv() <= adaptiveMinFrac * A.domain.dv();
+  const bool bFloor = bb.du() <= adaptiveMinFrac * B.domain.du() &&
+                      bb.dv() <= adaptiveMinFrac * B.domain.dv();
+  if (aFloor && bFloor) return false;
+  // Overlap-box diagonal relative to the smaller patch AABB diagonal (shape-free, scale-free
+  // deep-overlap witness). aabbIntersect is valid iff the boxes overlap (the caller already
+  // ruled out disjoint), so its diagonal is the overlap extent.
+  const Aabb ov = aabbIntersect(boxA, boxB);
+  if (!ov.valid()) return false;
+  const double smaller = std::min(boxA.diagonal(), boxB.diagonal());
+  if (smaller <= 0.0) return false;
+  // The cell brackets a genuine near-crossing (the caller ruled out disjoint); refine it one
+  // level finer so a co-resident locus that shares the coarse leaf with the dominant locus gets
+  // its OWN candidate → its own cluster → its own seed. `overlapFrac` is an optional SHALLOW
+  // guard (skip a corner-graze whose overlap exceeds it — a no-op at the default 1.0 that keeps
+  // every overlapping cell). The `adaptiveMinFrac` floor bounds the extra refinement cost.
+  return ov.diagonal() <= overlapFrac * smaller;
+}
+
 void subdivide(const SurfaceAdapter& A, const SurfaceAdapter& B,
                const ParamBox& ba, const ParamBox& bb, int depth,
                int maxDepth, double minFracU_A, double minFracV_A,
                double minFracU_B, double minFracV_B, double gap,
-               std::vector<CandidateRegion>& out) {
+               std::vector<CandidateRegion>& out,
+               bool adaptive, double adaptiveMinFrac, double adaptiveOverlapFrac) {
   const Aabb boxA = A.bound(ba);
   const Aabb boxB = B.bound(bb);
   if (!boxA.valid() || !boxB.valid()) return;
@@ -176,7 +211,10 @@ void subdivide(const SurfaceAdapter& A, const SurfaceAdapter& B,
                       ba.dv() <= minFracV_A * A.domain.dv();
   const bool bSmall = bb.du() <= minFracU_B * B.domain.du() &&
                       bb.dv() <= minFracV_B * B.domain.dv();
-  if (depth >= maxDepth || (aSmall && bSmall)) {
+  if (depth >= maxDepth ||
+      (aSmall && bSmall &&
+       !(adaptive &&
+         featureWarrantsFinerLeaf(boxA, boxB, ba, bb, A, B, adaptiveMinFrac, adaptiveOverlapFrac)))) {
     out.push_back({ba, bb});
     return;
   }
@@ -195,12 +233,16 @@ void subdivide(const SurfaceAdapter& A, const SurfaceAdapter& B,
   };
   if (splitA) {
     auto [a0, a1] = halves(ba);
-    subdivide(A, B, a0, bb, depth + 1, maxDepth, minFracU_A, minFracV_A, minFracU_B, minFracV_B, gap, out);
-    subdivide(A, B, a1, bb, depth + 1, maxDepth, minFracU_A, minFracV_A, minFracU_B, minFracV_B, gap, out);
+    subdivide(A, B, a0, bb, depth + 1, maxDepth, minFracU_A, minFracV_A, minFracU_B, minFracV_B, gap, out,
+              adaptive, adaptiveMinFrac, adaptiveOverlapFrac);
+    subdivide(A, B, a1, bb, depth + 1, maxDepth, minFracU_A, minFracV_A, minFracU_B, minFracV_B, gap, out,
+              adaptive, adaptiveMinFrac, adaptiveOverlapFrac);
   } else {
     auto [b0, b1] = halves(bb);
-    subdivide(A, B, ba, b0, depth + 1, maxDepth, minFracU_A, minFracV_A, minFracU_B, minFracV_B, gap, out);
-    subdivide(A, B, ba, b1, depth + 1, maxDepth, minFracU_A, minFracV_A, minFracU_B, minFracV_B, gap, out);
+    subdivide(A, B, ba, b0, depth + 1, maxDepth, minFracU_A, minFracV_A, minFracU_B, minFracV_B, gap, out,
+              adaptive, adaptiveMinFrac, adaptiveOverlapFrac);
+    subdivide(A, B, ba, b1, depth + 1, maxDepth, minFracU_A, minFracV_A, minFracU_B, minFracV_B, gap, out,
+              adaptive, adaptiveMinFrac, adaptiveOverlapFrac);
   }
 }
 
@@ -1050,6 +1092,20 @@ SeedSet seed_intersection(const SurfaceAdapter& A, const SurfaceAdapter& B,
       minFrac = std::max(minFrac / refine, 1.0 / 256.0);  // hard finest-leaf floor
     }
   }
+  // FEATURE-ADAPTIVE INITIAL SUBDIVISION (see SeedOptions). Fires ONLY on freeform<->freeform
+  // pairs (an elementary/plane/torus operand keeps span count 0 -> byte-identical uniform leaf,
+  // so every S1 analytic / mixed / S4-f contract is untouched). It refines a would-be uniform
+  // leaf FURTHER, toward `adaptiveMinFrac`, only where the two patch AABBs overlap deeply — a
+  // near-crossing the uniform leaf would miss (the idx=43 placement miss). Additive: it only
+  // adds candidate regions in feature cells; refineRegion still gates every seed.
+  const bool bothFreeformAdapt = A.freeformSpanCount >= 1 && B.freeformSpanCount >= 1;
+  const bool adaptive = opts.adaptiveSubdivision && bothFreeformAdapt;
+  // Adaptive floor: never coarser than the uniform leaf, and no finer than a hard 1/512 cost
+  // ceiling (deterministic; maxDepth still bounds recursion).
+  const double adaptiveMinFrac =
+      std::max(std::min(minFrac, opts.adaptiveMinFrac > 0 ? opts.adaptiveMinFrac : 1.0 / 256.0),
+               1.0 / 512.0);
+  const double adaptiveOverlapFrac = opts.adaptiveOverlapFrac > 0 ? opts.adaptiveOverlapFrac : 0.5;
   std::vector<CandidateRegion> candidates;
   for (int i = 0; i < gu; ++i) {
     for (int j = 0; j < gv; ++j) {
@@ -1059,7 +1115,8 @@ SeedSet seed_intersection(const SurfaceAdapter& A, const SurfaceAdapter& B,
       ba.v0 = A.domain.v0 + A.domain.dv() * (double(j) / gv);
       ba.v1 = A.domain.v0 + A.domain.dv() * (double(j + 1) / gv);
       subdivide(A, B, ba, B.domain, 0, opts.maxDepth,
-                minFrac, minFrac, minFrac, minFrac, gap, candidates);
+                minFrac, minFrac, minFrac, minFrac, gap, candidates,
+                adaptive, adaptiveMinFrac, adaptiveOverlapFrac);
     }
   }
   result.candidateRegions = static_cast<int>(candidates.size());

@@ -155,6 +155,33 @@ struct SeedOptions {
   // dense chain that keeps ONE physical loop connected, so it does NOT introduce the arc gaps
   // that would over-split a single loop.
   int capRetentionBudget = 65536;    ///< target refined seeds retained per cluster after loop-aware decimation
+
+  // ── FEATURE-ADAPTIVE INITIAL SUBDIVISION (default ON) — recover PLACEMENT-MISS loci ───
+  // A uniform leaf floor (`minPatchFrac`) can be too COARSE near a locus that a third
+  // co-resident branch threads through: at the uniform leaf a near-crossing is either lumped
+  // with an adjacent locus into ONE cluster or never produces its own clustered candidate, so
+  // the branch is never seeded (the measured `idx=43` freeform-fuzzer placement miss — NO cap
+  // hit, the third distinct locus simply never produced a clustered candidate; roadmap
+  // SSI-RECALL). This is UPSTREAM of clustering / the distinct-locus split, so no split or
+  // retention change reaches it.
+  //
+  // The fix refines a would-be leaf FURTHER (below the uniform `minPatchFrac`, down to
+  // `adaptiveMinFrac`) ONLY when a FEATURE criterion says a near-crossing likely threads the
+  // cell that the uniform leaf would miss: the two patches' 3D AABBs OVERLAP (the caller
+  // already ruled out disjoint), refining that threading cell ONE level below the uniform leaf so
+  // a co-resident locus sharing the coarse leaf with the dominant locus gets its OWN candidate →
+  // its own cluster → its own seed. `adaptiveOverlapFrac` is an optional SHALLOW guard (skip a
+  // corner-graze whose overlap exceeds it — a no-op at the default 1.0). This is
+  // PURELY ADDITIVE: it produces MORE candidate regions in feature cells; every extra candidate
+  // is still gated by `refineRegion` (must land on BOTH surfaces ≤ `onSurfTol` AND be
+  // transversal ‖n₁×n₂‖ ≥ `tangentSinTol`), so it can only surface a real co-resident locus the
+  // coarse leaf hid — it NEVER fabricates a locus, widens a tolerance, or over-splits (an extra
+  // candidate on an already-found locus refines to the same seed and the distinct-locus split /
+  // marcher dedup collapses it). Freeform↔freeform only (same gate as scale-adaptive seeding);
+  // bounded by the `adaptiveMinFrac` floor and `maxDepth`. Deterministic, OCCT-free.
+  bool adaptiveSubdivision = true;        ///< refine overlapping (feature) leaves one level below the uniform minPatchFrac
+  double adaptiveMinFrac = 1.0 / 256.0;   ///< hard finest-leaf floor for the adaptive path (≥ this per direction)
+  double adaptiveOverlapFrac = 1.0;       ///< SHALLOW guard: refine a leaf iff overlap-box diag <= this * smaller-patch diag (1.0 = every overlapping leaf)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

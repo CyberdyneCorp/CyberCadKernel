@@ -651,6 +651,26 @@ int main() {
     runPair(pc);
   }
 
+  // ── (12) COAXIAL TORUS ∩ SPHERE — the SECOND torus-family pair (S5-m) ──────────────
+  // A ring torus (major R=3, minor r=1, axis +Z, centre O) and a sphere Rs=3.0 centred AT
+  // the torus centre (ON the axis, the symmetric sc=0 pose). The sphere crosses the tube at
+  // TWO latitudes (ρ*=(R²−r²+Rs²)/(2R)=2.833, |ρ*−R|=0.167 < r), two analytic circle seams of
+  // EQUAL radius ρ*. Every op is a Pappus-exact solid of revolution: COMMON = inner tube arc +
+  // sphere zone; CUT (torus−sphere) = outer tube arc + reversed sphere zone; FUSE = outer tube
+  // bulge + two sphere polar caps. All three match BRepAlgoAPI_{Common,Fuse,Cut} on
+  // volume/area/watertight → NATIVE passes.
+  {
+    PairCase pc;
+    pc.pairName = "torus=sphere(coaxial)";
+    pc.nativeA = makeTorus(3.0, 1.0);
+    pc.nativeB = makeSphere(3.0, 0.0);   // Rs=3.0, centre origin (= torus centre), coaxial
+    pc.occtA = occtTorus(3.0, 1.0);
+    pc.occtB = occtSphere(3.0, 0.0);
+    pc.relTol = 2e-2;
+    probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
+    runPair(pc);
+  }
+
   std::printf("== %d passed, %d failed, %d fell-back (native-pass=%d) ==\n",
               g_passed, g_failed, g_fellBack, g_nativePass);
   std::fflush(stdout);

@@ -576,7 +576,7 @@ S4-f DETECTS + REPORTS + traces-through, it does not repair topology.
 
 Archived change `openspec/changes/archive/2026-07-05-add-native-ssi-s4f-completeness`.
 
-### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g/h/i/j landed + S5-k FIRST TRANSVERSAL (non-coaxial) slice + S5-l TORUS surface family (CONE surface family opened — coaxial cone∩cylinder, single- AND two-circle cone∩sphere, coaxial cone∩cone (frustum AND apex-to-apex hourglass), AND two-circle cylinder∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; S5-k lands the FIRST non-coaxial pose — the offset cylinder∩sphere COMMON from a NON-PLANAR traced seam; S5-l opens the TORUS family — coaxial torus∩cylinder COMMON/FUSE/CUT COMPLETE 3/3 native; ~months for full coverage)
+### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g/h/i/j landed + S5-k FIRST TRANSVERSAL (non-coaxial) slice + S5-l/m TORUS surface family (CONE surface family opened — coaxial cone∩cylinder, single- AND two-circle cone∩sphere, coaxial cone∩cone (frustum AND apex-to-apex hourglass), AND two-circle cylinder∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; S5-k lands the FIRST non-coaxial pose — the offset cylinder∩sphere COMMON from a NON-PLANAR traced seam; S5-l opens the TORUS family — coaxial torus∩cylinder COMMON/FUSE/CUT COMPLETE 3/3 native; S5-m extends it — coaxial torus∩sphere (sphere at torus centre) COMMON/FUSE/CUT COMPLETE 3/3 native; ~months for full coverage)
 Use SSI curves to **split** the curved faces of two solids, **classify**
 fragments inside/outside (reuse the BSP-CSG classifier + a curved point-in-solid
 test), **assemble** the surviving shell watertight (curved-seam weld from the
@@ -921,6 +921,46 @@ harness runs each of the sphere FUSE/CUT as an equal-R AND an unequal-R fixture;
   tube (Rc inside the donut hole or beyond the outer equator, |Rc − R| ≥ r → no proper two-circle
   crossing), a cylinder tangent to an equator, a short cylinder not axially spanning the tube, and a
   non-coaxial (off-axis / skew) torus∩cylinder all decline → NULL → OCCT (honest, never faked).
+- **S5-m — coaxial TORUS(ring)∩SPHERE COMMON / FUSE / CUT** (the SECOND torus-family pair; op-set
+  COMPLETE 3/3 native). A ring torus (major R, minor r, axis = frame Z, centre O) and a sphere
+  (radius Rs) whose centre sits ON the torus axis AT the torus centre (sc = 0 — the CLEANEST-oracle
+  SYMMETRIC pose). In the meridian (ρ,z) plane the tube is the disk of radius r centred at (R,0); the
+  sphere is the circle ρ²+z²=Rs². Both meet at the SAME radius ρ* = (R²−r²+Rs²)/(2R) and z = ±z0 =
+  ±√(r²−(ρ*−R)²) → TWO seam circles of EQUAL radius ρ* (like the S5-l cylinder chord, but the seam
+  radius is derived from the sphere). For |z| ≤ z0 the sphere arc lies INSIDE the tube walls; for
+  |z| > z0 the tube slice is entirely OUTSIDE the ball. Every op is a Pappus-exact solid of
+  revolution welded from the S5-e…l machinery through one `VertexPool` — the revolved tube arcs
+  (`appendTubeArc` topology, S5-l), the SPHERE ZONE between the two seam rings (`appendSphereZone`,
+  S5-h/i — the ONLY change is a `outwardSign` param added so the CUT can reverse it, default +1 →
+  every existing caller byte-identical), and the two sphere polar CAPS beyond the seams
+  (`appendSphereCap`, S5-c). The tube-arc topology is IDENTICAL to S5-l (COMMON = inner arc; CUT =
+  outer arc); only the CYLINDER chord band becomes the SPHERE zone/caps. The S3 tracer returns ONE
+  of the two co-resident loops, so the `torusSphereSetup` prologue computes BOTH circles itself and
+  CROSS-CHECKS the traced seam(s) against the analytic roots (station ±z0 + radius ρ*).
+  - **COMMON** — `buildTorusSphereCommon`: the tube ∩ ball — the INNER tube arc (v ∈ [v0, 2π−v0],
+    through the inner equator ρ = R−r) + the sphere zone ρ = √(Rs²−z²) between the two seam rings.
+  - **CUT (A−B, TORUS minuend, order-sensitive)** — `buildTorusSphereCut`: the tube ∖ ball — the
+    OUTER tube arc (v ∈ [−v0, v0], through the outer equator, covering the pole-region tube where
+    |z| > z0) + the sphere zone REVERSED (inward normal, bounding the carved cavity). A SHRINK, one
+    closed ring-of-revolution component. A sphere-minuend (sphere − torus) declines → OCCT.
+  - **FUSE (A∪B)** — `buildTorusSphereFuse`: the OUTER tube-arc bulge (ρ > ρ*, outside the ball) +
+    the TWO sphere polar caps (each seam ring out to its pole, the sphere surface OUTSIDE the tube).
+    The ball fills the donut hole + mid-band → the union is simply connected. A GROW.
+  Verified vs a **DUAL oracle** — the AIRTIGHT Pappus closed forms (engine `ssiCurvedBooleanVerified`
+  S5-m arm for COMMON: `V = 2π·[ (Rs²−R²−r²)·z0 + R·(z0·√(r²−z0²) + r²·asin(z0/r)) ]`; the generic
+  `booleanResultVerified` `V_torus + V_sph − V_common` / `V_torus − V_common` for FUSE/CUT with
+  `V_torus = 2π²Rr²`, `V_sph = 4/3·πRs³`) **AND** OCCT `BRepAlgoAPI_{Common,Fuse,Cut}` (sim), all
+  watertight/closed/valid, inside the 1% curved-parity bar, no tolerance weakened. Host+sim fixture
+  (torus R=3, r=1, axis +Z; sphere Rs=3.0 centred at origin; seams z*=±√(r²−(ρ*−R)²)≈±0.986,
+  radius ρ*=17/6≈2.833):
+  - COMMON: volN≈23.29 vs analytic 23.355 vs OCCT 23.355, ΔV≈2.8e-03 (a facet-inscription deficit).
+  - FUSE:   volN≈148.62 vs OCCT 148.96, ΔV≈2.3e-03 (a GROW; hole filled by the ball).
+  - CUT (torus−sphere): volN≈35.74 vs OCCT 35.86, ΔV≈3.5e-03 (a SHRINK, one ring-of-revolution component).
+  A SPINDLE torus (R ≤ r) declines at recognition; an OFF-CENTRE coaxial sphere (sc ≠ 0 — the general
+  spiric section with unequal seam radii), an OFF-AXIS sphere, a small sphere inside the donut hole,
+  and a large sphere engulfing the inner tube (|ρ*−R| ≥ r → no proper two-circle crossing) all
+  decline → NULL → OCCT (honest, never faked). The general OFF-CENTRE coaxial (sc ≠ 0) spiric section
+  is the next torus∩sphere slice.
 
 Honest scope still declining → OCCT (measured NULL fallbacks, never faked):
 - **the TRANSVERSAL (offset) cylinder∩sphere CUT + FUSE** (the sphere-outer-zone weld between two
@@ -935,12 +975,14 @@ Honest scope still declining → OCCT (measured NULL fallbacks, never faked):
   branched pair that is NOT equal-R orthogonal Steinmetz (unequal-R / non-orthogonal / ≠ 2 branch
   points / ≠ 4 arms). A disjoint Steinmetz pair (no seam) also declines for all three ops.
   (sphere∩sphere, Steinmetz, the coaxial cone∩cylinder, cone∩sphere single-crossing, the coaxial
-  cone∩cone, the TWO-CIRCLE coaxial cone∩sphere, AND the TWO-CIRCLE coaxial cylinder∩sphere
-  FUSE/CUT/COMMON op-sets are now COMPLETE 3/3 NATIVE — see S5-c/S5-d/S5-e/S5-f/S5-g/S5-h/S5-i above.)
+  cone∩cone, the TWO-CIRCLE coaxial cone∩sphere, the TWO-CIRCLE coaxial cylinder∩sphere, the coaxial
+  torus∩cylinder, AND the coaxial (centred) torus∩sphere FUSE/CUT/COMMON op-sets are now COMPLETE
+  3/3 NATIVE — see S5-c/S5-d/S5-e/S5-f/S5-g/S5-h/S5-i/S5-l/S5-m above.)
 Remaining S5 work: the transversal (offset) cyl∩sphere CUT/FUSE + larger-offset COMMON (the
-S5-k sphere-outer-zone weld + the co-resident second-loop recall), general (non-Steinmetz)
-branched pairs, transversal/apex cone pairs, the apex-spanning / tangent cone∩sphere sub-configs,
-transversal (non-coaxial) cone pairs, and more curved-curved families.
+S5-k sphere-outer-zone weld + the co-resident second-loop recall), the OFF-CENTRE coaxial (sc≠0)
+torus∩sphere spiric section, general (non-Steinmetz) branched pairs, transversal/apex cone pairs,
+the apex-spanning / tangent cone∩sphere sub-configs, transversal (non-coaxial) cone pairs, and more
+curved-curved families.
 
 ## NURBS Layer 2 — general-freeform measurement pass (empirical decline map) · ✅ MEASURED 2026-07-10 · ⛔ POST-HOC RECALL CAMPAIGN DECLINED 2026-07-11 · ✅ SCALE-ADAPTIVE INITIAL SEEDING LANDED 2026-07-11 (decline 28.5%→18.8%, DISAGREED==0) · ✅ LOCUS-COVERAGE ORACLE AUDIT + FREEFORM-PAIR SEEDING EXTENSION LANDED 2026-07-11 (true decline 18.8%; audit → 0 over-counts, residual 100% genuine; extension → 18.8%→16.7%/17.4% combined, DISAGREED==0) · ✅ SEED-CLUSTER DISTINCT-BRANCH SPLIT LANDED 2026-07-11 (decline 16.7%→13.9%, multi-branch declines 19→14, DISAGREED==0)
 

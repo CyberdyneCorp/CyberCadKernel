@@ -1682,4 +1682,123 @@ CC_TEST(torus_cyl_declines_spindle_and_non_crossing) {
   CC_CHECK(nb::ssi_boolean_solid(tor, shortCyl, nb::Op::Common).isNull());
 }
 
+// Airtight Pappus closed form for the COMMON (tube ∩ ball) of a coaxial torus∩sphere whose
+// sphere is centred at the torus centre (sc = 0). The two seams share radius ρ* = (R²−r²+Rs²)/(2R)
+// at z = ±z0 = ±√(r²−(ρ*−R)²); COMMON is the ρ ≤ √(Rs²−z²) tube segment revolved:
+//   V = 2π·[ (Rs²−R²−r²)·z0 + R·(z0·√(r²−z0²) + r²·asin(z0/r)) ].
+// Matches the engine's ssiCurvedBooleanVerified S5-m arm (no OCCT, no fabricated value).
+double torusSphereCommonVolume(double R, double r, double Rs) {
+  const double rhoStar = (R * R - r * r + Rs * Rs) / (2.0 * R);
+  const double d = rhoStar - R;
+  const double z0 = std::sqrt(std::max(r * r - d * d, 0.0));
+  const double innerInt =
+      z0 * std::sqrt(std::max(r * r - z0 * z0, 0.0)) + r * r * std::asin(std::clamp(z0 / r, -1.0, 1.0));
+  return 2.0 * sd::kSsiPi * ((Rs * Rs - R * R - r * r) * z0 + R * innerInt);
+}
+
+// ── (16) COAXIAL TORUS∩SPHERE COMMON / FUSE / CUT (S5-m) — the SECOND torus-family pair ──
+// A ring torus (major R=3, minor r=1, axis +Z, centre O) and a sphere Rs=3.0 centred AT the
+// torus centre (ON the axis, sc=0 — the symmetric pose). The sphere crosses the tube at TWO
+// latitudes (ρ*=(R²−r²+Rs²)/(2R)=2.833, |ρ*−R|=0.167<r=1), giving two analytic circle seams
+// at z=±z0=±√(r²−(ρ*−R)²)≈±0.986 of EQUAL radius ρ*. Every op is a Pappus-exact solid of
+// revolution: COMMON = inner tube arc + sphere zone; CUT (torus−sph) = outer tube arc +
+// reversed sphere zone; FUSE = outer tube bulge + two sphere polar caps. Verified vs the
+// AIRTIGHT closed forms — no OCCT, no fabricated value (mirrors the engine's S5-m oracle).
+CC_TEST(torus_sphere_coaxial_common_fuse_cut_watertight_matches_analytic) {
+  const double R = 3.0, r = 1.0, Rs = 3.0;
+  const ntopo::Shape tor = makeTorus(R, r);
+  const ntopo::Shape sph = makeSphere(0.0, Rs);  // centre origin (= torus centre) → coaxial, sc=0
+  CC_CHECK(!tor.isNull() && !sph.isNull());
+
+  const auto csTor = sd::recogniseCurvedSolid(tor);
+  const auto csSph = sd::recogniseCurvedSolid(sph);
+  CC_CHECK(csTor && csSph);
+  if (csTor && csSph) {
+    CC_CHECK(csTor->kind == sd::CurvedKind::Torus);
+    CC_CHECK(csSph->kind == sd::CurvedKind::Sphere);
+    CC_CHECK(std::fabs(csTor->radius - R) < 1e-9 && std::fabs(csTor->minorRadius - r) < 1e-9);
+    const ssi::TraceSet tr = ssi::trace_intersection(csTor->adapter(), csSph->adapter());
+    CC_CHECK(tr.nearTangentGaps == 0);   // fully transversal circle seams
+    CC_CHECK(tr.curveCount() >= 1);      // ≥1 of the two co-resident circles traced
+  }
+
+  // Airtight closed-form ground truth (Pappus).
+  const double vTorus = 2.0 * sd::kSsiPi * sd::kSsiPi * R * r * r;   // 2π²Rr²
+  const double vSph = 4.0 / 3.0 * sd::kSsiPi * Rs * Rs * Rs;         // 4/3 π Rs³
+  const double vCommonTrue = torusSphereCommonVolume(R, r, Rs);
+  const double vFuseTrue = vTorus + vSph - vCommonTrue;
+  const double vCutTrue = vTorus - vCommonTrue;
+  CC_CHECK(vCommonTrue > 0.0 && vCommonTrue < vTorus);
+
+  // ── COMMON: the tube ∩ ball (inner arc + sphere zone). ──
+  const ntopo::Shape common = nb::ssi_boolean_solid(tor, sph, nb::Op::Common);
+  CC_CHECK(!common.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  CC_CHECK(vCommon > 0.0);                                          // watertight → engine accepts
+  CC_CHECK(std::fabs(vCommon - vCommonTrue) <= 1e-2 * vCommonTrue);
+  CC_CHECK(vCommon <= std::min(vTorus, vSph) + 1e-9);              // common ≤ min(A,B)
+  CC_CHECK(!nb::boolean_solid(tor, sph, nb::Op::Common).isNull());
+  // COMMON is symmetric — reversing the operand order builds the same watertight solid.
+  const ntopo::Shape swapped = nb::ssi_boolean_solid(sph, tor, nb::Op::Common);
+  CC_CHECK(!swapped.isNull());
+  const double vSwapped = watertightMeshVolume(swapped);
+  CC_CHECK(vSwapped > 0.0);
+  CC_CHECK(std::fabs(vSwapped - vCommonTrue) <= 1e-2 * vCommonTrue);
+
+  // ── FUSE = A ∪ B: outer tube bulge + two sphere polar caps. A GROW (hole filled by the ball). ──
+  const ntopo::Shape fuse = nb::ssi_boolean_solid(tor, sph, nb::Op::Fuse);
+  CC_CHECK(!fuse.isNull());
+  const double vFuse = watertightMeshVolume(fuse);
+  CC_CHECK(vFuse > 0.0);
+  CC_CHECK(std::fabs(vFuse - vFuseTrue) <= 1e-2 * vFuseTrue);
+  CC_CHECK(vFuse >= std::max(vTorus, vSph) - 1e-9);               // FUSE grows past either operand
+  CC_CHECK(!nb::boolean_solid(tor, sph, nb::Op::Fuse).isNull());
+
+  // ── CUT = A − B (torus minuend): outer tube ring scooped by the reversed sphere zone. SHRINK. ──
+  const ntopo::Shape cut = nb::ssi_boolean_solid(tor, sph, nb::Op::Cut);
+  CC_CHECK(!cut.isNull());
+  const double vCut = watertightMeshVolume(cut);
+  CC_CHECK(vCut > 0.0);
+  CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
+  CC_CHECK(vCut <= vTorus + 1e-9);                                // CUT shrinks below the minuend
+  CC_CHECK(!nb::boolean_solid(tor, sph, nb::Op::Cut).isNull());
+  // CUT is order-sensitive: sphere − torus is a DIFFERENT topology; the S5-m CUT builder only
+  // handles the TORUS minuend, so sphere − torus declines here → OCCT.
+  CC_CHECK(nb::ssi_boolean_solid(sph, tor, nb::Op::Cut).isNull());
+}
+
+// ── (17) TORUS∩SPHERE HONEST DECLINES: spindle / off-centre / off-axis / non-crossing → OCCT ──
+// The S5-m assembler is the strict RING-torus + centred-sphere (sc=0) two-circle poke-through only.
+// A spindle torus is not recognised; an OFF-CENTRE coaxial sphere (sc≠0 — the general spiric
+// section), an OFF-AXIS sphere, a sphere too small to reach the tube, and a sphere so large it
+// engulfs the inner tube (no proper two-circle crossing) all decline → NULL → OCCT (never faked).
+CC_TEST(torus_sphere_declines_offcentre_offaxis_and_non_crossing) {
+  const ntopo::Shape tor = makeTorus(3.0, 1.0);
+
+  // (a) Off-CENTRE coaxial sphere (centre on the +Z axis but shifted — sc≠0): the general spiric
+  //     section with UNEQUAL seam radii; the symmetric-pose assembler declines. makeSphereY shifts
+  //     the centre along its +Y polar axis, which is NOT the torus +Z axis → also off-axis; either
+  //     way it is not the sc=0 symmetric pose the S5-m builder handles.
+  const ntopo::Shape offCentre = makeSphereY(0.5, 3.0);
+  CC_CHECK(nb::ssi_boolean_solid(tor, offCentre, nb::Op::Common).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(tor, offCentre, nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(tor, offCentre, nb::Op::Cut).isNull());
+
+  // (b) Off-AXIS sphere (centre off the torus axis, perpendicular offset) → transversal spiric.
+  const ntopo::Shape offAxis = makeSphere(0.7, 3.0);  // centre (0.7,0,0) — off the +Z axis
+  CC_CHECK(nb::ssi_boolean_solid(tor, offAxis, nb::Op::Common).isNull());
+
+  // (c) A small centred sphere (Rs=1.5) sits entirely inside the donut hole — ρ*=(9−1+2.25)/6≈1.71
+  //     < R−r=2, so |ρ*−R|=1.29 > r=1 → no proper two-circle crossing → declines for every op.
+  const ntopo::Shape small = makeSphere(0.0, 1.5);
+  CC_CHECK(nb::ssi_boolean_solid(tor, small, nb::Op::Common).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(tor, small, nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(tor, small, nb::Op::Cut).isNull());
+
+  // (d) A large centred sphere (Rs=4.2) engulfs the inner tube — ρ*=(9−1+17.64)/6≈4.27 > R+r=4,
+  //     so |ρ*−R|=1.27 > r=1 → no two-circle crossing → declines.
+  const ntopo::Shape big = makeSphere(0.0, 4.2);
+  CC_CHECK(nb::ssi_boolean_solid(tor, big, nb::Op::Common).isNull());
+}
+
 int main() { return cctest::run_all(); }

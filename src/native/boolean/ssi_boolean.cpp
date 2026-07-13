@@ -2363,7 +2363,7 @@ ConeSphere2Setup coneSphere2Setup(const CurvedSolid& A, const CurvedSolid& B,
 void appendSphereZone(const math::Point3& sphCentre, double Rs,
                       const std::vector<math::Point3>& ringLo,
                       const std::vector<math::Point3>& ringHi, VertexPool& pool,
-                      std::vector<topo::Shape>& faces) {
+                      std::vector<topo::Shape>& faces, double outwardSign = 1.0) {
   const int n = static_cast<int>(ringLo.size());
   if (n < 3 || static_cast<int>(ringHi.size()) != n) return;
   // Rows from the polar half-angle spanned by the zone at the sphere centre + kCapSagitta.
@@ -2396,7 +2396,8 @@ void appendSphereZone(const math::Point3& sphCentre, double Rs,
       const math::Point3 c = rowPt(r + 1, j), dd = rowPt(r + 1, i);
       const math::Point3 ctr{(a.x + b.x + c.x + dd.x) / 4, (a.y + b.y + c.y + dd.y) / 4,
                              (a.z + b.z + c.z + dd.z) / 4};
-      const math::Vec3 ref{ctr.x - sphCentre.x, ctr.y - sphCentre.y, ctr.z - sphCentre.z};  // outward radial
+      const math::Vec3 ref{(ctr.x - sphCentre.x) * outwardSign, (ctr.y - sphCentre.y) * outwardSign,
+                           (ctr.z - sphCentre.z) * outwardSign};  // ±radial (outward / reversed)
       pushPlanarTri(a, b, c, ref, pool, faces);
       pushPlanarTri(a, c, dd, ref, pool, faces);
     }
@@ -3268,6 +3269,282 @@ topo::Shape buildTorusCylFuse(const CurvedSolid& A, const CurvedSolid& B,
   return topo::ShapeBuilder::makeSolid({shell});
 }
 
+// ═══ S5-m — COAXIAL TORUS ∩ SPHERE (COMMON / FUSE / CUT) ═════════════════════════
+// The second TORUS-family pair (after the S5-l torus∩cylinder). A ring torus (major R,
+// minor r, axis = frame Z, centre O) and a sphere (radius Rs) whose centre sits ON the
+// torus axis AT THE TORUS CENTRE (the CLEANEST-oracle coaxial pose — a fully SYMMETRIC
+// two-circle poke-through). In the meridian (ρ,z) plane the tube is the disk of radius r
+// centred at (R,0); the sphere is the circle ρ²+z²=Rs². The two curves meet at the SAME
+// radius ρ* = (R²−r²+Rs²)/(2R) and z = ±z0, z0 = √(r²−(ρ*−R)²) — TWO seam circles of equal
+// radius ρ* at axial stations z=±z0 (exactly like the S5-l cylinder chord, but the seam
+// radius is derived from the sphere, not a cylinder). For |z| ≤ z0 the sphere arc lies
+// INSIDE the tube walls; for |z| > z0 the tube slice is entirely OUTSIDE the ball.
+//
+// Every boolean is a SOLID OF REVOLUTION welded from the S5-e…l machinery through one
+// VertexPool — the revolved tube arcs (appendTubeArc, S5-l), the sphere ZONE between the
+// two seam rings (appendSphereZone, S5-h/i), and the two sphere polar CAPS beyond the
+// seams (appendSphereCap, S5-c). The tube-arc topology is IDENTICAL to S5-l torus∩cylinder
+// (COMMON = inner arc; CUT = outer arc); only the CYLINDER chord band becomes the SPHERE
+// zone/caps (a straight ρ=Rc ruling → the bulging sphere arc).
+//
+// CLEANEST-ORACLE choice (SSI-ROADMAP §S5): all volumes are AIRTIGHT closed forms —
+//   V_torus  = 2π² R r²                                     (Pappus, full tube)
+//   V_common = 2π·[ (Rs²−R²−r²)·z0 + R·(z0·√(r²−z0²) + r²·asin(z0/r)) ]
+//              (Pappus of the ρ ≤ rho_s(z) tube segment; d²=r²−z², the −z²/+z² terms cancel)
+//   V_cut(T−S)  = V_torus − V_common                        (a SHRINK)
+//   V_fuse(T∪S) = V_torus + V_sphere − V_common             (a GROW; hole filled by the ball)
+// The generic booleanResultVerified drives FUSE/CUT off the native COMMON as V(A∩B); the
+// engine's ssiCurvedBooleanVerified S5-m arm additionally checks COMMON against this closed
+// form directly.
+//
+// HONEST SCOPE. Ring torus only (R > r > 0; a spindle R ≤ r declines at recognition). The
+// sphere centre must sit ON the torus axis AND at the torus centre (sc = 0 — the symmetric
+// pose whose two seams share one radius); an off-centre coaxial sphere (sc ≠ 0, unequal
+// seam radii — the general spiric section) and a non-coaxial / off-axis sphere both decline
+// → OCCT. A proper two-circle crossing requires |ρ*−R| < r strictly (a tangent / clear /
+// engulfing sphere declines). A sphere-minuend (sphere − torus) CUT declines → OCCT.
+struct TorusSphereSetup {
+  bool ok = false;
+  const CurvedSolid* tor = nullptr;
+  const CurvedSolid* sph = nullptr;
+  math::Point3 O;          ///< TORUS centre (= sphere centre) on the shared axis
+  math::Vec3 X, Y, zc;     ///< torus frame basis (zc = shared axis)
+  double R = 0.0, r = 0.0;  ///< torus major / minor radius
+  double Rs = 0.0;          ///< sphere radius
+  double rhoStar = 0.0;     ///< seam circle radius (= (R²−r²+Rs²)/(2R))
+  double v0 = 0.0;          ///< tube minor angle of the +z seam (cos v0 = (ρ*−R)/r)
+  double z0 = 0.0;          ///< +z seam axial station (= √(r²−(ρ*−R)²))
+  int N = 0;                ///< azimuth sample count (seam-chord bounded)
+  int M = 0;                ///< tube-arc subdivision (minor-angle chord bounded)
+
+  std::vector<math::Point3> ring(double rho, double s) const {
+    std::vector<math::Point3> out(N);
+    for (int i = 0; i < N; ++i) {
+      const double u = kSsiTwoPi * i / N;
+      const double cx = rho * std::cos(u), cy = rho * std::sin(u);
+      out[i] = math::Point3{O.x + X.x * cx + Y.x * cy + zc.x * s,
+                            O.y + X.y * cx + Y.y * cy + zc.y * s,
+                            O.z + X.z * cx + Y.z * cy + zc.z * s};
+    }
+    return out;
+  }
+  std::pair<double, double> tube(double v) const {
+    return {R + r * std::cos(v), r * std::sin(v)};
+  }
+  math::Point3 axisPt(double s) const {
+    return math::Point3{O.x + zc.x * s, O.y + zc.y * s, O.z + zc.z * s};
+  }
+  Seam seamRing(double rho, double s) const {
+    Seam out;
+    out.closed = true;
+    out.pts = ring(rho, s);
+    return out;
+  }
+};
+
+TorusSphereSetup torusSphereSetup(const CurvedSolid& A, const CurvedSolid& B,
+                                  const std::vector<Seam>& seams) {
+  TorusSphereSetup st;
+  if (seams.empty()) return st;  // need ≥1 traced seam to cross-check
+
+  const CurvedSolid* torPtr = nullptr;
+  const CurvedSolid* sphPtr = nullptr;
+  for (const CurvedSolid* s : {&A, &B}) {
+    if (s->kind == CurvedKind::Torus) torPtr = s;
+    else if (s->kind == CurvedKind::Sphere) sphPtr = s;
+  }
+  if (!torPtr || !sphPtr) return st;
+  const CurvedSolid& tor = *torPtr;
+  const CurvedSolid& sph = *sphPtr;
+
+  const math::Vec3 zc = tor.frame.z.vec();
+  const math::Point3 O = tor.frame.origin;
+  // Sphere centre must be ON the torus axis AND at the torus centre (the symmetric pose):
+  // the offset vector from the torus centre to the sphere centre must be ~zero.
+  const math::Vec3 d{sph.frame.origin.x - O.x, sph.frame.origin.y - O.y, sph.frame.origin.z - O.z};
+  if (math::norm(d) > 1e-6) return st;  // off-centre coaxial / off-axis → OCCT (never faked)
+
+  const double R = tor.radius, r = tor.minorRadius, Rs = sph.radius;
+  if (!(r > 1e-9) || !(R > r + 1e-9) || !(Rs > 1e-9)) return st;
+  const double rhoStar = (R * R - r * r + Rs * Rs) / (2.0 * R);
+  if (!(rhoStar > 1e-9)) return st;  // seam radius must be positive
+  const double dChord = rhoStar - R;
+  // Proper two-circle poke-through: the seam radius sits strictly between the tube walls.
+  if (!(std::fabs(dChord) < r - 1e-6)) return st;  // tangent / clear / engulfing → OCCT
+  const double cosv = dChord / r;
+  const double v0 = std::acos(std::clamp(cosv, -1.0, 1.0));  // ∈ (0, π)
+  const double z0 = r * std::sin(v0);                        // = √(r² − dChord²)
+  if (!(z0 > 1e-6)) return st;
+
+  // Cross-check EVERY traced seam against ONE of the two analytic circles (station ±z0,
+  // radius ρ*) — never trust a missing / mis-placed loop.
+  auto sOf = [&](const math::Point3& p) {
+    return math::dot(math::Vec3{p.x - O.x, p.y - O.y, p.z - O.z}, zc);
+  };
+  for (const Seam& seam : seams) {
+    if (!seam.closed || seam.pts.size() < 8) return st;
+    math::Point3 c{0, 0, 0};
+    for (const auto& p : seam.pts) { c.x += p.x; c.y += p.y; c.z += p.z; }
+    const double ns = static_cast<double>(seam.pts.size());
+    c.x /= ns; c.y /= ns; c.z /= ns;
+    double rhoTr = 0.0;
+    for (const auto& p : seam.pts) {
+      const math::Vec3 w{p.x - c.x, p.y - c.y, p.z - c.z};
+      rhoTr += math::norm(w - zc * math::dot(w, zc));
+    }
+    rhoTr /= ns;
+    const double sTr = sOf(c);
+    const bool matchLo = std::fabs(sTr + z0) < 1e-3 && std::fabs(rhoTr - rhoStar) < 1e-3;
+    const bool matchHi = std::fabs(sTr - z0) < 1e-3 && std::fabs(rhoTr - rhoStar) < 1e-3;
+    if (!matchLo && !matchHi) return st;  // traced seam matches neither analytic circle → OCCT
+  }
+
+  // Azimuth (N) + tube-arc (M) resolution, chord-bounded so a planar facet's sagitta off
+  // the true surface stays under the mesh deflection (matches the S5-l torus∩cylinder
+  // discretisation exactly).
+  const double kFacetSag = 0.004;
+  const double chordA = std::sqrt(std::max(8.0 * kFacetSag * rhoStar, 1e-12));
+  st.N = std::clamp(static_cast<int>(std::ceil(kSsiTwoPi * rhoStar / chordA)), 32, 200);
+  const double chordM = std::sqrt(std::max(8.0 * kFacetSag * r, 1e-12));
+  st.M = std::clamp(static_cast<int>(std::ceil(kSsiTwoPi * r / chordM)), 24, 160);
+  st.tor = torPtr;
+  st.sph = sphPtr;
+  st.O = O;
+  st.X = tor.frame.x.vec();
+  st.Y = tor.frame.y.vec();
+  st.zc = zc;
+  st.R = R;
+  st.r = r;
+  st.Rs = Rs;
+  st.rhoStar = rhoStar;
+  st.v0 = v0;
+  st.z0 = z0;
+  st.ok = true;
+  return st;
+}
+
+// The revolved tube arc between minor angles vA→vB for a TorusSphereSetup (the S5-l
+// appendTubeArc keys off TorusCylSetup; the geometry is identical — a revolved tube band
+// oriented by the true tube-outward reference radiating from the tube-centre circle).
+void appendTorusSphereTubeArc(const TorusSphereSetup& s, double vA, double vB,
+                              VertexPool& pool, std::vector<topo::Shape>& faces) {
+  const int m = s.M;
+  auto tubeCentreAt = [&](int i) {
+    const double u = kSsiTwoPi * i / s.N;
+    const double cx = s.R * std::cos(u), cy = s.R * std::sin(u);
+    return math::Point3{s.O.x + s.X.x * cx + s.Y.x * cy, s.O.y + s.X.y * cx + s.Y.y * cy,
+                        s.O.z + s.X.z * cx + s.Y.z * cy};
+  };
+  std::vector<math::Point3> prev;
+  for (int k = 0; k <= m; ++k) {
+    const double v = vA + (vB - vA) * (static_cast<double>(k) / m);
+    const auto [rho, z] = s.tube(v);
+    std::vector<math::Point3> cur = s.ring(rho, z);
+    if (k > 0) {
+      const int n = s.N;
+      for (int i = 0; i < n; ++i) {
+        const int j = (i + 1) % n;
+        const math::Point3 tc = tubeCentreAt(i);
+        const math::Point3 mid{(prev[i].x + prev[j].x + cur[j].x + cur[i].x) / 4,
+                               (prev[i].y + prev[j].y + cur[j].y + cur[i].y) / 4,
+                               (prev[i].z + prev[j].z + cur[j].z + cur[i].z) / 4};
+        const math::Vec3 out{mid.x - tc.x, mid.y - tc.y, mid.z - tc.z};
+        pushPlanarTri(prev[i], prev[j], cur[j], out, pool, faces);
+        pushPlanarTri(prev[i], cur[j], cur[i], out, pool, faces);
+      }
+    }
+    prev = std::move(cur);
+  }
+}
+
+// Cap ring-count for a torus∩sphere polar cap (mirrors cylSphereCapRings: polar half-angle
+// at the sphere centre × sqrt(Rs/(2·kCapSagitta))).
+int torusSphereCapRings(const TorusSphereSetup& s, const std::vector<math::Point3>& ring,
+                        const math::Point3& apex) {
+  const math::Vec3 aDir{apex.x - s.O.x, apex.y - s.O.y, apex.z - s.O.z};
+  double theta = 0.0;
+  for (const auto& p : ring) {
+    const math::Vec3 sDir{p.x - s.O.x, p.y - s.O.y, p.z - s.O.z};
+    const double den = std::max(math::norm(aDir) * math::norm(sDir), 1e-12);
+    theta = std::max(theta, std::acos(std::clamp(math::dot(aDir, sDir) / den, -1.0, 1.0)));
+  }
+  return std::clamp(
+      static_cast<int>(std::ceil(std::max(theta, 1e-6) * std::sqrt(s.Rs / (2.0 * kCapSagitta)))), 4,
+      48);
+}
+
+// buildTorusSphereCommon(A,B) = COMMON of the coaxial torus∩sphere: the tube ∩ ball — the
+// INNER tube arc (v ∈ [v0, 2π−v0], through the inner equator ρ = R−r) + the SPHERE ZONE
+// between the two seam rings (the bulging sphere arc ρ = √(Rs²−z²), replacing the S5-l
+// cylinder chord band). Watertight closed surface of revolution.
+topo::Shape buildTorusSphereCommon(const CurvedSolid& A, const CurvedSolid& B,
+                                   const std::vector<Seam>& seams) {
+  const TorusSphereSetup s = torusSphereSetup(A, B, seams);
+  if (!s.ok) return {};
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  // Inner tube arc from the +z seam (v0) through the inner equator (π) to the −z seam.
+  appendTorusSphereTubeArc(s, s.v0, kSsiTwoPi - s.v0, pool, faces);
+  // Sphere zone ρ = √(Rs²−z²) from the −z seam ring up to the +z seam ring (outward radial).
+  const std::vector<math::Point3> ringLo = s.ring(s.rhoStar, -s.z0);
+  const std::vector<math::Point3> ringHi = s.ring(s.rhoStar, s.z0);
+  appendSphereZone(s.O, s.Rs, ringLo, ringHi, pool, faces, /*outwardSign=*/1.0);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildTorusSphereCut(A,B) = A − B with TORUS the minuend: the tube ∖ ball — the OUTER tube
+// arc (v ∈ [−v0, v0], through the outer equator ρ = R+r, covering the pole-region tube where
+// |z| > z0) + the SPHERE ZONE REVERSED (inward normal, bounding the carved cavity). A SHRINK,
+// one closed ring-of-revolution component. A sphere-minuend (sphere − torus) declines → OCCT.
+topo::Shape buildTorusSphereCut(const CurvedSolid& A, const CurvedSolid& B,
+                                const std::vector<Seam>& seams) {
+  const TorusSphereSetup s = torusSphereSetup(A, B, seams);
+  if (!s.ok) return {};
+  if (A.kind != CurvedKind::Torus) return {};  // order-sensitive: torus must be the minuend
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  // Outer tube arc from the −z seam (−v0) through the outer equator (0) to the +z seam (v0).
+  appendTorusSphereTubeArc(s, -s.v0, s.v0, pool, faces);
+  // Sphere zone REVERSED (inward radial) between the two seam rings: the scooped cavity wall.
+  const std::vector<math::Point3> ringLo = s.ring(s.rhoStar, -s.z0);
+  const std::vector<math::Point3> ringHi = s.ring(s.rhoStar, s.z0);
+  appendSphereZone(s.O, s.Rs, ringLo, ringHi, pool, faces, /*outwardSign=*/-1.0);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildTorusSphereFuse(A,B) = A ∪ B: the OUTER tube arc bulge (v ∈ [−v0, v0], ρ > ρ*, outside
+// the ball) + the TWO SPHERE POLAR CAPS (each seam ring out to its pole, the sphere surface
+// OUTSIDE the tube). The ball fills the donut hole and the mid-band, so the union is simply
+// connected (no inner hole). A GROW. V = V_torus + V_sphere − V_common.
+topo::Shape buildTorusSphereFuse(const CurvedSolid& A, const CurvedSolid& B,
+                                 const std::vector<Seam>& seams) {
+  const TorusSphereSetup s = torusSphereSetup(A, B, seams);
+  if (!s.ok) return {};
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  // Outer tube-arc bulge (−v0 → 0 → v0), sharing the two seam rings.
+  appendTorusSphereTubeArc(s, -s.v0, s.v0, pool, faces);
+  // Two sphere polar caps beyond the seams: the +z0 seam ring out to the +Rs pole, the −z0
+  // seam ring out to the −Rs pole (apexes on the axis, outward radial normal).
+  const Seam seamLo = s.seamRing(s.rhoStar, -s.z0);
+  const Seam seamHi = s.seamRing(s.rhoStar, s.z0);
+  const math::Point3 poleP = s.axisPt(s.Rs);
+  const math::Point3 poleM = s.axisPt(-s.Rs);
+  // apex = the sphere pole; appendSphereCap picks the surface point nearest otherCentre
+  // (outer=false). Pass otherCentre = the pole itself so the apex resolves to that pole.
+  appendSphereCap(*s.sph, poleP, seamHi, torusSphereCapRings(s, seamHi.pts, poleP), pool, faces,
+                  /*outer=*/false, /*reversed=*/false);
+  appendSphereCap(*s.sph, poleM, seamLo, torusSphereCapRings(s, seamLo.pts, poleM), pool, faces,
+                  /*outer=*/false, /*reversed=*/false);
+  if (faces.size() < 6) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
 // ── The COMMON of a THROUGH-DRILL transversal pair (design.md §1-4): one operand (the
 // PIERCED wall, whose two seams are full-circle rim loops) is drilled clean through by
 // the other (the PIERCING wall, whose two seams are local patches). The common region
@@ -3292,6 +3569,12 @@ topo::Shape buildTorusCylFuse(const CurvedSolid& A, const CurvedSolid& B,
 topo::Shape buildCommon(const CurvedSolid& A, const CurvedSolid& B,
                         const std::vector<Seam>& seams) {
   if (seams.size() != 2) return {};
+  // A TORUS is never a through-drill piercer/pierced wall — a coaxial torus∩{cyl,sphere}
+  // two-circle poke-through has its OWN dedicated S5-l/m assembler. The sphere's polar (u,v)
+  // parametrisation can make one of the two torus-latitude seam circles read NON-full on the
+  // sphere (a tilted loop), spuriously matching the "one operand pierced" through-drill gate.
+  // Decline any torus pair here so the S5-l/m builders (dispatched below) own it.
+  if (A.kind == CurvedKind::Torus || B.kind == CurvedKind::Torus) return {};
   for (const Seam& s : seams)
     if (!s.closed || s.pts.size() < 4) return {};
 
@@ -3920,6 +4203,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-l: COAXIAL torus∩cylinder COMMON (inner tube arc + cylinder chord band).
       const topo::Shape torCyl = buildTorusCylCommon(*csA, *csB, seams);
       if (!torCyl.isNull()) return torCyl;
+      // S5-m: COAXIAL torus∩sphere COMMON (inner tube arc + sphere zone between the seams).
+      const topo::Shape torSph = buildTorusSphereCommon(*csA, *csB, seams);
+      if (!torSph.isNull()) return torSph;
       // S5-j: HOURGLASS (apex-to-apex) coaxial cone∩cone COMMON (bicone; apex-terminated min profile).
       const topo::Shape hgCommon = buildHourglassConeConeCommon(*csA, *csB, seams);
       if (!hgCommon.isNull()) return hgCommon;
@@ -3951,6 +4237,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-l: COAXIAL torus∩cylinder FUSE (outer tube bulge + cyl wall outside the tube + discs).
       const topo::Shape torCyl = buildTorusCylFuse(*csA, *csB, seams);
       if (!torCyl.isNull()) return torCyl;
+      // S5-m: COAXIAL torus∩sphere FUSE (outer tube bulge + two sphere polar caps).
+      const topo::Shape torSph = buildTorusSphereFuse(*csA, *csB, seams);
+      if (!torSph.isNull()) return torSph;
       // S5-g: coaxial cone(frustum)∩cone(frustum) FUSE (max-radius profile of revolution).
       return buildConeConeFuse(*csA, *csB, seams);
     }
@@ -3979,6 +4268,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-l: COAXIAL torus∩cylinder CUT (torus − cyl: outer tube arc + reversed cylinder bore).
       const topo::Shape torCyl = buildTorusCylCut(*csA, *csB, seams);
       if (!torCyl.isNull()) return torCyl;
+      // S5-m: COAXIAL torus∩sphere CUT (torus − sphere: outer tube arc + reversed sphere zone).
+      const topo::Shape torSph = buildTorusSphereCut(*csA, *csB, seams);
+      if (!torSph.isNull()) return torSph;
       // S5-j: HOURGLASS (apex-to-apex) coaxial cone∩cone CUT (conical shell to a full A-end disc).
       const topo::Shape hgCut = buildHourglassConeConeCut(*csA, *csB, seams);
       if (!hgCut.isNull()) return hgCut;

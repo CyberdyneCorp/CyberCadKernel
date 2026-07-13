@@ -513,6 +513,34 @@ CurvedCheck ssiCurvedBooleanVerified(const ntopo::Shape& result, const ntopo::Sh
         const double tol = std::max(1e-2 * expected, 1e-6);  // deflection-bounded curved mesh
         return {true, std::fabs(vr - expected) <= tol};
     }
+
+    // ── S5-m arm: COAXIAL torus∩sphere COMMON (two analytic circle seams). ──
+    // The sphere centre sits ON the torus axis AT the torus centre (the symmetric pose). In
+    // the meridian (ρ,z) plane the tube is the disk of radius r centred at (R,0); the sphere
+    // is the circle ρ²+z²=Rs². Both meet at the SAME radius ρ* = (R²−r²+Rs²)/(2R) and z=±z0,
+    // z0=√(r²−(ρ*−R)²). The COMMON is the ρ ≤ √(Rs²−z²) part of the tube, revolved. By Pappus
+    // V = 2π·[ (Rs²−R²−r²)·z0 + R·(z0·√(r²−z0²) + r²·asin(z0/r)) ] (the −z²/+z² terms cancel).
+    // Airtight closed form; mirrors the buildTorusSphereCommon geometry. Applicable only for
+    // the clean symmetric two-circle poke-through.
+    if (tor && sph) {
+        const nm::Vec3 zc = tor->frame.z.vec();
+        const nm::Vec3 d = sph->frame.origin - tor->frame.origin;
+        if (nm::norm(d) > 1e-6) return {};  // sphere not at the torus centre → not the clean pose
+        const double R = tor->radius, r = tor->minorRadius, Rs = sph->radius;
+        if (!(r > 1e-9) || !(R > r + 1e-9) || !(Rs > 1e-9)) return {};
+        const double rhoStar = (R * R - r * r + Rs * Rs) / (2.0 * R);
+        if (!(rhoStar > 1e-9)) return {};
+        const double dc = rhoStar - R;
+        if (!(std::fabs(dc) < r - 1e-6)) return {};  // not a proper two-circle crossing
+        const double z0 = std::sqrt(std::max(r * r - dc * dc, 0.0));
+        const double innerInt = z0 * std::sqrt(std::max(r * r - z0 * z0, 0.0)) +
+                                r * r * std::asin(std::clamp(z0 / r, -1.0, 1.0));
+        const double expected = 2.0 * cv::kPi * ((Rs * Rs - R * R - r * r) * z0 + R * innerInt);
+        const double vr = watertightVolume(result);
+        if (vr < 0.0) return {true, false};  // not watertight
+        const double tol = std::max(1e-2 * expected, 1e-6);  // deflection-bounded curved mesh
+        return {true, std::fabs(vr - expected) <= tol};
+    }
     return {};
 #else
     (void)result; (void)a; (void)b; (void)op;

@@ -1559,6 +1559,44 @@ subdivision** for the placement-miss loci — both genuine person-decade-moat wo
 DISAGREED-safe slice. The split-linkage lever (distance and now tangent-gated) is EXHAUSTED. No gate was
 loosened, no locus fabricated, no single loop over-split; DISAGREED stayed 0 throughout.
 
+### SSI-SUBDIV — feature-adaptive initial subdivision recovers the placement-miss locus · ✅ LANDED (decline 9.0%→4.9%, idx=43 recovered, multi-branch 8→2; DISAGREED==0; small-loop 5→5 no over-split; SSI-CAP partition byte-unchanged)
+
+The SSI-RECALL map above localized one of the residual co-resident misses (`idx=43`, seed `0f0f`,
+`candidates=30 421, clusters=2, seeds=2`, NO cap hit) as a **subdivision/refine PLACEMENT miss** —
+a 3rd distinct locus that **never produced a clustered candidate** because the uniform subdivision
+leaf was too coarse near it. This track closed that specific locus at the S2 layer (`seeding.cpp`
+only; `src/native` stays OCCT-free; `cc_*` byte-unchanged; SSI-CAP's cap-retention / partition /
+distinct-locus-split code BYTE-UNCHANGED — the lever is strictly UPSTREAM of the split).
+
+- **Mechanism (host replay of the exact fuzz pose + `SEED-DIAG`).** The pair (B-spline 6×5 ∩
+  rational NURBS 6×6, `F_MULTIBRANCH`) hosts THREE co-resident transversal loci; the dense-tier
+  scale-adaptive uniform leaf is 1/128. At that leaf the intersection collapses into `clusters=2`
+  (`cid=0` a dense ~30 k-seed pile emitting 1, `cid=1` emitting 1) → 2 seeds. The 3rd locus shares
+  the coarse leaf with the dominant locus and never becomes its own param-adjacency cluster. Probes
+  isolated the cause: **tightening the clustering `epsFrac` alone does NOT separate them** (still
+  `clusters=2`, `candidates=30 421`); only a **finer LEAF** does — refining the overlapping leaves
+  one level finer (leaf 1/128 → 1/256, `candidates 30 421 → 60 111`) yields `clusters=3, seeds=3`.
+- **The fix (additive, DISAGREED-safe): feature-adaptive initial subdivision.** New
+  `SeedOptions.adaptiveSubdivision` (default ON, freeform↔freeform only — same gate as scale-adaptive
+  seeding, so every elementary/mixed/S1/S4-f contract is byte-identical). At a would-be uniform leaf
+  whose two patch AABBs OVERLAP (the caller already ruled out disjoint), `featureWarrantsFinerLeaf`
+  refines it ONE level below the uniform leaf toward `adaptiveMinFrac` (1/256); `adaptiveOverlapFrac`
+  (default 1.0) is an optional shallow guard. Purely ADDITIVE: it only adds candidate regions in
+  overlapping (feature) cells; `refineRegion` still gates every seed on both surfaces ≤ `onSurfTol`
+  AND transversal (‖n₁×n₂‖ ≥ `tangentSinTol`), so it can only surface a REAL co-resident locus the
+  coarse leaf hid — it NEVER fabricates a locus, widens a tolerance, or over-splits (an extra
+  candidate on an already-found locus refines to the same seed; the distinct-locus split / marcher
+  dedup collapses a duplicate). Cost is bounded (~2× candidates on the dense pair only; the
+  `adaptiveMinFrac` floor + `maxDepth` bound recursion).
+- **Measured (freeform fuzzer `0x5515D1FF0F0F`+2, N=48×3).** idx=43 (seed 0f0f) RECOVERED: native
+  now seeds all 3 loci (the recovered seed at x≈−1.095 is on both surfaces ≤ 3e-14 and transversal,
+  sine 0.55). Before → after decline: **AGREED 131/144 (91.0%), DECLINED 13/144 (9.0%)** → **AGREED 137/144 (95.1%), DECLINED 7/144 (4.9%)**, DISAGREED 0 → 0 (bar holds),
+  small-loop bucket UNCHANGED (5 → 5 — no over-split); multi-branch declines 8 → 2 (six placement-miss loci recovered, idx=43 among them). SSI-CAP's recovered cases stay recovered (its code is
+  byte-unchanged). Regression fixture: `seed_freeform_adaptive_subdivision_recovers_third_locus` (the
+  verbatim idx=43 pose — adaptive OFF ⇒ 2 seeds, ON ⇒ 3, each genuine on both surfaces, distinct
+  loci spread across x). Host `test_native_ssi_seeding` 11/11, `test_native_ssi_exact_fuzz`
+  DISAGREED==0.
+
 ## Sequencing & effort
 
 ```

@@ -1390,6 +1390,65 @@ cannot lower the decline further without loosening the gate or fabricating geome
 REFUSES. The densify is a real product improvement (every downstream S5/S6/S7 consumer of a dense
 `TraceSet` curve now gets a tighter fit) and the honest floor is now precisely characterised.
 
+### SSI-RECALL — co-resident split lever is EXHAUSTED (mechanism re-measured) · ✅ HONEST-DECLINE 2026-07-13 (decline HOLDS 9.7%, DISAGREED==0; the residual is UPSTREAM of the split, not a split-linkage merge)
+
+Wave-I / I1 conjectured the 3 genuinely-missed co-resident loci were a **split-linkage** problem —
+"refined seeds chain within `sep`, unrecoverable without risking a single-loop over-split." This
+track **RE-MEASURED that conjecture with a per-cluster `SEED-DIAG` instrument** (env-gated, OCCT-free,
+no `cc_*` change) on the exact `0x5515D1FF0F0F`+2 / N=48×3 base, and it is **WRONG**: the residual is
+NOT a split-linkage merge the distinct-locus split can separate. It is UPSTREAM of the split. A
+curvature/tangent-aware sub-cluster separation was implemented, verified DISAGREED-safe, and measured
+to be a **complete no-op** — the honest evidence for retiring this lever.
+
+- **The attempted approach (genuinely-new, DISAGREED-safe): TANGENT-GATED single-linkage.** The
+  distance-only single-linkage in `splitDistinctLoci` was augmented with a curvature-aware GATE — two
+  seeds unite iff (a) within `sep` in 3D (unchanged) AND (b) the chord between them aligns
+  (`|chord·t| ≥ cosGate`, cos 60°) with BOTH seeds' intersection-loop tangents `t = normalize(nA×nB)`
+  (the SAME tangent the S3 marcher steps along). It is a NECESSARY condition to KEEP a link (AND-ed with
+  distance), so it can only split MORE, never merge → recall-only, DISAGREED-safe by construction (an
+  over-split re-traces the loop and the marcher's `sameLocus`/`retraces` dedup collapses it). All 5 SSI
+  host suites pass with NO assertion change (seeding 10, marching 22, s4f 6, exact_fuzz DISAGREED=0,
+  s4_classification 22).
+- **Measured effect — ZERO.** Freeform-fuzzer decline **HOLDS at 9.7% (14/144), DISAGREED == 0**,
+  histogram **byte-identical** to baseline (near-tangent 0 / multi-branch 9 / small-loop 5), all 14
+  decline anatomies (`traced`/`occtLines`/`genuineMiss`/`genuineOcctOnNat`/`worstMissLen`) unchanged. On
+  a CONSTRUCTED transverse-crossing co-resident pair (flat sheet ∩ saddle → an X of two lines with ⟂
+  tangents) the gate ALSO gave branches=1 in both modes. Because it is provably dead code on every pose
+  measured or constructed — pure hot-path cost (a tangent per retained seed, up to the 65 536 cap) with
+  no recall — it was **REVERTED**, not shipped (prefer the simpler design; do not gold-plate).
+- **THE ACTUAL MECHANISM (`SEED-DIAG`, the sharpened map).** The 3 genuine co-resident misses are
+  upstream of the split in three distinct ways, none a split-linkage merge:
+  - **idx=33 (seed 0f0f), traced=1 / occtLines=2:** `candidates=272 847, clusters=1, seeds=1`, and the
+    ONE cluster **hit the `kMaxSeedsPerCluster = 65 536` cap** (`xversalSeeds=65536, emitted=1`). Both
+    co-resident loci collapse into ONE param-adjacency cluster, and its refined-seed field is TRUNCATED
+    at the cap in candidate-iteration order → the co-resident locus's later leaves are **cap-starved**
+    before the split ever sees them. This is the SAME starvation class E1 raised from 256 to 65 536,
+    but these ultra-dense wavy poses genuinely exceed 65 536 (the E1 note's "a real intersection field
+    never reaches it" fails here).
+  - **idx=5 (seed 10c2), traced=2 / occtLines=3:** `candidates=215 834, clusters=1, seeds=2`, cluster
+    also **capped** (`xversalSeeds=65536, emitted=2`) — the split DID fire (2 seeds), but a 3rd locus is
+    still cap-starved.
+  - **idx=43 (seed 0f0f), traced=2 / occtLines=3:** `candidates=30 421, clusters=2, seeds=2`, NO cap
+    hit (cid=1 held only 53 seeds). A 3rd distinct locus **never produced a clustered candidate** — a
+    subdivision/refine PLACEMENT miss, not a cap or a split problem.
+  - Across the run: **92/144 trials collapse the whole intersection into `clusters=1`**, **113 clusters
+    carry ≥ 10 000 refined seeds, 8 hit the 65 536 cap**, yet only **13 clusters ever `emitted=2` and 1
+    `emitted=3`** — the split machinery works where loci ARE separable; it simply is not the residual's
+    bottleneck.
+
+**Honest conclusion (the corrected SSI-RECALL floor map).** The remaining co-resident misses are NOT a
+split-linkage frontier — no linkage predicate (distance OR curvature/tangent) can recover them, because
+the second locus never reaches the split as a distinct component. It is (a) **`kMaxSeedsPerCluster`
+cap-starvation** on ultra-dense poses whose single param-adjacency cluster hosts > 65 536 refined
+transversal crossings, and (b) a **subdivision/refine placement miss** where a co-resident locus never
+produces a clustered candidate. The next attackable levers are therefore UPSTREAM: a **density-preserving
+retention** when the per-cluster cap is hit (uniform/reservoir thinning so BOTH loci stay represented,
+rather than FIFO truncation — but this interacts with the documented "thinned set leaves arc gaps that
+spuriously split one loop" hazard, so it is not a free bounded slice), and **finer/adaptive initial
+subdivision** for the placement-miss loci — both genuine person-decade-moat work, not a bounded
+DISAGREED-safe slice. The split-linkage lever (distance and now tangent-gated) is EXHAUSTED. No gate was
+loosened, no locus fabricated, no single loop over-split; DISAGREED stayed 0 throughout.
+
 ## Sequencing & effort
 
 ```

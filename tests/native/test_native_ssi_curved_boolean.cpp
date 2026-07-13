@@ -2221,4 +2221,134 @@ CC_TEST(torus_torus_declines_spindle_contained_clear_and_offaxis) {
   CC_CHECK(nb::ssi_boolean_solid(torA, torY, nb::Op::Common).isNull());
 }
 
+// ── (16) TRANSVERSAL (NON-COAXIAL) cone∩sphere COMMON (S5-q) — the FIRST transversal CONE
+// slice ─────────────────────────────────────────────────────────────────────────────────────
+// A cone frustum r(y)=0.5+(y+3)/6 over y∈[-3,3] about world +Y (r goes 0.5→1.5) and a sphere
+// of radius Rs=2 whose centre is DISPLACED off the cone axis by off=0.5 in +X. The cone still
+// pierces the sphere so its wall crosses in TWO disjoint NON-PLANAR closed loops (the cone∩sphere
+// quartic locus — no analytic circle), so S5-q drives the COMMON directly from the S3-traced
+// seams: COMMON = sphere lower cap + cone band + sphere upper cap, every ring the traced
+// non-planar seam. There is no closed-form COMMON volume, so the oracle is a deterministic
+// fine-grid numerical integration of the analytic region (inside the sphere AND the finite cone)
+// — the primary parity oracle for a non-analytic seam. CUT/FUSE honest-decline (the sphere-outer-
+// zone weld between two non-planar seams is the transversal residual, same class as S5-k/S5-p).
+CC_TEST(cone_sphere_transversal_offset_common_watertight_matches_numeric) {
+  const double r0 = 0.5, y0 = -3.0, r1 = 1.5, y1 = 3.0, off = 0.5, Rs = 2.0;
+  const ntopo::Shape cone = makeCone(r0, y0, r1, y1);   // r(y)=0.5+0.5·(y+3)/3, axis +Y
+  const ntopo::Shape sph = makeSphere(off, Rs);         // sphere centred at (off,0,0) — OFF-AXIS
+  CC_CHECK(!cone.isNull() && !sph.isNull());
+
+  const auto csCone = sd::recogniseCurvedSolid(cone);
+  const auto csSph = sd::recogniseCurvedSolid(sph);
+  CC_CHECK(csCone && csSph);
+  if (csCone && csSph) {
+    CC_CHECK(csCone->kind == sd::CurvedKind::Cone);
+    CC_CHECK(csSph->kind == sd::CurvedKind::Sphere);
+    // The trace is TWO fully-transversal CLOSED non-planar loops (pierce-both-ends).
+    const ssi::TraceSet tr = ssi::trace_intersection(csCone->adapter(), csSph->adapter());
+    CC_CHECK(tr.nearTangentGaps == 0);
+    CC_CHECK(tr.branchPoints == 0);
+    CC_CHECK(tr.lines.size() == 2);
+    int closed = 0;
+    for (const ssi::WLine& w : tr.lines)
+      if (w.isClosed()) ++closed;
+    CC_CHECK(closed == 2);
+  }
+
+  // Deterministic numeric COMMON volume (analytic region: inside the sphere AND inside the finite
+  // cone). 200³ midpoint cells → converged to ≪ the 1% curved-parity bar.
+  const double slope = (r1 - r0) / (y1 - y0);
+  const int nx = 200, ny = 200, nz = 200;
+  const double X0 = -2.0, X1 = 3.0, Y0 = y0, Y1 = y1, Z0 = -2.0, Z1 = 2.0;
+  const double cell = (X1 - X0) / nx * (Y1 - Y0) / ny * (Z1 - Z0) / nz;
+  long inside = 0;
+  for (int i = 0; i < nx; ++i) {
+    const double x = X0 + (X1 - X0) * (i + 0.5) / nx;
+    for (int j = 0; j < ny; ++j) {
+      const double y = Y0 + (Y1 - Y0) * (j + 0.5) / ny;
+      const double rr = r0 + slope * (y - y0);
+      const double rr2 = rr * rr;
+      for (int k = 0; k < nz; ++k) {
+        const double z = Z0 + (Z1 - Z0) * (k + 0.5) / nz;
+        const double dx = x - off;
+        if (dx * dx + y * y + z * z <= Rs * Rs && x * x + z * z <= rr2) ++inside;
+      }
+    }
+  }
+  const double vCommonNumeric = inside * cell;
+  CC_CHECK(vCommonNumeric > 10.5 && vCommonNumeric < 12.0);   // ≈ 11.28
+
+  // ── COMMON: watertight native candidate whose volume matches the numeric oracle. ──
+  const ntopo::Shape common = nb::ssi_boolean_solid(cone, sph, nb::Op::Common);
+  CC_CHECK(!common.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  CC_CHECK(vCommon > 0.0);                                    // watertight → engine accepts
+  CC_CHECK(std::fabs(vCommon - vCommonNumeric) <= 1e-2 * vCommonNumeric);
+  const double vSph = 4.0 / 3.0 * sd::kSsiPi * Rs * Rs * Rs;
+  const double vCone = frustumVolume(r0, r1, y1 - y0);
+  CC_CHECK(vCommon <= std::min(vSph, vCone) + 1e-9);          // COMMON ≤ min(A,B)
+  CC_CHECK(!nb::boolean_solid(cone, sph, nb::Op::Common).isNull());
+
+  // COMMON is symmetric — reversing the operand order builds the same watertight solid.
+  const ntopo::Shape swapped = nb::ssi_boolean_solid(sph, cone, nb::Op::Common);
+  CC_CHECK(!swapped.isNull());
+  const double vSwapped = watertightMeshVolume(swapped);
+  CC_CHECK(vSwapped > 0.0);
+  CC_CHECK(std::fabs(vSwapped - vCommonNumeric) <= 1e-2 * vCommonNumeric);
+
+  // CUT / FUSE honest-decline for the transversal pose (the sphere-outer-zone weld between two
+  // non-planar seams is the transversal residual) → NULL → OCCT. Never a leaky solid.
+  CC_CHECK(nb::ssi_boolean_solid(cone, sph, nb::Op::Cut).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(sph, cone, nb::Op::Cut).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(cone, sph, nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(sph, cone, nb::Op::Fuse).isNull());
+}
+
+// ── (17) TRANSVERSAL cone∩sphere REDUCES TO COAXIAL: the offset→0 guarantee ────────────────────
+// As the perpendicular offset → 0 the pose becomes COAXIAL and the S5-h two-circle cone∩sphere
+// assembler (which runs BEFORE S5-q in the dispatch) claims it, reproducing the landed coaxial
+// COMMON; S5-q's transversal setup gates on a strictly-positive offset so it declines the coaxial
+// pose. This test pins that hand-off: the SAME cone with an ON-AXIS sphere yields a watertight
+// COMMON matching a deterministic numeric oracle, distinct from (larger than) the offset COMMON,
+// confirming the reduction boundary is a real hand-off, not a trivial identity.
+CC_TEST(cone_sphere_transversal_reduces_to_coaxial_at_zero_offset) {
+  const double r0 = 0.5, y0 = -3.0, r1 = 1.5, y1 = 3.0, Rs = 2.0;
+  const ntopo::Shape cone = makeCone(r0, y0, r1, y1);
+  const ntopo::Shape sphCoax = makeSphereY(0.0, Rs);   // centre (0,0,0) ON the cone +Y axis → coaxial
+
+  // Numeric coaxial COMMON (sphere centre on the axis → off=0): inside sphere AND cone.
+  const double slope = (r1 - r0) / (y1 - y0);
+  const int nx = 200, ny = 200, nz = 200;
+  const double X0 = -2.0, X1 = 2.0, Y0 = y0, Y1 = y1, Z0 = -2.0, Z1 = 2.0;
+  const double cell = (X1 - X0) / nx * (Y1 - Y0) / ny * (Z1 - Z0) / nz;
+  long inside = 0;
+  for (int i = 0; i < nx; ++i) {
+    const double x = X0 + (X1 - X0) * (i + 0.5) / nx;
+    for (int j = 0; j < ny; ++j) {
+      const double y = Y0 + (Y1 - Y0) * (j + 0.5) / ny;
+      const double rr = r0 + slope * (y - y0);
+      const double rr2 = rr * rr;
+      for (int k = 0; k < nz; ++k) {
+        const double z = Z0 + (Z1 - Z0) * (k + 0.5) / nz;
+        if (x * x + y * y + z * z <= Rs * Rs && x * x + z * z <= rr2) ++inside;
+      }
+    }
+  }
+  const double vCoaxNumeric = inside * cell;   // ≈ 11.75
+
+  const ntopo::Shape coax = nb::ssi_boolean_solid(cone, sphCoax, nb::Op::Common);
+  CC_CHECK(!coax.isNull());                                     // coaxial S5-h owns it
+  const double vCoax = watertightMeshVolume(coax);
+  CC_CHECK(vCoax > 0.0);
+  CC_CHECK(std::fabs(vCoax - vCoaxNumeric) <= 1e-2 * vCoaxNumeric);
+
+  // The coaxial COMMON is DISTINCT from the offset (transversal) COMMON — the offset shrinks the
+  // overlap — so the reduction is a real hand-off, not a trivial identity: they differ measurably.
+  const ntopo::Shape offCommon = nb::ssi_boolean_solid(cone, makeSphere(0.5, Rs), nb::Op::Common);
+  CC_CHECK(!offCommon.isNull());
+  const double vOff = watertightMeshVolume(offCommon);
+  CC_CHECK(vOff > 0.0);
+  CC_CHECK(vCoax - vOff > 1e-2);   // coaxial overlap strictly larger than the offset overlap
+}
+
 int main() { return cctest::run_all(); }

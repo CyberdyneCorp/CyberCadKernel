@@ -197,6 +197,20 @@ ntopo::Shape makeSphere(double r, double cy) {
   return ncst::build_revolution_profile({arc}, ax, 2.0 * kPi);
 }
 
+// A native sphere of radius r whose centre is DISPLACED off the +Y axis by cx in +X — the
+// transversal (non-coaxial) pose. The meridian arc (centre (cx,0)) is revolved about a +Y axis
+// THROUGH x=cx (so the arc centre lies ON that axis → a TRUE Sphere surface centred at (cx,0,0)).
+ntopo::Shape makeSphereOffX(double r, double cx) {
+  ncst::ProfileSegment arc;
+  arc.kind = 1;  // arc
+  arc.cx = cx; arc.cy = 0.0; arc.r = r;
+  arc.x0 = cx; arc.y0 = -r; arc.x1 = cx; arc.y1 = r;
+  arc.a0 = -kPi / 2.0; arc.a1 = kPi / 2.0;
+  ncst::RevolveAxis ax;  // +Y axis through x=cx
+  ax.ax = cx; ax.ay = 0.0; ax.adx = 0.0; ax.ady = 1.0;
+  return ncst::build_revolution_profile({arc}, ax, 2.0 * kPi);
+}
+
 // A native cone/frustum solid: a slanted line-segment profile (r0 at y0 → r1 at y1)
 // revolved a full turn about world +Y → a TRUE Cone wall + disc caps.
 ntopo::Shape makeCone(double r0, double y0, double r1, double y1) {
@@ -334,6 +348,11 @@ TopoDS_Shape occtBox(double x0, double y0, double x1, double y1, double dz) {
 }
 TopoDS_Shape occtSphere(double r, double cy) {
   return BRepPrimAPI_MakeSphere(gp_Pnt(0.0, cy, 0.0), r).Shape();
+}
+// A sphere whose centre is DISPLACED off the +Y (cone/cyl) axis by cx in +X — the transversal
+// (non-coaxial) pose. Matches makeSphereOffX.
+TopoDS_Shape occtSphereOffX(double r, double cx) {
+  return BRepPrimAPI_MakeSphere(gp_Pnt(cx, 0.0, 0.0), r).Shape();
 }
 // A cone about world +Y: base radius r0 at y0, top radius r1 at y1.
 TopoDS_Shape occtCone(double r0, double y0, double r1, double y1) {
@@ -763,6 +782,26 @@ int main() {
     pc.nativeB = makeCyl(2, 3.0, 0.0, 0.6, -2.0, 2.0);   // Z axis, offset x=3, Rc=0.6
     pc.occtA = occtTorus(3.0, 1.0);
     pc.occtB = occtCyl(2, 3.0, 0.0, 0.6, -2.0, 2.0);
+    pc.relTol = 2e-2;
+    probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
+    runPair(pc);
+  }
+
+  // ── (16) TRANSVERSAL (NON-COAXIAL) CONE ∩ SPHERE — the first transversal CONE slice (S5-q)
+  // A cone frustum r(y)=0.5→1.5 over y∈[−3,3] about +Y and a sphere Rs=2 whose centre is DISPLACED
+  // off the cone axis by 0.5 in +X. Non-coaxial → the two seams are NON-PLANAR closed loops (the
+  // cone∩sphere quartic locus, no analytic circle), driven directly from the S3 trace. COMMON
+  // (sphere caps + cone band) is a NATIVE PASS matching BRepAlgoAPI_Common on volume/area/watertight
+  // — the primary OCCT-parity oracle (DISAGREED=0, watertight, ΔV in band) for the non-analytic
+  // seam. CUT / FUSE honest-decline (the sphere-outer-zone weld between two non-planar seams is the
+  // transversal residual, exactly the S5-k/S5-p class) → OCCT fall-back (a valid, closed solid).
+  {
+    PairCase pc;
+    pc.pairName = "cone=sphere(transversal)";
+    pc.nativeA = makeCone(0.5, -3.0, 1.5, 3.0);
+    pc.nativeB = makeSphereOffX(2.0, 0.5);   // Rs=2, centre (0.5,0,0) — off the cone +Y axis
+    pc.occtA = occtCone(0.5, -3.0, 1.5, 3.0);
+    pc.occtB = occtSphereOffX(2.0, 0.5);
     pc.relTol = 2e-2;
     probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
     runPair(pc);

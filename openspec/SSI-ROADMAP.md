@@ -576,7 +576,7 @@ S4-f DETECTS + REPORTS + traces-through, it does not repair topology.
 
 Archived change `openspec/changes/archive/2026-07-05-add-native-ssi-s4f-completeness`.
 
-### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g/h/i/j landed + S5-k FIRST TRANSVERSAL (non-coaxial) slice + S5-l/m/n/o TORUS surface family (CONE surface family opened — coaxial cone∩cylinder, single- AND two-circle cone∩sphere, coaxial cone∩cone (frustum AND apex-to-apex hourglass), AND two-circle cylinder∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; S5-k lands the FIRST non-coaxial pose — the offset cylinder∩sphere COMMON from a NON-PLANAR traced seam; S5-l opens the TORUS family — coaxial torus∩cylinder COMMON/FUSE/CUT COMPLETE 3/3 native; S5-m extends it — coaxial torus∩sphere (sphere at torus centre) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-n extends it again — coaxial torus∩cone (oblique-chord generalisation of S5-l) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-o closes the family with the FIRST curved∩curved pair where BOTH operands are tori — coaxial torus∩torus COMMON/FUSE/CUT COMPLETE 3/3 native; S5-p lands the SECOND transversal (non-coaxial) slice and the FIRST transversal TORUS pair — the offset (axis-parallel) torus∩cylinder COMMON from a NON-PLANAR traced seam (CUT/FUSE honest-decline, the same two-non-planar-seam residual as S5-k); ~months for full coverage)
+### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g/h/i/j landed + S5-k FIRST TRANSVERSAL (non-coaxial) slice + S5-l/m/n/o TORUS surface family (CONE surface family opened — coaxial cone∩cylinder, single- AND two-circle cone∩sphere, coaxial cone∩cone (frustum AND apex-to-apex hourglass), AND two-circle cylinder∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; S5-k lands the FIRST non-coaxial pose — the offset cylinder∩sphere COMMON from a NON-PLANAR traced seam; S5-l opens the TORUS family — coaxial torus∩cylinder COMMON/FUSE/CUT COMPLETE 3/3 native; S5-m extends it — coaxial torus∩sphere (sphere at torus centre) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-n extends it again — coaxial torus∩cone (oblique-chord generalisation of S5-l) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-o closes the family with the FIRST curved∩curved pair where BOTH operands are tori — coaxial torus∩torus COMMON/FUSE/CUT COMPLETE 3/3 native; S5-p lands the SECOND transversal (non-coaxial) slice and the FIRST transversal TORUS pair — the offset (axis-parallel) torus∩cylinder COMMON from a NON-PLANAR traced seam (CUT/FUSE honest-decline, the same two-non-planar-seam residual as S5-k); S5-q lands the THIRD transversal (non-coaxial) slice and the FIRST transversal CONE pair — the offset cone∩sphere COMMON from a NON-PLANAR traced seam (CUT/FUSE honest-decline, the same two-non-planar-seam residual as S5-k/S5-p); ~months for full coverage)
 Use SSI curves to **split** the curved faces of two solids, **classify**
 fragments inside/outside (reuse the BSP-CSG classifier + a curved point-in-solid
 test), **assemble** the surviving shell watertight (curved-seam weld from the
@@ -1082,6 +1082,35 @@ harness runs each of the sphere FUSE/CUT as an equal-R AND an unequal-R fixture;
   same class as S5-k), so they HONEST-DECLINE → OCCT. A skew (non-parallel) cylinder axis, a single-sheet
   grazing cylinder (< two closed loops), and the coaxial pose (offset ≤ tol, owned by S5-l) all decline
   → NULL → OCCT (honest, never faked).
+- **S5-q — TRANSVERSAL (NON-COAXIAL) CONE(frustum)∩SPHERE COMMON** (the THIRD transversal / non-coaxial
+  slice after S5-k and S5-p, and the FIRST transversal CONE pair). Where S5-f/S5-h handle the COAXIAL
+  cone∩sphere pose (sphere centre ON the cone axis → ANALYTIC circle seams, planar rings), S5-q handles
+  the OFFSET pose: the cone axis is perpendicular-DISPLACED from the sphere centre, so the two seams are
+  NON-PLANAR closed space curves (the cone∩sphere quartic locus, NO analytic circle), consumed DIRECTLY
+  from the S3 `TraceSet` — the cone sibling of the S5-k Viviani slice. Pose: a cone frustum whose wall
+  pierces fully THROUGH the sphere → the wall crosses in exactly TWO disjoint closed loops (a lower + an
+  upper along the cone axis), both fully transversal (`nearTangentGaps==0`, `branchPoints==0`, both
+  Closed). COMMON is the SAME TOPOLOGY as the transversal cyl∩sphere S5-k COMMON — a cone mid-band capped
+  by two spherical caps — but every ring is the TRACED non-planar seam: `buildTransConeSphereCommon`
+  welds the sphere LOWER cap (inside the cone) + the cone BAND (seamLo→seamHi, inside the sphere) + the
+  sphere UPPER cap through one `VertexPool`. The new prologue `transConeSphereSetup` recognises the offset
+  pierce-both-ends pose (offset > tol, non-degenerate half-angle tanα, exactly two closed loops + the
+  inside-the-other survival samples) and resamples BOTH seams onto a common cone-azimuth grid
+  (`resampleByAzimuth`, shared with S5-k/S5-p); the band reuses `appendRevolvedBand` (the cone-axis radial
+  reference orients each facet outward for the widening wall exactly as for a cylinder wall), the caps
+  reuse `appendSphereCap` with the S5-k `transConeCapRings` refinement. REDUCTION: as the offset → 0 the
+  pose becomes coaxial and S5-h's `coneSphere2Setup` claims it FIRST in the dispatch (S5-q gates on a
+  STRICTLY-POSITIVE offset), reproducing the landed coaxial COMMON — a pinned regression. Verified vs a
+  deterministic numerical-integration oracle (no closed form for a non-analytic seam) AND OCCT
+  `BRepAlgoAPI_Common` (sim): host fixture (cone r(y)=0.5→1.5 over y∈[−3,3] about +Y; sphere Rs=2, centre
+  offset 0.5 in +X), COMMON volN≈11.278 vs numeric 11.280, ΔV≈1.4e-4 (0.014%), watertight, symmetric
+  (both operand orders), inside the 1% curved-parity bar — no tolerance weakened, DISAGREED=0. CUT/FUSE
+  both additionally need the SPHERE OUTER SHELL (the sphere ZONE between the two NON-PLANAR seams, the
+  long way round outside the cone); welding that two-non-planar-seam zone watertight is the UNRESOLVED
+  transversal residual (the same class as S5-k/S5-p), so they HONEST-DECLINE → OCCT. A near-cylindrical
+  cone (tanα≈0, S5-k territory), a single-loop / tangent pose (< two closed loops), a large-offset pose
+  whose band fails the watertight gate, and the coaxial pose (offset ≤ tol, owned by S5-f/S5-h) all
+  decline → NULL → OCCT (honest, never faked).
 
 Honest scope still declining → OCCT (measured NULL fallbacks, never faked):
 - **the TRANSVERSAL (offset) cylinder∩sphere CUT + FUSE** (the sphere-outer-zone weld between two
@@ -1089,9 +1118,13 @@ Honest scope still declining → OCCT (measured NULL fallbacks, never faked):
   ≳ 0.5·Rc, where the S2 co-resident seeding recall returns only ONE of the two loops); the SMALL-
   offset pierce-both-poles COMMON is now native — S5-k. Likewise **the TRANSVERSAL (offset) torus∩cylinder
   CUT + FUSE** (the torus-outer-zone weld between two non-planar seams — the S5-p residual, same class);
-  the small-offset pierce-through COMMON is now native — S5-p. Plus **oblique / multi-tube cyl∩cyl**, and
+  the small-offset pierce-through COMMON is now native — S5-p. Likewise **the TRANSVERSAL (offset)
+  cone∩sphere CUT + FUSE** (the sphere-outer-zone weld between two non-planar seams — the S5-q residual,
+  same class) and the LARGER-offset / near-cylindrical / single-loop transversal cone∩sphere COMMON (the
+  co-resident second-loop recall + the two-non-planar-seam band watertight gate); the pierce-both-ends
+  small-offset COMMON is now native — S5-q. Plus **oblique / multi-tube cyl∩cyl**, and
   other curved-curved families (sphere∩box, freeform), the TRANSVERSAL (non-coaxial) cone∩cylinder /
-  cone∩sphere / cone∩cone quartic space curve, apex-crossing / apex-in-extent frustums, parallel-wall (equal-half-angle)
+  cone∩cone quartic space curve, apex-crossing / apex-in-extent frustums, parallel-wall (equal-half-angle)
   coaxial cone∩cone, the APEX-SPANNING / internally-tangent coaxial cone∩sphere crossing (the
   two-circle POKE-THROUGH pose is now native — S5-h; only the apex-spanning / tangent sub-configs
   still decline), and the sphere-minuend `sphere − cone` CUT → decline; plus any

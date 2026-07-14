@@ -156,6 +156,18 @@ struct SeedOptions {
   // that would over-split a single loop.
   int capRetentionBudget = 65536;    ///< target refined seeds retained per cluster after loop-aware decimation
 
+  // ── SSI-SMALLLOOP MEASUREMENT (2026-07-14, NOT SHIPPED — see roadmap): a cap-carrier finer
+  // distinct-locus split (a finer `sep` applied ONLY to a cap-hit ultra-dense freeform cluster)
+  // was measured to RECOVER the idx=33 co-resident locus (traced 1→2, DISAGREED==0, no
+  // over-split on the idx=24 single-loop case) — a genuine, DISAGREED-safe RECALL gain. It was
+  // NOT shipped because it does NOT lower the freeform-fuzzer decline: the recovered glancing
+  // loop carries a 2.3e-3 native-vs-OCCT sub-`onCurve` residual, so idx=33 stays declined (now
+  // as multi-branch rather than small-loop) — the SAME curvature-adaptive-marching moat as
+  // idx=23/24, NOT a recall gap. Per the honest-decline discipline (recall recovered but decline
+  // count unchanged 3→3 on seed-1 → no-op on the metric), the SSI-CAP split `sep` is left
+  // BYTE-UNCHANGED. The env-gated SEED-DIAG component-profile probe below is the retained
+  // diagnostic; the reproducible replay is tests/native/replay_freeform_seed.cpp. ──
+
   // ── FEATURE-ADAPTIVE INITIAL SUBDIVISION (default ON) — recover PLACEMENT-MISS loci ───
   // A uniform leaf floor (`minPatchFrac`) can be too COARSE near a locus that a third
   // co-resident branch threads through: at the uniform leaf a near-crossing is either lumped

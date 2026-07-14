@@ -1617,6 +1617,62 @@ distinct-locus-split code BYTE-UNCHANGED — the lever is strictly UPSTREAM of t
   loci spread across x). Host `test_native_ssi_seeding` 11/11, `test_native_ssi_exact_fuzz`
   DISAGREED==0.
 
+### SSI-SMALLLOOP — the S4 recall tail sharpened; idx=33 co-resident locus RECOVERED but decline HOLDS (curve-divergence moat) · ⛔ HONEST-DECLINE 2026-07-14 (recall gain measured & DISAGREED-safe; NOT shipped — no decline drop; SSI-CAP split `sep` BYTE-UNCHANGED)
+
+The remaining seed `0x5515D1FF0F0F` declines after SSI-SUBDIV (idx=23/24/33) were re-measured with an
+OCCT-FREE HOST REPLAY of the exact fuzz poses (`tests/native/replay_freeform_seed.cpp` — reproduces
+the splitmix64→xoshiro256** RNG + generator verbatim, advances the stream to a target idx, runs the
+real `seed_intersection`/`trace_intersection` with an env-gated `SEED-DIAG` component-profile probe)
+cross-checked against the SIM/OCCT fuzzer's `[DECLINE-DIAG]`. This CORRECTS the prior "native 0" framing
+and localizes each decline to a distinct stage:
+
+- **idx=24 (near-tangent, small-loop) — NOT a recall miss; a fully-traced glancing loop.** Host replay:
+  seeder emits 1 seed from a 313 134-crossing cap-hit cluster that is ONE 3D component at EVERY
+  separation scale (`rawComps@sep=1 … @~eps=1`); the marcher traces it to a **Closed loop, 714 nodes,
+  onSurf 2e-10**. SIM `[DECLINE-DIAG]`: `traced=1 occtLines=1 genuineOcctOnNat=1.818e-3` — native DID
+  seed AND trace the single locus; the decline is the fitted/marched curve sitting `1.8e-3` off the OCCT
+  locus (just over the fixed `onCurve` 1e-3), a native-vs-OCCT curvature-adaptive-marching residual (the
+  moat), NOT a seeding gap. No seeding lever can touch it.
+- **idx=23 (near-tangent, multi-branch) — same moat.** `traced=4 occtLines=4 covByNat=3
+  genuineOcctOnNat=1.334e-3 worstMissLen=0.94`: native traced 4 of 4 loci; one graze diverges by
+  `1.33e-3` sub-`onCurve`. Curvature-adaptive marching, not recall.
+- **idx=33 (near-tangent) — a GENUINE co-resident second-locus miss, RECOVERABLE.** Host replay:
+  805 232 refined crossings collapse into ONE param-adjacency cluster (cap-hit), and the pile is ONE 3D
+  component at the committed split `sep` (= `splitDistinctFrac·scale = scale/16`) and at `sep/2`, but
+  splits into **TWO** components at `sep/4`…`sep/16`. The two loci are ~model-scale apart yet their
+  refined point clouds CHAIN together within `sep` along their arcs, so the split emits ONE seed and
+  DROPS the second locus. Baseline SIM: `traced=1 occtLines=2 covByNat=0 genuineMiss=2
+  genuineOcctOnNat=1.371` — a whole-locus recall miss. **Over-split-safety margin measured:** a genuine
+  SINGLE loop (idx=24) stays ONE component down to `sep/64`, so a finer split `sep` on a cap-hit cluster
+  separates idx=33's two loci without fragmenting a real loop.
+
+**Attempted (genuinely-new, bounded, additive, DISAGREED-safe): CAP-CARRIER FINER DISTINCT-LOCUS SPLIT.**
+A finer split `sep` (`sep/4`) applied — for BOTH the loop-aware retention partition AND the distinct-locus
+split — ONLY to a cluster whose RAW refined pile EXCEEDS the retention budget (the ultra-dense
+small-loop-carrier signature); every under-budget cluster (all canonical / normal-density poses) keeps the
+committed `sep` BYTE-IDENTICAL, so SSI-CAP's partition + split criterion is unchanged there. Recall-only by
+construction: each emitted seed is a real refined on-both-surfaces transversal crossing (`refineRegion`
+gates on-both ≤ `onSurfTol` AND ‖n₁×n₂‖ ≥ `tangentSinTol`); an over-split is dedup-collapsed by the S3
+marcher (`retraces`). **Measured (host + SIM seed-1):** idx=33 seeds **1 → 2** and traces **BOTH loci to
+complete BoundaryExit branches** (538 + 905 nodes, each on both surfaces ≤ 1.3e-9); idx=24 (single loop)
+stays 1 seed (NO over-split); `DISAGREED == 0`; host `test_native_ssi_seeding`/`_exact_fuzz` green. The
+recall gap is genuinely CLOSED (SIM idx=33: `covByNat 0→1, genuineMiss 2→1, genuineOcctOnNat 1.371→2.3e-3`).
+
+**Honest conclusion (why it is NOT shipped — the sharpened floor).** The lever RECOVERS the locus but does
+**NOT lower the decline**: the recovered glancing loop carries a `2.308e-3` native-vs-OCCT sub-`onCurve`
+residual, so idx=33 stays declined — now as **multi-branch** (`traced=2`) rather than small-loop
+(`traced=1`) — the SAME curvature-adaptive-marching moat that gates idx=23 (1.33e-3) and idx=24 (1.82e-3).
+Seed-1 decline is **DECLINED=3, DISAGREED=0 BEFORE and AFTER** (AGREED 45/48 both; the exact same three
+indices 23/24/33). Per the honest-decline discipline — a real recall gain that is a **no-op on the decline
+metric** is the REVERT trigger, and shipping a change to the committed SSI-CAP split `sep` that does not
+move the headline metric risks the SSI-CAP2 over-reach class — the behaviour change was **REVERTED**; the
+SSI-CAP split `sep` is BYTE-UNCHANGED. Retained: the env-gated `SEED-DIAG` component-profile probe (pure
+diagnostic) + the OCCT-free `replay_freeform_seed` instrument. **The true S4 tail on this seed is now one
+mechanism, not three: a sub-`onCurve` (1.3…2.3e-3) native-vs-OCCT divergence on glancing near-tangent loops
+that are FULLY SEEDED AND TRACED** — recoverable ONLY by curvature-adaptive marching (`maxDeflection` is
+`scale·1e-3`, looser than the 1e-3 coverage gate), the person-decade moat, not a bounded seeding slice. No
+tolerance widened, no locus fabricated, no single loop over-split; DISAGREED stayed 0 throughout.
+
 ## Sequencing & effort
 
 ```

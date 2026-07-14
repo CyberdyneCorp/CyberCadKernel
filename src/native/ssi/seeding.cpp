@@ -816,6 +816,24 @@ void linkBySep(const std::vector<Seed>& seeds, double sep, DisjointSet& ds) {
   }
 }
 
+// DIAGNOSTIC ONLY (env-gated, no behaviour change): count distinct 3D single-linkage
+// components in a seed pile at separation `sep`, and the max pairwise 3D extent. Used by the
+// SEED-DIAG dump to reveal whether a capped/merged cluster hosts ONE physical locus or several
+// co-resident loci the split should separate. Not on any hot path when diag is off.
+int countComponentsAtSep(const std::vector<Seed>& seeds, double sep) {
+  const std::size_t m = seeds.size();
+  if (m == 0) return 0;
+  DisjointSet ds(static_cast<int>(m));
+  linkBySep(seeds, sep, ds);
+  int n = 0;
+  std::vector<char> seen(m, 0);
+  for (std::size_t i = 0; i < m; ++i) {
+    const int r = ds.find(static_cast<int>(i));
+    if (!seen[static_cast<std::size_t>(r)]) { seen[static_cast<std::size_t>(r)] = 1; ++n; }
+  }
+  return n;
+}
+
 // LOOP-STRUCTURE-AWARE CAP RETENTION. When a cluster's refined pile exceeds `budget`, decimate
 // it to ≤ `budget` seeds WITHOUT starving any co-resident locus. Plain (flat) thinning of the
 // whole merged pile was REJECTED (E1): a uniform stride across two loci leaves ARC GAPS that
@@ -976,12 +994,36 @@ void refineClusters(const SurfaceAdapter& A, const SurfaceAdapter& B,
       // LOOP-AWARE CAP RETENTION (split path only): when the pile exceeds the budget, partition
       // it into distinct co-resident sub-loci and retain a per-sub-locus uniform stride FIRST, so
       // no locus is FIFO-starved before the split sees it. No-op when the pile is under budget.
+      // DIAGNOSTIC (env-gated): probe the RAW pile's 3D component structure BEFORE retention at
+      // several separation scales, so a merged/capped cluster reveals whether it hosts one
+      // physical locus or co-resident loci the split at `sep` cannot see. No behaviour change.
+      int compRaw = 0, compHalf = 0, compQtr = 0, compEps = 0;
+      if (diag) {
+        // Subsample large piles (uniform stride) so the O(m) component probe stays cheap on
+        // ultra-dense clusters; a stride preserves distinct-locus separation for the count.
+        std::vector<Seed> probe;
+        const std::size_t kProbeCap = 20000;
+        if (pile.size() > kProbeCap) {
+          const double st = static_cast<double>(pile.size()) / static_cast<double>(kProbeCap);
+          probe.reserve(kProbeCap);
+          for (std::size_t k = 0; k < kProbeCap; ++k)
+            probe.push_back(pile[std::min(pile.size() - 1, static_cast<std::size_t>(k * st))]);
+        } else {
+          probe = pile;
+        }
+        compRaw  = countComponentsAtSep(probe, sep);
+        compHalf = countComponentsAtSep(probe, sep * 0.5);
+        compQtr  = countComponentsAtSep(probe, sep * 0.25);
+        compEps  = countComponentsAtSep(probe, std::max(onSurfTol * 8.0, sep * 0.05));
+      }
       if (doSplit) retainLoopAware(pile, sep, retainBudget);
       splitDistinctLoci(pile, effSep, maxPer, emit);
       if (diag)
         std::fprintf(stderr,
-            "[SEED-DIAG] cid=%d xversalSeeds=%zu retained=%zu emitted=%zu sep=%.4e doSplit=%d scale=%.4e\n",
-            cid, pileRaw, pile.size(), emit.size(), sep, doSplit ? 1 : 0, scale);
+            "[SEED-DIAG] cid=%d xversalSeeds=%zu retained=%zu emitted=%zu sep=%.4e doSplit=%d scale=%.4e "
+            "| rawComps@sep=%d @sep/2=%d @sep/4=%d @~eps=%d\n",
+            cid, pileRaw, pile.size(), emit.size(), sep, doSplit ? 1 : 0, scale,
+            compRaw, compHalf, compQtr, compEps);
       for (Seed& s : emit) {
         ++out.refinedAccepted;
         s.branchId = branchId++;

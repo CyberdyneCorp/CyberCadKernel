@@ -1673,6 +1673,62 @@ that are FULLY SEEDED AND TRACED** — recoverable ONLY by curvature-adaptive ma
 `scale·1e-3`, looser than the 1e-3 coverage gate), the person-decade moat, not a bounded seeding slice. No
 tolerance widened, no locus fabricated, no single loop over-split; DISAGREED stayed 0 throughout.
 
+### SSI-MARCH — curvature-adaptive marching does NOT close the residual; the tail is a coverage-EXTENT gap, not arc error · ⛔ HONEST-DECLINE 2026-07-14 (measurement CORRECTS the SSI-SMALLLOOP "sub-onCurve marching residual" framing; src/native BYTE-UNCHANGED)
+
+SSI-SMALLLOOP framed the remaining seed-`0x5515D1FF0F0F` declines (idx=23/24/33) as a **sub-`onCurve`
+native-vs-OCCT curvature-adaptive-marching residual** on glancing near-tangent loops. SSI-MARCH set out to
+CLOSE that residual with a curvature-adaptive marching step and, MEASUREMENT-FIRST, **falsified the
+framing**: the residual is NOT marching arc-error and the loops are NOT near-tangent. It is a
+**coverage-EXTENT gap** — native traces only a short fragment of a much longer OCCT locus — which a finer /
+curvature-adaptive step provably cannot touch.
+
+**Direct host + OCCT measurements (OCCT-free `replay_freeform_seed` for the native geometry; SIM/OCCT
+freeform-fuzz seed-`0x5515d1ff0f0f` `[DECLINE-DIAG]` for the coverage residual):**
+
+- **The traces are WELL-CONDITIONED, not near-tangent.** idx=24 transversality sine ranges **0.30…0.36**;
+  idx=33 **0.59…0.84** (near-tangent would be sine `< tangentSinTol = 1e-3`). The chord/arc SAGITTA is
+  **6.3e-6** (idx=24) / **7.6e-6** (idx=33) — ~250× BELOW the `onCurve` 1e-3 gate and ~290× below the
+  1.8e-3 residual. The marcher is already deflection-limited: forcing `maxDeflection → ∞` grows the step to
+  5.8e-2 (11 nodes); the shipped `scale·1e-3` budget holds it at ≤ 7.3e-3 (41 nodes) at sagitta 6.3e-6. So
+  the existing REACTIVE deflection controller is ALREADY curvature-adaptive and already dominates.
+- **A curvature-adaptive step is a NO-OP on these poses.** A proactive step cap from the discrete curvature
+  κ̂ of the last two chords (`h ≤ sqrt(8·maxDeflection/κ̂)`) was prototyped (additive, default-off,
+  bounded by minStep). On idx=24 and idx=33 it is **byte-identical** even at a 20× tighter target fraction
+  (0.05): κ̂ ≈ 0.8–0.96 gives a cap of ~0.17, far above the deflection-limited step of ≤ 9e-3, so it never
+  bites. The high-frequency curvature that the reactive `stepDeflection` (reprojected-midpoint) controller
+  actually responds to is finer than any 3-node discrete κ̂ can see. The prototype was **REVERTED**
+  (`src/native/**` BYTE-UNCHANGED) — dead default-off code in the moat core is not justified when it moves
+  no metric.
+- **The trace is GEOMETRICALLY CONVERGED — refinement does not move the locus.** Tightening
+  `maxDeflection` 100× (`scale·1e-5`, 41 → 3866 nodes, sagitta 6.3e-6 → 6.3e-10) moves the idx=24 locus by
+  `< 1e-4` mid-arc. Node on-surface stays ~1.5e-11. The native curve is not step-error-limited.
+- **THE ROOT CAUSE — a coverage-EXTENT gap.** idx=24: `traced=1 occtLines=1 covByNat=0 genuineMiss=1
+  natOnOcct=1.733e-07 genuineOcctOnNat=1.818e-03 worstMissLen=3.938`. Native's nodes lie on the OCCT locus
+  to **1.7e-7** (native is essentially EXACT), but native's traced arc is only **polyLen ≈ 0.203** while the
+  OCCT locus is **length 3.938 — ~19× longer**. The `1.818e-3` `genuineOcctOnNat` is simply the closest
+  native's short 0.20 fragment gets to the FAR reaches of OCCT's long locus. Native terminates as a genuine
+  boundary-to-boundary `BoundaryExit` (front hits surface-A edge at param-gap 6.8e-6, back hits surface-B
+  edge at 7.3e-5) after 0.20 arc; the FULL OCCT locus continues far beyond. Refining the step leaves the
+  fragment length UNCHANGED (fine trace polyLen 0.2024). idx=23 is the analogous multi-branch case
+  (`natOnOcct=6.5e-8` — native exactly on OCCT — with one distinct OCCT arc `worstMissLen=0.94` genuinely
+  uncovered). The residual is therefore a **marching-TERMINATION / seeding-RECALL coverage gap** (native
+  seeds+traces only a sub-arc of the true locus), NOT a sub-`onCurve` marching-accuracy divergence.
+
+**Honest conclusion.** Curvature-adaptive marching is the WRONG lever for this tail and provably cannot
+close it: the step is already fine (sagitta 250× under gate), the geometry is converged (100× refinement
+moves the locus `< 1e-4`), and the fragment length is refinement-invariant (0.20 vs 0.20). The 1.3…1.8e-3
+`genuineOcctOnNat` is a **coverage-extent artifact** of native covering a short sub-arc of a long
+(3.94-unit) OCCT locus, not an arc-error moat. This RECLASSIFIES the SSI-SMALLLOOP framing: the seed-1 tail
+is a marching-TERMINATION / recall-coverage gap (why does the native march/seed cover only a fragment of the
+extended locus?), addressable — if at all — by the S4 termination/recall levers SSI-SMALLLOOP already found
+exhausted for the seeding side, NOT by the marching STEP. Seed-1 decline is unchanged (**DECLINED=3,
+DISAGREED=0**; idx 23/24/33). `src/native/**` is BYTE-UNCHANGED, `cc_*` byte-unchanged, SSI-CAP + SSI-SUBDIV
+unchanged, no tolerance widened, no locus fabricated. Retained: the OCCT-free `replay_freeform_seed`
+instrument (the host measurements above are reproducible through it with the env knobs
+`MARCH_MAXDEFL`/`MARCH_MAXSTEP`). The person-decade moat here is marching-TERMINATION robustness + extended-
+locus recall, not curvature-adaptive step placement — which the fixed-step trace already handles at
+sagitta 6e-6.
+
 ## Sequencing & effort
 
 ```

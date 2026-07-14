@@ -149,6 +149,23 @@ ntopo::Shape makeTorusAt(double R, double r, double zc) {
   return ntopo::ShapeBuilder::makeSolid({ntopo::ShapeBuilder::makeShell({face})});
 }
 
+// An axis-aligned SLAB half-space for the S5-r torus∩plane family: a big square footprint
+// [-half,half]² extruded in z over [zBot, zTop] — a box whose TOP face (z = zTop) and BOTTOM
+// face (z = zBot) are perpendicular to a +Z torus axis. Positioned with `half` large enough to
+// bracket the torus in-plane and exactly ONE of the two z-faces cutting the tube, it acts as a
+// single axis-perpendicular half-space through the torus. All six faces are planar.
+ntopo::Shape makeSlab(double half, double zBot, double zTop) {
+  std::vector<cst::ProfileSegment> segs(4);
+  segs[0].kind = 0; segs[0].x0 = -half; segs[0].y0 = -half; segs[0].x1 = half;  segs[0].y1 = -half;
+  segs[1].kind = 0; segs[1].x0 = half;  segs[1].y0 = -half; segs[1].x1 = half;  segs[1].y1 = half;
+  segs[2].kind = 0; segs[2].x0 = half;  segs[2].y0 = half;  segs[2].x1 = -half; segs[2].y1 = half;
+  segs[3].kind = 0; segs[3].x0 = -half; segs[3].y0 = half;  segs[3].x1 = -half; segs[3].y1 = -half;
+  ntopo::Shape box = cst::build_prism_profile(segs, {}, {}, zTop - zBot);  // extrude z=0..(zTop-zBot)
+  if (box.isNull()) return box;
+  const nmath::Transform up = nmath::Transform::translationOf(nmath::Vec3{0.0, 0.0, zBot});
+  return box.located(ntopo::Location{up});
+}
+
 // A full RING TORUS (major R, minor r) about world +Y (its axis aligned with the makeCone /
 // makeSphere +Y revolution axis, so a torus∩cone pair is genuinely coaxial). Same bare
 // doubly-periodic Kind::Torus face as makeTorus, only the frame axis is +Y.
@@ -2349,6 +2366,160 @@ CC_TEST(cone_sphere_transversal_reduces_to_coaxial_at_zero_offset) {
   const double vOff = watertightMeshVolume(offCommon);
   CC_CHECK(vOff > 0.0);
   CC_CHECK(vCoax - vOff > 1e-2);   // coaxial overlap strictly larger than the offset overlap
+}
+
+// ── (18) S5-r TORUS ∩ HALF-SPACE (PLANE ⟂ AXIS) COMMON / CUT ────────────────────────────────
+// A ring torus (major R, minor r, +Z axis) cut by an axis-perpendicular half-space (a big slab
+// whose one z-face cuts the tube at station z=h). The horizontal cut is symmetric in ρ−R, so the
+// plane-cut torus-segment volume collapses to the Pappus closed form V(z≤h) = 2π·R·A_low, with
+// A_low = πr² − (r²·acos(h/r) − h·√(r²−h²)). We cross-check that closed form against a 200³
+// numeric-integration oracle, then assert the native COMMON is watertight and matches it to the
+// 1% curved-parity bar, COMMON ≤ min(A,B), and swap-symmetric. CUT (torus minuend) keeps the
+// complementary segment. This is the OCCT-parity slice: BRepAlgoAPI_Common(torus, halfspace) is
+// exactly this revolution (encoded structurally; host numeric oracle is the primary check here).
+
+// Closed-form plane-cut torus segment volume, material on z ≤ h (keepLow) or z ≥ h.
+double torusPlaneSegmentVolume(double R, double r, double h, bool keepLow) {
+  const double root = std::sqrt(std::max(r * r - h * h, 0.0));
+  const double aCap = r * r * std::acos(std::clamp(h / r, -1.0, 1.0)) - h * root;  // z>h cap area
+  const double aLow = sd::kSsiPi * r * r - aCap;
+  const double vLow = 2.0 * sd::kSsiPi * R * aLow;
+  const double vTorus = 2.0 * sd::kSsiPi * sd::kSsiPi * R * r * r;
+  return keepLow ? vLow : (vTorus - vLow);
+}
+
+// 200³ numeric COMMON of a +Z ring torus AND the z ≤ h (keepLow) / z ≥ h half-space.
+double torusPlaneNumeric(double R, double r, double h, bool keepLow, int Ns = 200) {
+  const double L = R + r, Zr = r;
+  const double cell = (2 * L) / Ns * (2 * L) / Ns * (2 * Zr) / Ns;
+  long inside = 0;
+  for (int i = 0; i < Ns; ++i) {
+    const double x = -L + (2 * L) * (i + 0.5) / Ns;
+    for (int j = 0; j < Ns; ++j) {
+      const double y = -L + (2 * L) * (j + 0.5) / Ns;
+      const double rho = std::sqrt(x * x + y * y);
+      const double dRho = rho - R;
+      for (int k = 0; k < Ns; ++k) {
+        const double z = -Zr + (2 * Zr) * (k + 0.5) / Ns;
+        if (keepLow ? (z > h) : (z < h)) continue;
+        if (dRho * dRho + z * z <= r * r) ++inside;
+      }
+    }
+  }
+  return inside * cell;
+}
+
+CC_TEST(torus_plane_perp_common_cut_watertight_matches_numeric) {
+  const double R = 3.0, r = 1.0, h = 0.4;
+  const ntopo::Shape tor = makeTorus(R, r);            // +Z ring torus at the origin
+  // Slab occupying z ∈ [−3, h]: its TOP face (z=h) cuts the tube; all other faces bracket the
+  // torus (footprint half=10 ≫ R+r, bottom z=−3 < −r). torus ∩ slab = torus with z ≤ h.
+  const ntopo::Shape slabLow = makeSlab(10.0, -3.0, h);
+  CC_CHECK(!tor.isNull() && !slabLow.isNull());
+
+  // Oracle cross-check: closed form vs 200³ numeric agree to ≪ 1%.
+  const double vClosed = torusPlaneSegmentVolume(R, r, h, /*keepLow=*/true);
+  const double vNumeric = torusPlaneNumeric(R, r, h, /*keepLow=*/true);
+  CC_CHECK(std::fabs(vClosed - vNumeric) <= 1e-2 * vClosed);
+
+  const double vTorus = 2.0 * sd::kSsiPi * sd::kSsiPi * R * r * r;
+
+  // ── COMMON = torus ∩ (z ≤ h): watertight revolution matching the oracle. ──
+  const ntopo::Shape common = nb::ssi_boolean_solid(tor, slabLow, nb::Op::Common);
+  CC_CHECK(!common.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  CC_CHECK(vCommon > 0.0);                                        // watertight → engine accepts
+  CC_CHECK(std::fabs(vCommon - vClosed) <= 1e-2 * vClosed);
+  CC_CHECK(vCommon <= vTorus + 1e-9);                             // COMMON ≤ min(torus, halfspace)
+
+  // Swap-symmetric: (slab, torus) builds the same watertight solid.
+  const ntopo::Shape swapped = nb::ssi_boolean_solid(slabLow, tor, nb::Op::Common);
+  CC_CHECK(!swapped.isNull());
+  const double vSwapped = watertightMeshVolume(swapped);
+  CC_CHECK(vSwapped > 0.0);
+  CC_CHECK(std::fabs(vSwapped - vClosed) <= 1e-2 * vClosed);
+
+  // ── CUT = torus − (z ≤ h): the complementary segment (keep z ≥ h). SHRINK below the torus. ──
+  const ntopo::Shape cut = nb::ssi_boolean_solid(tor, slabLow, nb::Op::Cut);
+  CC_CHECK(!cut.isNull());
+  const double vCut = watertightMeshVolume(cut);
+  CC_CHECK(vCut > 0.0);
+  const double vCutTrue = torusPlaneSegmentVolume(R, r, h, /*keepLow=*/false);
+  CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
+  CC_CHECK(vCut <= vTorus + 1e-9);
+  // COMMON + CUT partition the torus (up to the parity bar).
+  CC_CHECK(std::fabs((vCommon + vCut) - vTorus) <= 1e-2 * vTorus);
+
+  // A half-space − torus minuend is out of the revolution scope → declines → OCCT.
+  CC_CHECK(nb::ssi_boolean_solid(slabLow, tor, nb::Op::Cut).isNull());
+  // FUSE needs the box's remaining faces → HONEST-DECLINE → OCCT.
+  CC_CHECK(nb::ssi_boolean_solid(tor, slabLow, nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(slabLow, tor, nb::Op::Fuse).isNull());
+}
+
+// A second pose: the slab keeps the UPPER part (z ≥ h) so COMMON is the short over-the-top cap
+// arc, and the cut station is NEGATIVE — exercises the keepLow=false builder branch directly.
+CC_TEST(torus_plane_perp_upper_keep_common_matches_numeric) {
+  const double R = 4.0, r = 1.5, h = -0.6;
+  const ntopo::Shape tor = makeTorus(R, r);
+  // Slab occupying z ∈ [h, 5]: its BOTTOM face (z=h) cuts the tube; keep z ≥ h.
+  const ntopo::Shape slabHi = makeSlab(12.0, h, 5.0);
+  CC_CHECK(!tor.isNull() && !slabHi.isNull());
+
+  const double vClosed = torusPlaneSegmentVolume(R, r, h, /*keepLow=*/false);
+  const double vNumeric = torusPlaneNumeric(R, r, h, /*keepLow=*/false);
+  CC_CHECK(std::fabs(vClosed - vNumeric) <= 1e-2 * vClosed);
+
+  const ntopo::Shape common = nb::ssi_boolean_solid(tor, slabHi, nb::Op::Common);
+  CC_CHECK(!common.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  CC_CHECK(vCommon > 0.0);
+  CC_CHECK(std::fabs(vCommon - vClosed) <= 1e-2 * vClosed);
+  const double vTorus = 2.0 * sd::kSsiPi * sd::kSsiPi * R * r * r;
+  CC_CHECK(vCommon <= vTorus + 1e-9);
+}
+
+// ── (19) S5-r HONEST DECLINES: parallel-to-axis / tangent / clear / through-the-hole → OCCT ──
+// Only the axis-perpendicular slice that cuts the tube assembles from the revolution builders.
+// A plane PARALLEL to the torus axis (Villarceau-like), a plane tangent to the tube, a slab clear
+// of the torus, and a slab whose cutting face passes through the donut hole (missing the tube) all
+// HONEST-DECLINE → NULL → OCCT. Nothing is faked.
+CC_TEST(torus_plane_honest_declines) {
+  const double R = 3.0, r = 1.0;
+  const ntopo::Shape tor = makeTorus(R, r);            // +Z axis
+
+  // (a) Plane PARALLEL to the axis: a slab whose cutting faces are ⟂ X (vertical), not ⟂ Z. Its
+  //     one cutting face at x=1.5 is parallel to the torus axis → not the perpendicular slice.
+  //     Build a +Y-extruded... simpler: a Z-tall slab thin in X at x∈[1.0, 2.0], tall in y and z.
+  {
+    std::vector<cst::ProfileSegment> segs(4);
+    // footprint in XY: x∈[1.0,2.0], y∈[−10,10]; extruded tall in z so the x-faces cut the torus.
+    segs[0].kind = 0; segs[0].x0 = 1.0; segs[0].y0 = -10; segs[0].x1 = 2.0; segs[0].y1 = -10;
+    segs[1].kind = 0; segs[1].x0 = 2.0; segs[1].y0 = -10; segs[1].x1 = 2.0; segs[1].y1 = 10;
+    segs[2].kind = 0; segs[2].x0 = 2.0; segs[2].y0 = 10;  segs[2].x1 = 1.0; segs[2].y1 = 10;
+    segs[3].kind = 0; segs[3].x0 = 1.0; segs[3].y0 = 10;  segs[3].x1 = 1.0; segs[3].y1 = -10;
+    ntopo::Shape vslab = cst::build_prism_profile(segs, {}, {}, 4.0);  // z=0..4
+    vslab = vslab.located(ntopo::Location{
+        nmath::Transform::translationOf(nmath::Vec3{0.0, 0.0, -2.0})});  // z∈[−2,2] spans the tube
+    CC_CHECK(!vslab.isNull());
+    // The x-faces are parallel to the +Z axis → the perpendicular-slice setup declines.
+    CC_CHECK(nb::ssi_boolean_solid(tor, vslab, nb::Op::Common).isNull());
+    CC_CHECK(nb::ssi_boolean_solid(tor, vslab, nb::Op::Cut).isNull());
+  }
+
+  // (b) Plane TANGENT to the tube (z = r): the cut just grazes the tube top → no proper annulus.
+  const ntopo::Shape tangent = makeSlab(10.0, -3.0, r);  // top face at z = r (tangent)
+  CC_CHECK(nb::ssi_boolean_solid(tor, tangent, nb::Op::Common).isNull());
+
+  // (c) Slab CLEAR of the torus (entirely above it): no intersection.
+  const ntopo::Shape clear = makeSlab(10.0, r + 0.5, 5.0);  // bottom face z = r+0.5 > r
+  CC_CHECK(nb::ssi_boolean_solid(tor, clear, nb::Op::Common).isNull());
+
+  // (d) Slab whose cutting face passes through the donut HOLE but the slab does not bracket the
+  //     torus tube in-plane (a narrow post inside the hole): the torus pokes out past the side
+  //     faces, so recognisePlaneHalfspace declines (not a single clean bracketing cut).
+  const ntopo::Shape post = makeSlab(1.0, -3.0, 0.4);  // half=1.0 < R−r=2 → torus pokes out
+  CC_CHECK(nb::ssi_boolean_solid(tor, post, nb::Op::Common).isNull());
 }
 
 int main() { return cctest::run_all(); }

@@ -107,6 +107,7 @@
 #endif
 
 #include <gp_Pnt.hxx>
+#include <gp_Vec.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
@@ -802,6 +803,35 @@ int main() {
     pc.nativeB = makeSphereOffX(2.0, 0.5);   // Rs=2, centre (0.5,0,0) — off the cone +Y axis
     pc.occtA = occtCone(0.5, -3.0, 1.5, 3.0);
     pc.occtB = occtSphereOffX(2.0, 0.5);
+    pc.relTol = 2e-2;
+    probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
+    runPair(pc);
+  }
+
+  // ── (17) COAXIAL TORUS ∩ HALF-SPACE (PLANE ⟂ AXIS) — the first curved∩planar slice (S5-r)
+  // A ring torus (R=3, r=1, axis +Z) cut by an axis-PERPENDICULAR planar half-space: a big box
+  // [-10,10]²×z∈[-3,0.4] whose TOP face (z=0.4) cuts the tube (|h|=0.4 < r=1) while its other five
+  // faces bracket the whole torus. The section at z=0.4 is an ANNULUS, so COMMON = torus ∩ (z≤0.4)
+  // is a Pappus-exact solid of revolution: the kept tube arc + a flat annulus cap (V=2π·R·A_low).
+  // COMMON is a NATIVE PASS matching BRepAlgoAPI_Common on volume/area/watertight — the primary
+  // OCCT-parity oracle (DISAGREED=0). CUT (torus−halfspace) = the complementary z≥0.4 segment, also
+  // a NATIVE PASS. FUSE honest-declines (the torus∪half-space needs the box's remaining faces,
+  // outside the revolution scope) → OCCT fall-back (a valid, closed shipped solid).
+  {
+    PairCase pc;
+    pc.pairName = "torus=plane(perp)";
+    pc.nativeA = makeTorus(3.0, 1.0);
+    pc.nativeB = makeBox(-10.0, -10.0, 10.0, 10.0, 3.4);   // z∈[0,3.4]; translated below to [-3,0.4]
+    pc.nativeB = pc.nativeB.located(ntopo::Location{
+        nmath::Transform::translationOf(nmath::Vec3{0.0, 0.0, -3.0})});
+    pc.occtA = occtTorus(3.0, 1.0);
+    {
+      gp_Trsf down;                                          // OCCT box world-placed z∈[0,3.4]…
+      down.SetTranslation(gp_Vec(0.0, 0.0, -3.0));           // …shifted to z∈[-3,0.4] to match native
+      pc.occtB = BRepBuilderAPI_Transform(
+                     occtBox(-10.0, -10.0, 10.0, 10.0, 3.4), down, Standard_True)
+                     .Shape();
+    }
     pc.relTol = 2e-2;
     probeTrace(pc.pairName, pc.nativeA, pc.nativeB);
     runPair(pc);

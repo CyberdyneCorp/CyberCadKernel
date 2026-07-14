@@ -3712,6 +3712,240 @@ topo::Shape buildTorusCylFuse(const CurvedSolid& A, const CurvedSolid& B,
   return topo::ShapeBuilder::makeSolid({shell});
 }
 
+// ═══ S5-r — COAXIAL TORUS ∩ HALF-SPACE (PLANE ⟂ AXIS) COMMON / FUSE / CUT ════════
+// A ring torus (major R, minor r, axis = frame Z, centre O) cut by a PLANAR HALF-SPACE
+// whose bounding plane is PERPENDICULAR to the torus axis (a horizontal slice at axial
+// station z = h in the torus z-frame). The half-space keeps the torus material on ONE
+// side of z = h. When the plane crosses the TUBE (|h| < r strictly) the section is an
+// ANNULUS (a washer between ρ = R − c and ρ = R + c, c = √(r² − h²)), so the result is a
+// SOLID OF REVOLUTION welded from a revolved tube arc + a flat annulus cap — the SAME
+// S5-l machinery (appendTubeArc, ring, appendAnnulusCap). The plane-parallel-to-axis
+// (Villarceau-like) orientation and every degenerate pose (plane tangent to the tube,
+// plane clear of the torus, plane through the hole) HONEST-DECLINE → NULL → OCCT.
+//
+// CLEANEST-ORACLE (SSI-ROADMAP §S5): the plane-cut torus-segment volume is a Pappus-exact
+// closed form; the host test cross-checks it against a 200³ numeric-integration oracle.
+// Keep the material where z ≤ h (the far side is the complement). The horizontal cut is
+// SYMMETRIC in ρ−R, so the segment's first moment about ρ = R VANISHES and Pappus collapses
+// to 2π·R·(segment area):
+//   V_torus       = 2π² R r²
+//   A_cap(z>h)    = r²·acos(h/r) − h·√(r²−h²)          (the removed circular cap area)
+//   A_low(z≤h)    = π r² − A_cap
+//   V_common(z≤h) = 2π·R·A_low                         (Pappus about the torus axis)
+// FUSE/CUT are the complement/whole relations the generic verifier already drives.
+//
+// The half-space operand is a PLANE-ONLY solid (a box/slab); it is NOT a CurvedSolid, so
+// this family is dispatched by the dedicated tryTorusHalfspace entry (below ssi_boolean_solid)
+// BEFORE the both-operands-curved gate. Nothing here is faked: a plane that is not axis-
+// perpendicular, does not cut the tube, or leaves the result full/empty → NULL → OCCT.
+struct TorusPlaneSetup {
+  bool ok = false;
+  const CurvedSolid* tor = nullptr;
+  math::Point3 O;           ///< torus centre (on the axis)
+  math::Vec3 X, Y, zc;      ///< torus frame basis (zc = axis)
+  double R = 0.0, r = 0.0;  ///< torus major / minor radius
+  double h = 0.0;           ///< cut plane axial station in the torus z-frame
+  bool keepLow = true;      ///< true → keep z ≤ h (the material below the plane); else z ≥ h
+  double v0 = 0.0;          ///< minor angle of the +ρ seam on the KEPT side (see builders)
+  int N = 0;                ///< azimuth sample count
+  int M = 0;                ///< tube-arc subdivision
+
+  std::vector<math::Point3> ring(double rho, double s) const {
+    std::vector<math::Point3> out(N);
+    for (int i = 0; i < N; ++i) {
+      const double u = kSsiTwoPi * i / N;
+      const double cx = rho * std::cos(u), cy = rho * std::sin(u);
+      out[i] = math::Point3{O.x + X.x * cx + Y.x * cy + zc.x * s,
+                            O.y + X.y * cx + Y.y * cy + zc.y * s,
+                            O.z + X.z * cx + Y.z * cy + zc.z * s};
+    }
+    return out;
+  }
+  std::pair<double, double> tube(double v) const {
+    return {R + r * std::cos(v), r * std::sin(v)};
+  }
+};
+
+// The world point on the tube-CENTRE circle at azimuth index i (for the true tube-outward
+// normal — mirrors S5-l tubeCentre so the inner-half arc is oriented correctly).
+math::Point3 torusPlaneTubeCentre(const TorusPlaneSetup& s, int i) {
+  const double u = kSsiTwoPi * i / s.N;
+  const double cx = s.R * std::cos(u), cy = s.R * std::sin(u);
+  return math::Point3{s.O.x + s.X.x * cx + s.Y.x * cy, s.O.y + s.X.y * cx + s.Y.y * cy,
+                      s.O.z + s.X.z * cx + s.Y.z * cy};
+}
+
+// Append the revolved tube arc vA→vB (M subdivisions), oriented by the true tube-outward
+// reference scaled by outwardSign. Identical machinery to S5-l appendTubeArc, keyed off
+// TorusPlaneSetup.
+void appendTorusPlaneTubeArc(const TorusPlaneSetup& s, double vA, double vB, double outwardSign,
+                             VertexPool& pool, std::vector<topo::Shape>& faces) {
+  const int m = s.M;
+  std::vector<math::Point3> prev;
+  for (int k = 0; k <= m; ++k) {
+    const double v = vA + (vB - vA) * (static_cast<double>(k) / m);
+    const auto [rho, z] = s.tube(v);
+    std::vector<math::Point3> cur = s.ring(rho, z);
+    if (k > 0) {
+      const int n = s.N;
+      for (int i = 0; i < n; ++i) {
+        const int j = (i + 1) % n;
+        const math::Point3 tc = torusPlaneTubeCentre(s, i);
+        const math::Point3 mid{(prev[i].x + prev[j].x + cur[j].x + cur[i].x) / 4,
+                               (prev[i].y + prev[j].y + cur[j].y + cur[i].y) / 4,
+                               (prev[i].z + prev[j].z + cur[j].z + cur[i].z) / 4};
+        const math::Vec3 out{(mid.x - tc.x) * outwardSign, (mid.y - tc.y) * outwardSign,
+                             (mid.z - tc.z) * outwardSign};
+        pushPlanarTri(prev[i], prev[j], cur[j], out, pool, faces);
+        pushPlanarTri(prev[i], cur[j], cur[i], out, pool, faces);
+      }
+    }
+    prev = std::move(cur);
+  }
+}
+
+// A PLANAR half-space bounding one operand, recovered from a plane-only solid (box / slab):
+// its outward normal (out of the material) + a point on the plane.
+struct PlaneHalfspace {
+  bool ok = false;
+  math::Vec3 n;       ///< outward normal (points OUT of the kept material)
+  math::Point3 o;     ///< a point on the bounding plane
+};
+
+// Recognise `s` as a planar half-space RELATIVE to a torus `tor`: a solid whose faces are
+// ALL planar, EXACTLY ONE of which cuts the torus tube while every other plane leaves the
+// whole torus strictly on its interior side (a box/slab acting as one half-space through
+// the torus). Returns the cutting plane oriented outward. nullopt for a curved operand, a
+// plane that misses the torus, or ≠1 cutting plane (→ decline → OCCT).
+std::optional<PlaneHalfspace> recognisePlaneHalfspace(const CurvedSolid& tor,
+                                                      const topo::Shape& s) {
+  if (s.isNull()) return std::nullopt;
+  // Interior reference: the torus tube-centre point at u=0 (definitely inside the torus, and
+  // — for a box that fully brackets the torus save one cut — inside the box material too).
+  const math::Point3 torRef{tor.frame.origin.x + tor.frame.x.vec().x * tor.radius,
+                            tor.frame.origin.y + tor.frame.x.vec().y * tor.radius,
+                            tor.frame.origin.z + tor.frame.x.vec().z * tor.radius};
+  std::vector<PlaneHalfspace> cutting;
+  for (topo::Explorer ex(s, topo::ShapeType::Face); ex.more(); ex.next()) {
+    const auto surf = topo::surfaceOf(ex.current());
+    if (!surf) return std::nullopt;
+    if (surf->surface->kind != topo::FaceSurface::Kind::Plane) return std::nullopt;  // curved → not this path
+    const math::Ax3 fr = ssidetail::worldFrame(*surf, ex.current());
+    math::Vec3 n = fr.z.vec();
+    if (math::dot(fr.origin - torRef, n) < 0.0) n = math::Vec3{-n.x, -n.y, -n.z};  // outward
+    // Does this plane cut the torus? The torus point nearest the plane on the OUTWARD side is
+    // at signed distance (centre→plane along −n) + (R + r) at most; it cuts iff the torus
+    // straddles it. Compute the torus's max/min signed distance to the plane.
+    const math::Vec3 zc = tor.frame.z.vec();
+    const double axialComp = math::dot(zc, n);                       // n·ẑ
+    const double radialComp = std::sqrt(std::max(1.0 - axialComp * axialComp, 0.0));
+    // Farthest torus surface extent along n: centre-plane offset ± (R·radialComp + r).
+    const double dCentre = math::dot(tor.frame.origin - fr.origin, n);
+    const double reach = tor.radius * radialComp + tor.minorRadius;
+    const double dMax = dCentre + reach, dMin = dCentre - reach;
+    if (dMax > 1e-6 && dMin < -1e-6) cutting.push_back(PlaneHalfspace{true, n, fr.origin});
+    else if (dMax > 1e-6) return std::nullopt;  // torus pokes OUT past a non-cutting plane → box does not bracket it
+  }
+  if (cutting.size() != 1) return std::nullopt;  // must be exactly one clean cut
+  return cutting.front();
+}
+
+// Assemble the torus∩half-space setup for a PLANE ⟂ AXIS cut. hs.n must be (anti)parallel
+// to the torus axis; the plane must cut the TUBE (|h| < r strictly). keepLow = keep z ≤ h.
+TorusPlaneSetup torusPlaneSetup(const CurvedSolid& tor, const PlaneHalfspace& hs) {
+  TorusPlaneSetup st;
+  if (tor.kind != CurvedKind::Torus) return st;
+  const math::Vec3 zc = tor.frame.z.vec();
+  // Plane normal must be parallel to the axis (the ⟂-axis, horizontal-slice orientation).
+  // A plane PARALLEL to the axis (Villarceau-like) or any oblique plane declines here.
+  const math::Vec3 nn = hs.n;
+  if (math::norm(math::cross(zc, nn)) > 1e-6) return st;  // not axis-perpendicular → OCCT
+  const double axialSign = math::dot(zc, nn) >= 0.0 ? 1.0 : -1.0;  // +1 ⇒ outward n along +ẑ
+  const double h = math::dot(hs.o - tor.frame.origin, zc);         // cut station on the axis
+  const double R = tor.radius, r = tor.minorRadius;
+  if (!(r > 1e-9) || !(R > r + 1e-9)) return st;
+  if (!(std::fabs(h) < r - 1e-6)) return st;  // plane tangent / clear of the tube → OCCT
+  // Outward n along +ẑ ⇒ material is on the z ≤ h side (keepLow); along −ẑ ⇒ z ≥ h side.
+  st.keepLow = (axialSign > 0.0);
+  st.tor = &tor;
+  st.O = tor.frame.origin;
+  st.X = tor.frame.x.vec();
+  st.Y = tor.frame.y.vec();
+  st.zc = zc;
+  st.R = R;
+  st.r = r;
+  st.h = h;
+  // Minor angle of the tube crossing: sin v = h/r. The two seam circles are at
+  // ρ = R + r·cos v (outer) and ρ = R − r·cos v (inner). v0 = asin(h/r) ∈ (−π/2, π/2).
+  st.v0 = std::asin(std::clamp(h / r, -1.0, 1.0));
+  // Azimuth (N) + tube-arc (M) chord resolution — matched to S5-l torusCyl (kFacetSag).
+  const double kFacetSag = 0.004;
+  const double rhoMax = R + r;
+  const double chordA = std::sqrt(std::max(8.0 * kFacetSag * rhoMax, 1e-12));
+  st.N = std::clamp(static_cast<int>(std::ceil(kSsiTwoPi * rhoMax / chordA)), 32, 200);
+  const double chordM = std::sqrt(std::max(8.0 * kFacetSag * r, 1e-12));
+  st.M = std::clamp(static_cast<int>(std::ceil(kSsiTwoPi * r / chordM)), 24, 160);
+  st.ok = true;
+  return st;
+}
+
+// The seam-annulus inner / outer radii + the tube-arc minor-angle span on the KEPT side.
+// KEPT = z ≤ h (keepLow): the arc runs from the upper-INNER seam (v = π − v0) THROUGH the
+// inner equator (π), the bottom (3π/2) and the outer equator (2π) to the upper-OUTER seam
+// (2π + v0). KEPT = z ≥ h: the complementary short cap arc v ∈ [v0, π − v0] over the top.
+struct TorusPlaneArc {
+  double vA, vB;        ///< tube-arc minor-angle span for the kept side
+  double rhoInner, rhoOuter;  ///< the annulus inner/outer radii at z = h
+};
+TorusPlaneArc torusPlaneArc(const TorusPlaneSetup& s) {
+  const double c = s.r * std::cos(s.v0);            // = √(r² − h²) ≥ 0
+  const double rhoOuter = s.R + c, rhoInner = s.R - c;
+  if (s.keepLow)  // long way round the bottom
+    return TorusPlaneArc{kSsiPi - s.v0, kSsiTwoPi + s.v0, rhoInner, rhoOuter};
+  // keep z ≥ h: the short cap arc over the top (v0 → π − v0)
+  return TorusPlaneArc{s.v0, kSsiPi - s.v0, rhoInner, rhoOuter};
+}
+
+// buildTorusPlaneCommon = torus ∩ half-space (plane ⟂ axis): the tube arc on the kept side
+// + a flat ANNULUS cap at z = h between the inner/outer seam circles. Closed watertight
+// solid of revolution.
+topo::Shape buildTorusPlaneCommon(const TorusPlaneSetup& s) {
+  if (!s.ok) return {};
+  const TorusPlaneArc a = torusPlaneArc(s);
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  appendTorusPlaneTubeArc(s, a.vA, a.vB, /*outwardSign=*/1.0, pool, faces);
+  // Annulus cap at z = h. Its outward normal points AWAY from the kept material: +ẑ if we
+  // keep z ≤ h, −ẑ if we keep z ≥ h. inner ring first, outer ring second (both at s = h).
+  const std::vector<math::Point3> inner = s.ring(a.rhoInner, s.h);
+  const std::vector<math::Point3> outer = s.ring(a.rhoOuter, s.h);
+  const math::Vec3 capN = s.keepLow ? s.zc : math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z};
+  appendAnnulusCap(inner, outer, capN, pool, faces);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildTorusPlaneCut = torus − half-space: the torus material on the COMPLEMENT side, i.e.
+// the OTHER tube arc + the annulus cap with the REVERSED normal. When the torus is the
+// minuend the CUT keeps the far side of the plane; it is the same revolution assembly with
+// the kept side flipped. (Order-sensitive: only a torus-minuend CUT lands here.)
+topo::Shape buildTorusPlaneCut(const TorusPlaneSetup& s) {
+  if (!s.ok) return {};
+  TorusPlaneSetup flip = s;
+  flip.keepLow = !s.keepLow;  // CUT removes the half-space material → keep the complement
+  return buildTorusPlaneCommon(flip);
+}
+
+// buildTorusPlaneFuse = torus ∪ half-space. The half-space is a genuine (unbounded/large)
+// solid, so the union is NOT a closed torus-segment revolution — it needs the half-space's
+// OTHER bounding faces (the rest of the box), which are outside this family's revolution
+// assembly. HONEST-DECLINE → NULL → OCCT (never faked). COMMON + CUT are the landed slices.
+topo::Shape buildTorusPlaneFuse(const TorusPlaneSetup& s) {
+  if (!s.ok) return {};
+  return {};  // half-space-union needs the box's remaining faces → OCCT
+}
+
 // ═══ S5-m — COAXIAL TORUS ∩ SPHERE (COMMON / FUSE / CUT) ═════════════════════════
 // The second TORUS-family pair (after the S5-l torus∩cylinder). A ring torus (major R,
 // minor r, axis = frame Z, centre O) and a sphere (radius Rs) whose centre sits ON the
@@ -5186,12 +5420,49 @@ topo::Shape tryBranchedSteinmetz(const CurvedSolid& A, const CurvedSolid& B,
   return {};
 }
 
+// S5-r dispatch: exactly one operand a ring TORUS, the other a PLANE-ONLY half-space (a
+// box/slab) whose single cutting plane is PERPENDICULAR to the torus axis. COMMON + CUT
+// (torus minuend) land as a revolution; FUSE and every non-perpendicular / degenerate pose
+// HONEST-DECLINE → NULL → OCCT. Returns NULL when the pair is not this family.
+topo::Shape tryTorusHalfspace(const topo::Shape& a, const topo::Shape& b, Op op) {
+  const std::optional<CurvedSolid> csA = recogniseCurvedSolid(a);
+  const std::optional<CurvedSolid> csB = recogniseCurvedSolid(b);
+  // Exactly one operand must be a recognised ring torus; the other must NOT be curved.
+  const bool aTor = csA && csA->kind == CurvedKind::Torus;
+  const bool bTor = csB && csB->kind == CurvedKind::Torus;
+  if (aTor == bTor) return {};                 // need exactly one torus operand
+  if (aTor && csB) return {};                  // the other is a curved solid → not a half-space
+  if (bTor && csA) return {};
+  const CurvedSolid& tor = aTor ? *csA : *csB;
+  const topo::Shape& plane = aTor ? b : a;
+  const std::optional<PlaneHalfspace> hs = recognisePlaneHalfspace(tor, plane);
+  if (!hs) return {};
+  const TorusPlaneSetup st = torusPlaneSetup(tor, *hs);
+  if (!st.ok) return {};
+  switch (op) {
+    case Op::Common: return buildTorusPlaneCommon(st);
+    case Op::Fuse:   return buildTorusPlaneFuse(st);
+    case Op::Cut: {
+      // CUT is order-sensitive: torus − half-space keeps the torus complement. A
+      // half-space − torus minuend is out of this family's revolution scope → OCCT.
+      if (!aTor) return {};  // torus must be operand A (the minuend)
+      return buildTorusPlaneCut(st);
+    }
+  }
+  return {};
+}
+
 }  // namespace
 
 // ── The S5-a driver (design.md §Pipeline). Short, linear; the geometry lives in the
 // detail helpers + buildCommon. Returns a candidate Solid or NULL; the ENGINE
 // self-verifies (watertight + set-algebra volume) and owns the OCCT fallback. ──────
 topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op) {
+  // 0. TORUS ∩ HALF-SPACE (S5-r): a plane-only operand is not a CurvedSolid, so it is
+  // dispatched BEFORE the both-operands-curved gate. NULL when the pair is not this family.
+  const topo::Shape torPlane = tryTorusHalfspace(a, b, op);
+  if (!torPlane.isNull()) return torPlane;
+
   // 0. GATE: both operands must be recognised elementary curved solids.
   const std::optional<CurvedSolid> csA = recogniseCurvedSolid(a);
   const std::optional<CurvedSolid> csB = recogniseCurvedSolid(b);

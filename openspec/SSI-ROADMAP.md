@@ -576,7 +576,7 @@ S4-f DETECTS + REPORTS + traces-through, it does not repair topology.
 
 Archived change `openspec/changes/archive/2026-07-05-add-native-ssi-s4f-completeness`.
 
-### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g/h/i/j landed + S5-k FIRST TRANSVERSAL (non-coaxial) slice + S5-l/m/n/o TORUS surface family (CONE surface family opened — coaxial cone∩cylinder, single- AND two-circle cone∩sphere, coaxial cone∩cone (frustum AND apex-to-apex hourglass), AND two-circle cylinder∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; S5-k lands the FIRST non-coaxial pose — the offset cylinder∩sphere COMMON from a NON-PLANAR traced seam; S5-l opens the TORUS family — coaxial torus∩cylinder COMMON/FUSE/CUT COMPLETE 3/3 native; S5-m extends it — coaxial torus∩sphere (sphere at torus centre) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-n extends it again — coaxial torus∩cone (oblique-chord generalisation of S5-l) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-o closes the family with the FIRST curved∩curved pair where BOTH operands are tori — coaxial torus∩torus COMMON/FUSE/CUT COMPLETE 3/3 native; S5-p lands the SECOND transversal (non-coaxial) slice and the FIRST transversal TORUS pair — the offset (axis-parallel) torus∩cylinder COMMON from a NON-PLANAR traced seam (CUT/FUSE honest-decline, the same two-non-planar-seam residual as S5-k); S5-q lands the THIRD transversal (non-coaxial) slice and the FIRST transversal CONE pair — the offset cone∩sphere COMMON from a NON-PLANAR traced seam (CUT/FUSE honest-decline, the same two-non-planar-seam residual as S5-k/S5-p); ~months for full coverage)
+### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g/h/i/j landed + S5-k FIRST TRANSVERSAL (non-coaxial) slice + S5-l/m/n/o TORUS surface family (CONE surface family opened — coaxial cone∩cylinder, single- AND two-circle cone∩sphere, coaxial cone∩cone (frustum AND apex-to-apex hourglass), AND two-circle cylinder∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; S5-k lands the FIRST non-coaxial pose — the offset cylinder∩sphere COMMON from a NON-PLANAR traced seam; S5-l opens the TORUS family — coaxial torus∩cylinder COMMON/FUSE/CUT COMPLETE 3/3 native; S5-m extends it — coaxial torus∩sphere (sphere at torus centre) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-n extends it again — coaxial torus∩cone (oblique-chord generalisation of S5-l) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-o closes the family with the FIRST curved∩curved pair where BOTH operands are tori — coaxial torus∩torus COMMON/FUSE/CUT COMPLETE 3/3 native; S5-p lands the SECOND transversal (non-coaxial) slice and the FIRST transversal TORUS pair — the offset (axis-parallel) torus∩cylinder COMMON from a NON-PLANAR traced seam (CUT/FUSE honest-decline, the same two-non-planar-seam residual as S5-k); S5-q lands the THIRD transversal (non-coaxial) slice and the FIRST transversal CONE pair — the offset cone∩sphere COMMON from a NON-PLANAR traced seam (CUT/FUSE honest-decline, the same two-non-planar-seam residual as S5-k/S5-p); S5-r lands the FIRST curved∩PLANAR-half-space slice — the coaxial torus∩(axis-perpendicular plane) COMMON+CUT as a Pappus-exact revolution (tube-arc + annulus cap), FUSE + the plane-parallel/degenerate poses honest-decline; ~months for full coverage)
 Use SSI curves to **split** the curved faces of two solids, **classify**
 fragments inside/outside (reuse the BSP-CSG classifier + a curved point-in-solid
 test), **assemble** the surviving shell watertight (curved-seam weld from the
@@ -1111,6 +1111,26 @@ harness runs each of the sphere FUSE/CUT as an equal-R AND an unequal-R fixture;
   cone (tanα≈0, S5-k territory), a single-loop / tangent pose (< two closed loops), a large-offset pose
   whose band fails the watertight gate, and the coaxial pose (offset ≤ tol, owned by S5-f/S5-h) all
   decline → NULL → OCCT (honest, never faked).
+- **S5-r — coaxial TORUS(ring)∩HALF-SPACE (PLANE ⟂ AXIS) COMMON + CUT** (the FIRST curved∩PLANAR-half-
+  space slice; the plane operand is not a `CurvedSolid`, so it is dispatched by the dedicated
+  `tryTorusHalfspace` entry ABOVE the both-operands-curved gate). A ring torus (major R, minor r, axis
+  = frame Z) cut by an axis-PERPENDICULAR planar half-space (a box/slab whose ONE cutting face sits at
+  axial station z=h, |h|<r) → a horizontal tube slice whose section is an ANNULUS (washer between
+  ρ=R±√(r²−h²)). Because the cut is symmetric in ρ−R the segment's first moment about ρ=R VANISHES and
+  the plane-cut torus-segment volume collapses to the Pappus closed form **V(z≤h)=2π·R·A_low**, with
+  A_low=πr²−(r²·acos(h/r)−h·√(r²−h²)). COMMON is a SOLID OF REVOLUTION welded from the S5-l tube-arc
+  machinery (`appendTorusPlaneTubeArc`, mirror of `appendTubeArc`) on the kept side + a flat `appendAnnulusCap`
+  at z=h through one `VertexPool` (watertight, closed). `recognisePlaneHalfspace` recovers the single
+  bracketing cut plane from a plane-only operand (all faces planar, exactly ONE straddling the torus, all
+  others clearing it); `torusPlaneSetup` gates the axis-perpendicular orientation + tube-crossing. CUT
+  (torus minuend) keeps the complementary segment (same revolution, kept side flipped). Verified vs the
+  Pappus closed form cross-checked against a 200³ numeric-integration oracle: host fixtures (R=3,r=1,h=0.4
+  keep-low; R=4,r=1.5,h=−0.6 keep-high), COMMON + CUT watertight, ΔV within the 1% curved-parity bar,
+  COMMON≤min(A,B), swap-symmetric, COMMON+CUT partition the torus — no tolerance weakened, DISAGREED=0.
+  FUSE HONEST-DECLINES (the torus∪half-space needs the box's REMAINING faces, outside the revolution
+  scope → OCCT); a half-space−torus minuend CUT declines. The PLANE-PARALLEL-to-axis (Villarceau-like)
+  orientation and every degenerate pose (plane tangent to the tube |h|≥r, slab clear of the torus, a
+  narrow post through the hole that does not bracket the tube) HONEST-DECLINE → NULL → OCCT (never faked).
 
 Honest scope still declining → OCCT (measured NULL fallbacks, never faked):
 - **the TRANSVERSAL (offset) cylinder∩sphere CUT + FUSE** (the sphere-outer-zone weld between two

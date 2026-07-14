@@ -3435,6 +3435,259 @@ topo::Shape buildTransConeSphereFuse(const CurvedSolid& A, const CurvedSolid& B,
   return {};  // sphere-outer-zone weld is the transversal residual → OCCT (never faked)
 }
 
+// ═══ S5-s — TRANSVERSAL (NON-COAXIAL) CONE ∩ CYLINDER COMMON (CUT/FUSE decline) ═══════
+// The FOURTH transversal (non-coaxial) curved-boolean slice, after S5-k (offset cyl∩sphere),
+// S5-p (offset torus∩cyl) and S5-q (offset cone∩sphere), and the FIRST transversal cone∩cyl pair.
+// Where S5-e handles the COAXIAL cone(frustum)∩cylinder pose (cone axis colinear with the cylinder
+// axis → a single ANALYTIC circle seam, a solid of revolution), S5-s handles the OFFSET pose: the
+// cylinder axis is PARALLEL to the cone axis but DISPLACED perpendicular from it, so a thin
+// cylinder crosses the SLANTED cone wall in ONE NON-PLANAR closed space curve (the cone∩cylinder
+// quartic locus — no analytic circle exists), consumed DIRECTLY from the S3 TraceSet.
+//
+// SINGLE-SEAM TOPOLOGY (why this is NOT the S5-k/p/q two-loop pose). A cylinder whose axis is
+// PARALLEL to the cone axis meets the cone in a SINGLE closed loop, not two: the cone wall radius
+// r(y)=R0+y·tanα is MONOTONIC in the axial coordinate, so a parallel-offset cylinder crosses it
+// exactly once along its length — the cylinder cross-section is fully OUTSIDE the cone at the
+// narrow end and fully INSIDE at the wide end (measured + verified: for every parallel-axis pose
+// the trace returns ONE loop; a fat cylinder straddling the axis returns at most an end-clipped
+// open arc, never two closed poke-through loops). So the S5-k/p/q "cone band capped by two caps"
+// machinery does NOT apply here; S5-s is a distinct SINGLE-SEAM assembler.
+//
+// SCOPE (the clean, robustly-handleable single-crossing pose): a THIN cylinder whose axis is
+// parallel to the cone axis, offset perpendicular, whose whole cross-section is OUTSIDE the cone at
+// its NARROW-end disc and fully INSIDE the cone at its WIDE-end disc (a clean single wall crossing
+// → exactly ONE fully-transversal closed seam, nearTangentGaps==0, branchPoints==0, Closed). The
+// COMMON is then the part of the cylinder inside the cone, bounded by three seam-driven fragments:
+//   COMMON = cone-wall CAP (the cone-surface sheet inside the cylinder, bounded by the seam) +
+//     cylinder-wall BAND (from the seam up to the cylinder's INSIDE-end rim) + cylinder INSIDE-END
+//     DISC (a full disc at the wide end, entirely inside the cone). The cone cap + cyl band share
+//     the traced seam ring, and the cyl band + end disc share the inside-end rim ring, all through
+//     one VertexPool → watertight. Every fragment is seam- or analytic-rim-driven and verified.
+//     This is the landed transversal cone∩cyl slice.
+//
+// The cone cap is a radial fan from the cap's cone-surface CENTRE (evaluated ON the cone at the
+// mean seam (u,v)) through concentric rings out to the exact traced seam nodes, each interior node
+// placed ON the cone (lerp the (u,v) centre→boundary, evaluate), oriented by the TRUE cone-outward
+// normal (radial·cosα − axial·sinα). The cylinder band is appendRevolvedBand between the seam ring
+// and the inside-end rim (both on a common azimuth grid → welds ring-to-ring); the end disc is a
+// full appendDiskCap fan on the cylinder axis.
+//
+// CUT / FUSE both additionally need the cone OUTER SHELL / the cylinder OUTER stub welded across
+// the non-planar seam (the outer-zone weld that made S5-k / S5-p / S5-q decline). So CUT/FUSE
+// HONEST-DECLINE → OCCT; COMMON is the landed slice. Nothing is faked.
+//
+// REDUCTION: as the offset → 0 the pose becomes coaxial and S5-e's `coneCylSetup` claims it FIRST
+// in the dispatch (it runs before S5-s), reproducing the landed coaxial result; S5-s therefore
+// gates on a STRICTLY-POSITIVE offset (else → decline, letting S5-e own it). A skew (non-parallel)
+// cylinder axis, ≠1 closed seam, or a pose failing the clean-single-crossing survival samples all
+// decline → OCCT. The engine owns the watertight + volume gate + OCCT fallback. Nothing is faked.
+struct TransConeCylSetup {
+  bool ok = false;
+  const CurvedSolid* cone = nullptr;
+  const CurvedSolid* cyl = nullptr;
+  bool coneIsA = true;        ///< which operand is the cone (picks the seam (u,v) track)
+  bool cylIsB = true;         ///< which operand is the cylinder (picks the seam (u,v) track)
+  math::Point3 O;             ///< cylinder frame origin
+  math::Vec3 zc;              ///< cylinder axis (unit) — parallel to the cone axis
+  double Rc = 0.0;            ///< cylinder radius
+  double offset = 0.0;        ///< perpendicular distance of the cyl axis from the cone axis
+  double vInside = 0.0;       ///< cylinder frame-v of the WIDE (inside-the-cone) end disc
+  int N = 0;                  ///< common azimuth sample count (seam-chord bounded)
+  Seam seam{};                ///< the single traced seam, resampled onto the azimuth grid
+};
+
+// The cone-outward reference at a cone (u,v): radial·cosα − axial·sinα (the true outward wall
+// normal of a cone that WIDENS toward +axis). Correct regardless of station (unlike a plain
+// axis-radial reference, which ignores the slant).
+math::Vec3 coneOutwardAt(const CurvedSolid& cone, double u) {
+  const math::Vec3 X = cone.frame.x.vec(), Y = cone.frame.y.vec(), Z = cone.frame.z.vec();
+  const double ca = std::cos(cone.semiAngle), sa = std::sin(cone.semiAngle);
+  const math::Vec3 radial{X.x * std::cos(u) + Y.x * std::sin(u),
+                          X.y * std::cos(u) + Y.y * std::sin(u),
+                          X.z * std::cos(u) + Y.z * std::sin(u)};
+  return math::Vec3{radial.x * ca - Z.x * sa, radial.y * ca - Z.y * sa, radial.z * ca - Z.z * sa};
+}
+
+// A cone-surface CAP bounded by one traced seam loop: a radial fan from the cap's cone-surface
+// CENTRE (evaluated ON the cone at the mean seam (u,v)) through `rings` concentric rings out to the
+// exact traced seam nodes. Every interior node sits ON the cone (lerp the (u,v) centre→boundary,
+// evaluate); the OUTER ring is the shared pooled seam nodes so cap↔band welds. Facets are oriented
+// by the TRUE cone-outward normal at the cap centre. `coneUv` is the seam's cone (u,v) track (uvA
+// or uvB per operand order). Mirrors appendTransTorusCap for the ruled cone surface.
+void appendTransConeCap(const CurvedSolid& cone, const Seam& seam,
+                        const std::vector<std::pair<double, double>>& coneUv, int rings,
+                        VertexPool& pool, std::vector<topo::Shape>& faces) {
+  const int n = static_cast<int>(seam.pts.size());
+  if (n < 3 || rings < 1 || static_cast<int>(coneUv.size()) != n) return;
+  const double u0 = coneUv.front().first;
+  double uSum = 0.0, vSum = 0.0;
+  for (const auto& p : coneUv) { uSum += nearU(u0, p.first); vSum += p.second; }
+  const double uc = uSum / n, vc = vSum / n;
+  auto ringPt = [&](int r, int k) -> math::Point3 {
+    if (r == rings) return seam.pts[k];  // outer ring = exact traced seam node
+    const double t = static_cast<double>(r) / rings;
+    const double u = uc + (nearU(u0, coneUv[k].first) - uc) * t;
+    const double v = vc + (coneUv[k].second - vc) * t;
+    return cone.point(u, v);
+  };
+  const math::Point3 centre = cone.point(uc, vc);
+  const math::Vec3 outRef = coneOutwardAt(cone, uc);
+  auto tri = [&](const math::Point3& a, const math::Point3& b, const math::Point3& c) {
+    pushPlanarTri(a, b, c, outRef, pool, faces);
+  };
+  for (int k = 0; k < n; ++k) tri(centre, ringPt(1, k), ringPt(1, (k + 1) % n));
+  for (int r = 2; r <= rings; ++r)
+    for (int k = 0; k < n; ++k) {
+      const int kn = (k + 1) % n;
+      tri(ringPt(r - 1, k), ringPt(r, k), ringPt(r, kn));
+      tri(ringPt(r - 1, k), ringPt(r, kn), ringPt(r - 1, kn));
+    }
+}
+
+// Recognise the transversal (offset, axis-parallel) cone∩cylinder single-crossing pose from the
+// one traced seam. Declines (→ ok=false) for the coaxial pose (offset ≤ tol, owned by S5-e), a skew
+// (non-parallel) axis, ≠1 closed seam, or a pose whose two end discs are not (outside / inside) the
+// cone respectively — the clean single-crossing gate. Mirrors the other transversal setups: a
+// linear pose-recognition + resample + survival gate.
+TransConeCylSetup transConeCylSetup(const CurvedSolid& A, const CurvedSolid& B,
+                                    const std::vector<Seam>& seams) {
+  TransConeCylSetup st;
+  if (seams.size() != 1) return st;                       // single wall crossing → exactly one loop
+  if (!seams[0].closed || seams[0].pts.size() < 8) return st;
+
+  const CurvedSolid* conePtr = nullptr;
+  const CurvedSolid* cylPtr = nullptr;
+  for (const CurvedSolid* s : {&A, &B}) {
+    if (s->kind == CurvedKind::Cone) conePtr = s;
+    else if (s->kind == CurvedKind::Cylinder) cylPtr = s;
+  }
+  if (!conePtr || !cylPtr) return st;
+  const CurvedSolid& cone = *conePtr;
+  const CurvedSolid& cyl = *cylPtr;
+  const bool coneIsA = (&A == conePtr);
+  const bool cylIsB = (&B == cylPtr);
+
+  const double tanA = std::tan(cone.semiAngle);
+  if (std::fabs(tanA) < 1e-6) return st;                  // near-cylindrical → S5-a territory
+  const math::Vec3 zt = cone.frame.z.vec();
+  const math::Vec3 zc = cyl.frame.z.vec();
+  // Cylinder axis must be PARALLEL to the cone axis (axis-parallel offset pose). A skew /
+  // perpendicular cylinder is a different, harder locus → decline → OCCT.
+  if (math::norm(math::cross(zt, zc)) > 1e-6) return st;
+  const math::Point3 O = cyl.frame.origin;
+  const math::Vec3 d{O.x - cone.frame.origin.x, O.y - cone.frame.origin.y, O.z - cone.frame.origin.z};
+  const double offset = math::norm(d - zt * math::dot(d, zt));  // perpendicular cyl-axis offset
+  if (offset <= 1e-4) return st;                          // coaxial → S5-e owns it → decline
+  const double Rc = cyl.radius;
+  if (!(Rc > 1e-9)) return st;
+
+  const double chord = std::sqrt(std::max(8.0 * kCapSagitta * Rc, 1e-12));
+  const int N = std::clamp(static_cast<int>(std::ceil(kSsiTwoPi * Rc / chord)), 24, 200);
+  st.cone = conePtr; st.cyl = cylPtr; st.coneIsA = coneIsA; st.cylIsB = cylIsB;
+  st.O = O; st.zc = zc; st.Rc = Rc; st.offset = offset; st.N = N;
+  st.seam = resampleByAzimuth(seams[0], cylIsB, N);
+
+  // The cylinder AXIS point at frame-v (O + v·zc) — the disc CENTRE (cyl.point(u,v) is a WALL point).
+  auto axisAt = [&](double v) {
+    return math::Point3{O.x + zc.x * v, O.y + zc.y * v, O.z + zc.z * v};
+  };
+  // CLEAN SINGLE-CROSSING gate (the honest inside-the-other test, never faked): the cylinder's two
+  // end discs bracket the crossing — one end disc must be fully OUTSIDE the cone and the other fully
+  // INSIDE. We test each end disc's axis centre + full rim against the cone. `vInside` is the
+  // fully-inside end's frame-v.
+  auto endDiscInside = [&](double v) -> int {
+    const int cc = classifyPoint(cone, axisAt(v), kSsiTol);
+    bool allIn = (cc == 1), allOut = (cc == -1);
+    for (int k = 0; k < 16; ++k) {
+      const double u = kSsiTwoPi * k / 16.0;
+      const int r = classifyPoint(cone, cyl.point(u, v), kSsiTol);
+      allIn = allIn && (r == 1);
+      allOut = allOut && (r == -1);
+    }
+    return allIn ? 1 : (allOut ? -1 : 0);
+  };
+  const int loEnd = endDiscInside(cyl.vLo);
+  const int hiEnd = endDiscInside(cyl.vHi);
+  if (loEnd == -1 && hiEnd == 1) st.vInside = cyl.vHi;
+  else if (loEnd == 1 && hiEnd == -1) st.vInside = cyl.vLo;
+  else return st;                                          // not a clean single crossing → decline
+
+  // The cylinder band midpoint (on the AXIS, between the seam mean and the inside end) must be
+  // INSIDE the cone (the band is a COMMON boundary).
+  double seamMeanV = 0.0;
+  for (const auto& p : st.seam.pts)
+    seamMeanV += math::dot(math::Vec3{p.x - O.x, p.y - O.y, p.z - O.z}, zc);
+  seamMeanV /= static_cast<double>(st.seam.pts.size());
+  const double vMid = 0.5 * (seamMeanV + st.vInside);
+  if (classifyPoint(cone, axisAt(vMid), kSsiTol) != 1) return st;
+
+  st.ok = true;
+  return st;
+}
+
+// Ring count for the transversal cone cap: the cap's angular span (max seam-node distance from the
+// cap centre) × sqrt(1/(2·kCapSagitta)), bounded [4,48].
+int transConeCylCapRings(const TransConeCylSetup& s) {
+  const auto& uv = s.coneIsA ? s.seam.uvA : s.seam.uvB;
+  const double u0 = uv.front().first;
+  double uSum = 0.0, vSum = 0.0;
+  for (const auto& p : uv) { uSum += nearU(u0, p.first); vSum += p.second; }
+  const math::Point3 centre = s.cone->point(uSum / uv.size(), vSum / uv.size());
+  double span = 0.0;
+  for (const auto& p : s.seam.pts)
+    span = std::max(span, math::norm(math::Vec3{p.x - centre.x, p.y - centre.y, p.z - centre.z}));
+  return std::clamp(
+      static_cast<int>(std::ceil(std::max(span, 1e-6) * std::sqrt(1.0 / (2.0 * kCapSagitta)))), 4,
+      48);
+}
+
+// buildTransConeCylCommon(A,B) = COMMON of the TRANSVERSAL (offset) cone∩cylinder single-crossing
+// pose: the cone-wall cap (bounded by the traced seam) + the cylinder wall band (seam → inside-end
+// rim) + the cylinder inside-end disc. All fragments share their boundary rings through one
+// VertexPool → watertight. The first transversal cone∩cyl slice.
+topo::Shape buildTransConeCylCommon(const CurvedSolid& A, const CurvedSolid& B,
+                                    const std::vector<Seam>& seams) {
+  const TransConeCylSetup s = transConeCylSetup(A, B, seams);
+  if (!s.ok) return {};
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  // The inside-end rim: a full azimuth ring on the cylinder at vInside, on the SAME grid as the
+  // seam (u = 2πk/N) so the band welds ring-to-ring.
+  std::vector<math::Point3> insideRim(s.N);
+  for (int k = 0; k < s.N; ++k) insideRim[k] = s.cyl->point(kSsiTwoPi * k / s.N, s.vInside);
+  const auto& coneUv = s.coneIsA ? s.seam.uvA : s.seam.uvB;
+  // Cone-wall cap bounded by the seam (the cone sheet inside the cylinder).
+  appendTransConeCap(*s.cone, s.seam, coneUv, transConeCylCapRings(s), pool, faces);
+  // Cylinder wall band from the seam ring to the inside-end rim.
+  appendRevolvedBand(s.seam.pts, insideRim, s.O, s.zc, pool, faces, 1.0);
+  // Cylinder inside-end disc (full fan on the cyl axis). The inside end is either vHi (outward
+  // along +zc) or vLo (outward along −zc).
+  const bool endIsHi = (s.vInside > 0.5 * (s.cyl->vLo + s.cyl->vHi));
+  const math::Vec3 discOut = endIsHi ? s.zc : math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z};
+  appendDiskCap(*s.cyl, s.vInside, insideRim, discOut, pool, faces);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildTransConeCylCut / buildTransConeCylFuse — the transversal CUT / FUSE of the offset
+// cone∩cylinder. Both need the cone OUTER SHELL / cylinder OUTER stub welded across the non-planar
+// seam (the outer-zone weld that made S5-k / S5-p / S5-q decline). So CUT/FUSE HONEST-DECLINE
+// (→ NULL → OCCT); COMMON is the landed slice. Nothing is faked.
+topo::Shape buildTransConeCylCut(const CurvedSolid& A, const CurvedSolid& B,
+                                 const std::vector<Seam>& seams) {
+  const TransConeCylSetup s = transConeCylSetup(A, B, seams);
+  if (!s.ok) return {};
+  return {};  // outer-zone weld across the non-planar seam is the transversal residual → OCCT
+}
+
+topo::Shape buildTransConeCylFuse(const CurvedSolid& A, const CurvedSolid& B,
+                                  const std::vector<Seam>& seams) {
+  const TransConeCylSetup s = transConeCylSetup(A, B, seams);
+  if (!s.ok) return {};
+  return {};  // outer-zone weld across the non-planar seam is the transversal residual → OCCT
+}
+
 // ═══ S5-l — COAXIAL TORUS ∩ CYLINDER (COMMON / FUSE / CUT) ══════════════════════
 // The TORUS surface family opened. A ring torus (major R, minor r, axis = frame Z) and a
 // coaxial cylinder (radius Rc, same axis) whose wall crosses the torus TUBE at TWO
@@ -5524,6 +5777,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-q: TRANSVERSAL (offset/non-coaxial) cone∩sphere COMMON (traced non-planar seams).
       const topo::Shape transConeSph = buildTransConeSphereCommon(*csA, *csB, seams);
       if (!transConeSph.isNull()) return transConeSph;
+      // S5-s: TRANSVERSAL (offset/non-coaxial) cone∩cylinder COMMON (traced non-planar seams).
+      const topo::Shape transConeCyl = buildTransConeCylCommon(*csA, *csB, seams);
+      if (!transConeCyl.isNull()) return transConeCyl;
       // S5-i: TWO-CIRCLE coaxial cylinder∩sphere COMMON (sphere lower cap + cyl band + sphere upper cap).
       const topo::Shape cylSph2 = buildCylSphere2Common(*csA, *csB, seams);
       if (!cylSph2.isNull()) return cylSph2;
@@ -5570,6 +5826,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-q: TRANSVERSAL cone∩sphere FUSE (honest-decline — sphere-outer-zone residual → OCCT).
       const topo::Shape transConeSph = buildTransConeSphereFuse(*csA, *csB, seams);
       if (!transConeSph.isNull()) return transConeSph;
+      // S5-s: TRANSVERSAL cone∩cylinder FUSE (honest-decline — cone-outer-zone residual → OCCT).
+      const topo::Shape transConeCyl = buildTransConeCylFuse(*csA, *csB, seams);
+      if (!transConeCyl.isNull()) return transConeCyl;
       // S5-i: TWO-CIRCLE coaxial cylinder∩sphere FUSE (cyl walls + sphere zone bulge + discs).
       const topo::Shape cylSph2 = buildCylSphere2Fuse(*csA, *csB, seams);
       if (!cylSph2.isNull()) return cylSph2;
@@ -5613,6 +5872,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-q: TRANSVERSAL cone∩sphere CUT (honest-decline — sphere-outer-zone residual → OCCT).
       const topo::Shape transConeSph = buildTransConeSphereCut(*csA, *csB, seams);
       if (!transConeSph.isNull()) return transConeSph;
+      // S5-s: TRANSVERSAL cone∩cylinder CUT (honest-decline — cone-outer-zone residual → OCCT).
+      const topo::Shape transConeCyl = buildTransConeCylCut(*csA, *csB, seams);
+      if (!transConeCyl.isNull()) return transConeCyl;
       // S5-i: TWO-CIRCLE coaxial cylinder∩sphere CUT (two disconnected cyl-end dimpled pieces).
       const topo::Shape cylSph2 = buildCylSphere2Cut(*csA, *csB, seams);
       if (!cylSph2.isNull()) return cylSph2;

@@ -2522,4 +2522,157 @@ CC_TEST(torus_plane_honest_declines) {
   CC_CHECK(nb::ssi_boolean_solid(tor, post, nb::Op::Common).isNull());
 }
 
+// ── (20) TRANSVERSAL (NON-COAXIAL) cone∩cylinder COMMON (S5-s) — the FIRST transversal
+// cone∩cyl slice ──────────────────────────────────────────────────────────────────────────────
+// A cone frustum r(y)=0.5+(y+3)/6 over y∈[-3,3] about world +Y (r goes 0.5→1.5) and a THIN
+// cylinder of radius Rc=0.3 whose axis is PARALLEL to the cone axis (+Y) but DISPLACED off it by
+// off=1.0 in +X, spanning y∈[-2,2] so its whole cross-section is OUTSIDE the cone at its narrow
+// (lower) end and fully INSIDE at its wide (upper) end. Because the axes are non-coaxial AND the
+// cone wall is monotonic, the cylinder wall crosses the cone in ONE (not two) NON-PLANAR closed
+// loop (the cone∩cylinder quartic locus — no analytic circle; verified: the trace returns exactly
+// one closed seam). S5-s therefore is a SINGLE-SEAM assembler, distinct from the two-loop S5-k/p/q
+// machinery: it drives the COMMON directly from the traced seam:
+//   COMMON = cone-wall cap (bounded by the seam) + cylinder wall band (seam → inside-end rim) +
+//     cylinder inside-end disc. There is no closed-form COMMON volume, so the oracle is a
+// deterministic 200³ numerical integration of the analytic region (inside the finite cone AND the
+// offset finite cylinder) — the primary parity oracle for a non-analytic seam. CUT/FUSE honest-
+// decline (the outer-zone weld across the non-planar seam is the transversal residual, same class
+// as S5-k/S5-p/S5-q).
+CC_TEST(cone_cyl_transversal_offset_common_watertight_matches_numeric) {
+  const double r0 = 0.5, y0 = -3.0, r1 = 1.5, y1 = 3.0, off = 1.0, Rc = 0.3;
+  const double cyLo = -2.0, cyHi = 2.0;
+  const ntopo::Shape cone = makeCone(r0, y0, r1, y1);          // r(y)=0.5+(y+3)/6, axis +Y
+  const ntopo::Shape cyl = makeCylOff(/*Y*/ 1, off, 0.0, Rc, cyLo, cyHi);  // axis at x=off, z=0
+  CC_CHECK(!cone.isNull() && !cyl.isNull());
+
+  const auto csCone = sd::recogniseCurvedSolid(cone);
+  const auto csCyl = sd::recogniseCurvedSolid(cyl);
+  CC_CHECK(csCone && csCyl);
+  if (csCone && csCyl) {
+    CC_CHECK(csCone->kind == sd::CurvedKind::Cone);
+    CC_CHECK(csCyl->kind == sd::CurvedKind::Cylinder);
+    // The trace is ONE fully-transversal CLOSED non-planar loop (single wall crossing).
+    const ssi::TraceSet tr = ssi::trace_intersection(csCone->adapter(), csCyl->adapter());
+    CC_CHECK(tr.nearTangentGaps == 0);
+    CC_CHECK(tr.branchPoints == 0);
+    CC_CHECK(tr.lines.size() == 1);
+    int closed = 0;
+    for (const ssi::WLine& w : tr.lines)
+      if (w.isClosed()) ++closed;
+    CC_CHECK(closed == 1);
+  }
+
+  // Deterministic numeric COMMON volume (analytic region: inside the finite cone AND inside the
+  // offset finite cylinder). 200³ midpoint cells → converged to ≪ the 1% curved-parity bar.
+  const double slope = (r1 - r0) / (y1 - y0);
+  const int nx = 200, ny = 200, nz = 200;
+  const double X0 = off - Rc - 0.05, X1 = off + Rc + 0.05, Y0 = cyLo, Y1 = cyHi;
+  const double Z0 = -Rc - 0.05, Z1 = Rc + 0.05;
+  const double cell = (X1 - X0) / nx * (Y1 - Y0) / ny * (Z1 - Z0) / nz;
+  long inside = 0;
+  for (int i = 0; i < nx; ++i) {
+    const double x = X0 + (X1 - X0) * (i + 0.5) / nx;
+    for (int j = 0; j < ny; ++j) {
+      const double y = Y0 + (Y1 - Y0) * (j + 0.5) / ny;
+      const double rr = r0 + slope * (y - y0);
+      const double rr2 = rr * rr;
+      for (int k = 0; k < nz; ++k) {
+        const double z = Z0 + (Z1 - Z0) * (k + 0.5) / nz;
+        const double dx = x - off;
+        if (x * x + z * z <= rr2 && dx * dx + z * z <= Rc * Rc) ++inside;
+      }
+    }
+  }
+  const double vCommonNumeric = inside * cell;
+  CC_CHECK(vCommonNumeric > 0.05);   // a real, non-degenerate overlap wedge (≈ 0.547)
+
+  // ── COMMON: watertight native candidate whose volume matches the numeric oracle. ──
+  const ntopo::Shape common = nb::ssi_boolean_solid(cone, cyl, nb::Op::Common);
+  CC_CHECK(!common.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  CC_CHECK(vCommon > 0.0);                                    // watertight → engine accepts
+  CC_CHECK(std::fabs(vCommon - vCommonNumeric) <= 1e-2 * vCommonNumeric);
+  const double vCyl = sd::kSsiPi * Rc * Rc * (cyHi - cyLo);
+  const double vCone = frustumVolume(r0, r1, y1 - y0);
+  CC_CHECK(vCommon <= std::min(vCyl, vCone) + 1e-9);          // COMMON ≤ min(A,B)
+  CC_CHECK(!nb::boolean_solid(cone, cyl, nb::Op::Common).isNull());
+
+  // COMMON is symmetric — reversing the operand order builds the same watertight solid.
+  const ntopo::Shape swapped = nb::ssi_boolean_solid(cyl, cone, nb::Op::Common);
+  CC_CHECK(!swapped.isNull());
+  const double vSwapped = watertightMeshVolume(swapped);
+  CC_CHECK(vSwapped > 0.0);
+  CC_CHECK(std::fabs(vSwapped - vCommonNumeric) <= 1e-2 * vCommonNumeric);
+
+  // CUT / FUSE honest-decline for the transversal pose (the outer-zone weld across the non-planar
+  // seam is the transversal residual) → NULL → OCCT. Never a leaky solid.
+  CC_CHECK(nb::ssi_boolean_solid(cone, cyl, nb::Op::Cut).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(cyl, cone, nb::Op::Cut).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(cone, cyl, nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(cyl, cone, nb::Op::Fuse).isNull());
+}
+
+// ── (21) TRANSVERSAL cone∩cylinder REDUCES TO COAXIAL: the offset→0 hand-off + honest declines ──
+// As the perpendicular offset → 0 the pose becomes COAXIAL and the S5-e cone∩cylinder assembler
+// (which runs BEFORE S5-s in the dispatch) owns it; S5-s's transversal setup gates on a strictly-
+// positive offset so it declines the coaxial pose. This test pins that hand-off in two parts:
+//   (a) a coaxial cylinder that CROSSES the cone wall (Rc=1.0, on-axis) yields a watertight S5-e
+//       COMMON matching a deterministic 200³ numeric oracle;
+//   (b) the SAME THIN cylinder (Rc=0.3) as the landed S5-s slice, taken COAXIAL, sits entirely
+//       inside the cone (no wall crossing → no seam) so its analytic overlap is the WHOLE cylinder
+//       — strictly LARGER than the S5-s offset overlap (the offset shrinks the overlap to a wedge).
+// So the reduction boundary is a real hand-off, not a trivial identity. It also pins the S5-s
+// honest declines: a skew (perpendicular-axis) cylinder never yields a leaky native solid.
+CC_TEST(cone_cyl_transversal_reduces_to_coaxial_and_declines_skew) {
+  const double r0 = 0.5, y0 = -3.0, r1 = 1.5, y1 = 3.0;
+  const double cyLo = -2.0, cyHi = 2.0;
+  const ntopo::Shape cone = makeCone(r0, y0, r1, y1);
+  const double slope = (r1 - r0) / (y1 - y0);
+
+  // (a) COAXIAL CROSSING (Rc=1.0, on the cone +Y axis) → S5-e single-circle COMMON.
+  const double RcCross = 1.0;
+  const ntopo::Shape cylCoax = makeCylOff(/*Y*/ 1, 0.0, 0.0, RcCross, cyLo, cyHi);
+  const int nx = 200, ny = 200, nz = 200;
+  const double X0 = -RcCross, X1 = RcCross, Y0 = cyLo, Y1 = cyHi, Z0 = -RcCross, Z1 = RcCross;
+  const double cell = (X1 - X0) / nx * (Y1 - Y0) / ny * (Z1 - Z0) / nz;
+  long inside = 0;
+  for (int i = 0; i < nx; ++i) {
+    const double x = X0 + (X1 - X0) * (i + 0.5) / nx;
+    for (int j = 0; j < ny; ++j) {
+      const double y = Y0 + (Y1 - Y0) * (j + 0.5) / ny;
+      const double rr = r0 + slope * (y - y0);
+      const double rr2 = rr * rr;
+      for (int k = 0; k < nz; ++k) {
+        const double z = Z0 + (Z1 - Z0) * (k + 0.5) / nz;
+        if (x * x + z * z <= rr2 && x * x + z * z <= RcCross * RcCross) ++inside;
+      }
+    }
+  }
+  const double vCoaxNumeric = inside * cell;
+  const ntopo::Shape coax = nb::ssi_boolean_solid(cone, cylCoax, nb::Op::Common);
+  CC_CHECK(!coax.isNull());                                     // coaxial S5-e owns it
+  const double vCoax = watertightMeshVolume(coax);
+  CC_CHECK(vCoax > 0.0);
+  CC_CHECK(std::fabs(vCoax - vCoaxNumeric) <= 1e-2 * vCoaxNumeric);
+
+  // (b) The landed S5-s OFFSET thin slice (Rc=0.3, off=1.0) vs the analytic COAXIAL overlap of the
+  // SAME thin cylinder. Coaxial (off=0) the whole cylinder is inside the cone (r(y) ≥ 0.667 > Rc),
+  // so the coaxial overlap is the full cylinder volume — strictly larger than the offset wedge.
+  const double RcThin = 0.3;
+  const ntopo::Shape offCommon =
+      nb::ssi_boolean_solid(cone, makeCylOff(1, 1.0, 0.0, RcThin, cyLo, cyHi), nb::Op::Common);
+  CC_CHECK(!offCommon.isNull());                                // S5-s owns the offset thin pose
+  const double vOff = watertightMeshVolume(offCommon);
+  CC_CHECK(vOff > 0.0);
+  const double vCoaxThinAnalytic = sd::kSsiPi * RcThin * RcThin * (cyHi - cyLo);  // full cylinder
+  CC_CHECK(vCoaxThinAnalytic - vOff > 1e-2);   // coaxial (full-containment) overlap > offset wedge
+
+  // HONEST DECLINE: a SKEW cylinder (axis ⟂ the cone +Y axis — here a +Z cylinder through the
+  // cone) is a different, harder locus → S5-s parallel-axis gate rejects it. It must NEVER emit a
+  // leaky native solid: the result is either NULL (→ OCCT) or a robustly watertight candidate.
+  const ntopo::Shape skew = makeCyl(/*Z*/ 2, RcThin, -3, 3);
+  const ntopo::Shape skewCommon = nb::ssi_boolean_solid(cone, skew, nb::Op::Common);
+  if (!skewCommon.isNull()) CC_CHECK(watertightMeshVolume(skewCommon) > 0.0);
+}
+
 int main() { return cctest::run_all(); }

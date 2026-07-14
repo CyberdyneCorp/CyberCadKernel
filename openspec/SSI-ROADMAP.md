@@ -1764,6 +1764,64 @@ instrument (the host measurements above are reproducible through it with the env
 locus recall, not curvature-adaptive step placement — which the fixed-step trace already handles at
 sagitta 6e-6.
 
+### SSI-TERM — idx=24 does NOT terminate early; it fully covers + CLOSES. SSI-MARCH's "polyLen 0.203 / BoundaryExit" map FALSIFIED · ⛔ HONEST-DECLINE 2026-07-14 (no premature-termination bug; residual is near-tangent lateral divergence, refinement-invariant; `src/native/**` BYTE-UNCHANGED)
+
+SSI-TERM set out to fix a PRESUMED premature-marching-termination bug: SSI-MARCH mapped idx=24 as a native
+trace of **polyLen ≈ 0.203** of a **length-3.938 OCCT locus** (~19×), terminating as a boundary-to-boundary
+`BoundaryExit` ("front hits surface-A edge at 6.8e-6, back hits surface-B edge at 7.3e-5"). SSI-TERM instrumented
+the S3 tracer (`marchDir` termination: loop-closure / boundary-exit / step-cap / corrector-bail) and,
+MEASUREMENT-FIRST, **the SSI-MARCH map does not reproduce on base `0942c2a`.** The presumed bug is absent.
+
+**Direct measurement (OCCT-free `replay_freeform_seed` verbatim-reproducing the SIM's RNG + `grid=6/leaf=1/32`
++ default `MarchOptions`; a `CYBERCAD_SSI_MARCH_DIAG` env-gated `marchDir`-termination witness, reverted after;
+SIM/OCCT freeform-fuzz seed-`0x5515d1ff0f0f` `[DECLINE-DIAG]` for the coverage residual):**
+
+- **idx=24 traces the FULL extent and CLOSES — it does NOT stop early.** `status=Closed, nodes=714,
+  polyLen=3.982` (≈ OCCT's 3.938), `onSurfResidual=1.99e-10`, `natOnOcct=1.7e-7` (native essentially EXACT on
+  OCCT). Termination witness: `LoopClosed(step)` at step 712, `arcLen=3.976`, `sine=0.14` — a genuine
+  full-circuit loop closure (the S4-f TRUE-RETURN gate `arcLen ≫ 2·closeRadius` + tangent-continuity, satisfied
+  after a real circuit). FRONT≈BACK (uvA (0.240,0.429)↔(0.237,0.423)); `closeGap(front-back)=0.0116`. The
+  footprint A:u[0.219,0.790]v[0.138,0.777], B:u[0.242,0.803]v[0.162,0.766] is DEEP INTERIOR — every node's edge
+  gap ≥ 0.24, nowhere near a domain edge. **All four hypothesized termination causes are ABSENT:** not a
+  premature loop-close (closes after a full 3.98 circuit), not a boundary-exit (footprint interior, no edge
+  approach), not a step-cap (714 ≪ 20000 `maxPoints`), not a corrector-bail (onSurf 1.99e-10). SSI-MARCH's
+  "0.203 / BoundaryExit / edge-6.8e-6" numbers are a STALE/WRONG map — pristine base-archive replay confirms 3.98
+  Closed byte-for-byte.
+- **THE ROOT CAUSE — a near-tangent LATERAL DIVERGENCE at a graze pinch, NOT a coverage-extent gap.** SIM idx=24
+  `[DECLINE-DIAG]`: `traced=1 occtLines=1 covByNat=0 genuineMiss=1 natOnOcct=1.733e-07 genuineOcctOnNat=1.818e-03
+  worstMissLen=3.938`. Native's whole 3.98 loop IS on the OCCT locus forward (`natOnOcct 1.7e-7`); the
+  `genuineOcctOnNat=1.818e-3` is the REVERSE residual — one OCCT sample is 1.8e-3 from native's polyline at a
+  single site. The scan localizes it: the loop has a near-tangent PINCH at node283 where transversality
+  `sine=0.026` (well above `tangentSinTol=1e-3`, so no S4 stop) and the curve turns 12.26° in one step. There the
+  two paraboloids graze, so the intersection root is LATERALLY ILL-CONDITIONED: native's corrector and OCCT's
+  each land on their own root (both on-surface to ≤ their tol), and the two roots differ by 1.8e-3 laterally
+  while the induced normal-distance change is `≈ 1.8e-3·sine ≈ 5e-5` — invisible to either `onSurf` gate. This is
+  a native-vs-OCCT ACCURACY difference at a graze, JUST over the fixed 1e-3 `onCurve` gate — the SSI-SMALLLOOP
+  curve-divergence moat, NOT the SSI-MARCH extent framing.
+- **The residual is refinement-INVARIANT — tightening the step cannot close it and in fact BREAKS closure.**
+  Tightening `maxDeflection` 100× (`scale·1e-5`) does NOT pull native's locus onto OCCT's: instead the step
+  collapses (maxChord 7.5e-5), the loop no longer closes within `maxPoints`, and the trace degrades to a
+  `Boundary(budgetExhausted)` open arc of polyLen 2.16 (`closeGap 1.115`). So the DEFAULT step (`scale·1e-3`,
+  sagitta 6e-6, 714 nodes, clean closed loop) is already the correct operating point; the 1.8e-3 is not
+  discretization error. This corroborates SSI-MARCH's "100× refinement moves the locus < 1e-4."
+
+**Honest conclusion.** There is NO premature-marching-termination bug for idx=24 to fix — the trace covers the
+full 3.98 extent and closes correctly, and its `1.818e-3` decline is the near-tangent lateral ill-conditioning
+between two independent SSI solvers at a `sine≈0.026` graze pinch, which is refinement-invariant and provably
+cannot be closed without WIDENING `onCurve` (forbidden) or FABRICATING a locus native's own converged root does
+not have (forbidden). idx=23 (multi-branch) analogously traces all 4 corner arcs (line[0] polyLen 0.942 = the
+mapped `worstMissLen`, on-surf 2.5e-11, genuine boundary-to-boundary exits) — again NO missed extent, a
+`1.334e-3` graze divergence. idx=33 is a DISTINCT case (`occtLines=2 traced=1 genuineOcctOnNat=1.371
+worstMissLen=4.755`): a genuine SEEDING-RECALL miss of a second co-resident locus (the SSI-SMALLLOOP finding),
+not a termination bug. **Seed-`0x5515d1ff0f0f` unchanged: AGREED=45 DECLINED=3 DISAGREED=0** (idx 23/24/33),
+matching the prior maps. `src/native/**` BYTE-UNCHANGED, `cc_*` byte-unchanged, SSI-CAP + SSI-SUBDIV unchanged,
+no tolerance widened, no locus fabricated. Host suites GREEN on pristine src: `test_native_ssi_marching` 22/22,
+`test_native_ssi_seeding` 11/11, `test_native_ssi_exact_fuzz` DISAGREED=0. Retained: the OCCT-free
+`replay_freeform_seed` gains a trace-extent/footprint/min-sine scan dump (`REPLAY_DUMP_TRACE`) + `MARCH_MAXDEFL/
+MARCH_MAXSTEP` refinement knobs — the instrument that reproduces all measurements above. The person-decade moat
+here is near-tangent-graze ACCURACY parity (a laterally ill-conditioned root two solvers resolve differently),
+and second-locus recall (idx=33) — NEITHER is a marching-termination defect; idx=24's termination is CORRECT.
+
 ## Sequencing & effort
 
 ```

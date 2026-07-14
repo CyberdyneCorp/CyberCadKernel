@@ -231,15 +231,74 @@ int main(int argc, char** argv) {
   if (seedOnly) { std::printf("-- (trace skipped: REPLAY_SEED_ONLY) --\n"); return 0; }
 
   ssi::MarchOptions mopt;
+  // Refinement knobs (SSI-TERM/SSI-MARCH): confirm the near-tangent pinch deviation is
+  // refinement-INVARIANT (not arc-error) by tightening the deflection / step on the SAME code.
+  if (const char* e = std::getenv("MARCH_MAXDEFL")) { double v = std::atof(e); if (v>0) mopt.maxDeflection = na.modelScale * v; }
+  if (const char* e = std::getenv("MARCH_MAXSTEP")) { double v = std::atof(e); if (v>0) mopt.maxStep = na.modelScale * v; }
   const ssi::TraceSet ts = ssi::trace_intersection(na, nb, sopt, mopt);
   std::printf("-- trace_intersection --\n");
   std::printf("   TRACE: tracedBranches=%d lines=%zu\n", ts.tracedBranches, ts.lines.size());
+  const bool dumpTrace = std::getenv("REPLAY_DUMP_TRACE") != nullptr;
   for (std::size_t i = 0; i < ts.lines.size(); ++i) {
     const auto& w = ts.lines[i];
     int st = static_cast<int>(w.status);
     const char* sn = st==0?"Closed":st==1?"BoundaryExit":st==2?"NearTangent":st==3?"Failed":"BranchArc";
-    std::printf("     line[%zu] status=%s nodes=%zu onSurfResidual=%.3e nearTangentCrossed=%d branchId=%d\n",
-                i, sn, w.points.size(), w.onSurfResidual, w.nearTangentCrossed, w.branchId);
+    // polyline arc length (native's covered EXTENT — compare to OCCT locus length).
+    double poly = 0.0;
+    for (std::size_t k = 1; k < w.points.size(); ++k)
+      poly += cybercad::native::math::distance(w.points[k].point, w.points[k-1].point);
+    std::printf("     line[%zu] status=%s nodes=%zu polyLen=%.6g onSurfResidual=%.3e nearTangentCrossed=%d branchId=%d\n",
+                i, sn, w.points.size(), poly, w.onSurfResidual, w.nearTangentCrossed, w.branchId);
+    if (dumpTrace && !w.points.empty()) {
+      // FRONT / BACK endpoint params — reveal WHICH surface edge the boundary-exit hit and by how far.
+      auto edgeGap = [](double x){ return std::min(std::min(x, 1.0 - x), 1e30); };  // domain [0,1] gap to nearest edge
+      const auto& f = w.points.front();
+      const auto& b = w.points.back();
+      std::printf("       FRONT uvA=(%.6f,%.6f) uvB=(%.6f,%.6f) edgeGapA=%.3e edgeGapB=%.3e\n",
+                  f.u1, f.v1, f.u2, f.v2,
+                  std::min(edgeGap(f.u1), edgeGap(f.v1)), std::min(edgeGap(f.u2), edgeGap(f.v2)));
+      std::printf("       BACK  uvA=(%.6f,%.6f) uvB=(%.6f,%.6f) edgeGapA=%.3e edgeGapB=%.3e\n",
+                  b.u1, b.v1, b.u2, b.v2,
+                  std::min(edgeGap(b.u1), edgeGap(b.v1)), std::min(edgeGap(b.u2), edgeGap(b.v2)));
+      // FULL footprint bbox in (u,v) on both surfaces — does native's arc footprint span the domain?
+      double au0=1e30,au1=-1e30,av0=1e30,av1=-1e30,bu0=1e30,bu1=-1e30,bv0=1e30,bv1=-1e30;
+      for (const auto& n : w.points) {
+        au0=std::min(au0,n.u1); au1=std::max(au1,n.u1); av0=std::min(av0,n.v1); av1=std::max(av1,n.v1);
+        bu0=std::min(bu0,n.u2); bu1=std::max(bu1,n.u2); bv0=std::min(bv0,n.v2); bv1=std::max(bv1,n.v2);
+      }
+      std::printf("       FOOTPRINT A:u[%.4f,%.4f]v[%.4f,%.4f] B:u[%.4f,%.4f]v[%.4f,%.4f]\n",
+                  au0,au1,av0,av1,bu0,bu1,bv0,bv1);
+      // MIN-SINE + MAX-CHORD + MAX-TURN scan: a near-tangent GRAZE (min transversality sine) is
+      // where native's converged locus can diverge laterally from OCCT's. Report the min-sine node
+      // + the largest inter-node chord + the sharpest per-node tangent turn (candidate deviation site).
+      double minSine = 1e30; std::size_t minSineIdx = 0;
+      double maxChord = 0.0;  std::size_t maxChordIdx = 0;
+      double maxTurnDeg = 0.0; std::size_t maxTurnIdx = 0;
+      for (std::size_t k = 0; k < w.points.size(); ++k) {
+        const auto& n = w.points[k];
+        const auto nA = na.normal(n.u1, n.v1); const auto nB = nb.normal(n.u2, n.v2);
+        const double s = cybercad::native::math::norm(cybercad::native::math::cross(nA.vec(), nB.vec()));
+        if (s < minSine) { minSine = s; minSineIdx = k; }
+        if (k >= 1) { const double d = cybercad::native::math::distance(n.point, w.points[k-1].point);
+                      if (d > maxChord) { maxChord = d; maxChordIdx = k; } }
+        if (k >= 1 && k + 1 < w.points.size()) {
+          auto d0 = w.points[k].point - w.points[k-1].point;
+          auto d1 = w.points[k+1].point - w.points[k].point;
+          const double n0 = cybercad::native::math::norm(d0), n1 = cybercad::native::math::norm(d1);
+          if (n0 > 1e-12 && n1 > 1e-12) {
+            double cs = cybercad::native::math::dot(d0,d1)/(n0*n1); cs = cs>1?1:(cs<-1?-1:cs);
+            const double deg = std::acos(cs) * 57.29577951308232;
+            if (deg > maxTurnDeg) { maxTurnDeg = deg; maxTurnIdx = k; }
+          }
+        }
+      }
+      const double closeGap = cybercad::native::math::distance(w.points.front().point, w.points.back().point);
+      std::printf("       SCAN minSine=%.4g @node%zu  maxChord=%.4g @node%zu  maxTurn=%.2fdeg @node%zu  closeGap(front-back)=%.4g\n",
+                  minSine, minSineIdx, maxChord, maxChordIdx, maxTurnDeg, maxTurnIdx, closeGap);
+      const auto& ms = w.points[minSineIdx];
+      std::printf("       MINSINE node uvA=(%.5f,%.5f) uvB=(%.5f,%.5f) P=(%.5f,%.5f,%.5f)\n",
+                  ms.u1, ms.v1, ms.u2, ms.v2, ms.point.x, ms.point.y, ms.point.z);
+    }
   }
   return 0;
 }

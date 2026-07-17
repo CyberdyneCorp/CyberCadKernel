@@ -955,6 +955,19 @@ SeamHealReport healTrimLoopSeam(const FaceSurface& surface, const TrimLoop& loop
 // ─────────────────────────────────────────────────────────────────────────────
 namespace {
 
+// Transpose a param point / polyline (swap u↔v). Point-in-region verdicts (In/Out/
+// OnBoundary) are INVARIANT under a consistent u↔v swap of BOTH the loop and the query
+// point, so a loop that crosses the V-seam of a torus is classified by transposing it into
+// the U-seam frame and reusing the identical, proven u-seam machinery, then reporting the
+// (swap-invariant) verdict. Purely additive — the u-seam path is unchanged.
+ParamPoint transposePoint(const ParamPoint& p) noexcept { return ParamPoint{p.v, p.u}; }
+std::vector<ParamPoint> transposeLoop(const std::vector<ParamPoint>& poly) {
+  std::vector<ParamPoint> t;
+  t.reserve(poly.size());
+  for (const ParamPoint& p : poly) t.push_back(transposePoint(p));
+  return t;
+}
+
 // Reduce a query u into the unwrapped loop's u-window [uMin, uMax] by adding period multiples,
 // so the raycast tests the point against the unwrapped (continuous) loop at the SAME physical u.
 // A full-wrap loop spans ≥ one full period, so every physical u maps into its window.
@@ -1012,9 +1025,64 @@ Containment classifySeam(const TrimmedNurbsFace& face, const ParamPoint& p,
 
   const SurfacePeriod sp = surfacePeriod(face.surface);
   // Non-periodic surface → the seam path is a strict NO-OP: defer to plain classify (byte-identical).
-  if (!sp.periodicU || sp.uPeriod <= 0.0) return classify(face, p, opts);
+  if ((!sp.periodicU || sp.uPeriod <= 0.0) && (!sp.periodicV || sp.vPeriod <= 0.0))
+    return classify(face, p, opts);
 
   std::vector<ParamPoint> outer = flattenLoop(face.outer, opts.flattenSegments);
+
+  // A torus is periodic in BOTH u and v. Decide which seam(s) the outer loop crosses so the
+  // correct axis is unwrapped:
+  //   * crosses neither seam           → strict NO-OP, defer to plain classify.
+  //   * crosses only the U-seam        → the u-seam path below (unchanged).
+  //   * crosses only the V-seam        → transpose (swap u↔v) and reuse the u-machinery with
+  //                                      vPeriod; the verdict is swap-invariant.
+  //   * crosses BOTH seams at once     → a doubly-wrapped torus region is genuinely ambiguous
+  //                                      here (no single-axis unwrap resolves it) → honest
+  //                                      decline (Unknown), never faked.
+  const bool crossU =
+      (sp.periodicU && sp.uPeriod > 0.0) && loopCrossesSeam(outer, sp.uPeriod);
+  const bool crossV =
+      (sp.periodicV && sp.vPeriod > 0.0) && loopCrossesSeam(transposeLoop(outer), sp.vPeriod);
+
+  if (crossU && crossV) return Containment::Unknown;  // doubly-wrapped torus loop → honest decline
+
+  if (crossV && !crossU) {
+    // V-seam crossing: transpose the loop + query point into the U-seam frame, classify with the
+    // identical proven u-machinery (vPeriod as the period), and return the swap-invariant verdict.
+    // Holes are transposed the same way so a v-crossing hole on a torus is handled too.
+    std::vector<ParamPoint> tOuter = transposeLoop(outer);
+    const ParamPoint tp = transposePoint(p);
+    const SeamHealReport sr = healSeamLoop(tOuter, sp.vPeriod);
+    if (!sr.crossesSeam) return classify(face, p, opts);
+    if (sr.ambiguous || !sr.healed) return Containment::Unknown;
+    Containment outerVerdict =
+        classifyAgainstSeamLoop(sr.loop, tp, sp.vPeriod, opts.onEdgeTol, sr.fullWrap);
+    if (outerVerdict != Containment::In) return outerVerdict;
+    for (const TrimLoop& hole : face.holes) {
+      std::vector<ParamPoint> hpoly = transposeLoop(flattenLoop(hole, opts.flattenSegments));
+      Containment h;
+      if (loopCrossesSeam(hpoly, sp.vPeriod)) {
+        const SeamHealReport hr = healSeamLoop(hpoly, sp.vPeriod);
+        if (hr.ambiguous || !hr.healed) return Containment::Unknown;
+        h = classifyAgainstSeamLoop(hr.loop, tp, sp.vPeriod, opts.onEdgeTol, hr.fullWrap);
+      } else {
+        if (!loopWellFormed(hpoly)) return Containment::Unknown;
+        const double hext = std::max(polyExtent(hpoly), 1e-300);
+        const double htol = opts.onEdgeTol * std::max(hext, 1.0);
+        const int r = raycast(hpoly, tp, htol);
+        h = r == 2 ? Containment::OnBoundary
+                   : (r == 3 ? Containment::Unknown : (r == 1 ? Containment::In : Containment::Out));
+      }
+      if (h == Containment::OnBoundary) return Containment::OnBoundary;
+      if (h == Containment::Unknown) return Containment::Unknown;
+      if (h == Containment::In) return Containment::Out;  // inside a hole → removed
+    }
+    return Containment::In;
+  }
+
+  // U-seam path (the original, unchanged behavior). If the surface is not u-periodic (e.g. a
+  // v-only-periodic surface that did not cross the v-seam), defer to plain classify.
+  if (!sp.periodicU || sp.uPeriod <= 0.0) return classify(face, p, opts);
   const SeamHealReport sr = healSeamLoop(outer, sp.uPeriod);
   // Not seam-involved (no crossing, no tangent touch) → strict NO-OP: defer to plain classify.
   if (!sr.crossesSeam) return classify(face, p, opts);

@@ -466,6 +466,15 @@ SeamHealReport healTrimLoopSeam(const FaceSurface& surface, const TrimLoop& loop
 // period into the loop's unwrapped u-window before the raycast, so a full wrap correctly
 // classifies EVERY u inside the v-band as In (the whole u-band is enclosed), and a
 // half-wrap encloses exactly its u-arc. A seam-tangent (ambiguous) loop declines Unknown.
+//
+// TORUS (periodic in BOTH u and v): the outer loop is checked against BOTH seams.
+//   * crosses only the U-seam → the u-unwrap above.
+//   * crosses only the V-seam (the minor sweep) → the loop + query point are TRANSPOSED
+//     (u↔v swap) into the u-seam frame and classified by the identical proven u-machinery
+//     with vPeriod; In/Out/OnBoundary are invariant under a consistent u↔v swap, so the
+//     verdict is exact. Holes crossing the v-seam are handled the same way.
+//   * crosses BOTH seams at once (a doubly-wrapped torus region) → genuinely ambiguous for
+//     a single-axis unwrap → DECLINED honestly (Unknown), never faked (a documented residual).
 // ─────────────────────────────────────────────────────────────────────────────
 Containment classifySeam(const TrimmedNurbsFace& face, const ParamPoint& p,
                          const ClassifyOptions& opts = {});

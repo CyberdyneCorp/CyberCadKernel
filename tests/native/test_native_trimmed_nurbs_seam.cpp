@@ -84,6 +84,16 @@ static FaceSurface unitPlane() {
   return s;
 }
 
+// A torus: periodic in BOTH u (major sweep) and v (minor sweep), each period 2π.
+static FaceSurface unitTorus() {
+  FaceSurface s;
+  s.kind = FaceSurface::Kind::Torus;
+  s.frame = math::Ax3{};
+  s.radius = 2.0;       // major radius
+  s.minorRadius = 0.5;  // minor radius (if present in the model; unused by UV raycast)
+  return s;
+}
+
 static PcurveSegment lineSeg(double u0, double v0, double u1, double v1) {
   PcurveSegment seg;
   seg.curve.kind = EdgeCurve::Kind::Line;
@@ -320,6 +330,75 @@ static void testAmbiguousDecline() {
               "seam-tangent topology → classifySeam Unknown (honest decline)");
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. TORUS V-SEAM: a trim loop that crosses the MINOR-sweep (v) seam is classified by
+//    transposing into the u-machinery. Regression for the gap where classifySeam only
+//    unwrapped the u-seam, so a v-crossing torus loop fell through to plain classify()
+//    (which treats the v-seam as a hard boundary → mis-classified). The v-axis cases here
+//    mirror the u-axis FULL-WRAP / HALF-WRAP oracles, with u and v roles swapped.
+// ─────────────────────────────────────────────────────────────────────────────
+static void testTorusVSeam() {
+  // --- FULL V-WRAP: a band bounded by two constant-v-ignoring... a band across the WHOLE
+  // v-period between two u-values u0<u1. Its two boundary circles at u0 and u1 each cross the
+  // v=0 seam once. Every v (mod 2π) inside the u-band [u0,u1] is enclosed. ---
+  {
+    const double u0 = 0.2, u1 = 0.8;
+    TrimmedNurbsFace f;
+    f.surface = unitTorus();
+    // The stored pcurves sweep v across the full period at u0 and u1 (seam-crossing on close).
+    f.outer.push_back(lineSeg(u0, 0.0, u0, kTwoPi));   // left boundary, v-sweep (crosses v-seam at close)
+    f.outer.push_back(lineSeg(u1, 0.0, u1, kTwoPi));   // right boundary, v-sweep
+
+    // Points at ANY v inside the u-band → In (the whole v-band is enclosed).
+    for (double v : {0.1, 1.0, M_PI, 4.0, 6.0}) {
+      expectClass(classifySeam(f, {0.5, v}), Containment::In, "torus v-full-wrap: mid-band In (any v)");
+    }
+    // u outside the band → Out (for any v).
+    expectClass(classifySeam(f, {0.05, 1.0}), Containment::Out, "torus v-full-wrap: left of band Out");
+    expectClass(classifySeam(f, {0.95, 3.0}), Containment::Out, "torus v-full-wrap: right of band Out");
+    // On the band's u-edges → OnBoundary.
+    expectClass(classifySeam(f, {u0, 2.0}), Containment::OnBoundary, "torus v-full-wrap: on u0 edge");
+    expectClass(classifySeam(f, {u1, 5.0}), Containment::OnBoundary, "torus v-full-wrap: on u1 edge");
+  }
+
+  // --- HALF V-WRAP: a finite region straddling the v=0 seam, v-arc [1.5π, 2.5π]
+  // (wrapped: [1.5π,2π]∪[0,0.5π]) × u∈[0.3,0.7]. Mirrors halfWrapRegion with u/v swapped. ---
+  {
+    const double u0 = 0.3, u1 = 0.7;
+    TrimmedNurbsFace f;
+    f.surface = unitTorus();
+    f.outer.push_back(lineSeg(u0, 1.5 * M_PI, u0, kTwoPi));   // toward the v-seam at u0
+    f.outer.push_back(lineSeg(u0, 0.0, u0, 0.5 * M_PI));      // re-entered at v=0
+    f.outer.push_back(lineSeg(u0, 0.5 * M_PI, u1, 0.5 * M_PI));// top side (v=0.5π)
+    f.outer.push_back(lineSeg(u1, 0.5 * M_PI, u1, 0.0));      // toward v-seam at u1
+    f.outer.push_back(lineSeg(u1, kTwoPi, u1, 1.5 * M_PI));   // re-entered at v=2π
+    f.outer.push_back(lineSeg(u1, 1.5 * M_PI, u0, 1.5 * M_PI));// bottom side, close
+
+    // Inside the wrapped v-arc (v near the seam, mid u) → In.
+    expectClass(classifySeam(f, {0.5, 0.2}), Containment::In, "torus v-half-wrap: v=0.2 inside arc In");
+    expectClass(classifySeam(f, {0.5, 6.1}), Containment::In, "torus v-half-wrap: v≈2π inside arc In");
+    expectClass(classifySeam(f, {0.5, 1.5 * M_PI + 0.2}), Containment::In, "torus v-half-wrap: v=1.5π+ In");
+    // OUTSIDE the v-arc (v on the far side, v≈π) → Out.
+    expectClass(classifySeam(f, {0.5, M_PI}), Containment::Out, "torus v-half-wrap: v=π (far side) Out");
+    // Inside the v-arc but u outside the band → Out.
+    expectClass(classifySeam(f, {0.1, 0.2}), Containment::Out, "torus v-half-wrap: left of u-band Out");
+    expectClass(classifySeam(f, {0.9, 0.2}), Containment::Out, "torus v-half-wrap: right of u-band Out");
+  }
+
+  // --- NON-CROSSING on a torus: a loop wholly inside one period in BOTH u and v must equal the
+  // plain classify() verdict (strict no-op superset). ---
+  {
+    TrimmedNurbsFace f;
+    f.surface = unitTorus();
+    f.outer = rectLoop(1.0, 2.0, 1.0, 2.0);  // inside u∈[0,2π] AND v∈[0,2π]
+    const ParamPoint probes[] = {{1.5, 1.5}, {1.1, 1.3}, {0.5, 1.5}, {1.5, 0.5}, {2.5, 1.5}};
+    for (const ParamPoint& p : probes)
+      expectClass(classifySeam(f, p), classify(f, p), "torus non-crossing: classifySeam == classify");
+    expectClass(classifySeam(f, {1.5, 1.5}), Containment::In, "torus non-crossing: interior In");
+    expectClass(classifySeam(f, {0.5, 1.5}), Containment::Out, "torus non-crossing: exterior Out");
+  }
+}
+
 int main() {
   testPeriodicity();
   testFullWrap();
@@ -327,6 +406,7 @@ int main() {
   testNonCrossingNoOp();
   testNonPeriodicNoOp();
   testAmbiguousDecline();
+  testTorusVSeam();
 
   if (g_failures == 0)
     std::printf("OK  test_native_trimmed_nurbs_seam: %d checks passed\n", g_checks);

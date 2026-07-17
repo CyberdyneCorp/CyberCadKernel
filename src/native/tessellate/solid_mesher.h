@@ -43,12 +43,18 @@
 
 #include "native/tessellate/face_mesher.h"
 #include "native/tessellate/mesh.h"
+#include "native/tessellate/seam_strip.h"
 #include "native/topology/native_topology.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <map>
+#include <set>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace cybercad::native::tessellate {
@@ -232,23 +238,58 @@ class SolidMesher {
     // vertices two faces put on a shared edge without collapsing genuine nearby features.
     const double weldTol = std::max(p_.deflection * 0.5, 1e-7);
 
-    // BASELINE PASS — the curved-rim pin is DISABLED (no freeform-backed rims marked), so
+    // BASELINE PASS — the curved-rim pin AND the shared-seam-strip weld are DISABLED, so
     // this is EXACTLY the pre-MOAT-M0-rim behaviour for EVERY shape. If the baseline welds
     // watertight (every existing mesh does), return it → BYTE-IDENTICAL. The curved-rim pin
-    // is a VERIFIED, FALLBACK-ONLY repair: it is tried ONLY when the baseline fails to weld.
-    const Mesh baseline = VertexWelder{weldTol}.weld(meshAllFaces(shape, /*enableRimPin=*/false));
+    // and the seam strip are VERIFIED, FALLBACK-ONLY repairs: tried ONLY when the baseline
+    // fails to weld.
+    const Mesh baseline =
+        VertexWelder{weldTol}.weld(meshAllFaces(shape, /*enableRimPin=*/false, /*enableSeamStrip=*/false));
     if (isWatertight(baseline)) return baseline;
 
     // FALLBACK PASS — the baseline is NOT watertight. Enable the curved-rim pin (mark the
     // freeform-backed rims a flat neighbour diverges from) and re-mesh. This is the curved-wall
     // bowl↔lid rim case: pinning the flat lid's diverging rim samples to the bowl's canonical
     // rim curve closes the open rim. Return the pinned result ONLY if it is now watertight;
-    // otherwise return the baseline (an honest non-watertight mesh — the caller's self-verify
-    // then declines → OCCT, never a leak). Because the pinned result is used ONLY when the
-    // baseline was non-watertight, NO already-watertight mesh is ever replaced → byte-identity
-    // holds for every existing mesh; the pin can only turn a non-watertight mesh watertight.
-    const Mesh pinned = VertexWelder{weldTol}.weld(meshAllFaces(shape, /*enableRimPin=*/true));
-    return isWatertight(pinned) ? pinned : baseline;
+    // otherwise fall through to the seam-strip pass. Because a pinned/strip result is used ONLY
+    // when the baseline was non-watertight, NO already-watertight mesh is ever replaced →
+    // byte-identity holds for every existing mesh; the repairs can only turn a non-watertight
+    // mesh watertight.
+    const Mesh pinned =
+        VertexWelder{weldTol}.weld(meshAllFaces(shape, /*enableRimPin=*/true, /*enableSeamStrip=*/false));
+    if (isWatertight(pinned)) return pinned;
+
+    // SEAM-STRIP PASS (MESH-STRIP-IMPL) — the pinned mesh is STILL not watertight: the
+    // remaining defect is the curved↔curved shared-seam-as-hole NON-MANIFOLD (a seam edge used
+    // 4× because the two annuli's independent per-face near-seam triangulations do not pair 1:1
+    // at the weld). Enable the shared seam-strip weld: mesh the seam-adjacent strip ONCE, shared
+    // by both faces, so their near-seam triangles are the SAME triangles and pair 1:1. Return it
+    // ONLY if now watertight; otherwise the best honest non-watertight mesh (pinned, else
+    // baseline) — the caller's self-verify then declines, never a leak.
+    const Mesh strip =
+        VertexWelder{weldTol}.weld(meshAllFaces(shape, /*enableRimPin=*/true, /*enableSeamStrip=*/true));
+#ifdef CYBERCAD_SEAMSTRIP_DEBUG
+    {
+      int open = 0, nm = 0;
+      for (const auto& [e, u] : edgeUseCounts(strip)) {
+        if (u == 1 || u >= 3) {
+          const math::Point3& a = strip.vertices[e.lo];
+          const math::Point3& b = strip.vertices[e.hi];
+          const double ra = std::sqrt(a.x * a.x + a.y * a.y);
+          const double rb = std::sqrt(b.x * b.x + b.y * b.y);
+          if ((u == 1 ? open : nm) < 8)
+            std::fprintf(stderr, "[seamstrip]   %s v=(%u,%u) r=(%.6f,%.6f) da=%.2e\n",
+                         u == 1 ? "OPEN" : "NM  ", e.lo, e.hi, ra, rb,
+                         std::fabs(ra - 0.131007));
+        }
+        if (u == 1) ++open; else if (u >= 3) ++nm;
+      }
+      std::fprintf(stderr, "[seamstrip] strip-pass V=%zu T=%zu OPEN=%d NONMANIF=%d wt=%d\n",
+                   strip.vertices.size(), strip.triangles.size(), open, nm, (int)isWatertight(strip));
+    }
+#endif
+    if (isWatertight(strip)) return strip;
+    return baseline;
   }
 
  private:
@@ -263,7 +304,7 @@ class SolidMesher {
   // marks freeform-backed rims and a flat neighbour's diverging rim samples are pinned to the
   // shared rim curve. The straight seam-chord pin (MOAT M0w) and every other path are
   // unaffected by this flag.
-  Mesh meshAllFaces(const topo::Shape& shape, bool enableRimPin) const {
+  Mesh meshAllFaces(const topo::Shape& shape, bool enableRimPin, bool enableSeamStrip) const {
     FaceMesher fm(p_);
     EdgeCache cache(p_.deflection, p_.edgeMinSegs, p_.edgeMaxSegs);
     // PRE-PASS: let each face raise the minimum segment count of its boundary edges (a twisted
@@ -277,10 +318,143 @@ class SolidMesher {
     if (enableRimPin)
       for (topo::Explorer ex(shape, topo::ShapeType::Face); ex.more(); ex.next())
         fm.markFreeformBackedRims(ex.current(), cache);
+    // PRE-PASS 3 (seam-strip pass only): detect every isSeamChord loop carried by EXACTLY TWO
+    // distinct faces (the genuinely-shared curved↔curved seam) and register its shared collar
+    // strip. Skipped on the baseline + rim-pin passes, keeping them byte-identical. The registry
+    // is handed to the FaceMesher so a face carrying a registered seam pins its seam+collar to
+    // the SHARED strip and fills only the collar-outward remainder.
+    SeamStripRegistry seamStrips;
+    if (enableSeamStrip) {
+      collectSeamStrips(shape, cache, seamStrips);
+      fm.setSeamStrips(&seamStrips);
+    }
     Mesh all;
     for (topo::Explorer ex(shape, topo::ShapeType::Face); ex.more(); ex.next())
       all.append(fm.mesh(ex.current(), cache));
     return all;
+  }
+
+  // ── PRE-PASS 3: shared-seam-strip detection (MESH-STRIP-IMPL) ─────────────────
+  // Walk every face's every isSeamChord edge; group by the edge's order-independent
+  // quantized 3-D endpoint pair (both faces carry the seam as SEPARATE nodes over the
+  // SAME 3-D chord, so their endpoints coincide). A seam chord carried by EXACTLY TWO
+  // distinct faces is a genuinely-shared curved↔curved seam. Chain those shared chords
+  // into closed loops by endpoint adjacency and register each loop's shared collar strip
+  // (its bit-identical d.points ring is the SAME EdgeCache discretization both faces read).
+  void collectSeamStrips(const topo::Shape& shape, EdgeCache& cache,
+                         SeamStripRegistry& out) const {
+    // Quantize a 3-D point to a coarse vertex id (dedup coincident chord endpoints).
+    auto vkey = [](const math::Point3& p) {
+      auto q = [](double v) {
+        return static_cast<long long>(v >= 0 ? v * 1e6 + 0.5 : v * 1e6 - 0.5);
+      };
+      return std::array<long long, 3>{q(p.x), q(p.y), q(p.z)};
+    };
+    struct ChordRec {
+      long long a, b;                  // endpoint vertex ids
+      std::vector<math::Point3> pts;   // the shared d.points ring (endpoint→endpoint)
+    };
+    // Collect every isSeamChord edge with its endpoints + shared discretization, grouping
+    // faces per (endpoint-pair) so we can require exactly-two-face incidence.
+    std::map<std::pair<long long, long long>, std::vector<ChordRec>> byEnds;
+    std::map<std::pair<long long, long long>, std::set<const topo::TShape*>> faces;
+    std::map<std::array<long long, 3>, long long> vid;
+    auto idOf = [&](const math::Point3& p) -> long long {
+      const auto k = vkey(p);
+      auto it = vid.find(k);
+      if (it != vid.end()) return it->second;
+      const long long id = static_cast<long long>(vid.size());
+      vid.emplace(k, id);
+      return id;
+    };
+    for (topo::Explorer fe(shape, topo::ShapeType::Face); fe.more(); fe.next()) {
+      const topo::Shape& face = fe.current();
+      for (const topo::Shape& wire : face.tshape()->children())
+        for (topo::Explorer ee(wire, topo::ShapeType::Edge); ee.more(); ee.next()) {
+          const topo::Shape& edge = ee.current();
+          const auto cr = topo::curveOf(edge);
+          if (!cr || !cr->curve) continue;
+          if (!detail::isSeamChord(*cr->curve, cr->first, cr->last)) continue;
+          const EdgeDiscretization& d = cache.discretize(edge);
+          if (d.points.size() < 2) continue;
+          const long long ia = idOf(d.points.front());
+          const long long ib = idOf(d.points.back());
+          if (ia == ib) continue;
+          const auto key = std::make_pair(std::min(ia, ib), std::max(ia, ib));
+          byEnds[key].push_back(ChordRec{ia, ib, d.points});
+          faces[key].insert(face.tshape().get());
+        }
+    }
+    // Keep only chords shared by EXACTLY TWO distinct faces; chain them into closed loops
+    // by endpoint adjacency (union of vertices → connected components) and register each.
+    std::map<long long, std::vector<const ChordRec*>> incident;  // vertex → shared chords
+    for (auto& [key, recs] : byEnds) {
+      if (faces[key].size() != 2) continue;  // not a genuinely-shared two-face seam
+      const ChordRec& r = recs.front();       // both faces share the SAME 3-D d.points
+      incident[r.a].push_back(&r);
+      incident[r.b].push_back(&r);
+    }
+#ifdef CYBERCAD_SEAMSTRIP_DEBUG
+    std::fprintf(stderr, "[seamstrip] chord-groups=%zu shared2face=%zu incident-verts=%zu\n",
+                 byEnds.size(),
+                 [&] { std::size_t n = 0; for (auto& [k, f] : faces) if (f.size() == 2) ++n; return n; }(),
+                 incident.size());
+#endif
+    if (incident.empty()) return;
+    // Connected components over the shared-chord graph; each component is one seam loop.
+    std::set<const ChordRec*> seen;
+    for (auto& [v0, chords0] : incident) {
+      for (const ChordRec* start : chords0) {
+        if (seen.count(start)) continue;
+        std::vector<const ChordRec*> comp;
+        std::vector<long long> stack{v0};
+        std::set<long long> visited;
+        // BFS the component from v0.
+        std::vector<long long> verts;
+        std::set<const ChordRec*> compSet;
+        std::vector<long long> work{start->a, start->b};
+        while (!work.empty()) {
+          const long long v = work.back();
+          work.pop_back();
+          if (!visited.insert(v).second) continue;
+          verts.push_back(v);
+          for (const ChordRec* c : incident[v])
+            if (compSet.insert(c).second) {
+              comp.push_back(c);
+              seen.insert(c);
+              work.push_back(c->a == v ? c->b : c->a);
+            }
+        }
+        if (comp.size() < 3) continue;  // not a closed ring
+#ifdef CYBERCAD_SEAMSTRIP_DEBUG
+        std::fprintf(stderr, "[seamstrip] register loop, chords=%zu\n", comp.size());
+#endif
+        registerLoop(comp, out);
+      }
+    }
+  }
+
+  // Register one seam loop's collar strip from its component of shared chords. Build the
+  // deduped 3-D vertex ring (each chord contributes its interior d.points too, so a
+  // subdivided seam registers every shared sample) and hand it to the registry.
+  template <class ChordPtr>
+  void registerLoop(const std::vector<ChordPtr>& comp, SeamStripRegistry& out) const {
+    // Collect every unique 3-D seam sample across the component's chords (dedup within the
+    // registry quantum). Ordering is not required for the collar frame (centroid/axis/radius
+    // are order-independent up to axis sign, and the collar offset is radial), so a simple
+    // deduped set of all d.points is sufficient and robust.
+    std::vector<math::Point3> ring;
+    std::map<std::array<long long, 3>, int> seen;
+    auto k = [](const math::Point3& p) {
+      auto q = [](double v) {
+        return static_cast<long long>(v >= 0 ? v * 1e7 + 0.5 : v * 1e7 - 0.5);
+      };
+      return std::array<long long, 3>{q(p.x), q(p.y), q(p.z)};
+    };
+    for (const auto* c : comp)
+      for (const math::Point3& p : c->pts)
+        if (seen.emplace(k(p), 1).second) ring.push_back(p);
+    out.addSeamLoop(ring);
   }
 
   MeshParams p_;

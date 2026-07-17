@@ -1007,6 +1007,17 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_freeform_freeform_multiseam)
         set(test_native_freeform_freeform_multiseam_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_freeform_freeform_multiseam.cpp")
+        # MESH-STRIP-IMPL — the SHARED-SEAM-STRIP CACHE WELD (seam_strip.h + face_mesher.h /
+        # solid_mesher.h) at FINE deflection on the SAME two-mirror-cup multi-seam fixture.
+        # Pins the honest behaviour: (1) the FUSE outer envelope welds watertight at d=0.0045
+        # (BELOW the 0.005 floor the multiseam suite tested) — the fine-deflection multi-seam
+        # gate; (2) below the working band the strip weld converts the 4×-used non-manifold
+        # collapse into a small OPEN-edge residual and the verb HONEST-DECLINES to NULL (never
+        # a silent leak). Real S3 seams ⇒ numsci-gated. Additive header-only weld; no lib /
+        # cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_seam_strip_weld)
+        set(test_native_seam_strip_weld_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_seam_strip_weld.cpp")
         # BOOL-INT / NURBS roadmap LAYER 3 — host GATE (a), the OCCT-free closed-form proof
         # of the FLAGSHIP: the general two-freeform-solid NURBS boolean ORCHESTRATOR
         # nurbsSolidBoolean(A, B, op) for op ∈ {Fuse, Cut, Common} (nurbs_solid_boolean.h).

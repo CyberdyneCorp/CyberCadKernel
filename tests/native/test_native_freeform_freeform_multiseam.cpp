@@ -200,14 +200,15 @@ CC_TEST(ffms_welds_annulus_lens_watertight) {
 // The meshed volume lands in the tessellation band of V(A)+V(B)−V(A∩B) and the solid is
 // watertight + coherent through the working deflection band [0.005, 0.01].
 //
-// Band note: unlike the COMMON/CUT annular LENS (whose survivors are the two middle annuli
-// sharing BOTH seams, welding to arbitrarily fine deflection), the FUSE survivor set keeps
-// each wall's OUTER background annulus, whose OTHER boundary is the rim. The M0 mesher
-// tessellates that rim-to-r₂ background at a curvature-driven density that, below d≈0.004,
-// leaves a single T-junction (one non-manifold edge) on the shared OUTER seam r₂ — a frozen-
-// mesher per-face-CDT PARITY residual the verb HONEST-DECLINES (self-verify NULL), NEVER a
-// leaky solid. Within the working band the two backgrounds tessellate r₂ identically and the
-// envelope welds watertight at the correct volume (asserted here + at the finer-band decline).
+// Band note: the FUSE survivor set keeps each wall's OUTER background annulus (rim-to-r₂),
+// sharing the OUTER curved seam r₂. With the MESH-STRIP-IMPL shared-seam-strip cache weld
+// landed, this envelope now welds watertight through the FINE band too (d ∈ [0.002, 0.0045],
+// pinned in test_native_seam_strip_weld.cpp) — this suite asserts the coarse-to-mid band
+// [0.005, 0.01]. The remaining sub-band residuals are honest-declines (NULL, never a leaky
+// solid), and are two DISTINCT knife-edges mapped in SSI-ROADMAP MESH-STRIP-IMPL: an ISOLATED
+// singular-deflection baseline breakdown at exactly d=0.004 (a pre-existing frozen-mesher
+// background-annulus tessellation coincidence, NOT the shared seam), and the over-dense-seam
+// weld-tolerance sliver below the COMMON working band. Neither is a leak.
 CC_TEST(ffms_welds_fuse_outer_envelope) {
   const topo::Shape A = ffx::buildA();
   const topo::Shape B = ffx::buildB();

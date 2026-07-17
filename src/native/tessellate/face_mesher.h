@@ -48,6 +48,7 @@
 
 #include "native/tessellate/edge_mesher.h"
 #include "native/tessellate/mesh.h"
+#include "native/tessellate/seam_strip.h"
 #include "native/tessellate/surface_eval.h"
 #include "native/tessellate/trim.h"
 #include "native/tessellate/uv_triangulate.h"
@@ -55,6 +56,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <unordered_map>
 #include <vector>
 
@@ -253,6 +255,12 @@ using detail::SeamPins;
 class FaceMesher {
  public:
   explicit FaceMesher(MeshParams params = {}) noexcept : p_(params) {}
+
+  /// Register the shared seam-strip registry (MESH-STRIP-IMPL). When non-null and a face
+  /// carries a registered shared seam, the near-seam strip is meshed from the SHARED collar
+  /// (so two faces sharing the seam emit identical near-seam triangles). Null (the default,
+  /// and every single-face / baseline path) ⇒ byte-identical to the pre-strip mesher.
+  void setSeamStrips(const SeamStripRegistry* r) noexcept { seamStrips_ = r; }
 
   /// Tessellate `face` using a throwaway edge cache (single-face use).
   Mesh mesh(const topo::Shape& face) const {
@@ -738,27 +746,197 @@ class FaceMesher {
   Mesh trimmedFreeformMesh(const SurfaceEvaluator& eval, const std::vector<UVPolygon>& loops,
                            const UVRegion& region, bool flip, const BoundaryAnchors& anchors,
                            const SeamPins& seamPins) const {
+    // ── SHARED SEAM-STRIP path (MESH-STRIP-IMPL) ──────────────────────────────
+    // If this face carries a registered shared seam loop, REPLACE that seam loop (in the
+    // CDT input) with its concentric COLLAR loop (one ring inward on the material side, at
+    // the SHARED 3-D collar points), then splice the fixed seam↔collar strip triangles. The
+    // collar is computed ONLY from the shared seam geometry, so both faces sharing the seam
+    // emit the IDENTICAL near-seam strip and the weld pairs 1:1. The CDT fills only the
+    // collar-outward remainder (interior Steiner points are suppressed inside the band).
+    std::vector<SeamCollar> collars;
+    std::vector<UVPolygon> cdtLoops = loops;
+    SeamPins collarPins;  // collar UV → shared collar 3-D (so the CDT collar ring matches the strip)
+    if (seamStrips_ && !seamStrips_->empty())
+      collars = substituteCollarLoops(eval, region, cdtLoops, seamPins, collarPins);
+
     std::vector<UV> pts;
-    const std::vector<std::vector<int>> loopIdx = appendBoundaryLoops(loops, pts);
+    const std::vector<std::vector<int>> loopIdx = appendBoundaryLoops(cdtLoops, pts);
     if (loopIdx.empty() || loopIdx[0].size() < 3) return {};
 
     detail::ConstrainedDelaunay cdt(pts, loopIdx);
-    for (const UV& g : interiorGridPoints(eval, region)) cdt.insert(g);
+    for (const UV& g : interiorGridPoints(eval, region))
+      if (collars.empty() || !inAnyCollarBand(eval, g)) cdt.insert(g);
     const auto maxPts = static_cast<std::size_t>(p_.maxDiv) * static_cast<std::size_t>(p_.maxDiv);
     cdt.refine(
-        [&](int a, int b, int c) { return triangleDeflection(eval, pts, a, b, c) > p_.deflection; },
+        [&](int a, int b, int c) {
+          if (!collars.empty() && triangleInCollarBand(eval, pts, a, b, c)) return false;
+          return triangleDeflection(eval, pts, a, b, c) > p_.deflection;
+        },
         /*maxPasses=*/20, maxPts);
     const std::vector<UVTri> tris = cdt.triangles();
 
-    Mesh m = evaluatePoints(eval, pts, flip, anchors, seamPins);
-    m.triangles.reserve(tris.size());
+    Mesh m = collarPins.empty() ? evaluatePoints(eval, pts, flip, anchors, seamPins)
+                                : evaluatePointsWithCollar(eval, pts, flip, anchors, seamPins,
+                                                           collarPins);
+    m.triangles.reserve(tris.size() + collars.size() * 8);
     for (const UVTri& t : tris) {
       const auto ia = static_cast<std::uint32_t>(t.a);
       const auto ib = static_cast<std::uint32_t>(t.b);
       const auto ic = static_cast<std::uint32_t>(t.c);
       if (flip) m.addTriangle(ia, ic, ib); else m.addTriangle(ia, ib, ic);
     }
+    // Splice the fixed seam↔collar strip (its 3-D vertices are the SHARED seam + collar
+    // points, so the two faces' strips are bit-identical and weld 2-manifold).
+    for (const SeamCollar& sc : collars) appendCollarStrip(m, sc, flip);
     return m;
+  }
+
+  // One registered seam loop's per-vertex strip data on THIS face: the shared seam 3-D
+  // point, the shared collar 3-D point, and the collar's UV (an inward march from the seam
+  // toward the material). The collar UV replaced the seam loop in the CDT input.
+  struct SeamCollar {
+    std::vector<math::Point3> seam3d;    ///< shared seam vertices (bit-identical across faces)
+    std::vector<math::Point3> collar3d;  ///< shared collar vertices (bit-identical across faces)
+    std::vector<UV> collarUV;            ///< collar UV on this face (for CDT + band test)
+    const detail::SeamStrip* strip = nullptr;
+  };
+
+  // For every loop that is a REGISTERED shared seam, replace it in `cdtLoops` with its
+  // collar loop (UV) and return the collar data for splicing. A loop is a registered seam
+  // iff every vertex resolves to a registered seam vertex (via the seam pin / surface) AND
+  // a shared collar exists. Non-seam loops are left untouched (byte-identical).
+  std::vector<SeamCollar> substituteCollarLoops(const SurfaceEvaluator& eval,
+                                                const UVRegion& region,
+                                                std::vector<UVPolygon>& cdtLoops,
+                                                const SeamPins& seamPins,
+                                                SeamPins& collarPins) const {
+    std::vector<SeamCollar> out;
+#ifdef CYBERCAD_SEAMSTRIP_DEBUG
+    std::fprintf(stderr, "[collar] seamPins.empty=%d\n", (int)seamPins.empty());
+#endif
+    for (std::size_t li = 0; li < cdtLoops.size(); ++li) {
+      UVPolygon& loop = cdtLoops[li];
+      std::size_t count = loop.size();
+      if (count >= 2 && nearlyEqual(loop.front(), loop.back())) --count;
+      if (count < 3) continue;
+      SeamCollar sc;
+      sc.seam3d.reserve(count);
+      sc.collar3d.reserve(count);
+      sc.collarUV.reserve(count);
+      // PASS 1 — resolve every seam vertex to its shared 3-D seam point + inward-marched
+      // material UV, and VOTE the collar's radial side for the WHOLE loop (a per-vertex side
+      // choice zigzags across a near-vertical seam; a per-loop majority keeps the collar a
+      // single concentric ring that both faces place identically).
+      std::vector<math::Point3> seamPts(count);
+      std::vector<UV> inUVs(count);
+      bool isSeam = true;
+      int voteOut = 0, voteIn = 0;
+      for (std::size_t i = 0; i < count && isSeam; ++i) {
+        const UV& uv = loop[i];
+        const math::Point3* pin = seamPins.find(uv);
+        const math::Point3 seamP = pin ? *pin : eval.value(uv.u, uv.v);
+        if (seamStrips_->stripIndexFor(seamP) < 0) { isSeam = false; break; }
+        const UV inUV = marchInward(loop, i, count, region);
+        const math::Point3 probe = eval.value(inUV.u, inUV.v);
+        (seamStrips_->radiusInStrip(probe, seamP) >= seamStrips_->seamRadiusFor(seamP) ? voteOut
+                                                                                       : voteIn)++;
+        seamPts[i] = seamP;
+        inUVs[i] = inUV;
+      }
+      if (!isSeam) continue;
+      const bool outward = voteOut >= voteIn;  // the loop's material side (per-loop, both faces agree)
+      // PASS 2 — take the collar on the voted side for every vertex.
+      for (std::size_t i = 0; i < count; ++i) {
+        const math::Point3* collar = seamStrips_->collarOnSide(seamPts[i], outward);
+        if (!collar) { isSeam = false; break; }
+        sc.seam3d.push_back(seamPts[i]);
+        sc.collar3d.push_back(*collar);
+        sc.collarUV.push_back(inUVs[i]);
+      }
+#ifdef CYBERCAD_SEAMSTRIP_DEBUG
+      std::fprintf(stderr, "[collar] loop %zu count=%zu isSeam=%d collar3d=%zu outward=%d\n", li,
+                   count, (int)isSeam, sc.collar3d.size(), (int)outward);
+#endif
+      if (!isSeam || sc.collar3d.size() < 3) continue;
+      // Replace the seam loop with its collar loop in the CDT input (the CDT then fills only
+      // collar-outward; the seam↔collar band is the spliced strip). Pin each collar UV to its
+      // shared 3-D collar point so the CDT collar-boundary vertex coincides EXACTLY with the
+      // spliced strip's collar vertex (both faces → bit-identical → weld 2-manifold).
+      for (std::size_t i = 0; i < sc.collarUV.size(); ++i)
+        collarPins.add(sc.collarUV[i], sc.collar3d[i]);
+      loop.assign(sc.collarUV.begin(), sc.collarUV.end());
+      out.push_back(std::move(sc));
+    }
+    return out;
+  }
+
+  // March UV vertex `i` of `loop` a small step toward the region interior: step along the
+  // inward normal of the loop edge (rotate the tangent 90°), sign fixed by region.inside.
+  static UV marchInward(const UVPolygon& loop, std::size_t i, std::size_t count,
+                        const UVRegion& region) {
+    const UV& prev = loop[(i + count - 1) % count];
+    const UV& next = loop[(i + 1) % count];
+    const double tx = next.u - prev.u, ty = next.v - prev.v;  // tangent
+    double nx = -ty, ny = tx;                                 // rotate 90°
+    const double nl = std::sqrt(nx * nx + ny * ny);
+    if (nl < 1e-30) return loop[i];
+    nx /= nl; ny /= nl;
+    // Step size: a small fraction of the local edge length so the probe stays a hair inside.
+    const double step = 0.25 * std::sqrt(tx * tx + ty * ty);
+    UV cand{loop[i].u + nx * step, loop[i].v + ny * step};
+    if (!region.inside(cand)) cand = UV{loop[i].u - nx * step, loop[i].v - ny * step};
+    return cand;
+  }
+
+  // Is UV grid point `g` inside ANY collar band (in the shared 3-D seam frame)? Suppressed
+  // from CDT interior insertion so neither face triangulates the shared strip independently.
+  bool inAnyCollarBand(const SurfaceEvaluator& eval, const UV& g) const {
+    return seamStrips_->inCollarBand(eval.value(g.u, g.v));
+  }
+
+  // Does a CDT triangle fall inside a collar band (all 3 vertices in the band)? Then its
+  // refinement is suppressed (the band is the fixed shared strip, not per-face refined).
+  bool triangleInCollarBand(const SurfaceEvaluator& eval, const std::vector<UV>& pts, int a, int b,
+                            int c) const {
+    return seamStrips_->inCollarBand(eval.value(pts[a].u, pts[a].v)) &&
+           seamStrips_->inCollarBand(eval.value(pts[b].u, pts[b].v)) &&
+           seamStrips_->inCollarBand(eval.value(pts[c].u, pts[c].v));
+  }
+
+  // Splice the fixed seam↔collar strip: two triangles per seam segment, over the SHARED
+  // seam + collar 3-D vertices. Both faces emit these SAME triangles (mirror-wound by
+  // `flip`), so the shared seam edge is used exactly twice → 2-manifold weld.
+  static void appendCollarStrip(Mesh& m, const SeamCollar& sc, bool flip) {
+    const std::size_t n = sc.seam3d.size();
+    if (n < 3 || sc.collar3d.size() != n) return;
+    const auto base = static_cast<std::uint32_t>(m.vertices.size());
+    const bool normals = m.hasNormals();
+    // Append seam ring (0..n-1) then collar ring (n..2n-1). A flat placeholder normal is
+    // fine — these near-seam strip triangles are thin; the weld carries the neighbour normal.
+    const math::Dir3 nrm{0.0, 0.0, flip ? -1.0 : 1.0};
+    for (std::size_t i = 0; i < n; ++i) {
+      m.vertices.push_back(sc.seam3d[i]);
+      if (normals) m.normals.push_back(nrm);
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+      m.vertices.push_back(sc.collar3d[i]);
+      if (normals) m.normals.push_back(nrm);
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+      const auto s0 = base + static_cast<std::uint32_t>(i);
+      const auto s1 = base + static_cast<std::uint32_t>((i + 1) % n);
+      const auto c0 = base + static_cast<std::uint32_t>(n + i);
+      const auto c1 = base + static_cast<std::uint32_t>(n + (i + 1) % n);
+      // Quad (s0, s1, c1, c0) → two triangles. Winding: seam-ring outward-facing; `flip`
+      // reverses it so both faces' strips wind oppositely and the shared seam edge pairs.
+      if (flip) {
+        m.addTriangle(s0, c1, s1);
+        m.addTriangle(s0, c0, c1);
+      } else {
+        m.addTriangle(s0, s1, c1);
+        m.addTriangle(s0, c1, c0);
+      }
+    }
   }
 
   // Curvature-driven interior UV sample grid, kept strictly inside the trimmed
@@ -880,7 +1058,38 @@ class FaceMesher {
     return m;
   }
 
+  // As evaluatePoints, but a UV carrying a COLLAR pin is placed at the shared collar 3-D
+  // point (so the CDT's collar-boundary vertex coincides with the spliced strip's collar
+  // vertex). Collar pins take precedence over seam/anchor snapping (a collar UV is interior,
+  // never a seam-boundary sample). Used ONLY on the seam-strip path (collarPins non-empty),
+  // so every existing mesh keeps the plain evaluatePoints and stays byte-identical.
+  static Mesh evaluatePointsWithCollar(const SurfaceEvaluator& eval, const std::vector<UV>& pts,
+                                       bool flip, const BoundaryAnchors& anchors,
+                                       const SeamPins& seamPins, const SeamPins& collarPins) {
+    Mesh m;
+    m.vertices.reserve(pts.size());
+    m.normals.reserve(pts.size());
+    for (const UV& q : pts) {
+      const SurfaceSample s = eval.d1(q.u, q.v);
+      if (const math::Point3* collar = collarPins.find(q)) {
+        m.vertices.push_back(*collar);
+        m.normals.push_back(flip ? s.normal.reversed() : s.normal);
+        continue;
+      }
+      if (const math::Point3* pin = seamPins.find(q)) {
+        m.vertices.push_back(*pin);
+        m.normals.push_back(flip ? s.normal.reversed() : s.normal);
+        continue;
+      }
+      const math::Point3* anchor = anchors.find(s.point);
+      m.vertices.push_back(anchor ? *anchor : s.point);
+      m.normals.push_back(flip ? s.normal.reversed() : s.normal);
+    }
+    return m;
+  }
+
   MeshParams p_;
+  const SeamStripRegistry* seamStrips_ = nullptr;
 };
 
 }  // namespace cybercad::native::tessellate

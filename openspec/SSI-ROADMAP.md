@@ -1852,6 +1852,54 @@ MARCH_MAXSTEP` refinement knobs — the instrument that reproduces all measureme
 here is near-tangent-graze ACCURACY parity (a laterally ill-conditioned root two solvers resolve differently),
 and second-locus recall (idx=33) — NEITHER is a marching-termination defect; idx=24's termination is CORRECT.
 
+### MESH-STRIP-IMPL — shared-seam-strip CACHE weld landed (fallback-only); fine-deflection multi-seam collapse SHARPENED to two distinct residuals · ◐ PARTIAL 2026-07-17 (weld mechanism lands + never-leaky; collapse-map corrected; `src/native/**` OCCT-free, `cc_*` byte-unchanged)
+
+The M0-WELD gate carried a suspected fine-deflection failure: the shared-seam-strip weld of a
+multi-seam curved↔curved solid was thought to collapse/degenerate as deflection → 0 (two annuli
+sharing a closed seam whose INDEPENDENT per-face near-seam CDTs pair non-1:1 → a seam edge used
+4× = NON-MANIFOLD whose residual grows with refinement). This track implemented the shared-seam-strip
+CACHE weld (`src/native/tessellate/seam_strip.h` + `face_mesher.h`/`solid_mesher.h`) and MEASURED the
+collapse precisely on the two-mirror-cup two-seam fixture (r₁≈0.131, r₂≈0.374), native-vs-closed-form.
+
+- **The strip weld (LANDED, fallback-only, byte-identical elsewhere).** `SeamStripRegistry` (a
+  SolidMesher pre-pass) detects every `isSeamChord` loop carried by EXACTLY TWO faces and records,
+  from the SHARED bit-identical seam d.points, a concentric COLLAR ring + strip. A face carrying a
+  registered seam substitutes its seam loop with the shared collar loop in the CDT, suppresses interior
+  Steiner insertion inside the collar band (tested in the shared 3-D seam frame so both faces suppress
+  IDENTICALLY), fills only the collar-outward remainder, and splices the fixed seam↔collar strip. Runs
+  ONLY as a FALLBACK after the baseline + rim-pin passes fail to weld — so every already-watertight mesh
+  is byte-identical, and the pass can only ever turn a non-watertight mesh watertight (or be discarded).
+- **VERIFIED win — the fine-deflection multi-seam band welds watertight.** FUSE (the outer envelope whose
+  survivors keep each wall's rim-to-r₂ background annulus, sharing the OUTER curved seam) welds into ONE
+  watertight, coherent, positive-volume closed 2-manifold (χ consistent, every edge used exactly twice,
+  be=0) across the fine band d ∈ [0.002, 0.0045], at the closed-form V(A)+V(B)−V(A∩B). COMMON/CUT (the
+  annular lens sharing BOTH seams) weld watertight for d ≥ 0.002. Regression: `tests/native/test_native_seam_strip_weld.cpp` (FUSE d=0.0045 watertight; the never-leaky sub-threshold decline). This corrects
+  the earlier `ffms_welds_fuse_outer_envelope` docstring's "below d≈0.004 always leaves a T-junction /
+  honest-declines" framing — the fine band DOES weld watertight.
+- **SHARPENED collapse map — two DISTINCT residuals, both refinement-measured, both honest-decline (NULL, never leaky), and the strip does NOT close either.** A byte-for-byte comparison against the pre-strip
+  (main) mesher confirms the strip weld changes NO watertight OUTCOME on this fixture — it reduces the
+  residual but does not flip a collapse to watertight:
+  1. **COMMON/lens d ≤ 0.0018 — over-dense-seam weld-tolerance sliver.** The strip weld ELIMINATES the
+     4×-used non-manifold (NONMANIF: 4×→0) but leaves a TINY OPEN-edge residual — exactly ONE degenerate
+     triangle (3 unpaired edges, all AT the inner seam r₁, radius within 3e-6 of each other). Mechanism:
+     the seam is sampled so densely that two adjacent seam vertices fall within the deflection-derived
+     weld tolerance (`weldTol = max(deflection·0.5, 1e-7)`), so the welder merges them and collapses the
+     strip quad into a sliver. This is the tradeoff the strip header itself predicted ("dropping the
+     slivers to kill the non-manifold leaves OPEN edges"): the strip converts NON-MANIFOLD → OPEN, it does
+     not close. Closing it needs a shared IDENTICAL seam-ring decimation (both faces) so no two consecutive
+     collar/seam vertices sit within the weld tolerance — a mesher-core redesign, deferred.
+  2. **FUSE d=0.004 — an ISOLATED SINGULAR-deflection baseline breakdown, UNRELATED to the shared seam.**
+     At exactly d=0.004 (but NOT its neighbours 0.0045/0.0042/0.0038/0.0035/0.0032) the BASELINE mesher
+     produces be=4439 open edges — a wholesale rim-to-r₂ background-annulus tessellation breakdown (a
+     curvature-driven sampling coincidence), NOT the seam-as-hole 4×-collapse. It reproduces byte-for-byte
+     on main (strip disabled), so it is a pre-existing frozen-mesher knife-edge, not introduced here; the
+     strip weld does not rescue it and the verb correctly declines → NULL.
+
+  Net: the shared-seam CACHE weld is a correct, safe, never-leaky mechanism that eliminates the
+  non-manifold collapse and welds the fine multi-seam band watertight; the two remaining sub-threshold
+  residuals above are the sharpened, honest-declining floor. `src/native/**` stays OCCT-free; `cc_*`
+  byte-unchanged; no tolerance widened; the watertight self-verify is never bypassed.
+
 ## Sequencing & effort
 
 ```

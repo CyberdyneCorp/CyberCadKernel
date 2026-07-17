@@ -2606,4 +2606,96 @@ CC_TEST(mixed_form_a_and_form_b_declines) {
   CC_CHECK(ex::readStepString(merged).isNull());  // mixed Form-A + Form-B → decline
 }
 
+// ── L8-HARDEN (major-arc TRIMMED_CURVE) — a >π circle arc honors its directed trim ─────
+// The DOCUMENTED L8 residual: "a single edge subtending >π with no intermediate vertex
+// imports as its minor complement." The two endpoint VERTICES of a CIRCLE edge pin the
+// two boundary angles but NOT the directed sweep between them — a MAJOR arc (span>π)
+// shares BOTH its endpoints with its minor complement, and curveRange resolves the
+// ambiguity by the "shortest CCW-forward" convention, so a foreign file whose arc is the
+// OTHER (major) sweep imported as the wrong (minor) arc. A foreign AP203/AP242 writer
+// (e.g. OCCT) carries the TRUE directed span in a TRIMMED_CURVE's two PARAMETER_VALUE
+// trims; the reader now honors [t0,t1] for a CIRCLE/ELLIPSE basis WHEN — and only when —
+// the trim endpoints reproduce the edge vertices (faithful), so the major arc rebuilds
+// with its true >π span. This fixture is a minimal foreign single-planar-face brep whose
+// outer bound is a MAJOR (270°) circle arc + a closing chord: the arc runs from
+// P0=(1,0,0) [angle 0] to P1=(0,1,0), and the trim (0 → −3π/2) selects the CLOCKWISE 270°
+// sweep — the sweep the endpoint-only reconstruction (90° CCW) gets WRONG.
+namespace {
+// A minimal, self-contained foreign STEP with one CIRCLE-arc edge; `trimBody` empty ⇒ a
+// bare CIRCLE (endpoint-only), else the CIRCLE is wrapped in a TRIMMED_CURVE(trimBody).
+std::string majorArcFaceStep(const std::string& trimBody) {
+  std::string s =
+      "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\n"
+      "FILE_NAME('','',(''),(''),'','','');\nFILE_SCHEMA(('AUTOMOTIVE_DESIGN'));\nENDSEC;\nDATA;\n"
+      "#100 = (LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.));\n"
+      "#101 = (NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.));\n"
+      "#102 = (NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT());\n"
+      "#103 = UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-06),#100,'','');\n"
+      "#104 = (GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#103))"
+      "GLOBAL_UNIT_ASSIGNED_CONTEXT((#100,#101,#102))REPRESENTATION_CONTEXT('',''));\n"
+      "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n#2 = DIRECTION('',(0.,0.,1.));\n"
+      "#3 = DIRECTION('',(1.,0.,0.));\n#4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n#5 = PLANE('',#4);\n"
+      "#6 = CARTESIAN_POINT('',(1.,0.,0.));\n#7 = CARTESIAN_POINT('',(0.,1.,0.));\n"
+      "#8 = VERTEX_POINT('',#6);\n#9 = VERTEX_POINT('',#7);\n"
+      "#10 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n";
+  if (trimBody.empty())
+    s += "#11 = CIRCLE('',#10,1.);\n";
+  else
+    s += "#111 = CIRCLE('',#10,1.);\n#11 = TRIMMED_CURVE('',#111," + trimBody + ");\n";
+  s += "#12 = EDGE_CURVE('',#8,#9,#11,.T.);\n#13 = ORIENTED_EDGE('',*,*,#12,.T.);\n"
+       "#14 = LINE('',#7,#20);\n#20 = VECTOR('',#21,1.);\n#21 = DIRECTION('',(1.,-1.,0.));\n"
+       "#15 = EDGE_CURVE('',#9,#8,#14,.T.);\n#16 = ORIENTED_EDGE('',*,*,#15,.T.);\n"
+       "#17 = EDGE_LOOP('',(#13,#16));\n#18 = FACE_OUTER_BOUND('',#17,.T.);\n"
+       "#19 = ADVANCED_FACE('',(#18),#5,.T.);\n#30 = CLOSED_SHELL('',(#19));\n"
+       "#31 = MANIFOLD_SOLID_BREP('',#30);\n#32 = SHAPE_REPRESENTATION('',(#31),#104);\n"
+       "ENDSEC;\nEND-ISO-10303-21;\n";
+  return s;
+}
+// The reconstructed span of the (single) CIRCLE edge, or -999 if none / null shape.
+double circleArcSpan(const topo::Shape& s) {
+  if (s.isNull()) return -999.0;
+  for (topo::Explorer e(s, topo::ShapeType::Edge); e.more(); e.next()) {
+    const auto cr = topo::curveOf(e.current());
+    const auto rr = topo::rangeOf(e.current());
+    if (cr && cr->curve && rr && cr->curve->kind == topo::EdgeCurve::Kind::Circle)
+      return rr->last - rr->first;
+  }
+  return -999.0;
+}
+}  // namespace
+
+CC_TEST(major_arc_trimmed_curve_reconstructs_full_span_not_minor_complement) {
+  const double kPi = 3.14159265358979323846;
+  const double kHalfPi = kPi / 2.0, k3HalfPi = 1.5 * kPi;
+
+  // Endpoint-only (bare CIRCLE, no trim): the ambiguity resolves to the 90° minor arc —
+  // the documented residual. This is the *control* for the healed case below.
+  const double bare = circleArcSpan(ex::readStepString(majorArcFaceStep("")));
+  CC_CHECK(std::fabs(bare - kHalfPi) < 1e-6);  // reconstructs the minor complement (unchanged)
+
+  // With the directed MAJOR trim (0 → −3π/2), the reader honors the trim and rebuilds the
+  // TRUE 270° arc (C(−3π/2)=(0,1)=P1 faithfully) — the healed residual.
+  const double major = circleArcSpan(ex::readStepString(majorArcFaceStep(
+      "(PARAMETER_VALUE(0.)),(PARAMETER_VALUE(-4.71238898038469)),.T.,.PARAMETER.")));
+  CC_CHECK(std::fabs(major - k3HalfPi) < 1e-6);  // >π: the major arc, NOT the minor complement
+  CC_CHECK(major > kPi);                         // strictly a major arc
+
+  // A directed MINOR trim (0 → π/2) still gives the 90° arc — the trim never *widens* a
+  // faithful minor arc into its major complement.
+  const double minor = circleArcSpan(ex::readStepString(majorArcFaceStep(
+      "(PARAMETER_VALUE(0.)),(PARAMETER_VALUE(1.5707963267948966)),.T.,.PARAMETER.")));
+  CC_CHECK(std::fabs(minor - kHalfPi) < 1e-6);
+}
+
+// HONEST fallback: a TRIMMED_CURVE whose PARAMETER_VALUE trims do NOT reproduce the edge
+// vertices (a mislabelled / degree-unit / degenerate trim) is NOT trusted — the reader
+// falls back to the vertex-derived range (the 90° minor arc), NEVER fabricating a wrong
+// arc from an unfaithful trim. Never widen a tolerance to force a heal.
+CC_TEST(major_arc_unfaithful_trim_falls_back_to_vertices) {
+  const double kHalfPi = 3.14159265358979323846 / 2.0;
+  const double span = circleArcSpan(ex::readStepString(majorArcFaceStep(
+      "(PARAMETER_VALUE(1.0)),(PARAMETER_VALUE(2.0)),.T.,.PARAMETER.")));  // ≠ vertex angles
+  CC_CHECK(std::fabs(span - kHalfPi) < 1e-6);  // ignored the bogus trim, kept the vertices
+}
+
 CC_RUN_ALL()

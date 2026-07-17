@@ -1861,9 +1861,21 @@ class Mapper {
   // covered knot sub-domain — information the endpoint vertices cannot recover (a
   // sub-arc of a periodic/looping spline shares endpoints with the whole curve). We
   // clamp the trims to the clamped knot span so a wide/degenerate trim reduces to the
-  // full curve. For an analytic basis (line/circle/ellipse) the vertices fix the
-  // endpoints exactly, so we keep the vertex-derived range (curveRange) and use the
-  // trims only implicitly (validated in trimmedCurve).
+  // full curve.
+  //
+  // For a CIRCLE / ELLIPSE basis the two endpoint VERTICES pin the two boundary angles
+  // exactly, but NOT the DIRECTED SWEEP between them: a1 = atan2(...) is ambiguous modulo
+  // 2π, and a MAJOR arc (span > π) shares BOTH its endpoints with its MINOR complement.
+  // curveRange resolves this ambiguity by the "shortest CCW-forward" convention, so a
+  // foreign file whose arc is the OTHER (major) sweep imports as its minor complement
+  // (the documented L8 residual). The TRIMMED_CURVE's two PARAMETER_VALUE trims carry the
+  // TRUE directed span in the curve's own parametrization (radians for our CIRCLE/ELLIPSE
+  // form, C(t)=O+r·cos t·X+r·sin t·Y), so we honor [t0,t1] when — and ONLY when — it is
+  // FAITHFUL: both trim endpoints must evaluate to the edge vertices p0/p1 (in either
+  // order) within tol. A trim that does not reproduce the vertices is NOT trusted (a
+  // mislabelled / degree-unit / degenerate trim) → we fall back to the vertex-derived
+  // range, NEVER fabricating a wrong arc. This is additive: a circle/ellipse WITHOUT a
+  // TRIMMED_CURVE wrapper (e.g. our own writer's rims) is byte-for-byte unchanged.
   std::pair<double, double> trimmedRange(long curveId, const topo::EdgeCurve& c,
                                          const math::Point3& p0, const math::Point3& p1) {
     const auto it = trimCache_.find(static_cast<int>(curveId));
@@ -1873,6 +1885,25 @@ class Mapper {
       double a = std::clamp(std::min(it->second.t0, it->second.t1), lo, hi);
       double b = std::clamp(std::max(it->second.t0, it->second.t1), lo, hi);
       if (b - a > 1e-9) return {a, b};  // a genuine sub-domain; degenerate → full curve
+    }
+    if (it != trimCache_.end() && it->second.hasT0 && it->second.hasT1 &&
+        (c.kind == topo::EdgeCurve::Kind::Circle || c.kind == topo::EdgeCurve::Kind::Ellipse)) {
+      const double t0 = it->second.t0, t1 = it->second.t1;
+      const double span = std::fabs(t1 - t0);
+      if (span > 1e-9 && span <= kTwoPi + 1e-9) {
+        // Scale-relative tolerance from the curve's own radius.
+        const double scale = std::max({std::fabs(c.radius), std::fabs(c.minorRadius), 1.0});
+        const double tol = 1e-7 * scale;
+        // The trim is FAITHFUL iff C(t0),C(t1) reproduce the two edge vertices (in either
+        // order): a directed sweep t0→t1 endpoints-matched can be trusted verbatim.
+        const math::Point3 e0 = evalEdge(c, t0), e1 = evalEdge(c, t1);
+        const bool sameOrder =
+            math::distance(e0, p0) <= tol && math::distance(e1, p1) <= tol;
+        const bool swapOrder =
+            math::distance(e0, p1) <= tol && math::distance(e1, p0) <= tol;
+        if (sameOrder) return {std::min(t0, t1), std::max(t0, t1)};
+        if (swapOrder) return {std::min(t0, t1), std::max(t0, t1)};
+      }
     }
     return curveRange(c, p0, p1);
   }

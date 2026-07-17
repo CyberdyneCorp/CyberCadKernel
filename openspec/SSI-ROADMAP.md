@@ -358,6 +358,23 @@ the pinch. Measured at that pinch node (full-precision params):
   (scale·1e-6) gate of BOTH surfaces. The graze IS a provably ill-conditioned band; its
   half-width is the honest conditioning number of "on both surfaces" at `sine ≈ 0.026`.
 
+**Ill-conditioning scaling across the three near-tangent poses (host oracle).** The fuzzy-band
+width GROWS as the transversality sine shrinks — the quantitative signature of the
+ill-conditioned "on both surfaces" constraint at a graze — while native's corrected node stays
+ON the true curve at every tightness:
+
+| pose | graze sine | normal angle | corrector cond | native NODE → truth | fuzzy-band width (within `onSurf`) | chord bow |
+|---|---|---|---|---|---|---|
+| idx=23 | 0.270 | 15.7° | 7.4 | 2.6e-11 | 2.2e-5 | — |
+| idx=24 | 0.026 | 1.49° | 78.6 | 3.4e-10 (node) | 2.4e-4 | 6.2e-4 |
+| idx=33 | **0.0078** | 0.449° | 257 | 1.5e-9 | **9.0e-4** | 2.8e-4 |
+
+Even at the tightest graze (idx=33, `sine 0.0078`, corrector condition `257`, band width `9.0e-4`
+— nearly the full `onCurve` gate), native's node is on the true curve to `1.5e-9`. The band
+widens ~40× from idx=23 to idx=33 as the surfaces approach tangency, but native never leaves the
+true curve — confirming the divergence is the ill-conditioned band + fitted-spline coverage, not
+a corrector error that worsens with conditioning.
+
 **OCCT cross-check (SIM, `GeomAPI_IntSS` oracle, same seed, `DISAGREED == 0`).** The additive
 `[GRAZE-3WAY]` decline line emits, per declined trial, native's worst-gap NODE (its root), its
 worst FITTED-spline sample, and the nearest OCCT curve point to each, fed back through the SAME
@@ -379,10 +396,16 @@ independent host oracle. Two declines were captured:
   native-root → OCCT-root = `6.5e-8`.** idx=23's decline is the MISSED co-resident branch
   (`worstMissLen 0.94`, `genuineOcctOnNat 1.33e-3`), a seeding-recall gap — NOT a graze
   divergence on a shared curve.
+- **`idx=33` — tightest near-tangent (host pinch `sine 0.0078`), two co-resident loci missed**
+  (`reason=small-loop`, `traced=1`, `occtLines=2`, `natOnOcct=6.2e-7`, `genuineOcctOnNat=1.37`,
+  `worstMissLen=4.76`). At the worst NODE gap: **native-root → truth = `5.6e-11`, OCCT-root →
+  truth = `6.2e-7`, native-root → OCCT-root = `6.2e-7`**; worst fitted sample `9.3e-5` off OCCT.
+  Again native's node is on truth and MORE accurate than OCCT; the decline is two missed distinct
+  loci (a seeding-recall gap), and native's traced loop is on both surfaces + on the OCCT locus.
 
-Across both, native is NEVER the further-from-truth root (native `3.4e-10`/`2.6e-11` vs OCCT
-`1.74e-7`/`6.5e-8`); the reported divergence is native's fitted-spline coverage bow, confirmed
-independently AND against OCCT.
+Across all three, native is NEVER the further-from-truth root (native `3.4e-10`/`2.6e-11`/`5.6e-11`
+vs OCCT `1.74e-7`/`6.5e-8`/`6.2e-7`); the reported divergence is native's fitted-spline coverage
+bow, confirmed independently AND against OCCT.
 
 **Verdict (measurement-driven): the two candidate roots are NOT distinguishable by accuracy —
 native's node is AT the true curve (6.4e-10; OCCT cross-check idx=23 native 2.6e-11 vs OCCT

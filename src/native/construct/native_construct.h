@@ -42,6 +42,14 @@
 //   build_revolution_profile(...)    revolve a TYPED profile: line → Plane/Cylinder/
 //                                    Cone, arc centred ON the axis → Sphere band. An
 //                                    arc OFF the axis (Torus) / spline → NULL (OCCT).
+//   build_torus(R,r,frame|centre,ax) the BARE analytic RING-TORUS primitive: one
+//                                    doubly-periodic Kind::Torus face (no seam wire).
+//                                    Unlike an off-axis arc revolve (rational B-spline
+//                                    bands), the face is a TRUE analytic torus, so the
+//                                    boolean's recogniseCurvedSolid admits it and the
+//                                    torus∩{cyl/sphere/cone/torus} families run in the
+//                                    pure-native path (no OCCT). Ring torus only
+//                                    (R > r > 0); spindle/degenerate → NULL. cc_torus.
 //
 //   ── Tier-B (#4b, loft.h) ─────────────────────────────────────────────────────
 //   build_ruled_loft(secA,secB)      skin TWO closed section loops with EQUAL vertex

@@ -1380,4 +1380,65 @@ CC_TEST(native_facade_steinmetz_common) {
     cc_shape_release(lens);
 }
 
+// ── cc_torus: the BARE analytic ring-torus primitive (BOOL-COMPLETE) ─────────────
+// A native REVOLVE of an off-axis circle builds rational B-spline bands (declined by
+// the boolean's recogniseCurvedSolid); cc_torus emits a TRUE analytic Kind::Torus face
+// so the torus∩{cyl/sphere/cone/torus} families run in the pure-native path. Here we
+// prove the facade primitive itself: a watertight torus at the Pappus-exact volume
+// 2π²Rr², centred at the origin about +Z, plus the spindle/degenerate honest declines.
+CC_TEST(native_cc_torus_watertight_pappus_volume) {
+    EngineGuard g;
+    cc_set_engine(1);
+
+    const double R = 3.0, r = 1.0;
+    const double centre[3] = {0.0, 0.0, 0.0};
+    const double axis[3] = {0.0, 0.0, 1.0};
+    const CCShapeId id = cc_torus(centre, axis, R, r);
+    CC_CHECK(id != 0);
+    if (id == 0) {
+        std::printf("  last_error=%s\n", cc_last_error());
+        return;
+    }
+
+    // Pappus: V = 2π²Rr², A = 4π²Rr. The mesh is watertight (mass_properties uses the
+    // divergence theorem over the native mesh → invalid/negative on a leaky shell).
+    const CCMassProps mp = cc_mass_properties(id);
+    CC_CHECK(mp.valid != 0);
+    const double kPi = 3.14159265358979323846;
+    const double vTrue = 2.0 * kPi * kPi * R * r * r;   // ≈ 59.22
+    const double aTrue = 4.0 * kPi * kPi * R * r;        // ≈ 118.4
+    CC_CHECK(std::fabs(mp.volume - vTrue) < 2e-2 * vTrue);
+    CC_CHECK(std::fabs(mp.area - aTrue) < 2e-2 * aTrue);
+    // Centre of a symmetric torus about the origin.
+    CC_CHECK(std::fabs(mp.cx) < 1e-3 && std::fabs(mp.cy) < 1e-3 && std::fabs(mp.cz) < 1e-3);
+
+    // Bounding box: the torus spans ±(R+r) in-plane, ±r axially.
+    double bb[6] = {0};
+    CC_CHECK_EQ(cc_bounding_box(id, bb), 1);
+    CC_CHECK(std::fabs(bb[0] - (-(R + r))) < 2e-2 && std::fabs(bb[3] - (R + r)) < 2e-2);
+    CC_CHECK(std::fabs(bb[1] - (-(R + r))) < 2e-2 && std::fabs(bb[4] - (R + r)) < 2e-2);
+    CC_CHECK(std::fabs(bb[2] - (-r)) < 2e-2 && std::fabs(bb[5] - r) < 2e-2);
+
+    CCMesh mesh = cc_tessellate(id, 0.05);
+    CC_CHECK(mesh.vertexCount > 0);
+    CC_CHECK(mesh.triangleCount > 0);
+    cc_mesh_free(mesh);
+    cc_shape_release(id);
+}
+
+// The honest declines: a spindle torus (R ≤ r → self-intersecting) and degenerate
+// radii / a zero-length axis return 0 (never a leaky/self-intersecting body).
+CC_TEST(native_cc_torus_declines_spindle_and_degenerate) {
+    EngineGuard g;
+    cc_set_engine(1);
+    const double centre[3] = {0.0, 0.0, 0.0};
+    const double axis[3] = {0.0, 0.0, 1.0};
+    CC_CHECK(cc_torus(centre, axis, 0.5, 1.0) == 0);   // spindle: R < r
+    CC_CHECK(cc_torus(centre, axis, 1.0, 1.0) == 0);   // degenerate: R == r
+    CC_CHECK(cc_torus(centre, axis, 3.0, 0.0) == 0);   // zero tube radius
+    CC_CHECK(cc_torus(centre, axis, 3.0, -0.5) == 0);  // negative tube radius
+    const double zeroAxis[3] = {0.0, 0.0, 0.0};
+    CC_CHECK(cc_torus(centre, zeroAxis, 3.0, 1.0) == 0);  // zero-length axis
+}
+
 CC_RUN_ALL()

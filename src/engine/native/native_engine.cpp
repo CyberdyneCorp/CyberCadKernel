@@ -775,6 +775,32 @@ std::shared_ptr<IEngine> make_native_fallback_engine() {
 #endif
 }
 
+// ADDITIVE — the bare analytic RING-TORUS primitive (see native_engine.h). Builds
+// the native single-face Kind::Torus solid via construct::build_torus and wraps it as
+// a process-native EngineShape so the exact-NURBS boolean recognises it. An engine-
+// agnostic factory: it does NOT touch active_engine() or any IEngine vtable — the
+// torus is always a native body (the OCCT engine has no equivalent bare-torus-face
+// primitive the boolean's recogniseCurvedSolid consumes).
+ShapeResult make_native_torus(const double centre[3], const double axis[3], double majorRadius,
+                              double minorRadius) {
+    if (centre == nullptr || axis == nullptr) {
+        return ShapeResult::fail(cyber::make_error("cc_torus: null centre/axis"));
+    }
+    const nmath::Vec3 a{axis[0], axis[1], axis[2]};
+    const double an = nmath::norm(a);
+    if (!(an > 1e-12)) {
+        return ShapeResult::fail(cyber::make_error("cc_torus: degenerate (zero-length) axis"));
+    }
+    const nmath::Point3 c{centre[0], centre[1], centre[2]};
+    const nmath::Dir3 axDir{a * (1.0 / an)};
+    ntopo::Shape solid = ncst::build_torus(majorRadius, minorRadius, c, axDir);
+    if (solid.isNull()) {
+        return ShapeResult::fail(cyber::make_error(
+            "cc_torus: not a ring torus (require majorRadius > minorRadius > 0)"));
+    }
+    return ShapeResult::ok(wrapNative(std::move(solid)));
+}
+
 // ── M8 scoped-unlink DRY-RUN rehearsal (NON-SHIPPING) ───────────────────────────
 // Under -DCYBERCAD_M8_REHEARSAL=ON (implies no OCCT), the build's DEFAULT active
 // engine becomes a NativeEngine whose only fallback is the stub — the exact

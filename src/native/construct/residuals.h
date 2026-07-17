@@ -1023,6 +1023,48 @@ inline topo::Shape build_revolution_profile_spline(const std::vector<ProfileSegm
   return topo::ShapeBuilder::makeSolid({shell});
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// build_torus — the BARE periodic Kind::Torus B-rep primitive.
+//
+// A native REVOLVE of an off-axis full circle builds RATIONAL B-SPLINE bands
+// (build_revolution_torus above), whose faces carry Kind::BSpline — so the
+// boolean's `recogniseCurvedSolid` (which HAS a Torus arm) never sees a true
+// analytic torus and the torus∩{cyl/sphere/cone/torus} families defer to OCCT.
+// This builder emits a torus as ONE doubly-periodic analytic Kind::Torus face
+// with a NULL outer wire (the whole natural (u,v)∈[0,2π)² rectangle) — exactly
+// the form `recogniseCurvedSolid` admits and the tessellator meshes watertight
+// (both seams weld, no poles). It is the SAME shape the STEP reader maps a
+// TOROIDAL_SURFACE to.
+//
+// Placement: a right-handed frame `pos` (origin = torus centre on the axis,
+// z = revolution axis, x = the u=0 reference in the X–Y plane); (R,r) are the
+// MAJOR (axis → tube-centre) and MINOR (tube) radii. A RING torus is required
+// (R > r > 0); a spindle/degenerate torus (R ≤ r or r ≤ 0) returns a NULL Shape
+// so the caller falls through to OCCT — never a self-intersecting body.
+inline topo::Shape build_torus(double majorRadius, double minorRadius, const math::Ax3& pos) {
+  if (!(minorRadius > 1e-9) || !(majorRadius > minorRadius + 1e-9)) return {};  // ring torus only
+  topo::FaceSurface s;
+  s.kind = topo::FaceSurface::Kind::Torus;
+  s.frame = pos;
+  s.radius = majorRadius;
+  s.minorRadius = minorRadius;
+  const topo::Shape face = topo::ShapeBuilder::makeFace(s, topo::Shape{});
+  return topo::ShapeBuilder::makeSolid({topo::ShapeBuilder::makeShell({face})});
+}
+
+// Convenience overload: a torus centred at `centre` about a unit `axis`.
+inline topo::Shape build_torus(double majorRadius, double minorRadius,
+                               const math::Point3& centre, const math::Dir3& axis) {
+  // Pick any reference direction not parallel to the axis for the frame's x.
+  const math::Vec3 a = axis.vec();
+  math::Vec3 ref = std::fabs(a.z) < 0.9 ? math::Vec3{0, 0, 1} : math::Vec3{1, 0, 0};
+  ref = ref - a * math::dot(ref, a);
+  const double n = math::norm(ref);
+  if (!(n > 1e-12)) return {};
+  const math::Ax3 pos = math::Ax3::fromAxisAndRef(centre, axis, math::Dir3{ref * (1.0 / n)});
+  return build_torus(majorRadius, minorRadius, pos);
+}
+
 }  // namespace cybercad::native::construct
 
 #endif  // CYBERCAD_NATIVE_CONSTRUCT_RESIDUALS_H

@@ -130,6 +130,18 @@ namespace cyber {
 // with CYBERCAD_HAS_OCCT, else the StubEngine. Defined in native_engine.cpp.
 std::shared_ptr<IEngine> make_native_fallback_engine();
 
+// ADDITIVE — the bare analytic RING-TORUS primitive as a NATIVE B-rep body
+// (one doubly-periodic Kind::Torus face), wrapped as an EngineShape and registered
+// process-wide as native so the exact-NURBS boolean's torus∩{cyl/sphere/cone/torus}
+// families run in the pure-native path (no OCCT). A native REVOLVE of an off-axis
+// circle only produces rational B-spline bands, which decline at recogniseCurvedSolid;
+// this returns the true analytic torus the boolean recognises. Returns an ok=false
+// ShapeResult for a spindle / degenerate torus (majorRadius ≤ minorRadius, or
+// minorRadius ≤ 0). Backs cc_torus; defined in native_engine.cpp. Never touches any
+// IEngine vtable slot or the cc_* struct ABI.
+ShapeResult make_native_torus(const double centre[3], const double axis[3], double majorRadius,
+                              double minorRadius);
+
 class NativeEngine final : public IEngine {
 public:
     // `fallback` receives every capability NativeEngine does not implement, and

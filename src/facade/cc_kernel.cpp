@@ -343,6 +343,19 @@ CCShapeId cc_solid_revolve(const double* profileXY, int pointCount, double angle
         CCShapeId{0});
 }
 
+CCShapeId cc_torus(const double centre[3], const double axis[3], double majorRadius,
+                   double minorRadius) {
+    return cyber::guard(
+        [&]() -> CCShapeId {
+            // The torus is a NATIVE analytic primitive (a bare Kind::Torus face) regardless of
+            // the active engine — it exists to drive the native exact-NURBS boolean's torus
+            // families. cc_make_native_torus registers it process-wide as a native body.
+            auto r = cyber::make_native_torus(centre, axis, majorRadius, minorRadius);
+            return finish_shape(r);
+        },
+        CCShapeId{0});
+}
+
 CCShapeId cc_solid_loft(const double* bottomXY, int bottomCount, const double* topXY, int topCount,
                         double depth) {
     return cyber::guard(

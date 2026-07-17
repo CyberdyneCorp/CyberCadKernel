@@ -1767,6 +1767,69 @@ CC_TEST(torus_cyl_coaxial_common_fuse_cut_watertight_matches_analytic) {
   CC_CHECK(nb::ssi_boolean_solid(cyl, tor, nb::Op::Cut).isNull());
 }
 
+// ── (14a′) NATIVE PRIMITIVE construct::build_torus drives the boolean identically (BOOL-COMPLETE) ─
+// The headline gap this wave closes: a native REVOLVE of an off-axis circle builds rational
+// B-spline bands (declined by recogniseCurvedSolid), so before this wave the ONLY way to get a
+// bare Kind::Torus operand into the native path was the in-test makeTorus. construct::build_torus
+// is the SHIPPING native primitive (backing cc_torus) that emits exactly that recognisable torus.
+// This pins that the native-built torus (a) recognises with the correct R/r/axis, and (b) drives
+// the coaxial S5-l COMMON/CUT/FUSE to the SAME Pappus-exact volumes as makeTorus — pure-native,
+// watertight, no OCCT.
+CC_TEST(native_build_torus_recognises_and_drives_boolean) {
+  const double R = 3.0, r = 1.0, Rc = 3.2, cLo = -2.0, cHi = 2.0;
+  // The native shipping primitive — a +Z ring torus at the origin.
+  const ntopo::Shape tor = cst::build_torus(R, r, nmath::Point3{0, 0, 0}, nmath::Dir3{0, 0, 1});
+  CC_CHECK(!tor.isNull());
+
+  // (a) recogniseCurvedSolid admits it as a Torus with the correct radii + axis.
+  const auto csTor = sd::recogniseCurvedSolid(tor);
+  CC_CHECK(csTor);
+  if (csTor) {
+    CC_CHECK(csTor->kind == sd::CurvedKind::Torus);
+    CC_CHECK(std::fabs(csTor->radius - R) < 1e-9);
+    CC_CHECK(std::fabs(csTor->minorRadius - r) < 1e-9);
+    CC_CHECK(std::fabs(csTor->frame.z.vec().z - 1.0) < 1e-9);
+  }
+
+  // The native torus itself meshes watertight at the Pappus volume 2π²Rr².
+  const double vTorus = 2.0 * sd::kSsiPi * sd::kSsiPi * R * r * r;
+  const double vTorMesh = watertightMeshVolume(tor);
+  CC_CHECK(vTorMesh > 0.0);
+  CC_CHECK(std::fabs(vTorMesh - vTorus) <= 2e-2 * vTorus);
+
+  // (b) the coaxial torus∩cyl COMMON/CUT/FUSE land NATIVELY (pure-native, no OCCT), matching the
+  // Pappus closed forms — identical to the makeTorus fixture (which uses the SAME bare face).
+  const ntopo::Shape cyl = makeCyl(/*Z*/ 2, Rc, cLo, cHi);
+  CC_CHECK(!cyl.isNull());
+  const double vCylFull = cylinderVolume(Rc, cLo, cHi);
+  const double vCommonTrue = torusCylCommonVolume(R, r, Rc);
+  const double vCutTrue = vTorus - vCommonTrue;
+  const double vFuseTrue = vTorus + vCylFull - vCommonTrue;
+
+  const ntopo::Shape common = nb::ssi_boolean_solid(tor, cyl, nb::Op::Common);
+  const ntopo::Shape cut = nb::ssi_boolean_solid(tor, cyl, nb::Op::Cut);
+  const ntopo::Shape fuse = nb::ssi_boolean_solid(tor, cyl, nb::Op::Fuse);
+  CC_CHECK(!common.isNull() && !cut.isNull() && !fuse.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  const double vCut = watertightMeshVolume(cut);
+  const double vFuse = watertightMeshVolume(fuse);
+  CC_CHECK(vCommon > 0.0 && vCut > 0.0 && vFuse > 0.0);   // all watertight → engine accepts
+  CC_CHECK(std::fabs(vCommon - vCommonTrue) <= 1e-2 * vCommonTrue);
+  CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
+  CC_CHECK(std::fabs(vFuse - vFuseTrue) <= 1e-2 * vFuseTrue);
+
+  // The build_torus(frame) overload agrees with the (centre,axis) overload.
+  const ntopo::Shape torF = cst::build_torus(R, r, nmath::Ax3{});
+  CC_CHECK(!torF.isNull());
+  const auto csF = sd::recogniseCurvedSolid(torF);
+  CC_CHECK(csF && csF->kind == sd::CurvedKind::Torus);
+
+  // Spindle / degenerate → NULL (honest decline; never a self-intersecting body).
+  CC_CHECK(cst::build_torus(0.5, 1.0, nmath::Point3{0, 0, 0}, nmath::Dir3{0, 0, 1}).isNull());
+  CC_CHECK(cst::build_torus(1.0, 1.0, nmath::Point3{0, 0, 0}, nmath::Dir3{0, 0, 1}).isNull());
+  CC_CHECK(cst::build_torus(3.0, 0.0, nmath::Point3{0, 0, 0}, nmath::Dir3{0, 0, 1}).isNull());
+}
+
 // ── (14b) TRANSVERSAL (NON-COAXIAL) TORUS∩CYLINDER COMMON (S5-p) — the first transversal
 // TORUS slice ─────────────────────────────────────────────────────────────────────────────────
 // A ring torus (major R=3, minor r=1, axis +Z) and a THIN cylinder Rc=0.6 whose axis is PARALLEL

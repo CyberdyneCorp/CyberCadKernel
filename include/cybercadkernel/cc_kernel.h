@@ -349,6 +349,19 @@ int  cc_active_engine(void);         /* 1 if the NativeEngine is active, else 0 
 CCShapeId cc_solid_extrude(const double *profileXY, int pointCount, double depth);
 CCShapeId cc_solid_revolve(const double *profileXY, int pointCount, double angleRadians);
 
+/* Build a RING TORUS as a BARE analytic B-rep primitive: one doubly-periodic
+ * Kind::Torus face (no seam wire) — the exact-analytic surface an off-axis
+ * circle revolve only approximates as rational B-spline bands. `centre` is the
+ * torus centre on the revolution axis; `axis` the (unit-normalized) revolution
+ * axis; `majorRadius` the axis→tube-centre distance; `minorRadius` the tube
+ * radius. A ring torus is required (majorRadius > minorRadius > 0); a spindle /
+ * degenerate torus returns 0. Unlike cc_solid_revolve of a circle, the emitted
+ * face is a TRUE analytic torus, so it drives the native exact-NURBS boolean's
+ * torus∩{cylinder,sphere,cone,torus} families in the pure-native path (no OCCT).
+ * ADDITIVE: a new symbol; no existing signature or struct is changed. */
+CCShapeId cc_torus(const double centre[3], const double axis[3],
+                   double majorRadius, double minorRadius);
+
 /* Ruled loft between a bottom XY section on z=0 and a top XY section on z=depth.
  * `bottomXY` / `topXY` are flat (x,y) pairs; each section is a closed polygon. With
  * EQUAL point counts (bottomCount == topCount, ≥3) the two sections are skinned by a

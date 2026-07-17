@@ -2370,12 +2370,33 @@ CC_TEST(cone_sphere_transversal_offset_common_watertight_matches_numeric) {
   CC_CHECK(vSwapped > 0.0);
   CC_CHECK(std::fabs(vSwapped - vCommonNumeric) <= 1e-2 * vCommonNumeric);
 
-  // CUT / FUSE honest-decline for the transversal pose (the sphere-outer-zone weld between two
-  // non-planar seams is the transversal residual) → NULL → OCCT. Never a leaky solid.
-  CC_CHECK(nb::ssi_boolean_solid(cone, sph, nb::Op::Cut).isNull());
-  CC_CHECK(nb::ssi_boolean_solid(sph, cone, nb::Op::Cut).isNull());
-  CC_CHECK(nb::ssi_boolean_solid(cone, sph, nb::Op::Fuse).isNull());
-  CC_CHECK(nb::ssi_boolean_solid(sph, cone, nb::Op::Fuse).isNull());
+  // ── CUT / FUSE now LAND (S5-q, the SAME seam-band primitive as S5-k about the cone axis). ──
+  // Oracles: exact V(A)/V(B) minus the numeric COMMON (inclusion–exclusion), the box being sized
+  // for the COMMON not the whole sphere/cone.
+  const double vCutSphNumeric = vSph - vCommonNumeric;                // sphere − cone
+  const double vCutConeNumeric = vCone - vCommonNumeric;              // cone − sphere
+  const double vFuseNumeric = vSph + vCone - vCommonNumeric;          // union
+
+  const ntopo::Shape cutSC = nb::ssi_boolean_solid(sph, cone, nb::Op::Cut);
+  CC_CHECK(!cutSC.isNull());
+  const double vCutSC = watertightMeshVolume(cutSC);
+  CC_CHECK(vCutSC > 0.0);
+  CC_CHECK(std::fabs(vCutSC - vCutSphNumeric) <= 1e-2 * vCutSphNumeric);
+
+  const ntopo::Shape cutCS = nb::ssi_boolean_solid(cone, sph, nb::Op::Cut);
+  CC_CHECK(!cutCS.isNull());
+  const double vCutCS = watertightMeshVolume(cutCS);
+  CC_CHECK(vCutCS > 0.0);
+  CC_CHECK(std::fabs(vCutCS - vCutConeNumeric) <= 1e-2 * vCutConeNumeric);
+
+  const ntopo::Shape fuseCS = nb::ssi_boolean_solid(cone, sph, nb::Op::Fuse);
+  const ntopo::Shape fuseSC = nb::ssi_boolean_solid(sph, cone, nb::Op::Fuse);
+  CC_CHECK(!fuseCS.isNull() && !fuseSC.isNull());
+  const double vFuseCS = watertightMeshVolume(fuseCS), vFuseSC = watertightMeshVolume(fuseSC);
+  CC_CHECK(vFuseCS > 0.0 && vFuseSC > 0.0);
+  CC_CHECK(std::fabs(vFuseCS - vFuseNumeric) <= 1e-2 * vFuseNumeric);
+  CC_CHECK(std::fabs(vFuseSC - vFuseNumeric) <= 1e-2 * vFuseNumeric);
+  CC_CHECK(vFuseCS >= std::max(vSph, vCone) - 1e-9);
 }
 
 // ── (17) TRANSVERSAL cone∩sphere REDUCES TO COAXIAL: the offset→0 guarantee ────────────────────

@@ -3405,11 +3405,13 @@ topo::Shape buildTransTorusCylCommon(const CurvedSolid& A, const CurvedSolid& B,
 // buildTransTorusCylCut / buildTransTorusCylFuse — the transversal CUT / FUSE of the offset
 // torus∩cylinder. Both need the TORUS OUTER SHELL: the tube surface OUTSIDE the cylinder bore,
 // i.e. the tube ZONE between the two NON-PLANAR traced seams taken the LONG way round (away from
-// the bore). Like the S5-k transversal cyl∩sphere residual, this zone is bounded by two non-planar
-// space curves that do NOT lie on a common tube latitude, so no revolved-band / single-apex fan
-// tiles it watertight. Assembling it as a shared-pool planar-facet shell that welds byte-clean to
-// both seams is the UNRESOLVED transversal residual (the same class as S5-k). So CUT/FUSE HONEST-
-// DECLINE (→ NULL → OCCT); COMMON is the landed slice. Nothing is faked.
+// the bore). S5-k/S5-q RESOLVED the SPHERE version of this residual (appendSphereOuterZoneBetween-
+// Seams tiles a sphere outer zone on-surface via the cyl/cone-axis φ-sweep), but the TORUS outer
+// zone is a genuinely distinct surface: its exact-on-surface parametrisation is a per-index sweep
+// of the TUBE (minor-angle) coordinate between the two seams the long way round the tube, NOT a
+// sphere φ-sweep — a separate primitive not yet built. So this remains the SHARPENED transversal
+// residual (torus-outer-zone weld) → CUT/FUSE HONEST-DECLINE (→ NULL → OCCT); COMMON is the landed
+// slice. Nothing is faked.
 topo::Shape buildTransTorusCylCut(const CurvedSolid& A, const CurvedSolid& B,
                                   const std::vector<Seam>& seams) {
   const TransTorusCylSetup s = transTorusCylSetup(A, B, seams);
@@ -3471,12 +3473,40 @@ struct TransConeSphereSetup {
   bool coneIsB = false;      ///< which operand is the cone (picks the seam (u,v) track)
   int N = 0;                 ///< common azimuth sample count (seam-chord bounded)
   Seam seamLo{}, seamHi{};   ///< the two traced seams, resampled + ordered lo/hi along zc
+  double coneLo = 0.0, coneHi = 0.0;  ///< cone axial extent (v param) ordered along +zc
+  // The two-cap+outer-zone topology (same class as S5-k) is only valid when BOTH sphere poles
+  // (±zc from the centre) sit strictly INSIDE the cone. Gated by CUT/FUSE, not COMMON.
+  bool polesInsideCone = false;
   // A point on the cone axis far beyond the lower / upper seam (selects each cap's apex).
   math::Point3 axisFarM() const {
     return math::Point3{O.x - zc.x * 1e4, O.y - zc.y * 1e4, O.z - zc.z * 1e4};
   }
   math::Point3 axisFarP() const {
     return math::Point3{O.x + zc.x * 1e4, O.y + zc.y * 1e4, O.z + zc.z * 1e4};
+  }
+  math::Point3 poleM() const {
+    return math::Point3{C.x - zc.x * Rs, C.y - zc.y * Rs, C.z - zc.z * Rs};
+  }
+  math::Point3 poleP() const {
+    return math::Point3{C.x + zc.x * Rs, C.y + zc.y * Rs, C.z + zc.z * Rs};
+  }
+  // A cone wall ring at AXIAL station s (measured along zc from the cone origin), sampled at the
+  // SAME azimuths as the seams (index i ↔ seam index i) so an end disc / wall band welds
+  // ring-to-ring through the pool. Placed via the cone frame at radius rCone(s)=radius+s·tanα so
+  // the ring's axial station matches appendDiskCap's axis point (origin+zc·s) EXACTLY — the cone
+  // surface's own (u,v) `point` uses the SLANT v, which is axially short and would tilt the disc.
+  std::vector<math::Point3> coneRingAxial(double s) const {
+    const math::Vec3 X = cone->frame.x.vec(), Y = cone->frame.y.vec();
+    const double rC = cone->radius + s * std::tan(cone->semiAngle);
+    std::vector<math::Point3> r(seamLo.pts.size());
+    for (size_t i = 0; i < seamLo.pts.size(); ++i) {
+      const double u = coneIsB ? seamLo.uvB[i].first : seamLo.uvA[i].first;
+      const double cx = rC * std::cos(u), cy = rC * std::sin(u);
+      r[i] = math::Point3{O.x + X.x * cx + Y.x * cy + zc.x * s,
+                          O.y + X.y * cx + Y.y * cy + zc.y * s,
+                          O.z + X.z * cx + Y.z * cy + zc.z * s};
+    }
+    return r;
   }
 };
 
@@ -3533,6 +3563,8 @@ TransConeSphereSetup transConeSphereSetup(const CurvedSolid& A, const CurvedSoli
 
   st.cone = conePtr; st.sph = sphPtr; st.O = O; st.zc = zc; st.C = C;
   st.Rs = Rs; st.offset = offset; st.coneIsB = coneIsB; st.N = N;
+  st.coneLo = std::min(cone.vLo, cone.vHi);
+  st.coneHi = std::max(cone.vLo, cone.vHi);
   const double m0 = transConeSeamAxialMean(st, s0), m1 = transConeSeamAxialMean(st, s1);
   if (std::fabs(m0 - m1) < 1e-4) return st;                // both loops at one station → not two ends
   st.seamLo = (m0 <= m1) ? s0 : s1;
@@ -3557,6 +3589,10 @@ TransConeSphereSetup transConeSphereSetup(const CurvedSolid& A, const CurvedSoli
   };
   if (classifyPoint(cone, capApex(st.axisFarM()), kSsiTol) != 1) return st;
   if (classifyPoint(cone, capApex(st.axisFarP()), kSsiTol) != 1) return st;
+
+  // OUTER-ZONE gate (CUT/FUSE): both sphere poles (±zc from the centre) strictly INSIDE the cone.
+  st.polesInsideCone = classifyPoint(cone, st.poleM(), kSsiTol) == 1 &&
+                       classifyPoint(cone, st.poleP(), kSsiTol) == 1;
 
   st.ok = true;
   return st;
@@ -3600,22 +3636,60 @@ topo::Shape buildTransConeSphereCommon(const CurvedSolid& A, const CurvedSolid& 
 }
 
 // buildTransConeSphereCut / buildTransConeSphereFuse — the transversal CUT / FUSE of the offset
-// cone∩sphere. Both need the sphere OUTER SHELL (the sphere ZONE between the two NON-PLANAR
-// seams, the long way round outside the cone) — the SAME unresolved two-non-planar-seam zone weld
-// that made S5-k / S5-p decline. So CUT/FUSE HONEST-DECLINE (→ NULL → OCCT); COMMON is the landed
-// slice. Nothing is faked: rather than emit a leaky sphere-zone shell, we defer to OCCT.
+// cone∩sphere, LANDED by the SAME seam-band primitive as S5-k (`appendSphereOuterZoneBetweenSeams`
+// about the CONE axis). The sphere OUTER ZONE (the long way round outside the cone) is tiled
+// on-surface by the cone-axis φ-sweep; the cone side is exact via straight-ruling revolved bands
+// (a cone generatrix is straight) + cone end discs. Gated on `polesInsideCone`; otherwise the
+// two-cap+outer-zone topology fails and we HONEST-DECLINE → OCCT. Nothing faked.
+//   * SPHERE − CONE: sphere outer zone + reversed cone tunnel band.
+//   * CONE − SPHERE: two cone stubs each dimpled by a reversed COMMON sphere cap + cone end discs.
+//   * FUSE: sphere outer zone + two cone end stubs + cone end discs.
 topo::Shape buildTransConeSphereCut(const CurvedSolid& A, const CurvedSolid& B,
                                     const std::vector<Seam>& seams) {
   const TransConeSphereSetup s = transConeSphereSetup(A, B, seams);
-  if (!s.ok) return {};
-  return {};  // sphere-outer-zone weld is the transversal residual → OCCT (never faked)
+  if (!s.ok || !s.polesInsideCone) return {};
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  if (&A == s.sph) {
+    // SPHERE − CONE: outer sphere zone + reversed cone tunnel band (the bore).
+    appendSphereOuterZoneBetweenSeams(s.C, s.Rs, s.zc, s.seamHi, s.seamLo, pool, faces, 1.0);
+    appendRevolvedBand(s.seamLo.pts, s.seamHi.pts, s.O, s.zc, pool, faces, /*outwardSign=*/-1.0);
+    if (faces.size() < 4) return {};
+  } else {
+    // CONE − SPHERE: two disconnected cone stubs, each dimpled by a reversed COMMON cap.
+    const math::Point3 apexM = s.axisFarM(), apexP = s.axisFarP();
+    const std::vector<math::Point3> ringLo = s.coneRingAxial(s.coneLo);
+    const std::vector<math::Point3> ringHi = s.coneRingAxial(s.coneHi);
+    appendDiskCap(*s.cone, s.coneLo, ringLo, math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool, faces);
+    appendRevolvedBand(ringLo, s.seamLo.pts, s.O, s.zc, pool, faces);
+    appendSphereCap(*s.sph, apexM, s.seamLo, transConeCapRings(s, s.seamLo, apexM), pool, faces,
+                    /*outer=*/false, /*reversed=*/true);
+    appendSphereCap(*s.sph, apexP, s.seamHi, transConeCapRings(s, s.seamHi, apexP), pool, faces,
+                    /*outer=*/false, /*reversed=*/true);
+    appendRevolvedBand(s.seamHi.pts, ringHi, s.O, s.zc, pool, faces);
+    appendDiskCap(*s.cone, s.coneHi, ringHi, s.zc, pool, faces);
+    if (faces.size() < 8) return {};
+  }
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
 }
 
 topo::Shape buildTransConeSphereFuse(const CurvedSolid& A, const CurvedSolid& B,
                                      const std::vector<Seam>& seams) {
   const TransConeSphereSetup s = transConeSphereSetup(A, B, seams);
-  if (!s.ok) return {};
-  return {};  // sphere-outer-zone weld is the transversal residual → OCCT (never faked)
+  if (!s.ok || !s.polesInsideCone) return {};
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const std::vector<math::Point3> ringLo = s.coneRingAxial(s.coneLo);
+  const std::vector<math::Point3> ringHi = s.coneRingAxial(s.coneHi);
+  appendDiskCap(*s.cone, s.coneLo, ringLo, math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool, faces);
+  appendRevolvedBand(ringLo, s.seamLo.pts, s.O, s.zc, pool, faces);        // lower cone stub
+  appendSphereOuterZoneBetweenSeams(s.C, s.Rs, s.zc, s.seamHi, s.seamLo, pool, faces, 1.0);
+  appendRevolvedBand(s.seamHi.pts, ringHi, s.O, s.zc, pool, faces);        // upper cone stub
+  appendDiskCap(*s.cone, s.coneHi, ringHi, s.zc, pool, faces);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
 }
 
 // ═══ S5-s — TRANSVERSAL (NON-COAXIAL) CONE ∩ CYLINDER COMMON (CUT/FUSE decline) ═══════
@@ -3854,9 +3928,13 @@ topo::Shape buildTransConeCylCommon(const CurvedSolid& A, const CurvedSolid& B,
 }
 
 // buildTransConeCylCut / buildTransConeCylFuse — the transversal CUT / FUSE of the offset
-// cone∩cylinder. Both need the cone OUTER SHELL / cylinder OUTER stub welded across the non-planar
-// seam (the outer-zone weld that made S5-k / S5-p / S5-q decline). So CUT/FUSE HONEST-DECLINE
-// (→ NULL → OCCT); COMMON is the landed slice. Nothing is faked.
+// cone∩cylinder. S5-s is a SINGLE-SEAM pose (the parallel-offset cylinder crosses the monotone
+// cone wall exactly once), so — unlike the two-loop S5-k/S5-q that the seam-band primitive now
+// lands — its CUT/FUSE need a SINGLE-seam outer weld (the cone outer sheet / cylinder outer stub
+// welded across ONE non-planar seam), a distinct construction from appendSphereOuterZoneBetween-
+// Seams (which spans a zone between TWO seams). That single-seam weld is the remaining transversal
+// residual for this family. So CUT/FUSE HONEST-DECLINE (→ NULL → OCCT); COMMON is the landed
+// slice. Nothing is faked.
 topo::Shape buildTransConeCylCut(const CurvedSolid& A, const CurvedSolid& B,
                                  const std::vector<Seam>& seams) {
   const TransConeCylSetup s = transConeCylSetup(A, B, seams);

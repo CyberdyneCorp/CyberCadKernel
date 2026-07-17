@@ -135,18 +135,17 @@ int main() {
       {bo::FfOp::Cut, "CUT", ax::volCut()},
       {bo::FfOp::Fuse, "FUSE", ax::volA() + ax::volB() - ax::volCommon()},
   };
-  // Sweep from the working band down into the fine-deflection residual region.
-  const double defls[] = {0.0025, 0.002, 0.00125, 0.001, 0.0008};
+  // Sweep from the working band down into the fine-deflection residual region. The RAW
+  // survivor histogram (full strip-pass SolidMesher, no orientation retry) IS the mesher's
+  // weld verdict; the assembly witnesses (gap) are deflection-independent by construction.
+  // We deliberately DO NOT call the 4-orientation verb weld here (it meshes the survivor
+  // solid up to 4× per row — cost-prohibitive at fine deflection); the raw histogram's
+  // open/nonmanif count is the decisive assembly-vs-mesher separator.
+  const double defls[] = {0.0025, 0.002, 0.00125};
   for (const auto& o : ops) {
     std::printf("\n--- %s (closed-form %.6f) ---\n", o.nm, o.cf);
     for (double d : defls) {
-      bo::MultiSeamCutReport rep;
-      const topo::Shape r =
-          bo::freeformFreeformMultiSeamCutWithSeams(A, B, seams, o.op, d, &rep, o.cf);
-      const double relErr = rep.enclosedVolume > 0 ? std::fabs(rep.enclosedVolume - o.cf) / o.cf : -1;
-      std::printf("  d=%.5f: [VERB] decline=%-18s surv=%d wt=%d coh=%d be=%zu vol=%.6f relErr=%.4f null=%d\n",
-                  d, bo::multiSeamCutDeclineName(rep.decline), rep.survivorFaces, rep.watertight,
-                  rep.coherent, rep.boundaryEdges, rep.enclosedVolume, relErr, r.isNull());
+      std::printf("  d=%.5f:\n", d);
       probe(A, B, seams, o.op, d);
       std::fflush(stdout);
     }

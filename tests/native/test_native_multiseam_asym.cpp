@@ -133,4 +133,66 @@ CC_TEST(asym_fuse_welds_watertight) {
   }
 }
 
+// ── L3-BAND: the fine-deflection residual is MESHER-limited, NOT assembly-limited ──
+// BELOW each op's working band the multi-seam sew declines (never leaks). This test PINS
+// where that decline lives: it proves the ASSEMBLY layer (split tiling + survivor set,
+// the boolean/ lane) is CORRECT and deflection-INDEPENDENT at a sub-band deflection, while
+// the verb honest-declines to NULL — so the residual is the frozen-M0-mesher shared-seam-
+// strip weld (tessellate/, out of this lane), not the assembly.
+//
+// Measured (measure_multiseam_fine): at d=0.002 (below the [0.0025,…] working band) the
+// COMMON survivor set is IDENTICAL to the welding d=0.0025 case (surv=2), splitWallBySeams
+// tiles BOTH walls with UV gap == 0 (exactly, deflection-independent), yet the raw survivor
+// mesh carries ONE non-manifold edge localized to the OUTER seam r₂ — the per-face-CDT
+// parity collapse of the shared-seam-strip weld. The assembly did its job; the mesher weld
+// is the limiter. This is the SACRED never-leaky honest-decline, pinned to its layer.
+CC_TEST(asym_fine_deflection_residual_is_mesher_not_assembly) {
+  namespace ffm = cybercad::native::boolean::ffmdetail;
+  namespace ffc = cybercad::native::boolean::ffcdetail;
+  const topo::Shape A = ax::buildA();
+  const topo::Shape B = ax::buildB();
+  const std::vector<bo::ssi::WLine>& seams = ax::closedSeams();
+  if (seams.size() != 2) { CC_CHECK(false); return; }
+
+  // (1) ASSEMBLY is correct and deflection-INDEPENDENT: split BOTH walls by BOTH seams; the
+  // UV tiling gap is exactly 0 on each wall (the split is a pure topology/UV operation — it
+  // never touches the deflection). This is the in-lane stage-3 machinery, and it is sound.
+  const auto foA = bo::recogniseFreeformSolid(A);
+  const auto foB = bo::recogniseFreeformSolid(B);
+  CC_CHECK(foA && foB);
+  const bo::OperandFace* wallA = nullptr;
+  const bo::OperandFace* wallB = nullptr;
+  bo::FfCutDecline wA = bo::FfCutDecline::Ok, wB = bo::FfCutDecline::Ok;
+  CC_CHECK(ffc::freeformWall(*foA, &wallA, wA) && ffc::freeformWall(*foB, &wallB, wB));
+  std::vector<bo::ssi::WLine> seamsB;
+  for (const auto& s : seams) seamsB.push_back(ffc::rekeyToB(s));
+  std::vector<ffm::WallRegion> regA, regB;
+  double gapA = -1.0, gapB = -1.0;
+  CC_CHECK(ffm::splitWallBySeams(wallA->face, seams, regA, gapA));
+  CC_CHECK(ffm::splitWallBySeams(wallB->face, seamsB, regB, gapB));
+  CC_CHECK(regA.size() == 3 && regB.size() == 3);   // inner disk + middle annulus + background
+  CC_CHECK(gapA < 1e-9 && gapB < 1e-9);             // EXACT UV tiling — deflection-independent
+
+  // (2) At a SUB-BAND deflection the verb honest-declines to NULL (never a leaky solid).
+  // The assembly reached the weld (both seams traced, both walls split into 3 regions), so
+  // the decline is a measured mesher-weld self-verify failure — NOT an upstream give-up.
+  const double dSub = 0.002;  // below the COMMON/CUT working band ([0.0025, 0.01])
+  bo::MultiSeamCutReport rep;
+  const topo::Shape r =
+      bo::freeformFreeformMultiSeamCutWithSeams(A, B, seams, bo::FfOp::Common, dSub, &rep, ax::volCommon());
+  CC_CHECK(r.isNull());                              // honest decline, never leaky
+  CC_CHECK(!rep.watertight);
+  CC_CHECK(rep.seamLoops == 2);                      // reached the weld
+  CC_CHECK(rep.subRegionsA == 3 && rep.subRegionsB == 3);
+  CC_CHECK(rep.decline == bo::MultiSeamCutDecline::NotWatertight);  // mesher-weld failure
+
+  // (3) The in-band deflection STILL welds (the band boundary is real, not a regression).
+  bo::MultiSeamCutReport repOk;
+  const topo::Shape rOk =
+      bo::freeformFreeformMultiSeamCutWithSeams(A, B, seams, bo::FfOp::Common, 0.0025, &repOk, ax::volCommon());
+  CC_CHECK(!rOk.isNull());
+  CC_CHECK(repOk.decline == bo::MultiSeamCutDecline::Ok);
+  CC_CHECK(repOk.boundaryEdges == 0);
+}
+
 int main() { return cctest::run_all(); }

@@ -186,6 +186,37 @@ double distToSpheroid(const Point3& x, double ax) {
   return std::fabs(std::sqrt((x.x / ax) * (x.x / ax) + x.y * x.y + x.z * x.z) - 1.0);
 }
 
+// A TRANSPOSED NURBS unit sphere: the exact mirror of nurbsUnitSphere with the parametric roles of
+// U and V SWAPPED — the PROFILE (half-circle) runs along U (poles at the u=0 and u=2 edges) and the
+// REVOLUTION runs along V (v-domain [0,4] → 2π). So the degenerate chart direction is V: ‖dV‖ → 0
+// at the u-EDGES (a collapsed control COLUMN), while ‖dU‖ stays finite. This is a genuine chart
+// pole the ORIGINAL U-only witness (‖dU‖ collapse on a v-edge) structurally CANNOT see — pre-slice
+// the marcher reached each u-edge and spuriously BoundaryExited at HALF the loop. It is the
+// transpose-symmetric twin of the freeform circular pole (e). u∈[0,2] south→north profile, v∈[0,4]
+// full revolution.
+ssi::SurfaceAdapter nurbsTransposedSphere() {
+  const int degU = 2, degV = 2, nU = 5, nV = 9;
+  const double px[5] = {0.0, 1.0, 1.0, 1.0, 0.0};    // profile radius R (now along U)
+  const double pz[5] = {-1.0, -1.0, 0.0, 1.0, 1.0};  // profile height z
+  const double pw[5] = {1.0, kC, 1.0, kC, 1.0};      // profile rational weights
+  std::vector<Point3> poles(static_cast<std::size_t>(nU) * nV);
+  std::vector<double> w(static_cast<std::size_t>(nU) * nV);
+  for (int k = 0; k < nV; ++k) {                     // k over V = revolution
+    const double ang = k * 45.0 * kPi / 180.0;
+    const bool corner = (k % 2) == 1;                // odd v-poles are the rational circle corners
+    const double wc = corner ? kC : 1.0, rs = corner ? (1.0 / kC) : 1.0;
+    const double ck = std::cos(ang), sk = std::sin(ang);
+    for (int j = 0; j < nU; ++j) {                   // j over U = profile
+      const double R = px[j] * rs;
+      poles[static_cast<std::size_t>(j) * nV + k] = Point3{R * ck, R * sk, pz[j]};
+      w[static_cast<std::size_t>(j) * nV + k] = wc * pw[j];
+    }
+  }
+  std::vector<double> kU{0, 0, 0, 1, 1, 2, 2, 2};                  // profile knots on U
+  std::vector<double> kV{0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4};      // revolution knots on V
+  return ssi::makeNurbsAdapter(degU, degV, poles, w, nU, nV, kU, kV);
+}
+
 }  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -511,6 +542,65 @@ CC_TEST(s4e_asymmetric_elliptical_pole_full_loop) {
   }
   CC_CHECK(v1lo < 0.05);                         // reaches the south non-circular pole (v→0)
   CC_CHECK(v1hi > 1.95);                         // and the north non-circular pole (v→2)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (h) S4-e TRANSPOSED chart pole — a V-DIRECTION collapse (‖dV‖ → 0 on a u-EDGE). The mirror of
+// (e): a NURBS unit sphere authored with the profile on U and the revolution on V, so the whole
+// v COLUMN at each u-edge maps to one pole point. The ORIGINAL S4-e witness only tests ‖dU‖
+// collapse on a v-edge, so pre-slice it never fired on this transposed authoring — the marcher
+// reached each u-edge and spuriously BoundaryExited at HALF the loop (len ≈ π). AFTER this slice
+// the transpose-symmetric witness (collapsedV + degenerateUEdge + freeformChartInvertV) fires,
+// the crossing reflects through each u-edge pole to the far column, BOTH poles are crossed, and
+// the FULL closed great circle is traced (len ≈ 2π, singularitiesCrossed ≥ 2), every node on both
+// surfaces ≤ tol — the transpose-orientation capability the roadmap deferred as an "edge/seam
+// degeneracy". The x=0 cross-section of the unit sphere is the unit great circle regardless of
+// which parametric direction hosts the profile.
+// ─────────────────────────────────────────────────────────────────────────────
+CC_TEST(s4e_transposed_v_collapse_pole_full_loop) {
+  auto A = nurbsTransposedSphere();                        // ‖dV‖→0 at the u=0 and u=2 edges
+  auto B = planeX0(ssi::ParamBox{-2.0, 2.0, -2.0, 2.0});
+  // Seed on the equator at world (0,1,0): profile u=1 (R=1 at z=0), revolution v=1 (angle 90°).
+  const Point3 sp = A.point(1.0, 1.0);
+  auto seeds = handSeed(1.0, 1.0, sp.y, sp.z, sp);
+  const double tol = 1e-6;
+
+  // BEFORE — chart switch OFF: the S3 marcher truncates at the first (u-edge) pole (arc ≈ π).
+  ssi::MarchOptions off;
+  auto before = ssi::trace_from_seeds(A, B, seeds, off);
+  CC_CHECK(before.singularitiesCrossed == 0);
+  CC_CHECK(before.curveCount() == 1);
+  if (before.curveCount() == 1) {
+    CC_CHECK(before.lines[0].status == ssi::TraceStatus::BoundaryExit);  // spurious exit at the pole
+    CC_CHECK(polylineLength(before.lines[0]) < 0.75 * (2.0 * kPi));      // only HALF the loop (≈ π)
+  }
+
+  // AFTER — chart switch ON: BOTH transposed (V-collapse) poles crossed, the full loop traced.
+  ssi::MarchOptions on;
+  on.enableChartSingularities = true;
+  auto tr = ssi::trace_from_seeds(A, B, seeds, on);
+
+  CC_CHECK(tr.curveCount() == 1);
+  if (tr.curveCount() != 1) return;
+  const ssi::WLine& w = tr.lines[0];
+  CC_CHECK(w.isClosed());                       // full closed loop, not a truncated meridian
+  CC_CHECK(tr.closedCurves == 1);
+  CC_CHECK(tr.nearTangentGaps == 0);            // the transposed poles were crossed, not deferred
+  CC_CHECK(tr.singularitiesCrossed >= 2);       // BOTH u-edge (V-collapse) poles stepped across
+  CC_CHECK(w.chartSingularCrossed >= 2);
+
+  const double len = polylineLength(w);
+  CC_CHECK(len <= 2.0 * kPi + 1e-4);            // never longer than the true circumference
+  CC_CHECK(len >= 0.90 * (2.0 * kPi));          // the FULL loop (not the truncated π half)
+  double u1lo = 1e9, u1hi = -1e9;
+  for (const auto& n : w.points) {
+    CC_CHECK(distToUnitSphereO(n.point) < tol); // every node on BOTH surfaces (no fabricated pole)
+    CC_CHECK(distToPlaneX0(n.point) < tol);
+    u1lo = std::min(u1lo, n.u1);
+    u1hi = std::max(u1hi, n.u1);
+  }
+  CC_CHECK(u1lo < 0.05);                         // reaches the u=0 (south) transposed pole
+  CC_CHECK(u1hi > 1.95);                         // and the u=2 (north) transposed pole
 }
 
 int main() { return cctest::run_all(); }

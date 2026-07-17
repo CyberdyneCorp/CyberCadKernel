@@ -66,6 +66,15 @@ struct ChartCond {
   double dV = 0.0;         ///< ‖∂S/∂v‖
   bool normalFinite = true;///< the surface normal is finite here (a pole/apex, not a NaN)
   bool collapsed = false;  ///< the U chart collapsed: ‖dU‖ ≪ ‖dV‖·frac AND ‖dU‖ ≪ scale·frac
+  // TRANSPOSE-SYMMETRIC witness (S4-e transposed slice). A surface can carry its degenerate
+  // chart in EITHER parametric direction: the sphere-of-revolution family collapses ‖dU‖ at a
+  // v-edge (the `collapsed` flag above), but a TRANSPOSED authoring — the profile on U, the
+  // revolution on V — collapses ‖dV‖ at a u-edge instead. `collapsedV` is the exact mirror of
+  // `collapsed` with the roles of U and V swapped: ‖dV‖ ≪ ‖dU‖·frac AND ‖dV‖ ≪ scale·frac. The
+  // two flags are mutually exclusive by construction (each fires only when ITS direction is the
+  // smaller). A node with `collapsedV` is crossed by the SAME point-based corrector; only the
+  // far-side chart re-seed transposes (a u-edge pole, a far-v inversion) — see marching.cpp.
+  bool collapsedV = false; ///< the V chart collapsed: ‖dV‖ ≪ ‖dU‖·frac AND ‖dV‖ ≪ scale·frac
 };
 
 // Central finite-difference ‖dU‖ / ‖dV‖ at (u,v), the SAME scheme advanceParams uses (a
@@ -94,6 +103,10 @@ inline ChartCond chartConditionAt(const SurfaceAdapter& S, double u, double v, d
   const Vec3 n = S.normal(u, v).vec();
   c.normalFinite = std::isfinite(n.x) && std::isfinite(n.y) && std::isfinite(n.z);
   c.collapsed = c.normalFinite && c.dU < collapseFrac * c.dV && c.dU < collapseFrac * scale;
+  // Transpose-symmetric V collapse (the mirror of `collapsed` with U/V swapped). Only fires when
+  // V is the SMALLER (dV < dU) so the two flags never fire together — a genuine V-direction chart
+  // pole (profile on U, revolution on V) that the U-only witness would miss.
+  c.collapsedV = c.normalFinite && c.dV < collapseFrac * c.dU && c.dV < collapseFrac * scale;
   return c;
 }
 
@@ -132,6 +145,66 @@ inline bool degenerateVEdge(const SurfaceAdapter& S, double v, double scale, dou
   // Collapsed row ⇔ spread ≪ scale (use collapseFrac·scale, the same order the pointwise
   // witness uses for ‖dU‖). A finite v-cap has spread = O(scale) and is rejected.
   return spread < collapseFrac * scale;
+}
+
+// ── transposed degenerate-u-edge (collapsed-COLUMN) pole detector ──────────────────
+//
+// The exact mirror of `degenerateVEdge` with the roles of U and V swapped: recognises a chart
+// pole whose degenerate direction is V (the whole v COLUMN at a u-edge maps to one 3D point —
+// ‖dV‖ → 0). A transposed surface of revolution (profile on U, revolution on V) collapses here
+// rather than at a v-edge, so the collapsed-row detector would never fire. Only meaningful for a
+// NON-periodic u (a genuine open u-limit); FALSE at a finite u-cap (that column is a full curve,
+// spread = O(scale)). Point-only; a wrong verdict cannot fabricate geometry (the crossing that
+// consumes it still emits only nodes verified on both surfaces ≤ onSurfTol, else defers). Returns
+// the degenerate edge's u (u0 or u1) in `edgeU`.
+inline bool degenerateUEdge(const SurfaceAdapter& S, double u, double scale, double collapseFrac,
+                            double& edgeU) {
+  const ParamBox& dom = S.domain;
+  if (S.uPeriod > 0.0) return false;
+  edgeU = (std::fabs(u - dom.u0) <= std::fabs(u - dom.u1)) ? dom.u0 : dom.u1;
+  const int nv = 12;
+  const Point3 p0 = S.point(edgeU, dom.v0);
+  double spread = 0.0;
+  for (int i = 1; i <= nv; ++i) {
+    const double v = dom.v0 + (dom.v1 - dom.v0) * (static_cast<double>(i) / nv);
+    spread = std::max(spread, math::norm(S.point(edgeU, v) - p0));
+  }
+  return spread < collapseFrac * scale;
+}
+
+// ── transposed freeform pole far-side LATITUDE inversion (the V mirror of freeformChartInvert) ──
+//
+// The V-direction analog of `freeformChartInvert`: at a transposed freeform pole the u is fixed
+// just inside the collapsed u-edge and the FAR v (the outgoing "latitude" on the far column) is
+// recovered by a point-only nearest-point search over the v domain at that fixed uFix. Same
+// well-posedness argument (a fixed u off the pole edge keeps the tiny parallel ring distinguishing
+// near vs far column by v; never touches the degenerate dV). Yields only a SEED; the corrector
+// finishes the landing and verifies on both surfaces.
+inline double freeformChartInvertV(const SurfaceAdapter& S, const Point3& target, double uFix) {
+  const ParamBox& d = S.domain;
+  auto dist2 = [&](double v) {
+    const Vec3 e = S.point(uFix, v) - target;
+    return math::dot(e, e);
+  };
+  const int nv = 64;
+  double bv = d.v0, best = dist2(bv);
+  for (int i = 1; i <= nv; ++i) {
+    const double v = d.v0 + (d.v1 - d.v0) * (static_cast<double>(i) / nv);
+    const double f = dist2(v);
+    if (f < best) { best = f; bv = v; }
+  }
+  double hv = (d.v1 - d.v0) / nv;
+  for (int it = 0; it < 40; ++it) {
+    bool improved = false;
+    for (const double sv : {+hv, -hv}) {
+      const double v = bv + sv;
+      if (v < d.v0 || v > d.v1) continue;
+      const double f = dist2(v);
+      if (f < best) { best = f; bv = v; improved = true; }
+    }
+    if (!improved) hv *= 0.5;
+  }
+  return bv;
 }
 
 // ── pole-longitude continuity map ──────────────────────────────────────────────

@@ -661,6 +661,12 @@ enum class ChartSurf { None, A, B };
 struct ChartHit {
   ChartSurf surf = ChartSurf::None;
   chartsing::ChartCond cond{};  ///< the collapsed surface's conditioning (‖dU‖, ‖dV‖, finite normal)
+  // TRANSPOSE-SYMMETRIC axis (S4-e transposed slice). Which of the collapsed surface's two
+  // parametric directions ran out: false = the U chart collapsed (‖dU‖→0 at a v-edge, the
+  // original sphere-of-revolution case), true = the V chart collapsed (‖dV‖→0 at a u-edge, a
+  // TRANSPOSED authoring). The crossing uses the SAME point-based corrector either way; only the
+  // far-side chart re-seed + the pole-edge classification transpose on this flag.
+  bool axisV = false;
 };
 
 // A single surface's chart condition at a node, AUGMENTED with the S4-e-general
@@ -679,7 +685,7 @@ struct ChartHit {
 chartsing::ChartCond chartCondAugmented(const SurfaceAdapter& S, double u, double v, double scale,
                                         const Tuned& t) {
   chartsing::ChartCond c = chartsing::chartConditionAt(S, u, v, scale, t.chartCollapseFrac);
-  if (c.collapsed || !c.normalFinite) return c;  // already collapsed, or a NaN normal → leave it
+  if (c.collapsed || c.collapsedV || !c.normalFinite) return c;  // collapsed (U or V), or NaN → leave it
   // FREEFORM only (uPeriod == 0). An ANALYTIC surface (sphere, uPeriod = 2π) crosses via the exact
   // poleContinuationU u+π jump, whose small-h pin needs the witness to fire RIGHT AT the pole — so
   // firing it early (in the edge band) would break the analytic crossing. Analytic circular poles
@@ -706,10 +712,18 @@ ChartHit chartCondition(const SurfaceAdapter& A, const SurfaceAdapter& B, const 
   const chartsing::ChartCond ca = chartCondAugmented(A, s.u1, s.v1, scale, t);
   const chartsing::ChartCond cb = chartCondAugmented(B, s.u2, s.v2, scale, t);
   ChartHit h;
-  const double ra = ca.dU / std::max(ca.dV, 1e-300);
-  const double rb = cb.dU / std::max(cb.dV, 1e-300);
-  if (ca.collapsed && (!cb.collapsed || ra <= rb)) { h.surf = ChartSurf::A; h.cond = ca; }
-  else if (cb.collapsed)                           { h.surf = ChartSurf::B; h.cond = cb; }
+  // A collapse is present on a surface if EITHER its U or its V chart ran out (transpose-symmetric).
+  const bool aColl = ca.collapsed || ca.collapsedV;
+  const bool bColl = cb.collapsed || cb.collapsedV;
+  // The collapse SEVERITY on a surface is the smaller-over-larger tangent ratio (the collapsed
+  // direction against the healthy one), directionless so U- and V-collapses compare on equal
+  // footing when both surfaces somehow collapse.
+  auto sev = [](const chartsing::ChartCond& c) {
+    return std::min(c.dU, c.dV) / std::max(std::max(c.dU, c.dV), 1e-300);
+  };
+  const double ra = sev(ca), rb = sev(cb);
+  if (aColl && (!bColl || ra <= rb)) { h.surf = ChartSurf::A; h.cond = ca; h.axisV = ca.collapsedV; }
+  else if (bColl)                    { h.surf = ChartSurf::B; h.cond = cb; h.axisV = cb.collapsedV; }
   return h;
 }
 
@@ -721,8 +735,11 @@ bool chartRecovered(const SurfaceAdapter& A, const SurfaceAdapter& B, const Stat
   // degenerate-v-edge band is recognised as RECOVERED once v steps back out of that band (‖dU‖
   // recovering OR the node having left the edge approach band). Bit-identical to the raw test for
   // a circular pole / cone apex (those never trip the edge-augmentation).
-  return !chartCondAugmented(A, s.u1, s.v1, scale, t).collapsed &&
-         !chartCondAugmented(B, s.u2, s.v2, scale, t).collapsed;
+  auto anyCollapse = [&](const SurfaceAdapter& S, double u, double v) {
+    const chartsing::ChartCond c = chartCondAugmented(S, u, v, scale, t);
+    return c.collapsed || c.collapsedV;  // recovered ⇔ NEITHER chart direction still collapsed
+  };
+  return !anyCollapse(A, s.u1, s.v1) && !anyCollapse(B, s.u2, s.v2);
 }
 
 // Seed the SINGULAR surface's far-side (u,v) LOOSELY from chart continuity, using only the
@@ -753,13 +770,21 @@ bool isPoleEdge(const SurfaceAdapter& S, double v) {
   const double ev = std::max(d.dv() * 1e-3, 1e-9);
   return v <= d.v0 + ev || v >= d.v1 - ev;
 }
+// Transposed pole (V collapse): the pole sits on a u-EDGE (the v column runs out there). The
+// mirror of isPoleEdge with U/V swapped.
+bool isPoleEdgeU(const SurfaceAdapter& S, double u) {
+  const ParamBox& d = S.domain;
+  const double eu = std::max(d.du() * 1e-3, 1e-9);
+  return u <= d.u0 + eu || u >= d.u1 - eu;
+}
 
-void chartFarUV(const SurfaceAdapter& S, bool poleCase, double u, double v, const Point3& target,
-                double& uOut, double& vOut) {
-  if (poleCase) {
-    // Sphere pole: the great arc CONTINUES on the OPPOSITE meridian — jump the longitude by half
-    // a turn (poleContinuationU, u_in+π) and KEEP the latitude (the far arc runs back DOWN from
-    // the same pole edge, v unchanged; there is no v beyond ±π/2). The corrector re-lands v.
+void chartFarUV(const SurfaceAdapter& S, bool poleCase, bool axisV, double u, double v,
+                const Point3& target, double& uOut, double& vOut) {
+  if (poleCase && !axisV) {
+    // U-COLLAPSE pole (the original sphere-of-revolution case). Sphere pole: the great arc
+    // CONTINUES on the OPPOSITE meridian — jump the longitude by half a turn (poleContinuationU,
+    // u_in+π) and KEEP the latitude (the far arc runs back DOWN from the same pole edge, v
+    // unchanged; there is no v beyond ±π/2). The corrector re-lands v.
     if (S.uPeriod > 0.0) {
       uOut = chartsing::poleContinuationU(u, S.uPeriod);
     } else {
@@ -774,6 +799,14 @@ void chartFarUV(const SurfaceAdapter& S, bool poleCase, double u, double v, cons
       uOut = chartsing::freeformChartInvert(S, target, v);
     }
     vOut = v;  // KEEP the latitude (analytic reflect and freeform share this — far arc runs back down)
+  } else if (poleCase && axisV) {
+    // TRANSPOSED (V-COLLAPSE) pole: the roles of U and V swap. The pole sits on a u-EDGE, the
+    // "longitude" is now v (revolution on V) and the collapsing "latitude" is u. Recover the far
+    // LATITUDE v by the transposed point-only inversion at the fixed near-pole u; KEEP u (the far
+    // arc runs back from the same u-edge). Freeform-only in practice (a transposed authoring is a
+    // freeform NURBS, uPeriod == 0); the corrector verifies the pick, else the march defers.
+    vOut = chartsing::freeformChartInvertV(S, target, u);
+    uOut = u;
   } else {
     uOut = u;       // apex: azimuth unchanged (the straight line keeps its longitude)
     vOut = -v;      // far nappe: signed radius (hence v) flips sign through the apex
@@ -809,7 +842,8 @@ struct ChartCrossOut {
 // crossNearTangent for S4-c).
 ChartCrossOut crossChartSingularity(const SurfaceAdapter& A, const SurfaceAdapter& B,
                                     const State& stall, const Vec3& tStarFwd, ChartSurf which,
-                                    const Tuned& t, double scale, std::vector<WLinePoint>& out) {
+                                    bool axisV, const Tuned& t, double scale,
+                                    std::vector<WLinePoint>& out) {
   ChartCrossOut r;
   const std::size_t base = out.size();  // rollback marker: discard all crossing nodes on failure
   const Vec3 dirStar = tStarFwd;        // fixed crossing direction (last-good forward tangent)
@@ -818,16 +852,20 @@ ChartCrossOut crossChartSingularity(const SurfaceAdapter& A, const SurfaceAdapte
   // POLE (sphere, collapse on a v edge — continue on the opposite meridian) vs APEX (cone,
   // collapse in the v interior — pass through to the far nappe, v sign flips).
   const double vSing = singularIsA ? stall.v1 : stall.v2;
-  // POLE vs APEX. A pole sits at a genuine degenerate v-EDGE (the whole edge row collapses to one
-  // point); an apex is an INTERIOR v collapse (cone signed radius crosses zero away from an edge).
+  const double uSing = singularIsA ? stall.u1 : stall.u2;
+  // POLE vs APEX. A pole sits at a genuine degenerate EDGE (the whole edge row/column collapses to
+  // one point); an apex is an INTERIOR collapse (cone signed radius crosses zero away from an edge).
   // isPoleEdge's thin (1e-3 of domain) band works for a CIRCULAR pole (the witness fires right at
   // the edge), but the NON-CIRCULAR (elliptical) witness fires up to chartEdgeApproachV (2%) BEFORE
-  // the edge, well outside that thin band — so classify by the SURFACE property (degenerateVEdge:
-  // the nearest v-edge row is collapsed) as well. Either signal ⇒ pole; neither ⇒ apex.
-  double poleEdgeV;
+  // the edge, well outside that thin band — so classify by the SURFACE property (degenerate edge
+  // row/column collapsed) as well. Either signal ⇒ pole; neither ⇒ apex. TRANSPOSE-SYMMETRIC: a
+  // V-collapse (axisV) pole sits on a u-EDGE, so test the u-edge witnesses; a U-collapse on a v-edge.
+  double poleEdgeV, poleEdgeU;
   const bool poleCase =
-      isPoleEdge(singular, vSing) ||
-      chartsing::degenerateVEdge(singular, vSing, scale, 1e-2, poleEdgeV);
+      axisV ? (isPoleEdgeU(singular, uSing) ||
+               chartsing::degenerateUEdge(singular, uSing, scale, 1e-2, poleEdgeU))
+            : (isPoleEdge(singular, vSing) ||
+               chartsing::degenerateVEdge(singular, vSing, scale, 1e-2, poleEdgeV));
 
   State cur = stall;
   const double h = t.chartStep;         // FINE, fixed step across the band (resolve, don't leap)
@@ -849,11 +887,21 @@ ChartCrossOut crossChartSingularity(const SurfaceAdapter& A, const SurfaceAdapte
     if (crossingStep && poleCase) {
       const SurfaceAdapter& sing = (hitCur.surf == ChartSurf::A) ? A : B;
       if (sing.uPeriod <= 0.0) {  // freeform pole → reflect through the pole point for the far target
-        double edgeV;
         const double vS = (hitCur.surf == ChartSurf::A) ? cur.v1 : cur.v2;
         const double uS = (hitCur.surf == ChartSurf::A) ? cur.u1 : cur.u2;
-        if (chartsing::degenerateVEdge(sing, vS, scale, 1e-2, edgeV)) {
-          const Point3 pole = sing.point(uS, edgeV);
+        // Locate the collapsed edge point. U-collapse ⇒ a v-edge row (S.point(uS, edgeV));
+        // transposed V-collapse ⇒ a u-edge column (S.point(edgeU, vS)).
+        double edge;
+        bool onEdge = false;
+        Point3 pole{};
+        if (axisV) {
+          onEdge = chartsing::degenerateUEdge(sing, uS, scale, 1e-2, edge);
+          if (onEdge) pole = sing.point(edge, vS);
+        } else {
+          onEdge = chartsing::degenerateVEdge(sing, vS, scale, 1e-2, edge);
+          if (onEdge) pole = sing.point(uS, edge);
+        }
+        if (onEdge) {
           const Point3 far{2.0 * pole.x - anchor.x, 2.0 * pole.y - anchor.y, 2.0 * pole.z - anchor.z};
           const double d = math::dot(far - anchor, dirStar);
           if (d > h) { pinDist = d; target = far; }  // only widen (never shrink below the fine h)
@@ -872,8 +920,8 @@ ChartCrossOut crossChartSingularity(const SurfaceAdapter& A, const SurfaceAdapte
     else             advanceParams(reg, cur.u1, cur.v1, reg.uPeriod, dirStar * pinDist, reg.domain, seed.u1, seed.v1);
     if (crossingStep) {
       double uO, vO;
-      if (singularIsA) { chartFarUV(A, poleCase, cur.u1, cur.v1, target, uO, vO); seed.u1 = uO; seed.v1 = vO; }
-      else             { chartFarUV(B, poleCase, cur.u2, cur.v2, target, uO, vO); seed.u2 = uO; seed.v2 = vO; }
+      if (singularIsA) { chartFarUV(A, poleCase, axisV, cur.u1, cur.v1, target, uO, vO); seed.u1 = uO; seed.v1 = vO; }
+      else             { chartFarUV(B, poleCase, axisV, cur.u2, cur.v2, target, uO, vO); seed.u2 = uO; seed.v2 = vO; }
       crossed = true;
     }
 
@@ -1037,11 +1085,11 @@ std::optional<DirResult> tryBandEntry(const SurfaceAdapter& A, const SurfaceAdap
 // last-good forward tangent (w.haveStar): the crossing needs a fixed t★ for the point-based cut.
 // Isolating this keeps marchDir a flat dispatch.
 std::optional<DirResult> tryChartBand(const SurfaceAdapter& A, const SurfaceAdapter& B,
-                                      const State& start, int step, ChartSurf which,
+                                      const State& start, int step, ChartSurf which, bool axisV,
                                       const Tuned& t, double scale, Walk& w,
                                       std::vector<WLinePoint>& out, DirResult& res) {
   const ChartCrossOut cx =
-      crossChartSingularity(A, B, w.cur, w.tStar, which, t, scale, out);
+      crossChartSingularity(A, B, w.cur, w.tStar, which, axisV, t, scale, out);
   if (!cx.crossed) {  // chart collapse the point-based cut could not verify across → honest stop
     DirResult stop;
     stop.end = DirEnd::NearTangent;
@@ -1106,7 +1154,7 @@ DirResult marchDir(const SurfaceAdapter& A, const SurfaceAdapter& B,
     if (t.enableChartSingularities && w.haveStar) {
       const ChartHit hit = chartCondition(A, B, w.cur, scale, t);
       if (hit.surf != ChartSurf::None) {
-        if (auto done = tryChartBand(A, B, start, step, hit.surf, t, scale, w, out, res))
+        if (auto done = tryChartBand(A, B, start, step, hit.surf, hit.axisV, t, scale, w, out, res))
           return *done;
         continue;  // crossed → resume the normal walk on the far side
       }

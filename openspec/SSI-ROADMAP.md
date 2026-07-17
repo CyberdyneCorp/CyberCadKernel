@@ -533,7 +533,7 @@ already cancels odd-order terms, κ at B is O(δ²)-accurate ~1e-7) and is NOT s
 - **Unlocks:** **Steinmetz is now unblocked** natively; the multi-arm `TraceSet` +
   `BranchNode` connectivity is available to S5 curved booleans for self-crossing loci.
 
-#### S4-e — Singularities · ◐ THREE HONEST SLICES DONE AT THE BAR (analytic sphere-pole + cone-apex crossed; FREEFORM circular parametric pole crossed; ASYMMETRIC / non-circular freeform pole crossed; curve cusp declined by IFT; higher-order + edge/seam degeneracies remain)
+#### S4-e — Singularities · ◐ FOUR HONEST SLICES DONE AT THE BAR (analytic sphere-pole + cone-apex crossed; FREEFORM circular parametric pole crossed; ASYMMETRIC / non-circular freeform pole crossed; TRANSPOSED V-collapse pole (‖dV‖→0 on a u-edge) crossed; curve cusp declined by IFT; higher-order + seam degeneracies remain)
 A **chart (removable) singularity** is where ONE surface's own `(u,v)` parametrization
 degenerates while its 3D point + normal stay finite: a **sphere parametric pole**
 (`v = ±π/2`, where `‖dU‖ = R·cos v → 0`) or a **cone apex** (signed radius
@@ -651,6 +651,34 @@ still DEFERS at its `v=1` domain-boundary endpoint (a degenerate edge but a genu
 the far-side reproject cannot verify past a nonexistent surface), and the S4-c graze / S4-d
 Steinmetz still cross with the flag on (`singularitiesCrossed = 0`).
 
+**Fourth slice — TRANSPOSED (V-COLLAPSE) chart pole (this change, gated `CYBERCAD_HAS_NUMSCI`,
+additive):** all three prior slices assume the degenerate chart direction is U (`‖dU‖ → 0` on a
+`v`-edge — the sphere-of-revolution family, profile on V, revolution on U). But a chart pole can sit
+in EITHER parametric direction: a TRANSPOSED authoring (profile on U, revolution on V) collapses
+`‖dV‖ → 0` on a `u`-EDGE instead (the whole `v` COLUMN maps to one pole point). The original witness
+tests ONLY `‖dU‖` collapse, so it structurally could not see this — the marcher reached each
+`u`-edge and spuriously `BoundaryExit`ed at HALF the loop (`len ≈ π`, `singularitiesCrossed = 0`,
+NOT even deferred). This slice makes the whole S4-e path TRANSPOSE-SYMMETRIC, strictly additively:
+- **`chartsing::ChartCond.collapsedV`** — the exact mirror of `collapsed` with U/V swapped
+  (`‖dV‖ ≪ collapseFrac·‖dU‖` AND `≪ collapseFrac·scale`). Mutually exclusive with `collapsed` (each
+  fires only when ITS direction is the smaller), so a U-collapse surface is bit-identical.
+- **`chartsing::degenerateUEdge` / `freeformChartInvertV`** — the U-edge column-collapse detector and
+  the far-LATITUDE (fixed-`u`) point-only inversion, the transposes of `degenerateVEdge` /
+  `freeformChartInvert`.
+- **`ChartHit.axisV` threaded through the crossing** — `chartCondition` reports WHICH direction
+  collapsed; `crossChartSingularity` classifies the pole against the `u`-edge witnesses, reflects
+  the far target through the `u`-edge pole point, and re-seeds the far column via
+  `chartFarUV(..., axisV=true)` (keep `u`, invert far `v`). The point-based fixed-plane corrector and
+  the honest verify-or-defer guard are UNCHANGED — a wrong pick fails on both surfaces and the march
+  defers, exactly as the U path. **At the bar (host, NUMSCI ON):** a NATIVE NURBS unit sphere authored
+  TRANSPOSED (profile on `u∈[0,2]`, revolution on `v∈[0,4]`, both `u`-edges genuine collapsed columns)
+  `∩` the `x=0` plane traces the full closed great circle, `singularitiesCrossed = 2`,
+  `nearTangentGaps = 0`, `len ≈ 6.11` (~97% of 2π — the fine crossing chord skips the measure-zero
+  pole arc, never fabricated), every node on both surfaces ≤ `1e-6`, `u ∈ [~0, ~2]` (BOTH transposed
+  poles). All eight prior S4-e cases + the S4-c/S4-d controls stay green byte-identical (a U-collapse
+  surface never trips `collapsedV`; the plane / cylinder-cap / cone-apex are untouched). Regression:
+  `s4e_transposed_v_collapse_pole_full_loop`.
+
 **Curve cusp — DECLINED (no dead code):** a cusp of the intersection curve (arclength velocity
 → 0) requires `‖n_A×n_B‖ → 0`; by the implicit-function theorem, with regular charts AND healthy
 pair sine the intersection is a smooth regular curve, so "a curve cusp with regular charts and
@@ -662,8 +690,10 @@ cusps route to the existing S4-c/S4-d/OCCT path.
 - **Honest scope / risk:** the two **analytic chart singularities** (sphere pole, cone apex), the
   **freeform circular parametric pole** (collapsed spline/NURBS row), and now the **asymmetric
   (non-circular / elliptical) freeform pole** (via the degenerate-`v`-edge witness + reflected-far
-  crossing pin) are crossed, each verified node-by-node on both surfaces + on the OCCT locus. Still
-  DEFERRED → OCCT (reported, never faked): **higher-order / edge / seam** degeneracies (and any
+  crossing pin), and now the **transposed (V-collapse, `‖dV‖→0` on a `u`-edge) pole** (via the
+  transpose-symmetric witness + `u`-edge reflect) are crossed, each verified node-by-node on both
+  surfaces + on the OCCT locus. Still
+  DEFERRED → OCCT (reported, never faked): **higher-order / seam** degeneracies (and any
   asymmetric pole so extreme its reflected-far reproject does not verify — it defers the same
   honest way); a full brep **degenerate-pole B-spline SOLID
   through the boolean pipeline** (no native construct feeds a freeform-pole face to the marcher —

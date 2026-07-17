@@ -141,9 +141,19 @@ CylinderFit fitCylinder(std::span<const Point3> points);
 /// refined geometrically through numerics::least_squares.
 ConeFit fitCone(std::span<const Point3> points);
 
-/// Try all primitives and return the best one whose RELATIVE RMS is ≤ `relTol`
+/// Try all primitives and return the best-typed one whose RELATIVE RMS is ≤ `relTol`
 /// (default 1e-6 of the cloud extent). If none qualifies, return Freeform — this
 /// function never fits a free-form B-spline; it only decides / declines.
+///
+/// TYPE CHOICE among the within-tol candidates: the SIMPLER primitive wins on a GENUINE
+/// TIE (ordering plane < sphere < cylinder < cone), but a tie is only genuine when the
+/// fits are comparably good. The best (lowest-relError) within-tol candidate is found,
+/// then the simplest candidate within a decisive factor of it is chosen; a simpler
+/// primitive that is DRAMATICALLY worse than a within-tol complex fit loses to it. This
+/// stops a narrow-band WIDE cone (a countersink/chamfer at a loose tol) from being mis-
+/// typed as a bogus large-radius sphere while still resolving true ties (an exact plane,
+/// which a degenerate cone also fits to ~machine-zero) to the simpler type. No tolerance
+/// is ever widened — every accepted candidate is already ≤ relTol.
 PrimitiveDetection detectPrimitive(std::span<const Point3> points,
                                    double relTol = 1e-6);
 

@@ -483,21 +483,42 @@ PrimitiveDetection detectPrimitive(std::span<const Point3> points, double relTol
       {PrimitiveType::Cone, out.cone.ok ? out.cone.rms / extent : 1e300, out.cone.ok},
   }};
 
-  // Pick the lowest-relError candidate that (a) succeeded and (b) is within relTol.
-  // A cone/cylinder can also perfectly fit plane-like data as a degenerate limit;
-  // we prefer the SIMPLER primitive on ties by ordering plane<sphere<cyl<cone and
-  // requiring a strict improvement to override. So iterate in simplicity order and
-  // accept the first within tolerance.
-  const PrimitiveType order[4] = {PrimitiveType::Plane, PrimitiveType::Sphere,
-                                  PrimitiveType::Cylinder, PrimitiveType::Cone};
-  for (PrimitiveType want : order) {
-    for (const auto& cd : cands) {
-      if (cd.t == want && cd.ok && cd.rel <= relTol) {
-        out.type = cd.t;
-        out.rms = cd.rel * extent;
-        out.relError = cd.rel;
-        out.ok = true;
-        return out;
+  // Among the candidates that (a) succeeded and (b) are within relTol, choose the type.
+  // A cone/cylinder can also fit plane-/sphere-like data as a degenerate limit, so we
+  // prefer the SIMPLER primitive on GENUINE TIES (ordering plane<sphere<cyl<cone). But a
+  // tie is only genuine when the fits are comparably good. A narrow-band WIDE CONE, for
+  // instance, is fit near-exactly by a cone yet ALSO squeaks under a NOISE-RELATIVE tol as
+  // a bogus large-radius sphere; there the sphere is not a tie, it is markedly worse, and
+  // shoe-horning the cone into a sphere is a mis-classification (e.g. a scanned countersink
+  // /chamfer cone reported as a sphere). So: find the best (lowest-relError) within-tol
+  // candidate, then, walking simplicity order, accept the first candidate whose relError is
+  // within a DECISIVE FACTOR of that best (a real tie). A simpler primitive that is worse by
+  // MORE than the factor loses to the decisively-better complex one. This never widens the
+  // tolerance (both remain ≤ relTol) and preserves the simple-on-ties behaviour: on an exact
+  // plane, plane and cone are both ~machine-zero (a tie) → plane still wins; on an exact
+  // sphere only the sphere is near-zero → sphere wins.
+  //
+  // The factor is generous (a simpler fit up to ~2 decades worse than the best still wins as
+  // a tie) so honest borderline fits are not aggressively upgraded; only a simpler fit that
+  // is DRAMATICALLY worse than a within-tol complex fit is rejected as a mis-type.
+  constexpr double kTieFactor = 100.0;
+  double bestRel = 1e300;
+  for (const auto& cd : cands)
+    if (cd.ok && cd.rel <= relTol) bestRel = std::min(bestRel, cd.rel);
+
+  if (bestRel <= relTol) {
+    const double tieBand = bestRel * kTieFactor;
+    const PrimitiveType order[4] = {PrimitiveType::Plane, PrimitiveType::Sphere,
+                                    PrimitiveType::Cylinder, PrimitiveType::Cone};
+    for (PrimitiveType want : order) {
+      for (const auto& cd : cands) {
+        if (cd.t == want && cd.ok && cd.rel <= relTol && cd.rel <= tieBand) {
+          out.type = cd.t;
+          out.rms = cd.rel * extent;
+          out.relError = cd.rel;
+          out.ok = true;
+          return out;
+        }
       }
     }
   }

@@ -286,6 +286,55 @@ int main() {
     expectTrue(seg.declinedCount == static_cast<int>(pts.size()), "decline: all declined");
   }
 
+  // ── 6. WIDE-CONE DISCRIMINATION (regression) — a narrow-band wide cone is a CONE,
+  //       not a bogus sphere ─────────────────────────────────────────────────────
+  // A machined countersink / chamfer scanned over a limited height band is a WIDE
+  // half-angle cone frustum. At a realistic (loose) scan tolerance such a band is ALSO
+  // fit — badly, as a huge-radius sphere — within the relative tolerance, and because a
+  // sphere is "simpler" than a cone the old simplicity-first discrimination returned the
+  // SPHERE (a mis-classification: wrong type, nonsense radius). The fix keeps simple-on-
+  // ties but rejects a simpler primitive that is DECISIVELY worse than a within-tol cone.
+  // Here the cone fits ~machine-exact while the best sphere is ~1e-3 relative — no tie —
+  // so the region MUST be a Cone, with the true apex / axis / half-angle recovered.
+  {
+    const Point3 apex{2, -1, 3};
+    Vec3 axis{1, 2, 2};
+    axis = axis / std::sqrt(dot(axis, axis));  // tilted (not covariance-aligned)
+    const double alpha = 55.0 * kPi / 180.0;   // WIDE half-angle
+    Vec3 t = (std::fabs(axis.x) < 0.9) ? Vec3{1, 0, 0} : Vec3{0, 1, 0};
+    Vec3 e1 = cross(axis, t);
+    e1 = e1 / std::sqrt(dot(e1, e1));
+    Vec3 e2 = cross(axis, e1);
+    std::vector<Point3> pts;
+    // Narrow height band h ∈ [3, 4] (a limited frustum, as a real scan of a countersink).
+    for (int i = 0; i < 30; ++i)
+      for (int j = 0; j < 8; ++j) {
+        const double ph = 2 * kPi * i / 30.0;
+        const double h = 3.0 + 1.0 * j / 7.0;
+        const double rho = h * std::tan(alpha);
+        pts.push_back(apex + axis * h + (e1 * std::cos(ph) + e2 * std::sin(ph)) * rho);
+      }
+
+    // A LOOSE (mm-scale-scanner) tolerance — the regime where the bogus sphere used to
+    // sneak under the relative tolerance and win on simplicity.
+    SegmentParams prm;
+    prm.tol = 1e-2;
+    const SegmentationResult seg = segmentAndFit(pts, prm);
+
+    expectTrue(countKind(seg, RegionKind::Cone) == 1, "wide-cone: exactly one Cone");
+    expectTrue(countKind(seg, RegionKind::Sphere) == 0, "wide-cone: NOT mis-typed as Sphere");
+    const SegmentRegion* cr = firstKind(seg, RegionKind::Cone);
+    expectTrue(cr != nullptr, "wide-cone: Cone region present");
+    if (cr) {
+      expectNear(absCos(cr->cone.axis, Dir3(axis)), 1.0, 1e-6, "wide-cone: axis recovered");
+      expectNear(cr->cone.halfAngle, alpha, 1e-6, "wide-cone: half-angle recovered");
+      expectNear(distance(cr->cone.apex, apex), 0.0, 1e-6, "wide-cone: apex recovered");
+      expectLE(cr->rms, 1e-6, "wide-cone: RMS ~0 (a true cone fit, not a widened sphere)");
+      expectTrue(static_cast<int>(cr->inliers.size()) == static_cast<int>(pts.size()),
+                 "wide-cone: whole band owned by the one cone");
+    }
+  }
+
   std::printf("reverse_engineer gate: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

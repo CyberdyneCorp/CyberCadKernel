@@ -187,6 +187,41 @@ int main() {
     expectTrue(d.type == PrimitiveType::Cone, "cone detected");
   }
 
+  // ── 1e. WIDE-CONE DISCRIMINATION (regression): a narrow-band wide cone at a LOOSE
+  //        relative tolerance is a CONE, not a bogus large-radius sphere ──────────
+  // A machined countersink/chamfer scanned over a limited height band is a wide-half-
+  // angle cone frustum. Such a band is ALSO fit — badly — by a huge sphere, whose
+  // RELATIVE RMS squeaks under a loose (scanner-scale) relTol; because a sphere is
+  // "simpler" than a cone the old simplicity-first rule returned the SPHERE (wrong type,
+  // nonsense radius). detectPrimitive must now keep simple-on-genuine-ties yet reject a
+  // simpler primitive that is DECISIVELY worse than a within-tol cone. The cone fits
+  // ~machine-exact while the best sphere is ~1e-3 relative — no tie — so this is a Cone.
+  {
+    const Point3 apex{2, -1, 3};
+    Vec3 axis{1, 2, 2};
+    axis = axis / std::sqrt(dot(axis, axis));  // tilted, not covariance-aligned
+    const double alpha = 55.0 * kPi / 180.0;   // WIDE half-angle
+    Vec3 t = (std::fabs(axis.x) < 0.9) ? Vec3{1, 0, 0} : Vec3{0, 1, 0};
+    Vec3 e1 = cross(axis, t);
+    e1 = e1 / std::sqrt(dot(e1, e1));
+    Vec3 e2 = cross(axis, e1);
+    std::vector<Point3> pts;
+    for (int i = 0; i < 30; ++i)
+      for (int j = 0; j < 8; ++j) {
+        const double ph = 2 * kPi * i / 30.0;
+        const double h = 3.0 + 1.0 * j / 7.0;  // narrow band h ∈ [3,4]
+        const double rho = h * std::tan(alpha);
+        pts.push_back(apex + axis * h + (e1 * std::cos(ph) + e2 * std::sin(ph)) * rho);
+      }
+    // A loose relative tolerance — the regime where the bogus sphere used to win.
+    const PrimitiveDetection d = detectPrimitive(pts, 5e-3);
+    expectTrue(d.type == PrimitiveType::Cone, "wide-cone detected (not a bogus Sphere)");
+    expectTrue(d.type != PrimitiveType::Sphere, "wide-cone NOT mis-typed as Sphere");
+    // The winning cone is a TRUE fit — its relative error is ~machine-zero, not the ~1e-3
+    // of the sphere approximation.
+    expectLE(d.relError, 1e-9, "wide-cone winner is the near-exact cone, not the sphere");
+  }
+
   // ── 2. DISCRIMINATION: free-form bicubic bump → Freeform, not a primitive ────
   {
     std::vector<Point3> pts;

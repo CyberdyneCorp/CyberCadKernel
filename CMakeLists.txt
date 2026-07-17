@@ -1018,6 +1018,16 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS measure_multiseam_asym)
         set(measure_multiseam_asym_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/measure_multiseam_asym.cpp")
+        # L3-BAND (measurement) — the FINE-DEFLECTION diagnostic probe on the asymmetric
+        # multi-seam pose. Sweeps BELOW the BOOL-MULTISEAM working band (d ≤ 0.0025) and
+        # separates the ASSEMBLY layer (split tiling gap + survivor set + membership, in the
+        # boolean/ lane) from the MESHER weld (the raw survivor-mesh histogram, localized to
+        # the inner r1 / outer r2 seam) so the fine-deflection residual is pinned to its layer
+        # — assembly-limited (in-lane, fixable) vs frozen-M0-mesher-weld-limited (out of lane).
+        # Real S3 seams ⇒ numsci-gated; measurement only, no lib / cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS measure_multiseam_fine)
+        set(measure_multiseam_fine_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/measure_multiseam_fine.cpp")
         # BOOL-MULTISEAM host GATE — the ASYMMETRIC (curvature-mismatched) multi-seam sew:
         # a degree-4 valley (a=4) ∩ a degree-4 dome of a DIFFERENT amplitude (b=6), so the
         # two walls meet in TWO concentric seams with MISMATCHED curvature (z* = a·H/(a+b),

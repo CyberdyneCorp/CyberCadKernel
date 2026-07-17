@@ -672,14 +672,22 @@ watertight sew is MISSING.
 >   (The cone end rings use `coneRingAxial` — placed at the TRUE axial station — because the cone
 >   surface's own (u,v) `point` uses the SLANT v, which is axially short and would tilt the end disc.)
 >
-> **SHARPENED RESIDUAL (S5-p, S5-s).** The sphere-outer-zone primitive generalises to any pair whose
-> outer zone is a SPHERE band (S5-k, S5-q). It does NOT cover: **S5-p torus∩cyl** — the outer zone is
-> a TUBE band (a per-index sweep of the torus MINOR-angle the long way round the tube, a distinct
-> exact-on-surface parametrisation, not a sphere φ-sweep); and **S5-s cone∩cyl** — a SINGLE-seam pose
-> (the parallel-offset cylinder crosses the monotone cone wall exactly once) whose CUT/FUSE need a
-> single-seam outer weld, not a between-two-seams zone. Both keep their `return {}` honest-decline →
-> OCCT (COMMON lands for all four). The SACRED DISAGREED=0 / never-leaky invariant is preserved:
-> nothing outside the 1% bar or non-watertight is emitted; unhandled poses defer to OCCT.
+> **S5-p + S5-s CUT/FUSE LANDED (TUBE-BAND wave) — the hole-split, NOT a between-seams band.** The
+> sphere-outer-zone primitive (S5-k, S5-q) works because a cylinder pierces a BOUNDED body pole-to-pole,
+> so its two seams are latitude-like loops that ENCIRCLE the axis (span the full azimuth) and the outer
+> zone is a clean equatorial belt. MEASUREMENT overturned the earlier "TUBE band / single-seam weld"
+> framing for S5-p/S5-s: an offset cylinder pierces the torus tube / cone wall on ONE side, so the seams
+> are **LOCALIZED in the pierced surface's (u,v)** (torus major u ∈ [−0.2, 0.2], NOT azimuth-wrapping).
+> The outer zone is therefore the **FULL pierced surface MINUS the seam cap patch(es)** — a HOLED surface,
+> not a between-two-seams zone. Both now LAND via a **(u,v)-grid + loop-zipper hole-split**
+> (`appendTorusTubeOuterZone` for the torus tube, `appendConeWallOuterZone` for the cone wall in AXIAL
+> cone coords): mesh the full surface grid, drop cells inside a seam loop (tight jagged hole ≤1 cell),
+> chain the hole boundary into an ordered ring, zip it to the exact traced seam. **S5-p torus∩cyl** (2
+> holes) CUT/FUSE weld watertight ΔV≈0.75%/0.71%; **S5-s cone∩cyl** — cyl−cone is a clean seam-driven cyl
+> stub (no hole, ΔV≈0.01%), cone−cyl + FUSE use the holed cone wall (ΔV≈0.6%). All COMMON <0.2%. Poses
+> where a seam is not localizable clear of the rims / u-wrap, or whose hole boundary is not a single clean
+> loop, HONEST-DECLINE → OCCT. The SACRED DISAGREED=0 / never-leaky invariant is preserved: nothing
+> outside the 1% bar or non-watertight is emitted.
 
 ### External STEP import: SEAM-CROSSING trim loop on a periodic surface · **LANDED (L8-HEAL)**
 

@@ -283,6 +283,8 @@ ntopo::Shape makeCylFacadeX(double r, double halfLen) {
 // watertight shell sharing the four arc seams and the two branch-point poles. The result's
 // enclosed volume matches the EXACT 16 r³/3 to within the tessellation-deflection bound
 // (the engine's own curved-parity bar) — a real native pass, no fabricated value.
+
+
 CC_TEST(steinmetz_branched_common_watertight_matches_analytic) {
   const double r = 1.0;
   const double vTrue = steinmetzVolume(r);
@@ -1775,8 +1777,9 @@ CC_TEST(torus_cyl_coaxial_common_fuse_cut_watertight_matches_analytic) {
 // COMMON = torus lower cap + cylinder band + torus upper cap, every ring the traced non-planar
 // seam. There is no closed-form COMMON volume, so the oracle is a deterministic fine-grid
 // numerical integration of the analytic region (inside the tube AND the offset finite cylinder)
-// — the primary parity oracle for a non-analytic seam. CUT/FUSE honest-decline (the torus-outer-
-// zone weld between two non-planar seams is the transversal residual, exactly as in S5-k).
+// — the primary parity oracle for a non-analytic seam. CUT/FUSE now LAND via the tube-band
+// primitive appendTorusTubeOuterZoneBetweenSeams (the tube ZONE outside the bore, swept the LONG
+// way round the minor angle between the two non-planar seams, on-surface to machine precision).
 CC_TEST(torus_cyl_transversal_offset_common_watertight_matches_numeric) {
   const double R = 3.0, r = 1.0, Rc = 0.6, off = 3.0, cLo = -2.0, cHi = 2.0;
   const ntopo::Shape tor = makeTorus(R, r);                       // +Z torus at origin
@@ -1847,12 +1850,36 @@ CC_TEST(torus_cyl_transversal_offset_common_watertight_matches_numeric) {
   CC_CHECK(vSwapped > 0.0);
   CC_CHECK(std::fabs(vSwapped - vCommonNumeric) <= 1e-2 * vCommonNumeric);
 
-  // CUT / FUSE honest-decline for the transversal pose (the torus-outer-zone weld between two
-  // non-planar seams is the transversal residual) → NULL → OCCT. Never a leaky solid.
-  CC_CHECK(nb::ssi_boolean_solid(tor, cyl, nb::Op::Cut).isNull());
+  // ── CUT / FUSE now LAND (S5-p tube-band via appendTorusTubeOuterZoneBetweenSeams). ──
+  // The integration box above is sized for the COMMON (bore region only), so every CUT/FUSE
+  // oracle is the exact analytic V(torus)/V(cyl) minus that numeric COMMON (inclusion–exclusion)
+  // — the deterministic numeric cross-check for a non-analytic seam.
+  const double vCutTorNumeric = vTorus - vCommonNumeric;               // torus − cyl = torus − ∩
+  const double vFuseNumeric = vTorus + vCyl - vCommonNumeric;          // A ∪ B (inclusion–excl.)
+
+  // CUT torus − cylinder: watertight, on-surface tube outer zone + reversed bore; ΔV within 1%.
+  const ntopo::Shape cutTC = nb::ssi_boolean_solid(tor, cyl, nb::Op::Cut);
+  CC_CHECK(!cutTC.isNull());
+  const double vCutTC = watertightMeshVolume(cutTC);
+  CC_CHECK(vCutTC > 0.0);                                              // watertight → engine accepts
+  CC_CHECK(std::fabs(vCutTC - vCutTorNumeric) <= 1e-2 * vCutTorNumeric);
+  CC_CHECK(vCutTC < vTorus + 1e-9);                                    // A − B ≤ A
+
+  // CUT cylinder − torus is a DIFFERENT topology (order-sensitive) → declines here → OCCT.
   CC_CHECK(nb::ssi_boolean_solid(cyl, tor, nb::Op::Cut).isNull());
-  CC_CHECK(nb::ssi_boolean_solid(tor, cyl, nb::Op::Fuse).isNull());
-  CC_CHECK(nb::ssi_boolean_solid(cyl, tor, nb::Op::Fuse).isNull());
+
+  // FUSE (both operand orders): watertight union envelope; ΔV within 1%; symmetric.
+  const ntopo::Shape fuseTC = nb::ssi_boolean_solid(tor, cyl, nb::Op::Fuse);
+  const ntopo::Shape fuseCT = nb::ssi_boolean_solid(cyl, tor, nb::Op::Fuse);
+  CC_CHECK(!fuseTC.isNull() && !fuseCT.isNull());
+  const double vFuseTC = watertightMeshVolume(fuseTC), vFuseCT = watertightMeshVolume(fuseCT);
+  CC_CHECK(vFuseTC > 0.0 && vFuseCT > 0.0);
+  CC_CHECK(std::fabs(vFuseTC - vFuseNumeric) <= 1e-2 * vFuseNumeric);
+  CC_CHECK(std::fabs(vFuseCT - vFuseNumeric) <= 1e-2 * vFuseNumeric);
+  CC_CHECK(vFuseTC >= std::max(vTorus, vCyl) - 1e-9);                  // union ≥ max(A,B)
+
+  // Partition identity: COMMON + (torus − cyl) = torus (the numeric oracle self-consistency).
+  CC_CHECK(std::fabs((vCommon + vCutTC) - vTorus) <= 2e-2 * vTorus);
 }
 
 // ── (14c) TRANSVERSAL torus∩cyl REDUCES TO COAXIAL + skew/single-sheet declines ────────────────
@@ -2613,9 +2640,10 @@ CC_TEST(torus_plane_honest_declines) {
 //   COMMON = cone-wall cap (bounded by the seam) + cylinder wall band (seam → inside-end rim) +
 //     cylinder inside-end disc. There is no closed-form COMMON volume, so the oracle is a
 // deterministic 200³ numerical integration of the analytic region (inside the finite cone AND the
-// offset finite cylinder) — the primary parity oracle for a non-analytic seam. CUT/FUSE honest-
-// decline (the outer-zone weld across the non-planar seam is the transversal residual, same class
-// as S5-k/S5-p/S5-q).
+// offset finite cylinder) — the primary parity oracle for a non-analytic seam. CUT/FUSE now LAND
+// via the single-seam outer weld: cyl − cone is a clean seam-driven cylinder stub, while cone − cyl
+// and FUSE use the HOLED cone wall (full cone wall minus the seam cap, grid + loop-zipper) — the
+// same on-surface hole-split scheme as the S5-p torus tube outer zone.
 CC_TEST(cone_cyl_transversal_offset_common_watertight_matches_numeric) {
   const double r0 = 0.5, y0 = -3.0, r1 = 1.5, y1 = 3.0, off = 1.0, Rc = 0.3;
   const double cyLo = -2.0, cyHi = 2.0;
@@ -2682,12 +2710,41 @@ CC_TEST(cone_cyl_transversal_offset_common_watertight_matches_numeric) {
   CC_CHECK(vSwapped > 0.0);
   CC_CHECK(std::fabs(vSwapped - vCommonNumeric) <= 1e-2 * vCommonNumeric);
 
-  // CUT / FUSE honest-decline for the transversal pose (the outer-zone weld across the non-planar
-  // seam is the transversal residual) → NULL → OCCT. Never a leaky solid.
-  CC_CHECK(nb::ssi_boolean_solid(cone, cyl, nb::Op::Cut).isNull());
-  CC_CHECK(nb::ssi_boolean_solid(cyl, cone, nb::Op::Cut).isNull());
-  CC_CHECK(nb::ssi_boolean_solid(cone, cyl, nb::Op::Fuse).isNull());
-  CC_CHECK(nb::ssi_boolean_solid(cyl, cone, nb::Op::Fuse).isNull());
+  // ── CUT / FUSE now LAND (S5-s single-seam outer weld: clean cyl stub + holed cone wall). ──
+  // The integration box is sized for the COMMON wedge, so every CUT/FUSE oracle is the exact
+  // analytic V(cyl)/V(cone) minus the numeric COMMON (inclusion–exclusion).
+  const double vCutCylNumeric = vCyl - vCommonNumeric;                // cyl − cone = cyl − ∩
+  const double vCutConeNumeric = vCone - vCommonNumeric;              // cone − cyl = cone − ∩
+  const double vFuseNumeric = vCyl + vCone - vCommonNumeric;          // A ∪ B (inclusion–excl.)
+
+  // CUT cylinder − cone: the clean seam-driven cylinder stub outside the cone; ΔV within 1%.
+  const ntopo::Shape cutCC = nb::ssi_boolean_solid(cyl, cone, nb::Op::Cut);
+  CC_CHECK(!cutCC.isNull());
+  const double vCutCC = watertightMeshVolume(cutCC);
+  CC_CHECK(vCutCC > 0.0);                                             // watertight → engine accepts
+  CC_CHECK(std::fabs(vCutCC - vCutCylNumeric) <= 1e-2 * vCutCylNumeric);
+  CC_CHECK(vCutCC < vCyl + 1e-9);                                     // A − B ≤ A
+
+  // CUT cone − cylinder: the holed cone wall + cone discs + reversed cyl bite; ΔV within 1%.
+  const ntopo::Shape cutCoC = nb::ssi_boolean_solid(cone, cyl, nb::Op::Cut);
+  CC_CHECK(!cutCoC.isNull());
+  const double vCutCoC = watertightMeshVolume(cutCoC);
+  CC_CHECK(vCutCoC > 0.0);
+  CC_CHECK(std::fabs(vCutCoC - vCutConeNumeric) <= 1e-2 * vCutConeNumeric);
+  CC_CHECK(vCutCoC < vCone + 1e-9);
+
+  // FUSE (both operand orders): watertight union envelope; ΔV within 1%; symmetric.
+  const ntopo::Shape fuseCoC = nb::ssi_boolean_solid(cone, cyl, nb::Op::Fuse);
+  const ntopo::Shape fuseCC = nb::ssi_boolean_solid(cyl, cone, nb::Op::Fuse);
+  CC_CHECK(!fuseCoC.isNull() && !fuseCC.isNull());
+  const double vFuseCoC = watertightMeshVolume(fuseCoC), vFuseCC = watertightMeshVolume(fuseCC);
+  CC_CHECK(vFuseCoC > 0.0 && vFuseCC > 0.0);
+  CC_CHECK(std::fabs(vFuseCoC - vFuseNumeric) <= 1e-2 * vFuseNumeric);
+  CC_CHECK(std::fabs(vFuseCC - vFuseNumeric) <= 1e-2 * vFuseNumeric);
+  CC_CHECK(vFuseCoC >= std::max(vCyl, vCone) - 1e-9);                 // union ≥ max(A,B)
+
+  // Partition identity: COMMON + (cyl − cone) = cyl (the numeric oracle self-consistency).
+  CC_CHECK(std::fabs((vCommon + vCutCC) - vCyl) <= 2e-2 * vCyl);
 }
 
 // ── (21) TRANSVERSAL cone∩cylinder REDUCES TO COAXIAL: the offset→0 hand-off + honest declines ──

@@ -641,6 +641,17 @@ void appendDiskCap(const CurvedSolid& cs, double v, const std::vector<math::Poin
   pushPlanarTri(axisPt, rim[n - 1], rim[0], capOutward, pool, faces);
 }
 
+// A flat disc cap fanning from an EXPLICIT axis point to a rim ring, planar facets, normal `capN`.
+// (appendDiskCap keys the axis point off a CurvedSolid frame + v, which is wrong for a cone slant-v
+// or a torus z-frame station; this variant takes the axis point directly.)
+void appendAxisDiscCap(const math::Point3& axisPt, const std::vector<math::Point3>& rim,
+                       const math::Vec3& capN, VertexPool& pool, std::vector<topo::Shape>& faces) {
+  const int n = static_cast<int>(rim.size());
+  if (n < 3) return;
+  for (int k = 0; k < n; ++k)
+    pushPlanarTri(axisPt, rim[k], rim[(k + 1) % n], capN, pool, faces);
+}
+
 // ── ORIENTED TUBE BAND: the piercing wall between the two rim seams, its facet normals
 // forced to point on the side of `outwardSign` × radial-out-of-the-tube (+1 outer boss
 // wall for FUSE end tubes / -1 inward tunnel wall for CUT). Mirrors appendTubeBand but
@@ -3221,12 +3232,30 @@ struct TransTorusCylSetup {
   const CurvedSolid* tor = nullptr;
   const CurvedSolid* cyl = nullptr;
   bool torIsA = true;         ///< which operand is the torus (picks the seam (u,v) track)
+  bool cylIsB = true;         ///< which operand is the cylinder (picks the seam (u,v) track)
   math::Point3 O;             ///< cylinder origin
   math::Vec3 zc;              ///< cylinder axis (unit) — parallel to the torus axis
   double Rc = 0.0;            ///< cylinder radius
   double offset = 0.0;        ///< perpendicular distance of the cyl axis from the torus axis
   int N = 0;                  ///< common azimuth sample count (seam-chord bounded)
   Seam seamLo{}, seamHi{};    ///< the two traced seams, resampled + ordered lo/hi along zc
+  double cylLo = 0.0, cylHi = 0.0;  ///< cylinder axial extent (v param) ordered along +zc
+  // The two-cap+tube-outer-zone topology (COMMON caps = the tube patch INSIDE the cylinder;
+  // the CUT/FUSE outer zone = the rest of the tube surface OUTSIDE the cylinder, swept the
+  // long way round the MINOR angle) is only valid when the cylinder pokes fully THROUGH the
+  // tube — both cylinder end discs sit clear of the tube (outside), so the two seams bound a
+  // clean bore and the complementary tube band is one connected zone. Gated by CUT/FUSE.
+  bool cylPierces = false;
+  // A cylinder wall ring at axial station v, sampled at the SAME N azimuths as seamLo/seamHi
+  // (index i ↔ seam index i) so an end disc / wall band welds ring-to-ring through the pool.
+  std::vector<math::Point3> cylRing(double v) const {
+    std::vector<math::Point3> r(seamLo.pts.size());
+    for (size_t i = 0; i < seamLo.pts.size(); ++i) {
+      const double u = cylIsB ? seamLo.uvB[i].first : seamLo.uvA[i].first;
+      r[i] = cyl->point(u, v);
+    }
+    return r;
+  }
 };
 
 // Mean cylinder-axial projection (onto the cyl axis from the cyl origin) of a seam's nodes.
@@ -3333,8 +3362,11 @@ TransTorusCylSetup transTorusCylSetup(const CurvedSolid& A, const CurvedSolid& B
   Seam s0 = resampleByAzimuth(seams[0], cylIsB, N);
   Seam s1 = resampleByAzimuth(seams[1], cylIsB, N);
 
-  st.tor = torPtr; st.cyl = cylPtr; st.torIsA = torIsA; st.O = O; st.zc = zc;
+  st.tor = torPtr; st.cyl = cylPtr; st.torIsA = torIsA; st.cylIsB = cylIsB; st.O = O; st.zc = zc;
   st.Rc = Rc; st.offset = offset; st.N = N;
+  // Cylinder axial extent along +zc (v param), ordered lo≤hi so end discs / stubs are consistent.
+  st.cylLo = std::min(cyl.vLo, cyl.vHi);
+  st.cylHi = std::max(cyl.vLo, cyl.vHi);
   const double m0 = transTorusSeamAxialMean(st, s0), m1 = transTorusSeamAxialMean(st, s1);
   if (std::fabs(m0 - m1) < 1e-4) return st;               // both loops at one station → not two sheets
   st.seamLo = (m0 <= m1) ? s0 : s1;
@@ -3359,6 +3391,21 @@ TransTorusCylSetup transTorusCylSetup(const CurvedSolid& A, const CurvedSolid& B
   };
   if (classifyPoint(cyl, capCentre(st.seamLo), kSsiTol) != 1) return st;
   if (classifyPoint(cyl, capCentre(st.seamHi), kSsiTol) != 1) return st;
+
+  // CUT/FUSE tube-outer-zone gate: the cylinder must poke fully THROUGH the tube, so BOTH end
+  // discs (their whole rim + axis centre) sit strictly OUTSIDE the tube. Then the two seams
+  // bound a clean bore and the complementary tube band (swept the long way round the minor
+  // angle) is one connected zone. If an end disc lands inside the tube (a stub buried in the
+  // tube) the band is not two-seam-complementary → CUT/FUSE decline (COMMON still lands).
+  auto endDiscOutside = [&](double v) -> bool {
+    if (classifyPoint(tor, math::Point3{O.x + zc.x * v, O.y + zc.y * v, O.z + zc.z * v},
+                      kSsiTol) != -1)
+      return false;
+    for (int k = 0; k < 16; ++k)
+      if (classifyPoint(tor, cyl.point(kSsiTwoPi * k / 16.0, v), kSsiTol) != -1) return false;
+    return true;
+  };
+  st.cylPierces = endDiscOutside(st.cylLo) && endDiscOutside(st.cylHi);
 
   st.ok = true;
   return st;
@@ -3402,28 +3449,216 @@ topo::Shape buildTransTorusCylCommon(const CurvedSolid& A, const CurvedSolid& B,
   return topo::ShapeBuilder::makeSolid({shell});
 }
 
+// ── TORUS TUBE OUTER ZONE = the FULL tube surface MINUS the two seam-bounded cap patches ──
+// The transversal torus∩cylinder outer zone (the tube surface OUTSIDE the cylinder bore) is NOT a
+// between-two-seams band the way the SPHERE outer zone is (appendSphereOuterZoneBetweenSeams). The
+// sphere version works because a cylinder pierces the sphere pole-to-pole, so its two seams are
+// LATITUDE-like loops each ENCIRCLING the cylinder axis (they span the full azimuth θ), and the
+// sphere surface between them is a clean equatorial belt swept at constant θ. The offset torus∩cyl
+// geometry is genuinely different: a thin axis-parallel cylinder pierces ONE side of the tube, so
+// its two seams are LOCALIZED closed loops in the torus (u,v) plane (MEASURED: torus major u ∈
+// [−0.2, 0.2], NOT the full [0,2π]). The tube surface outside the bore is therefore the ENTIRE
+// torus tube MINUS the two small cap patches — a doubly-holed torus surface, not a v-sweep band.
+//
+// The exact-on-surface tiling: mesh the full torus tube on a (Nu × Nv) (u,v) grid (every node ON
+// the torus via tor.point), DROP every quad whose (u,v) centre falls inside either seam loop (the
+// cap patches, already tiled by the COMMON caps), and STITCH each grid hole to the exact seam loop
+// with a LOOP ZIPPER (a watertight triangle strip between two closed loops of possibly-different
+// node counts). The seam nodes are the shared pool vertices the cylinder tunnel / stub bands weld
+// to, so the whole CUT/FUSE shell closes along the exact traced seams. Facets are oriented by the
+// TRUE tube-outward reference (tubeOutwardAt), scaled by outwardSign (+1 outward / −1 reversed).
+//
+// systems-band (~30 — grid + point-in-loop + loop-zipper stitch); isolated + flagged per policy.
+
+// A watertight LOOP ZIPPER between an OUTER closed loop `outer` (the grid-rectangle ring, Po nodes)
+// and an INNER closed loop `innerIn` (the exact seam, Pi nodes). The inner loop is first ALIGNED to
+// the outer: reversed if its winding (about the shared centroid, projected on the local tube-normal
+// plane) is opposite, and rotated so its node 0 is the nearest to outer[0]. Then it advances
+// whichever loop is "behind" in fractional arc position, emitting one triangle per step → a closed
+// triangle strip sharing every node of both loops. Facets oriented by tubeOutwardAt × outwardSign.
+void zipLoops(const CurvedSolid& tor, const std::vector<math::Point3>& outer,
+              const std::vector<math::Point3>& innerIn, double outwardSign, VertexPool& pool,
+              std::vector<topo::Shape>& faces) {
+  const int Po = static_cast<int>(outer.size()), Pi = static_cast<int>(innerIn.size());
+  if (Po < 3 || Pi < 3) return;
+  // Shared centroid + a plane normal (tube-outward at the centroid) for a consistent winding sign.
+  math::Point3 ctrO{0, 0, 0};
+  for (const auto& p : outer) { ctrO.x += p.x; ctrO.y += p.y; ctrO.z += p.z; }
+  ctrO.x /= Po; ctrO.y /= Po; ctrO.z /= Po;
+  const math::Vec3 nrm = tubeOutwardAt(tor, ctrO);
+  auto signedTurn = [&](const std::vector<math::Point3>& L) {
+    double acc = 0.0;
+    const int n = static_cast<int>(L.size());
+    for (int i = 0; i < n; ++i) {
+      const math::Vec3 a{L[i].x - ctrO.x, L[i].y - ctrO.y, L[i].z - ctrO.z};
+      const math::Vec3 b{L[(i + 1) % n].x - ctrO.x, L[(i + 1) % n].y - ctrO.y,
+                         L[(i + 1) % n].z - ctrO.z};
+      acc += math::dot(math::cross(a, b), nrm);
+    }
+    return acc;
+  };
+  std::vector<math::Point3> inner = innerIn;
+  if (signedTurn(outer) * signedTurn(inner) < 0.0) std::reverse(inner.begin(), inner.end());
+  // Rotate inner so inner[0] is nearest outer[0].
+  int best = 0; double bd = 1e300;
+  for (int i = 0; i < Pi; ++i) {
+    const math::Vec3 d{inner[i].x - outer[0].x, inner[i].y - outer[0].y, inner[i].z - outer[0].z};
+    const double dd = math::dot(d, d);
+    if (dd < bd) { bd = dd; best = i; }
+  }
+  std::rotate(inner.begin(), inner.begin() + best, inner.end());
+
+  auto emit = [&](const math::Point3& a, const math::Point3& b, const math::Point3& c) {
+    const math::Point3 ctr{(a.x + b.x + c.x) / 3, (a.y + b.y + c.y) / 3, (a.z + b.z + c.z) / 3};
+    const math::Vec3 t = tubeOutwardAt(tor, ctr);
+    pushPlanarTri(a, b, c, math::Vec3{t.x * outwardSign, t.y * outwardSign, t.z * outwardSign},
+                  pool, faces);
+  };
+  int io = 0, ii = 0;
+  while (io < Po || ii < Pi) {
+    const double fo = static_cast<double>(io) / Po, fi = static_cast<double>(ii) / Pi;
+    if (io < Po && (ii >= Pi || fo <= fi)) {            // advance the OUTER loop
+      emit(outer[io % Po], outer[(io + 1) % Po], inner[ii % Pi]);
+      ++io;
+    } else {                                            // advance the INNER loop
+      emit(outer[io % Po], inner[(ii + 1) % Pi], inner[ii % Pi]);
+      ++ii;
+    }
+  }
+}
+
+// The tube OUTER zone = full torus tube grid, minus a small grid RECTANGLE around each seam,
+// with each rectangle ring zipped to the exact seam loop. Returns false (appending nothing on a
+// clean-fail path) if either seam is not localizable inside a clean grid rectangle whose boundary
+// is entirely OUTSIDE the seam (→ the caller HONEST-DECLINES). Every emitted node is ON the torus
+// (grid via tor.point, ring via tor.point, seam = exact traced nodes) so the zone is on-surface to
+// machine precision; the seam nodes are shared pool vertices the bore/stub bands weld to.
+bool appendTorusTubeOuterZone(const CurvedSolid& tor, const Seam& seamHi, const Seam& seamLo,
+                              bool torIsA, VertexPool& pool, std::vector<topo::Shape>& faces,
+                              double outwardSign) {
+  const auto& uvHi = torIsA ? seamHi.uvA : seamHi.uvB;
+  const auto& uvLo = torIsA ? seamLo.uvA : seamLo.uvB;
+  if (uvHi.size() < 3 || uvLo.size() < 3) return false;
+  // Grid resolution bounded by the S5-l full-grid facet-sagitta convention (kFacetSag=0.004, the
+  // mesh deflection) rather than the far-finer kCapSagitta — the facet chord error then rides at
+  // the mesh deflection, well inside the 1% curved-parity bar, while keeping the total facet count
+  // (≈ Nu·Nv) tractable for the mesher (the whole tube is a full N×M grid, not a few bands).
+  const double kFacetSag = 0.004;
+  const double chordU = std::sqrt(std::max(8.0 * kFacetSag * tor.radius, 1e-12));
+  const double chordV = std::sqrt(std::max(8.0 * kFacetSag * tor.minorRadius, 1e-12));
+  const int Nu = std::clamp(static_cast<int>(std::ceil(kSsiTwoPi * tor.radius / chordU)), 32, 200);
+  const int Nv = std::clamp(static_cast<int>(std::ceil(kSsiTwoPi * tor.minorRadius / chordV)), 24, 160);
+  auto uAt = [&](int i) { return kSsiTwoPi * (((i % Nu) + Nu) % Nu) / Nu; };
+  auto vAt = [&](int j) { return kSsiTwoPi * (((j % Nv) + Nv) % Nv) / Nv; };
+
+  // Per-seam grid RECTANGLE [i0,i1]×[j0,j1] (grid-index space, i on u, j on v) strictly containing
+  // the seam bbox with one cell of margin. Cells inside the rectangle are OMITTED from the grid;
+  // the rectangle ring is zipped to the seam. Requires: the seam localized (span < ~a third of the
+  // grid in each param, so the rectangle does not wrap) — else decline.
+  struct Rect { int i0, i1, j0, j1; };
+  auto rectOf = [&](const std::vector<std::pair<double, double>>& uv, Rect& R) -> bool {
+    const double u0 = uv.front().first, v0 = uv.front().second;
+    double umin = 1e300, umax = -1e300, vmin = 1e300, vmax = -1e300;
+    for (const auto& p : uv) {
+      const double u = nearU(u0, p.first), v = nearU(v0, p.second);
+      umin = std::min(umin, u); umax = std::max(umax, u);
+      vmin = std::min(vmin, v); vmax = std::max(vmax, v);
+    }
+    R.i0 = static_cast<int>(std::floor(umin / kSsiTwoPi * Nu)) - 1;
+    R.i1 = static_cast<int>(std::ceil(umax / kSsiTwoPi * Nu)) + 1;
+    R.j0 = static_cast<int>(std::floor(vmin / kSsiTwoPi * Nv)) - 1;
+    R.j1 = static_cast<int>(std::ceil(vmax / kSsiTwoPi * Nv)) + 1;
+    // Localized: the rectangle must be well inside the grid (no wrap-overlap) in BOTH params.
+    return (R.i1 - R.i0) >= 2 && (R.i1 - R.i0) <= Nu - 2 &&
+           (R.j1 - R.j0) >= 2 && (R.j1 - R.j0) <= Nv - 2;
+  };
+  Rect RH{}, RL{};
+  if (!rectOf(uvHi, RH) || !rectOf(uvLo, RL)) return false;
+  // The two rectangles must be DISJOINT in grid-index space (mod Nu/Nv) so cells are omitted once.
+  auto inRect = [&](int i, int j, const Rect& R) {
+    for (int di = R.i0; di < R.i1; ++di) {
+      const int ii = ((di % Nu) + Nu) % Nu;
+      if (ii != (((i % Nu) + Nu) % Nu)) continue;
+      if (j >= R.j0 && j < R.j1) return true;
+    }
+    return false;
+  };
+  // Emit every grid quad NOT inside either seam rectangle.
+  for (int i = 0; i < Nu; ++i)
+    for (int j = 0; j < Nv; ++j) {
+      if (inRect(i, j, RH) || inRect(i, j, RL)) continue;
+      const math::Point3 a = tor.point(uAt(i), vAt(j)), b = tor.point(uAt(i + 1), vAt(j));
+      const math::Point3 c = tor.point(uAt(i + 1), vAt(j + 1)), dd = tor.point(uAt(i), vAt(j + 1));
+      const math::Point3 ctr{(a.x + b.x + c.x + dd.x) / 4, (a.y + b.y + c.y + dd.y) / 4,
+                             (a.z + b.z + c.z + dd.z) / 4};
+      const math::Vec3 t = tubeOutwardAt(tor, ctr);
+      const math::Vec3 ref{t.x * outwardSign, t.y * outwardSign, t.z * outwardSign};
+      pushPlanarTri(a, b, c, ref, pool, faces);
+      pushPlanarTri(a, c, dd, ref, pool, faces);
+    }
+  // Build each rectangle RING (the closed loop of grid nodes bounding the omitted block, ordered
+  // consistently with the seam) and zip it to the exact seam. The ring nodes are the SAME grid
+  // nodes the surrounding kept quads use → the ring welds to the grid; the zipper welds ring→seam.
+  auto ringOf = [&](const Rect& R) {
+    std::vector<math::Point3> ring;
+    for (int i = R.i0; i < R.i1; ++i) ring.push_back(tor.point(uAt(i), vAt(R.j0)));      // bottom
+    for (int j = R.j0; j < R.j1; ++j) ring.push_back(tor.point(uAt(R.i1), vAt(j)));      // right
+    for (int i = R.i1; i > R.i0; --i) ring.push_back(tor.point(uAt(i), vAt(R.j1)));      // top
+    for (int j = R.j1; j > R.j0; --j) ring.push_back(tor.point(uAt(R.i0), vAt(j)));      // left
+    return ring;
+  };
+  zipLoops(tor, ringOf(RH), seamHi.pts, outwardSign, pool, faces);
+  zipLoops(tor, ringOf(RL), seamLo.pts, outwardSign, pool, faces);
+  return true;
+}
+
 // buildTransTorusCylCut / buildTransTorusCylFuse — the transversal CUT / FUSE of the offset
-// torus∩cylinder. Both need the TORUS OUTER SHELL: the tube surface OUTSIDE the cylinder bore,
-// i.e. the tube ZONE between the two NON-PLANAR traced seams taken the LONG way round (away from
-// the bore). S5-k/S5-q RESOLVED the SPHERE version of this residual (appendSphereOuterZoneBetween-
-// Seams tiles a sphere outer zone on-surface via the cyl/cone-axis φ-sweep), but the TORUS outer
-// zone is a genuinely distinct surface: its exact-on-surface parametrisation is a per-index sweep
-// of the TUBE (minor-angle) coordinate between the two seams the long way round the tube, NOT a
-// sphere φ-sweep — a separate primitive not yet built. So this remains the SHARPENED transversal
-// residual (torus-outer-zone weld) → CUT/FUSE HONEST-DECLINE (→ NULL → OCCT); COMMON is the landed
-// slice. Nothing is faked.
+// torus∩cylinder, LANDED via the tube OUTER zone (`appendTorusTubeOuterZone`): the FULL torus tube
+// grid MINUS the two localized seam cap patches (MEASURED: the seams are localized in torus u,
+// NOT azimuth-wrapping, so the outer zone is a doubly-holed torus surface, NOT a between-two-seams
+// band like the SPHERE family — the sphere primitive does NOT apply here). Each grid hole is a
+// small rectangle zipped to the exact traced seam, so the shell is watertight on-surface and welds
+// to the reversed bore (CUT) / cylinder stubs (FUSE) along the shared seam nodes.
+//
+// Gated on `cylPierces` (both cylinder end discs outside the tube → the two seams bound a clean
+// bore) AND on each seam being localizable inside a clean grid rectangle (appendTorusTubeOuterZone
+// returns false otherwise). Any pose that cannot weld robustly HONEST-DECLINES → NULL → OCCT.
+//
+// buildTransTorusCylCut(A,B) = A − B (TORUS minuend only; cyl − torus declines, order-sensitive):
+//   the tube OUTER zone (outward) + the cylinder tunnel wall between the two seams (INWARD normal
+//   — the reversed bore). V = V(torus) − V(COMMON).
 topo::Shape buildTransTorusCylCut(const CurvedSolid& A, const CurvedSolid& B,
                                   const std::vector<Seam>& seams) {
   const TransTorusCylSetup s = transTorusCylSetup(A, B, seams);
-  if (!s.ok) return {};
-  return {};  // torus-outer-zone weld is the transversal residual → OCCT (never faked)
+  if (!s.ok || !s.cylPierces) return {};
+  if (A.kind != CurvedKind::Torus) return {};  // order-sensitive: torus must be the minuend
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  if (!appendTorusTubeOuterZone(*s.tor, s.seamHi, s.seamLo, s.torIsA, pool, faces, 1.0)) return {};
+  appendRevolvedBand(s.seamLo.pts, s.seamHi.pts, s.O, s.zc, pool, faces, /*outwardSign=*/-1.0);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
 }
 
+// buildTransTorusCylFuse(A,B) = A ∪ B: the tube OUTER zone + the two cylinder end stubs beyond the
+// seams (cylLo→seamLo, seamHi→cylHi walls) + the two cylinder end discs. V = V(A)+V(B)−V(∩).
 topo::Shape buildTransTorusCylFuse(const CurvedSolid& A, const CurvedSolid& B,
                                    const std::vector<Seam>& seams) {
   const TransTorusCylSetup s = transTorusCylSetup(A, B, seams);
-  if (!s.ok) return {};
-  return {};  // torus-outer-zone weld is the transversal residual → OCCT (never faked)
+  if (!s.ok || !s.cylPierces) return {};
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const std::vector<math::Point3> ringLo = s.cylRing(s.cylLo);
+  const std::vector<math::Point3> ringHi = s.cylRing(s.cylHi);
+  appendDiskCap(*s.cyl, s.cylLo, ringLo, math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool, faces);
+  appendRevolvedBand(ringLo, s.seamLo.pts, s.O, s.zc, pool, faces, 1.0);
+  if (!appendTorusTubeOuterZone(*s.tor, s.seamHi, s.seamLo, s.torIsA, pool, faces, 1.0)) return {};
+  appendRevolvedBand(s.seamHi.pts, ringHi, s.O, s.zc, pool, faces, 1.0);
+  appendDiskCap(*s.cyl, s.cylHi, ringHi, s.zc, pool, faces);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
 }
 
 // ═══ S5-q — TRANSVERSAL (NON-COAXIAL) CONE ∩ SPHERE COMMON (CUT/FUSE decline) ═════════
@@ -3749,8 +3984,30 @@ struct TransConeCylSetup {
   double Rc = 0.0;            ///< cylinder radius
   double offset = 0.0;        ///< perpendicular distance of the cyl axis from the cone axis
   double vInside = 0.0;       ///< cylinder frame-v of the WIDE (inside-the-cone) end disc
+  double vOutside = 0.0;      ///< cylinder frame-v of the NARROW (outside-the-cone) end disc
+  double coneLo = 0.0, coneHi = 0.0;  ///< cone wall slant-v extent, ordered lo≤hi
   int N = 0;                  ///< common azimuth sample count (seam-chord bounded)
   Seam seam{};                ///< the single traced seam, resampled onto the azimuth grid
+
+  /// The cone wall ring at slant station v (N azimuth samples on the seam grid) — the disc rim.
+  std::vector<math::Point3> coneRing(double v) const {
+    std::vector<math::Point3> r(N);
+    for (int i = 0; i < N; ++i) r[i] = cone->point(kSsiTwoPi * i / N, v);
+    return r;
+  }
+  /// The cone axis point at AXIAL station s (disc centre): origin + s·axis. Matches the AXIAL wall
+  /// parametrization used by appendConeWallOuterZone (CurvedSolid.vLo/vHi are axial stations).
+  math::Point3 coneAxisPt(double s) const {
+    return math::Point3{cone->frame.origin.x + cone->frame.z.vec().x * s,
+                        cone->frame.origin.y + cone->frame.z.vec().y * s,
+                        cone->frame.origin.z + cone->frame.z.vec().z * s};
+  }
+  /// The cylinder wall ring at frame-v station v (N azimuth samples on the seam grid).
+  std::vector<math::Point3> cylRing(double v) const {
+    std::vector<math::Point3> r(N);
+    for (int i = 0; i < N; ++i) r[i] = cyl->point(kSsiTwoPi * i / N, v);
+    return r;
+  }
 };
 
 // The cone-outward reference at a cone (u,v): radial·cosα − axial·sinα (the true outward wall
@@ -3773,7 +4030,7 @@ math::Vec3 coneOutwardAt(const CurvedSolid& cone, double u) {
 // or uvB per operand order). Mirrors appendTransTorusCap for the ruled cone surface.
 void appendTransConeCap(const CurvedSolid& cone, const Seam& seam,
                         const std::vector<std::pair<double, double>>& coneUv, int rings,
-                        VertexPool& pool, std::vector<topo::Shape>& faces) {
+                        VertexPool& pool, std::vector<topo::Shape>& faces, bool reversed = false) {
   const int n = static_cast<int>(seam.pts.size());
   if (n < 3 || rings < 1 || static_cast<int>(coneUv.size()) != n) return;
   const double u0 = coneUv.front().first;
@@ -3788,7 +4045,8 @@ void appendTransConeCap(const CurvedSolid& cone, const Seam& seam,
     return cone.point(u, v);
   };
   const math::Point3 centre = cone.point(uc, vc);
-  const math::Vec3 outRef = coneOutwardAt(cone, uc);
+  const math::Vec3 co = coneOutwardAt(cone, uc);
+  const math::Vec3 outRef = reversed ? math::Vec3{-co.x, -co.y, -co.z} : co;
   auto tri = [&](const math::Point3& a, const math::Point3& b, const math::Point3& c) {
     pushPlanarTri(a, b, c, outRef, pool, faces);
   };
@@ -3865,9 +4123,11 @@ TransConeCylSetup transConeCylSetup(const CurvedSolid& A, const CurvedSolid& B,
   };
   const int loEnd = endDiscInside(cyl.vLo);
   const int hiEnd = endDiscInside(cyl.vHi);
-  if (loEnd == -1 && hiEnd == 1) st.vInside = cyl.vHi;
-  else if (loEnd == 1 && hiEnd == -1) st.vInside = cyl.vLo;
+  if (loEnd == -1 && hiEnd == 1) { st.vInside = cyl.vHi; st.vOutside = cyl.vLo; }
+  else if (loEnd == 1 && hiEnd == -1) { st.vInside = cyl.vLo; st.vOutside = cyl.vHi; }
   else return st;                                          // not a clean single crossing → decline
+  st.coneLo = std::min(cone.vLo, cone.vHi);
+  st.coneHi = std::max(cone.vLo, cone.vHi);
 
   // The cylinder band midpoint (on the AXIS, between the seam mean and the inside end) must be
   // INSIDE the cone (the band is a COMMON boundary).
@@ -3929,24 +4189,265 @@ topo::Shape buildTransConeCylCommon(const CurvedSolid& A, const CurvedSolid& B,
 
 // buildTransConeCylCut / buildTransConeCylFuse — the transversal CUT / FUSE of the offset
 // cone∩cylinder. S5-s is a SINGLE-SEAM pose (the parallel-offset cylinder crosses the monotone
-// cone wall exactly once), so — unlike the two-loop S5-k/S5-q that the seam-band primitive now
-// lands — its CUT/FUSE need a SINGLE-seam outer weld (the cone outer sheet / cylinder outer stub
-// welded across ONE non-planar seam), a distinct construction from appendSphereOuterZoneBetween-
-// Seams (which spans a zone between TWO seams). That single-seam weld is the remaining transversal
-// residual for this family. So CUT/FUSE HONEST-DECLINE (→ NULL → OCCT); COMMON is the landed
-// slice. Nothing is faked.
+// cone wall exactly once), so — unlike the two-loop S5-k/S5-q — its CUT/FUSE need a SINGLE-seam
+// outer weld. Two shapes arise, and BOTH now land:
+//   * the CYLINDER outer stub (the cyl part OUTSIDE the cone) is a clean seam-driven solid — no
+//     holed surface: cyl narrow-end disc + cyl wall band (narrow rim → seam) + the COMMON cone cap
+//     REVERSED (the dimple). This is buildCut(cyl − cone).
+//   * the CONE with a cylindrical bite (cone − cyl, and the FUSE envelope) needs the FULL cone wall
+//     MINUS the single seam cap patch — a HOLED cone surface — welded to the cone end discs + the
+//     reversed cyl band. Built by `appendConeWallOuterZone` (the SAME grid + loop-zipper scheme as
+//     the S5-p torus tube outer zone, on the cone wall with ONE localized hole).
+// Every fragment is seam-/rim-driven and on-surface; any pose that cannot localize the seam hole
+// inside a clean grid rectangle HONEST-DECLINES → OCCT. Nothing is faked.
+
+// Winding-align + rotate `innerIn` to `outer` (about the shared centroid, using `outRef` as the
+// orientation normal) and zip: advance whichever loop is behind in fractional arc, one triangle
+// per step, oriented by `outRef` — a closed watertight strip sharing every node of both loops.
+void zipToSeam(const std::vector<math::Point3>& outer, const std::vector<math::Point3>& innerIn,
+               const math::Vec3& outRef, VertexPool& pool, std::vector<topo::Shape>& faces) {
+  const int Po = static_cast<int>(outer.size()), Pi = static_cast<int>(innerIn.size());
+  if (Po < 3 || Pi < 3) return;
+  std::vector<math::Point3> inner = innerIn;
+  math::Point3 c{0, 0, 0};
+  for (const auto& p : outer) { c.x += p.x; c.y += p.y; c.z += p.z; }
+  c.x /= Po; c.y /= Po; c.z /= Po;
+  auto turn = [&](const std::vector<math::Point3>& L) {
+    double acc = 0.0; const int n = static_cast<int>(L.size());
+    for (int i = 0; i < n; ++i) {
+      const math::Vec3 a{L[i].x - c.x, L[i].y - c.y, L[i].z - c.z};
+      const math::Vec3 b{L[(i + 1) % n].x - c.x, L[(i + 1) % n].y - c.y, L[(i + 1) % n].z - c.z};
+      acc += math::dot(math::cross(a, b), outRef);
+    }
+    return acc;
+  };
+  if (turn(outer) * turn(inner) < 0.0) std::reverse(inner.begin(), inner.end());
+  int best = 0; double bd = 1e300;
+  for (int i = 0; i < Pi; ++i) {
+    const math::Vec3 d{inner[i].x - outer[0].x, inner[i].y - outer[0].y, inner[i].z - outer[0].z};
+    const double dd = math::dot(d, d);
+    if (dd < bd) { bd = dd; best = i; }
+  }
+  std::rotate(inner.begin(), inner.begin() + best, inner.end());
+  int io = 0, ii = 0;
+  while (io < Po || ii < Pi) {
+    const double fo = static_cast<double>(io) / Po, fi = static_cast<double>(ii) / Pi;
+    if (io < Po && (ii >= Pi || fo <= fi)) {
+      pushPlanarTri(outer[io % Po], outer[(io + 1) % Po], inner[ii % Pi], outRef, pool, faces);
+      ++io;
+    } else {
+      pushPlanarTri(outer[io % Po], inner[(ii + 1) % Pi], inner[ii % Pi], outRef, pool, faces);
+      ++ii;
+    }
+  }
+}
+
+// Point-in-loop test in a param (u,v) plane; `uv` unwrapped about its own front, query shifted to
+// the same u-branch. Bbox-rejects a query off the loop's branch (returns false → outside).
+bool pointInUvLoop(double qu, double qv, const std::vector<std::pair<double, double>>& uv) {
+  const int n = static_cast<int>(uv.size());
+  if (n < 3) return false;
+  const double u0 = uv.front().first;
+  std::vector<double> lu(n), lv(n);
+  double umin = 1e300, umax = -1e300, vmin = 1e300, vmax = -1e300;
+  for (int i = 0; i < n; ++i) {
+    lu[i] = nearU(u0, uv[i].first); lv[i] = uv[i].second;
+    umin = std::min(umin, lu[i]); umax = std::max(umax, lu[i]);
+    vmin = std::min(vmin, lv[i]); vmax = std::max(vmax, lv[i]);
+  }
+  const double u = nearU(u0, qu);
+  if (u < umin || u > umax || qv < vmin || qv > vmax) return false;
+  bool in = false;
+  for (int i = 0, j = n - 1; i < n; j = i++)
+    if (((lv[i] > qv) != (lv[j] > qv)) &&
+        (u < (lu[j] - lu[i]) * (qv - lv[i]) / (lv[j] - lv[i] + 1e-300) + lu[i]))
+      in = !in;
+  return in;
+}
+
+// The cone WALL OUTER zone = the full cone wall grid (u∈[0,2π), v∈[coneLo,coneHi]) MINUS the cells
+// whose centre lies inside the single seam loop (a TIGHT jagged hole hugging the seam within one
+// cell), the jagged hole boundary chained into an ordered loop and ZIPPED to the exact seam. The
+// grid v-direction is NOT periodic: the coneLo / coneHi wall edges are the cone's rim rings the end
+// discs close. Returns false (appending nothing) if the seam is not localized clear of both rims or
+// its hole boundary is not a single clean loop (→ caller HONEST-DECLINES). `capRingLo/Hi` receive
+// the rim rings so the caller welds the end discs to the SAME nodes.
+bool appendConeWallOuterZone(const CurvedSolid& cone, double coneLo, double coneHi, const Seam& seam,
+                             bool coneIsA, VertexPool& pool, std::vector<topo::Shape>& faces,
+                             std::vector<math::Point3>& capRingLo,
+                             std::vector<math::Point3>& capRingHi) {
+  const auto& uv = coneIsA ? seam.uvA : seam.uvB;
+  if (uv.size() < 3) return false;
+  const double rHi = cone.radius + coneHi * std::sin(cone.semiAngle);  // widest wall radius
+  const double kFacetSag = 0.0005;  // finer than the coaxial 0.004 — the cone wall carries the bulk
+  const double chordU = std::sqrt(std::max(8.0 * kFacetSag * std::max(rHi, 1e-6), 1e-12));
+  const int Nu = std::clamp(static_cast<int>(std::ceil(kSsiTwoPi * rHi / chordU)), 48, 300);
+  const int Nv = std::clamp(static_cast<int>(std::ceil((coneHi - coneLo) / chordU)), 16, 200);
+  // The cone wall grid + end discs are built in AXIAL coordinates (station s along zc from the cone
+  // frame origin), matching the codebase convention that CurvedSolid.vLo/vHi are AXIAL stations
+  // (see S5-q coneRingAxial): a wall ring at axial s has radius r(s)=radius+s·tanα, placed at
+  // origin+zc·s, so the disc at s (centre origin+zc·s, same radius) welds flush — unlike
+  // cone.point(u,v) whose v is the SLANT parameter (v·cosα short of the axial station). `coneLo/Hi`
+  // are those axial stations. The seam's cone (u,v) v is SLANT, so convert to axial (y=v·cosα) for
+  // the hole cell test.
+  const math::Vec3 CX = cone.frame.x.vec(), CY = cone.frame.y.vec(), CZ = cone.frame.z.vec();
+  const double tanA = std::tan(cone.semiAngle), cosA = std::cos(cone.semiAngle);
+  auto uAt = [&](int i) { return kSsiTwoPi * (((i % Nu) + Nu) % Nu) / Nu; };
+  auto vAt = [&](int j) { return coneLo + (coneHi - coneLo) * j / Nv; };  // AXIAL station s
+  auto wallPt = [&](double u, double s) {
+    const double r = cone.radius + s * tanA;
+    return math::Point3{cone.frame.origin.x + CX.x * r * std::cos(u) + CY.x * r * std::sin(u) + CZ.x * s,
+                        cone.frame.origin.y + CX.y * r * std::cos(u) + CY.y * r * std::sin(u) + CZ.y * s,
+                        cone.frame.origin.z + CX.z * r * std::cos(u) + CY.z * r * std::sin(u) + CZ.z * s};
+  };
+  // Seam (u,v) track in AXIAL coordinates (its v is SLANT → axial = v·cosα) for the hole cell test.
+  std::vector<std::pair<double, double>> uvAxial;
+  uvAxial.reserve(uv.size());
+  for (const auto& p : uv) uvAxial.emplace_back(p.first, p.second * cosA);
+  // A cell (i,j) is a HOLE cell iff its (u, axial-s) centre lies inside the seam loop. The seam must
+  // sit clear of both rims (no hole cell in row 0 or row Nv-1) and clear of the u-wrap.
+  auto cellCentreInSeam = [&](int i, int j) {
+    return pointInUvLoop(uAt(i) + kSsiPi / Nu, vAt(j) + (coneHi - coneLo) / (2.0 * Nv), uvAxial);
+  };
+  std::vector<std::pair<int, int>> holeCells;
+  for (int i = 0; i < Nu; ++i)
+    for (int j = 0; j < Nv; ++j)
+      if (cellCentreInSeam(i, j)) {
+        if (j == 0 || j == Nv - 1) return false;   // seam touches a rim → decline (rim weld out of scope)
+        holeCells.emplace_back(i, j);
+      }
+  if (holeCells.size() < 3) return false;           // seam not resolved by the grid → decline
+  auto isHole = [&](int i, int j) {
+    const int iu = ((i % Nu) + Nu) % Nu;
+    if (j < 0 || j >= Nv) return false;
+    for (const auto& c : holeCells)
+      if (c.first == iu && c.second == j) return true;
+    return false;
+  };
+  // Emit every KEPT wall quad (grid corner at (i,j)→(i+1,j+1)); the four grid nodes are shared pool
+  // vertices so kept quads weld to each other and to the hole-boundary ring.
+  for (int i = 0; i < Nu; ++i)
+    for (int j = 0; j < Nv; ++j) {
+      if (isHole(i, j)) continue;
+      const math::Point3 a = wallPt(uAt(i), vAt(j)), b = wallPt(uAt(i + 1), vAt(j));
+      const math::Point3 c = wallPt(uAt(i + 1), vAt(j + 1)), dd = wallPt(uAt(i), vAt(j + 1));
+      pushPlanarTri(a, b, c, coneOutwardAt(cone, uAt(i)), pool, faces);
+      pushPlanarTri(a, c, dd, coneOutwardAt(cone, uAt(i)), pool, faces);
+    }
+  // Chain the hole-boundary GRID EDGES into an ordered loop of grid NODES. A boundary edge of the
+  // hole is a grid edge with a hole cell on ONE side and a kept cell on the other. Collect the
+  // directed boundary edges (node→node) so the hole is on the LEFT (kept on the right), then walk
+  // them tip-to-tail into one loop. Node key = (i in [0,Nu), j in [0,Nv]).
+  auto nodeKey = [&](int i, int j) { return (((i % Nu) + Nu) % Nu) * (Nv + 1) + j; };
+  std::unordered_map<int, int> nextOf;   // directed edge node→node (keyed by from-node)
+  auto addEdge = [&](int fi, int fj, int ti, int tj) {
+    nextOf[nodeKey(fi, fj)] = nodeKey(ti, tj);
+  };
+  for (const auto& c : holeCells) {
+    const int i = c.first, j = c.second;
+    // For each of the 4 sides of the hole cell, if the neighbour cell is KEPT, add the side as a
+    // directed boundary edge wound so the hole is enclosed CCW in (i,j) space.
+    if (!isHole(i, j - 1)) addEdge(i + 1, j, i, j);       // bottom side (neighbour below kept)
+    if (!isHole(i + 1, j)) addEdge(i + 1, j + 1, i + 1, j); // right side
+    if (!isHole(i, j + 1)) addEdge(i, j + 1, i + 1, j + 1); // top side
+    if (!isHole(i - 1, j)) addEdge(i, j, i, j + 1);         // left side
+  }
+  if (nextOf.empty()) return false;
+  // Walk the chain into an ordered node loop; must return to start and consume every edge once.
+  std::vector<int> loopKeys;
+  const int startK = nextOf.begin()->first;
+  int cur = startK;
+  for (size_t guard = 0; guard <= nextOf.size(); ++guard) {
+    loopKeys.push_back(cur);
+    auto it = nextOf.find(cur);
+    if (it == nextOf.end()) return false;                 // broken chain → decline
+    cur = it->second;
+    if (cur == startK) break;
+  }
+  if (loopKeys.size() != nextOf.size()) return false;      // not a SINGLE simple loop → decline
+  // Materialize the ring on the cone (each node key → (i,j) → cone.point).
+  std::vector<math::Point3> ring;
+  ring.reserve(loopKeys.size());
+  for (int k : loopKeys) {
+    const int i = k / (Nv + 1), j = k % (Nv + 1);
+    ring.push_back(wallPt(uAt(i), vAt(j)));
+  }
+  const math::Vec3 outRef = coneOutwardAt(cone, uAt(holeCells.front().first));
+  zipToSeam(ring, seam.pts, outRef, pool, faces);
+  capRingLo.clear(); capRingHi.clear();
+  for (int i = 0; i < Nu; ++i) capRingLo.push_back(wallPt(uAt(i), vAt(0)));
+  for (int i = 0; i < Nu; ++i) capRingHi.push_back(wallPt(uAt(i), vAt(Nv)));
+  return true;
+}
+
+// buildTransConeCylCut(A,B) = A − B:
+//   * CYLINDER − CONE (A = cyl): the cyl part OUTSIDE the cone — a clean seam-driven solid (cyl
+//     narrow-end disc + cyl wall band narrow-rim→seam + the COMMON cone cap REVERSED). No hole.
+//   * CONE − CYLINDER (A = cone): the cone with a cylindrical bite — the HOLED cone wall (full wall
+//     minus the seam cap) + cone end discs + reversed cyl band + cyl inside-end disc reversed.
 topo::Shape buildTransConeCylCut(const CurvedSolid& A, const CurvedSolid& B,
                                  const std::vector<Seam>& seams) {
   const TransConeCylSetup s = transConeCylSetup(A, B, seams);
   if (!s.ok) return {};
-  return {};  // outer-zone weld across the non-planar seam is the transversal residual → OCCT
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const auto& coneUv = s.coneIsA ? s.seam.uvA : s.seam.uvB;
+  if (&A == s.cyl) {
+    // CYLINDER − CONE: the cylinder stub OUTSIDE the cone.
+    const std::vector<math::Point3> rimOut = s.cylRing(s.vOutside);
+    const bool outIsHi = (s.vOutside > 0.5 * (s.cyl->vLo + s.cyl->vHi));
+    appendDiskCap(*s.cyl, s.vOutside, rimOut, outIsHi ? s.zc : math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z},
+                  pool, faces);
+    appendRevolvedBand(rimOut, s.seam.pts, s.O, s.zc, pool, faces, 1.0);       // cyl wall (outside)
+    // The cone cap (the cone-wall patch bounding the stub top), REVERSED — its outward normal
+    // points OUT of the stub (into the cone interior), opposite the COMMON cap's cone-outward.
+    appendTransConeCap(*s.cone, s.seam, coneUv, transConeCylCapRings(s), pool, faces,
+                       /*reversed=*/true);
+    if (faces.size() < 4) return {};
+  } else {
+    // CONE − CYLINDER: the holed cone wall + cone end discs + reversed cyl band + reversed inside disc.
+    std::vector<math::Point3> capLo, capHi;
+    if (!appendConeWallOuterZone(*s.cone, s.coneLo, s.coneHi, s.seam, s.coneIsA, pool, faces, capLo,
+                                 capHi))
+      return {};
+    appendAxisDiscCap(s.coneAxisPt(s.coneLo), capLo, math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool, faces);
+    appendAxisDiscCap(s.coneAxisPt(s.coneHi), capHi, s.zc, pool, faces);
+    // The removed cylinder's inner surface: reversed cyl band (seam→inside rim) + reversed inside disc.
+    std::vector<math::Point3> insideRim = s.cylRing(s.vInside);
+    appendRevolvedBand(s.seam.pts, insideRim, s.O, s.zc, pool, faces, /*outwardSign=*/-1.0);
+    const bool endIsHi = (s.vInside > 0.5 * (s.cyl->vLo + s.cyl->vHi));
+    appendDiskCap(*s.cyl, s.vInside, insideRim,
+                  endIsHi ? math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z} : s.zc, pool, faces);
+    if (faces.size() < 6) return {};
+  }
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
 }
 
+// buildTransConeCylFuse(A,B) = A ∪ B: the HOLED cone wall (full wall minus the seam cap) + cone end
+// discs + the cylinder stub OUTSIDE the cone (narrow-end disc + cyl wall band narrow-rim→seam). The
+// cone cap patch and the cyl band inside the cone are interior → dropped. V = V(A)+V(B)−V(∩).
 topo::Shape buildTransConeCylFuse(const CurvedSolid& A, const CurvedSolid& B,
                                   const std::vector<Seam>& seams) {
   const TransConeCylSetup s = transConeCylSetup(A, B, seams);
   if (!s.ok) return {};
-  return {};  // outer-zone weld across the non-planar seam is the transversal residual → OCCT
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  std::vector<math::Point3> capLo, capHi;
+  if (!appendConeWallOuterZone(*s.cone, s.coneLo, s.coneHi, s.seam, s.coneIsA, pool, faces, capLo,
+                               capHi))
+    return {};
+  appendAxisDiscCap(s.coneAxisPt(s.coneLo), capLo, math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool, faces);
+  appendAxisDiscCap(s.coneAxisPt(s.coneHi), capHi, s.zc, pool, faces);
+  // Cylinder stub outside the cone: narrow-end disc + cyl wall band (narrow rim → seam).
+  const std::vector<math::Point3> rimOut = s.cylRing(s.vOutside);
+  const bool outIsHi = (s.vOutside > 0.5 * (s.cyl->vLo + s.cyl->vHi));
+  appendDiskCap(*s.cyl, s.vOutside, rimOut, outIsHi ? s.zc : math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z},
+                pool, faces);
+  appendRevolvedBand(rimOut, s.seam.pts, s.O, s.zc, pool, faces, 1.0);
+  if (faces.size() < 6) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
 }
 
 // ═══ S5-l — COAXIAL TORUS ∩ CYLINDER (COMMON / FUSE / CUT) ══════════════════════
@@ -4098,17 +4599,6 @@ TorusCylSetup torusCylSetup(const CurvedSolid& A, const CurvedSolid& B,
   st.cylS1 = cylS1;
   st.ok = true;
   return st;
-}
-
-// A flat disc cap fanning from an explicit axis point to a rim ring, planar facets, normal
-// `capN`. (appendDiskCap keys the axis point off a CurvedSolid frame + v; the torus/cyl
-// caps are cleanest with the axis point given directly in the torus z-frame.)
-void appendAxisDiscCap(const math::Point3& axisPt, const std::vector<math::Point3>& rim,
-                       const math::Vec3& capN, VertexPool& pool, std::vector<topo::Shape>& faces) {
-  const int n = static_cast<int>(rim.size());
-  if (n < 3) return;
-  for (int k = 0; k < n; ++k)
-    pushPlanarTri(axisPt, rim[k], rim[(k + 1) % n], capN, pool, faces);
 }
 
 // The world point on the TUBE-CENTRE circle at azimuth index i (radius R about the axis) —

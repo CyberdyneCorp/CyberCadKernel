@@ -1762,9 +1762,21 @@ CC_TEST(torus_cyl_coaxial_common_fuse_cut_watertight_matches_analytic) {
   CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
   CC_CHECK(vCut <= vTorus + 1e-9);                                // CUT shrinks below the minuend
   CC_CHECK(!nb::boolean_solid(tor, cyl, nb::Op::Cut).isNull());
-  // CUT is order-sensitive: cylinder − torus is a DIFFERENT topology; the S5-l CUT builder only
-  // handles the TORUS minuend, so cyl − torus declines here → OCCT.
-  CC_CHECK(nb::ssi_boolean_solid(cyl, tor, nb::Op::Cut).isNull());
+
+  // ── REVERSE CUT = cyl − torus (order-sensitive) now LANDS (buildCylTorusCut): the finite
+  // cylinder with a concave toroidal GROOVE carved into its wall over z∈[−z0,z0]. A DIFFERENT
+  // solid from the torus-minuend outer ring — a cylinder-body solid of revolution. Watertight,
+  // matching the Pappus V_cyl − V_common; a SHRINK below the cylinder. ──
+  const double vCutRevTrue = vCylFull - vCommonTrue;               // cyl − torus = cyl − ∩
+  const ntopo::Shape cutRev = nb::ssi_boolean_solid(cyl, tor, nb::Op::Cut);
+  CC_CHECK(!cutRev.isNull());
+  const double vCutRev = watertightMeshVolume(cutRev);
+  CC_CHECK(vCutRev > 0.0);                                          // watertight → engine accepts
+  CC_CHECK(std::fabs(vCutRev - vCutRevTrue) <= 1e-2 * vCutRevTrue);
+  CC_CHECK(vCutRev <= vCylFull + 1e-9);                             // cyl − torus ≤ cyl
+  CC_CHECK(!nb::boolean_solid(cyl, tor, nb::Op::Cut).isNull());     // engine self-verify accepts it
+  // Partition identity: (cyl − torus) + COMMON = cyl (the closed-form self-consistency).
+  CC_CHECK(std::fabs((vCutRev + vCommon) - vCylFull) <= 2e-2 * vCylFull);
 }
 
 // ── (14a′) NATIVE PRIMITIVE construct::build_torus drives the boolean identically (BOOL-COMPLETE) ─

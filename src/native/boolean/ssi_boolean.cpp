@@ -4716,6 +4716,46 @@ topo::Shape buildTorusCylFuse(const CurvedSolid& A, const CurvedSolid& B,
   return topo::ShapeBuilder::makeSolid({shell});
 }
 
+// buildCylTorusCut(A,B) = A − B with the CYLINDER the minuend (the ORDER-SENSITIVE reverse of
+// buildTorusCylCut): the finite cylinder MINUS the part of the torus tube inside it — a solid
+// cylinder with a concave toroidal GROOVE carved into its lateral wall over z ∈ [−z0, z0].
+// It is a single closed solid of revolution, NOT the torus-minuend's outer ring; landed here as
+// the tractable reverse (previously honest-declined). The (ρ,z) profile is the cylinder rectangle
+// [0, Rc] × [cylS0, cylS1] minus the inner tube segment {(ρ−R)²+z² ≤ r², ρ ≤ Rc}. Its boundary:
+//   * bottom disc cap (z = cylS0, normal −z) + top disc cap (z = cylS1, normal +z);
+//   * cylinder wall ρ = Rc OUTSIDE the groove: z ∈ [cylS0, −z0] and [z0, cylS1] (outward +radial);
+//   * the INNER tube arc (v ∈ [v0, 2π−v0], through the inner equator ρ = R−r) as the GROOVE wall,
+//     REVERSED (outwardSign = −1): the remaining cylinder material sits on the axis side of the
+//     arc, so its outward normal points AWAY from the axis, into the removed tube region.
+// The two seam rings (ρ = Rc, z = ±z0) are shared so the groove welds to the wall stubs. Gated on
+// the cylinder fully spanning the tube axially (the S5-l setup's cylS0 < −z0, cylS1 > z0 guarantee,
+// so both wall stubs are non-degenerate). V = V_cyl − V_common. The engine's watertight + two-sided
+// volume self-verify is the safety net; a pose that cannot weld robustly HONEST-DECLINES → OCCT.
+topo::Shape buildCylTorusCut(const CurvedSolid& A, const CurvedSolid& B,
+                             const std::vector<Seam>& seams) {
+  const TorusCylSetup s = torusCylSetup(A, B, seams);
+  if (!s.ok) return {};
+  if (A.kind != CurvedKind::Cylinder) return {};  // order-sensitive: cylinder must be the minuend
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const std::vector<math::Point3> ring0 = s.ring(s.Rc, s.cylS0);   // bottom cap rim
+  const std::vector<math::Point3> ringLo = s.ring(s.Rc, -s.z0);    // −z seam
+  const std::vector<math::Point3> ringHi = s.ring(s.Rc, s.z0);     // +z seam
+  const std::vector<math::Point3> ring1 = s.ring(s.Rc, s.cylS1);   // top cap rim
+  // Bottom disc cap (normal −z), cylinder wall stub up to the −z seam (outward +radial).
+  appendAxisDiscCap(s.axisPt(s.cylS0), ring0, math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool, faces);
+  appendRevolvedBand(ring0, ringLo, s.O, s.zc, pool, faces, 1.0);
+  // The INNER tube arc as the concave groove, REVERSED (material on the axis side of the arc).
+  // Walk from the −z seam (v = 2π − v0) through the inner equator (π) to the +z seam (v = v0).
+  appendTubeArc(s, kSsiTwoPi - s.v0, s.v0, /*outwardSign=*/-1.0, pool, faces);
+  // Cylinder wall stub above the +z seam, top disc cap (normal +z).
+  appendRevolvedBand(ringHi, ring1, s.O, s.zc, pool, faces, 1.0);
+  appendAxisDiscCap(s.axisPt(s.cylS1), ring1, s.zc, pool, faces);
+  if (faces.size() < 6) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
 // ═══ S5-r — COAXIAL TORUS ∩ HALF-SPACE (PLANE ⟂ AXIS) COMMON / FUSE / CUT ════════
 // A ring torus (major R, minor r, axis = frame Z, centre O) cut by a PLANAR HALF-SPACE
 // whose bounding plane is PERPENDICULAR to the torus axis (a horizontal slice at axial
@@ -6638,6 +6678,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-l: COAXIAL torus∩cylinder CUT (torus − cyl: outer tube arc + reversed cylinder bore).
       const topo::Shape torCyl = buildTorusCylCut(*csA, *csB, seams);
       if (!torCyl.isNull()) return torCyl;
+      // S5-l reverse: COAXIAL cylinder∩torus CUT (cyl − torus: cylinder with a toroidal groove).
+      const topo::Shape cylTor = buildCylTorusCut(*csA, *csB, seams);
+      if (!cylTor.isNull()) return cylTor;
       // S5-m: COAXIAL torus∩sphere CUT (torus − sphere: outer tube arc + reversed sphere zone).
       const topo::Shape torSph = buildTorusSphereCut(*csA, *csB, seams);
       if (!torSph.isNull()) return torSph;

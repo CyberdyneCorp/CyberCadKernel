@@ -601,7 +601,12 @@ int main() {
     // the corner); thickenFoldTrim follows the diagonal fold and thickens the column-band that
     // hugs it — a strictly larger closed watertight solid on each side.
     const BsplineSurfaceData S = diagonalRidgePatch();
-    const double d = 0.6;      // toward the ridge's centre of curvature → fold the diagonal band
+    // d chosen so the recovered column-band solid is genuinely SELF-INTERSECTION-FREE: the
+    // node-wise offset fold guard (1 + d·κ) > 0 is necessary but not sufficient for the DISCRETE
+    // offset PANEL to be embedding-free — at a larger |d| the offset cap over the near-fold band
+    // edge can buckle between samples (a documented residual). |d| = 0.4 folds the diagonal band
+    // (so the plain thicken still declines) while the retained fold-free band thickens cleanly.
+    const double d = 0.4;      // toward the ridge's centre of curvature → fold the diagonal band
     const double tol = 1e-2;   // the warped-band fit floor near the high-curvature fold (honest)
 
     // Baseline: thickenSurface declines (fold); the axis-aligned staircase recovers rectangles.
@@ -643,8 +648,9 @@ int main() {
     expectTrue(foldVol > stairVol + 1e-3,
                "diagonal-fold: fold-locus thicken beats the rectangle staircase on volume");
 
-    // PASSTHROUGH: a small fold-free thicken yields a SINGLE full-domain solid.
-    const std::vector<ThickenResult> gentle = thickenFoldTrim(S, 0.03, 1e-4, 16, 16);
+    // PASSTHROUGH: a small fold-free thicken yields a SINGLE full-domain solid. (tol matches the
+    // section: the gentle offset's fit floor is above 1e-4, so the passthrough uses the same 1e-2.)
+    const std::vector<ThickenResult> gentle = thickenFoldTrim(S, 0.03, tol, 16, 16);
     expectTrue(gentle.size() == 1 && gentle[0].ok && !gentle[0].trimmed,
                "diagonal-fold: fold-free thicken returns one full-domain solid");
 

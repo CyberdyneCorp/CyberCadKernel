@@ -855,7 +855,7 @@ std::vector<OffsetResult> offsetSurfaceFoldTrim(const BsplineSurfaceData& surfac
     // fold, so a strip hugging the fold pushes the fit error up. Insetting a cell keeps the
     // retained region genuinely fold-free with margin. An edge on the DOMAIN boundary (v=0 or
     // v=1) is a true patch boundary, not a high-curvature fold, so it is inset only ½ cell.
-    constexpr double kFoldEdgeCells = 1.0;
+    constexpr double kFoldEdgeCells = 2.0;
     std::vector<double> uS(nCol), vLo(nCol), vHi(nCol);
     Domain bbox{dom.u1, dom.u0, dom.v1, dom.v0};  // accumulate the band bounding box
     bool anyCol = false;
@@ -874,15 +874,41 @@ std::vector<OffsetResult> offsetSurfaceFoldTrim(const BsplineSurfaceData& surfac
     }
     if (!anyCol) continue;  // every column collapsed after the inset — skip
 
+    // Trim DEGENERATE TIP columns: a triangular band tapers to a point at the far corner, where
+    // the interval width → 0. A zero-width column makes a degenerate cap quad (and adjacent caps
+    // can pinch/self-touch), so drop leading/trailing columns whose width is below a small
+    // fraction of the band's widest column — keeping a proper trapezoid, not a spike-to-point.
+    {
+      double wMax = 0.0;
+      for (int k = 0; k < nCol; ++k) wMax = std::max(wMax, vHi[k] - vLo[k]);
+      const double wMin = 0.05 * wMax;  // tip columns thinner than this are degenerate
+      int a = 0, b = nCol - 1;
+      while (a <= b && (vHi[a] - vLo[a]) < wMin) ++a;
+      while (b >= a && (vHi[b] - vLo[b]) < wMin) --b;
+      if (b - a + 1 < 3) continue;  // too few well-formed columns to fit a band — skip
+      if (a > 0 || b < nCol - 1) {
+        uS.assign(uS.begin() + a, uS.begin() + b + 1);
+        vLo.assign(vLo.begin() + a, vLo.begin() + b + 1);
+        vHi.assign(vHi.begin() + a, vHi.begin() + b + 1);
+      }
+    }
+
     // Inset the u-extent by ½ cell on each end too (the extreme columns border the fold).
     const double uInset = 0.5 * du;
     const double bandU0 = uS.front() + uInset, bandU1 = uS.back() - uInset;
     if (!(bandU1 > bandU0)) continue;
 
+    // Recompute the band bounding box over the (possibly tip-trimmed) columns.
+    bbox = Domain{bandU0, bandU1, dom.v1, dom.v0};
+    for (std::size_t k = 0; k < vLo.size(); ++k) {
+      bbox.v0 = std::min(bbox.v0, vLo[k]);
+      bbox.v1 = std::max(bbox.v1, vHi[k]);
+    }
+
     // The warp: s ∈ [0,1] → u across the band (inset), interpolate the (vLo,vHi) envelope at u by
     // piecewise-linear lookup on the per-column stations, t ∈ [0,1] → v across [vLo(u),vHi(u)].
     const std::vector<double> uSc = uS, vLoc = vLo, vHic = vHi;  // capture by value
-    const int nc = nCol;
+    const int nc = static_cast<int>(uSc.size());
     Warp warp = [uSc, vLoc, vHic, nc, bandU0, bandU1](double s, double t, double& u, double& v) {
       u = bandU0 + (bandU1 - bandU0) * s;
       // locate u in the station array (ascending, uniform) → linear interp of the envelope.

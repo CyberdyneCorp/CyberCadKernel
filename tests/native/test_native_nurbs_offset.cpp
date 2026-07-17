@@ -230,6 +230,30 @@ static BsplineSurfaceData partialFoldBump() {
   return s;
 }
 
+// A CENTRAL-RIDGE bump: a tall narrow Gaussian ridge running as a BAND across the middle in
+// u (peaked at the u-index-3 row, flat toward u=0 and u=1), spanning the whole v. An offset
+// toward the ridge's centre of curvature folds ONLY the central band, leaving TWO large
+// fold-free rectangles at low-u and high-u. Used to exercise MULTI-region fold trimming: the
+// single-rectangle offsetSurfaceTrimmed keeps only one side; offsetSurfaceMultiTrimmed must
+// recover BOTH.
+static BsplineSurfaceData centralRidgeBump() {
+  BsplineSurfaceData s;
+  s.degreeU = 3;
+  s.degreeV = 3;
+  s.nPolesU = 7;
+  s.nPolesV = 7;
+  s.knotsU = {0, 0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1, 1};
+  s.knotsV = {0, 0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1, 1};
+  for (int i = 0; i < 7; ++i)
+    for (int j = 0; j < 7; ++j) {
+      const double x = i * 0.35, y = j * 0.35;
+      const double du = i - 3.0;                       // ridge centred at the mid-u row
+      const double z = 0.9 * std::exp(-1.4 * du * du);  // narrow ridge, invariant in v
+      s.poles.push_back({x, y, z});
+    }
+  return s;
+}
+
 // A degenerate patch: a control net that collapses to a line along U (all V-columns
 // identical points) — the ∂S/∂v tangent is null, so the normal is undefined.
 static BsplineSurfaceData degenerateNormalPatch() {
@@ -623,6 +647,109 @@ int main() {
     expectTrue(!allFold.ok && allFold.status == OffsetStatus::SelfIntersection,
                "fully-folding offset still declines (no meaningful fold-free region)");
     expectTrue(allFold.surface.poles.empty(), "fully-folding decline returns no surface");
+  }
+
+  // ═══ 8. MULTI-REGION FOLD TRIMMING — recover BOTH sides of a fold band ═══════════
+  {
+    // A central ridge whose offset folds only the middle band, splitting the fold-free
+    // parameter space into TWO large rectangles (low-u and high-u). The single-rectangle
+    // offsetSurfaceTrimmed keeps ONLY one side; offsetSurfaceMultiTrimmed must recover BOTH.
+    const BsplineSurfaceData S = centralRidgeBump();
+    const double d = 0.6;  // toward the ridge's centre of curvature → fold the central band
+
+    // Baseline: the plain offset declines (fold somewhere); the single trim keeps ONE side.
+    const OffsetResult plain = offsetSurface(S, d, 1e-3);
+    expectTrue(plain.status == OffsetStatus::SelfIntersection,
+               "central-ridge: plain offset declines as self-intersection");
+    const OffsetResult single = offsetSurfaceTrimmed(S, d, 1e-3);
+    expectTrue(single.ok && single.trimmed, "central-ridge: single trim recovers one side");
+
+    // Multi-trim: recovers BOTH fold-free rectangles.
+    const std::vector<OffsetResult> multi = offsetSurfaceMultiTrimmed(S, d, 1e-3);
+    expectTrue(multi.size() >= 2, "central-ridge: multi-trim recovers >= 2 fold-free regions");
+
+    const double su0 = domLo(S.knotsU, S.degreeU), su1 = domHi(S.knotsU, S.degreeU);
+    const double sv0 = domLo(S.knotsV, S.degreeV), sv1 = domHi(S.knotsV, S.degreeV);
+    SurfaceGrid sg{std::span<const Point3>(S.poles), S.nPolesU, S.nPolesV};
+
+    bool sawLowU = false, sawHighU = false;
+    double coverAreaMulti = 0.0;
+    for (const OffsetResult& r : multi) {
+      expectTrue(r.ok && r.trimmed, "central-ridge: each recovered region is a valid trim");
+      // Each kept rectangle is a strict sub-rectangle inside the domain.
+      expectTrue(r.keptU1 > r.keptU0 && r.keptV1 > r.keptV0,
+                 "central-ridge: recovered rectangle is non-empty");
+      coverAreaMulti += (r.keptU1 - r.keptU0) * (r.keptV1 - r.keptV0);
+      const double midU = 0.5 * (r.keptU0 + r.keptU1);
+      if (midU < 0.5) sawLowU = true;
+      if (midU > 0.5) sawHighU = true;
+
+      // FOLD-FREE over the whole recovered rectangle: (1 + d·κ) stays strictly positive.
+      double worstFactor = std::numeric_limits<double>::infinity();
+      const int N = 13;
+      for (int i = 0; i < N; ++i)
+        for (int j = 0; j < N; ++j) {
+          const double u = r.keptU0 + (r.keptU1 - r.keptU0) * (i / (double)(N - 1));
+          const double v = r.keptV0 + (r.keptV1 - r.keptV0) * (j / (double)(N - 1));
+          Vec3 dbuf[9];
+          surfaceDerivs(S.degreeU, S.degreeV, sg, S.knotsU, S.knotsV, u, v, 2,
+                        std::span<Vec3>(dbuf, 9));
+          const Vec3 Su = dbuf[3], Sv = dbuf[1], Suu = dbuf[6], Suv = dbuf[4], Svv = dbuf[2];
+          const Vec3 nRaw = cross(Su, Sv);
+          const double nLen = norm(nRaw);
+          if (nLen < 1e-12) continue;
+          const Vec3 nn = nRaw / nLen;
+          const double E = dot(Su, Su), F = dot(Su, Sv), G = dot(Sv, Sv);
+          const double det1 = E * G - F * F;
+          if (det1 < 1e-14) continue;
+          const double L = dot(Suu, nn), M = dot(Suv, nn), Nn = dot(Svv, nn);
+          const double K = (L * Nn - M * M) / det1;
+          const double H = (E * Nn - 2.0 * F * M + G * L) / (2.0 * det1);
+          double disc = H * H - K;
+          if (disc < 0.0) disc = 0.0;
+          const double root = std::sqrt(disc);
+          for (double k : {H + root, H - root})
+            worstFactor = std::min(worstFactor, 1.0 + d * k);
+        }
+      expectTrue(worstFactor > 0.0,
+                 "central-ridge: recovered region is fold-free (Jacobian factor positive)");
+    }
+    expectTrue(sawLowU && sawHighU,
+               "central-ridge: multi-trim recovers BOTH the low-u and high-u fold-free sides");
+
+    // The multi-region cover recovers strictly MORE material than the single largest rectangle
+    // (the whole point: the single trim silently drops the mirror side).
+    const double singleArea = (single.keptU1 - single.keptU0) * (single.keptV1 - single.keptV0);
+    expectTrue(coverAreaMulti > singleArea + 1e-6,
+               "central-ridge: multi-trim recovers more area than single-rectangle trim");
+
+    // Pairwise NON-OVERLAP of the recovered rectangles (disjoint fold-free regions).
+    for (std::size_t a = 0; a < multi.size(); ++a)
+      for (std::size_t b = a + 1; b < multi.size(); ++b) {
+        const OffsetResult& A = multi[a];
+        const OffsetResult& B = multi[b];
+        const bool disjoint = A.keptU1 <= B.keptU0 + 1e-9 || B.keptU1 <= A.keptU0 + 1e-9 ||
+                              A.keptV1 <= B.keptV0 + 1e-9 || B.keptV1 <= A.keptV0 + 1e-9;
+        expectTrue(disjoint, "central-ridge: recovered rectangles are pairwise disjoint");
+      }
+
+    // PASSTHROUGH: a small fold-free offset yields a SINGLE full-domain region (trimmed=false).
+    const std::vector<OffsetResult> gentle = offsetSurfaceMultiTrimmed(S, 0.03, 1e-3);
+    expectTrue(gentle.size() == 1 && gentle[0].ok && !gentle[0].trimmed,
+               "central-ridge: fold-free offset returns one full-domain region");
+    if (gentle.size() == 1) {
+      const bool full = std::fabs(gentle[0].keptU0 - su0) < 1e-9 &&
+                        std::fabs(gentle[0].keptU1 - su1) < 1e-9 &&
+                        std::fabs(gentle[0].keptV0 - sv0) < 1e-9 &&
+                        std::fabs(gentle[0].keptV1 - sv1) < 1e-9;
+      expectTrue(full, "central-ridge: passthrough region is the full domain");
+    }
+
+    // FULLY-FOLDING dome: no meaningful fold-free region → EMPTY vector (honest-decline).
+    const BsplineSurfaceData dome = tightDome(0.5);
+    const std::vector<OffsetResult> allFold = offsetSurfaceMultiTrimmed(dome, 1.5 * 0.5, 1e-3);
+    expectTrue(allFold.empty(),
+               "central-ridge: fully-folding offset returns empty (never a folded region)");
   }
 
   std::printf("nurbs_offset: %d checks, %d failures\n", g_checks, g_failures);

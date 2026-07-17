@@ -197,6 +197,29 @@ static BsplineSurfaceData partialFoldPatch(double bumpHeight) {
   return s;
 }
 
+// A CENTRAL-RIDGE patch: a tall narrow Gaussian ridge running as a BAND across the middle in
+// u, spanning the whole v. A large outward offset folds ONLY the central band, splitting the
+// fold-free parameter space into TWO large rectangles (low-u and high-u). thickenTrimmed keeps
+// only the single largest side; thickenMultiTrimmed must recover BOTH as disjoint closed
+// solids.
+static BsplineSurfaceData centralRidgePatch() {
+  BsplineSurfaceData s;
+  s.degreeU = 3;
+  s.degreeV = 3;
+  s.nPolesU = 7;
+  s.nPolesV = 7;
+  s.knotsU = {0, 0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1, 1};
+  s.knotsV = {0, 0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1, 1};
+  for (int i = 0; i < 7; ++i)
+    for (int j = 0; j < 7; ++j) {
+      const double x = i * 0.35, y = j * 0.35;
+      const double du = i - 3.0;                       // ridge centred at the mid-u row
+      const double z = 0.9 * std::exp(-1.4 * du * du);  // narrow ridge, invariant in v
+      s.poles.push_back({x, y, z});
+    }
+  return s;
+}
+
 // ── Robust triangle-pair PIERCING self-intersection oracle (edge-vs-triangle) ──────
 // True iff any two NON-adjacent triangles of the solid properly cross (an edge of one pierces
 // the interior of the other). Ignores coplanar skin contact (scale-relative det skip) so a
@@ -484,6 +507,68 @@ int main() {
       expectTrue(trim.solid.triangles.empty(),
                  "fully-degenerate decline returns no (self-intersecting) solid");
     }
+  }
+
+  // ═══ 6. MULTI-REGION SELF-INTERSECTION TRIM — thickenMultiTrimmed ════════════════
+  {
+    // A central ridge whose offset folds only the middle band, splitting the fold-free space
+    // into TWO rectangles. thickenTrimmed keeps ONE side; thickenMultiTrimmed recovers BOTH as
+    // DISJOINT closed watertight solids — the honest result of thickening a fold-split face.
+    const BsplineSurfaceData S = centralRidgePatch();
+    const double d = 0.6;  // toward the ridge's centre of curvature → fold the central band
+
+    // Baseline: thickenSurface declines (fold); thickenTrimmed keeps a single fold-free side.
+    const ThickenResult base = thickenSurface(S, d, 1e-3, 16, 16);
+    expectTrue(!base.ok && base.status == ThickenStatus::SelfIntersection,
+               "central-ridge: thickenSurface declines (SelfIntersection)");
+    const ThickenResult single = thickenTrimmed(S, d, 1e-3, 16, 16);
+    expectTrue(single.ok && single.trimmed, "central-ridge: thickenTrimmed keeps one side");
+
+    // Multi-trim: >= 2 disjoint closed solids, each fully verified.
+    const std::vector<ThickenResult> multi = thickenMultiTrimmed(S, d, 1e-3, 16, 16);
+    expectTrue(multi.size() >= 2,
+               "central-ridge: thickenMultiTrimmed recovers >= 2 disjoint solids");
+
+    bool sawLowU = false, sawHighU = false;
+    double totalVol = 0.0;
+    for (std::size_t k = 0; k < multi.size(); ++k) {
+      const ThickenResult& r = multi[k];
+      char tag[64];
+      std::snprintf(tag, sizeof tag, "central-ridge multi[%zu]", k);
+      assertClosed(r, tag);  // ok, watertight, χ==2, zero boundary, oriented, positive volume
+      if (!r.ok) continue;
+      expectTrue(r.trimmed, "central-ridge: each recovered solid reports trimmed == true");
+      // Each recovered solid is self-intersection-FREE (the fold band was cut out).
+      char sbuf[80];
+      std::snprintf(sbuf, sizeof sbuf, "central-ridge multi[%zu]: self-intersection-free", k);
+      expectTrue(!selfIntersects(r.solid, 1e-6), sbuf);
+      totalVol += r.enclosedVolume;
+      const double midU = 0.5 * (r.keptU0 + r.keptU1);
+      if (midU < 0.5) sawLowU = true;
+      if (midU > 0.5) sawHighU = true;
+    }
+    expectTrue(sawLowU && sawHighU,
+               "central-ridge: recovered BOTH the low-u and high-u fold-free sides");
+    // The union recovers strictly more volume than the single largest side (the whole point).
+    expectTrue(single.ok && totalVol > single.enclosedVolume + 1e-6,
+               "central-ridge: multi-trim recovers more volume than single-side trim");
+
+    // PASSTHROUGH: a small fold-free thicken yields a SINGLE full-domain solid, byte-identical
+    // to thickenSurface (the multi path must not perturb the fold-free case).
+    const std::vector<ThickenResult> gentle = thickenMultiTrimmed(S, 0.03, 1e-4, 16, 16);
+    expectTrue(gentle.size() == 1 && gentle[0].ok && !gentle[0].trimmed,
+               "central-ridge: fold-free thicken returns one full-domain solid");
+    if (gentle.size() == 1) {
+      const ThickenResult full = thickenSurface(S, 0.03, 1e-4, 16, 16);
+      expectTrue(full.ok && meshBitEqual(gentle[0].solid, full.solid),
+                 "central-ridge: passthrough solid byte-identical to thickenSurface");
+    }
+
+    // FULLY-FOLDING dome: no fold-free region → EMPTY vector (never a self-intersecting solid).
+    const std::vector<ThickenResult> allFold = thickenMultiTrimmed(tightDome(0.5), -1.5 * 0.5,
+                                                                   1e-3, 16, 16);
+    expectTrue(allFold.empty(),
+               "central-ridge: fully-folding thicken returns empty (honest-decline)");
   }
 
   std::printf("nurbs_thicken: %d checks, %d failures\n", g_checks, g_failures);

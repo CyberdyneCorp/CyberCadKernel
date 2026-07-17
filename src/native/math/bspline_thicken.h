@@ -72,6 +72,8 @@
 #include "bspline_ops.h"               // BsplineSurfaceData (Layer-1 data type)
 #include "native/tessellate/mesh.h"    // tessellate::Mesh (closed-shell carrier + checks)
 
+#include <vector>
+
 namespace cybercad::native::math {
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -196,6 +198,39 @@ ThickenResult thickenSurface(const BsplineSurfaceData& surface, double d,
 /// than ever returning a non-closed or self-intersecting solid.
 ThickenResult thickenTrimmed(const BsplineSurfaceData& surface, double d,
                              double tol = 1e-4, int gridU = 24, int gridV = 24);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MULTI-REGION self-intersection-trimmed thicken (additive; thickenTrimmed byte-unchanged).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// THICKEN `surface` by signed distance `d`, recovering a CLOSED watertight solid over EVERY
+/// meaningful fold-free parameter rectangle — not just the single maximal one thickenTrimmed
+/// keeps.
+///
+/// When the inward offset would INTERPENETRATE as a BAND crossing the domain (a ridge/valley
+/// whose offset folds through S along a strip), the fold-free parameter space splits into TWO
+/// (or more) disjoint rectangles on either side of the band. thickenTrimmed keeps only the
+/// single largest side and discards the rest — up to ~half the part. thickenMultiTrimmed
+/// instead thickens EACH meaningful fold-free rectangle into its own closed six-panel shell
+/// (via the SAME offsetSurfaceMultiTrimmed decomposition) and returns them as a set of
+/// DISJOINT closed solids — the honest result of thickening a face a fold cuts in two.
+///
+/// Behaviour contract:
+///   * NO INTERPENETRATION — returns a SINGLE solid byte-identical to thickenSurface(surface,
+///     d, tol, gridU, gridV) (`trimmed == false`, full-domain kept rectangle).
+///   * SINGLE fold-free region — returns a single solid identical to thickenTrimmed.
+///   * BAND / MULTIPLE fold-free regions — returns ONE closed watertight solid per region, in
+///     descending area order; each individually verified (watertight, χ = 2, zero boundary
+///     edges, consistently oriented) before inclusion.
+///   * FULLY DEGENERATE — returns an EMPTY vector (honest-decline; a self-intersecting solid
+///     is NEVER returned). A degenerate-normal / malformed input likewise returns empty.
+///
+/// Same guards as thickenSurface for degenerate input / normal / zero thickness. Every
+/// returned solid is a valid closed shell; a region that fails closure is dropped, never
+/// returned open. Never widens tolerance; never emits a self-intersecting solid.
+std::vector<ThickenResult> thickenMultiTrimmed(const BsplineSurfaceData& surface, double d,
+                                               double tol = 1e-4, int gridU = 24,
+                                               int gridV = 24);
 
 }  // namespace cybercad::native::math
 

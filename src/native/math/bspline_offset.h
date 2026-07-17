@@ -65,6 +65,8 @@
 
 #include "bspline_ops.h"  // BsplineSurfaceData (Layer-1 data type)
 
+#include <vector>
+
 namespace cybercad::native::math {
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -180,6 +182,40 @@ OffsetResult offsetSurfaceRational(const BsplineSurfaceData& surface, double d,
 /// a self-intersecting (folded) surface is NEVER returned as valid.
 OffsetResult offsetSurfaceTrimmed(const BsplineSurfaceData& surface, double d,
                                   double tol = 1e-4, int startGrid = 9, int maxGrid = 33);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MULTI-REGION fold-trimmed offset (additive; offsetSurfaceTrimmed byte-unchanged).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Construct the OFFSET of `surface` at signed distance `d`, recovering a valid offset over
+/// EVERY meaningful fold-free parameter rectangle — not just the single maximal one
+/// offsetSurfaceTrimmed keeps.
+///
+/// A fold that runs as a BAND across the domain (a ridge/valley crossing in u or v) splits
+/// the fold-free parameter space into TWO (or more) disjoint axis-aligned rectangles on
+/// either side of the band. offsetSurfaceTrimmed keeps only the single largest rectangle and
+/// silently discards the other fold-free region(s) — up to ~half the valid material. This
+/// entry point instead performs a GREEDY maximal-rectangle COVER of the fold-free node map:
+/// repeatedly extract the largest all-fold-free rectangle, mask it out, and repeat, until no
+/// remaining rectangle covers at least `kMinKeptFraction` of the domain. Each kept rectangle
+/// is offset independently (the SAME sample→fit→refine core, each individually fold-free and
+/// within tolerance) and returned as its own OffsetResult with `trimmed == true` and its kept
+/// rectangle reported.
+///
+/// Behaviour contract:
+///   * FOLD-FREE everywhere — returns a SINGLE result identical to offsetSurface (`trimmed ==
+///     false`, full-domain kept rectangle).
+///   * SINGLE fold-free region — returns a single result identical to offsetSurfaceTrimmed.
+///   * BAND / MULTIPLE fold-free regions — returns ONE result per meaningful rectangle, in
+///     descending area order; their union is the recovered fold-free material.
+///   * FULLY FOLDING / degenerate — returns an EMPTY vector (honest-decline; a folded surface
+///     is NEVER returned as valid). A degenerate-normal input likewise returns empty.
+///
+/// The rectangles are pairwise non-overlapping and each is provably fold-free (½-cell inset,
+/// same as offsetSurfaceTrimmed). Never widens tolerance; never emits a folded region.
+std::vector<OffsetResult> offsetSurfaceMultiTrimmed(const BsplineSurfaceData& surface, double d,
+                                                    double tol = 1e-4, int startGrid = 9,
+                                                    int maxGrid = 33);
 
 }  // namespace cybercad::native::math
 

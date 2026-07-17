@@ -470,7 +470,27 @@ OffsetResult offsetSurfaceRational(const BsplineSurfaceData& surface, double d, 
 
 // If the kept fold-free rectangle covers less than this fraction of the domain area, no
 // meaningful offset remains → honest-decline rather than return a sliver.
-namespace { constexpr double kMinKeptFraction = 0.05; }
+namespace {
+constexpr double kMinKeptFraction = 0.05;
+
+// Map a fold-free NODE-index rectangle to a parameter rectangle, shrunk INWARD by ½ cell on
+// each side so its interior is bounded by regular nodes (no fold on the trimmed edge).
+// Returns false (leaving `kept` untouched) if the rectangle collapses after the ½-cell inset
+// (a one-node-thick strip cannot form a rectangle). Shared by the single- and multi-region
+// trim paths so both inset the SAME way.
+bool rectToDomain(const IndexRect& rect, const Domain& dom, int gN, Domain& kept) {
+  const double du = (dom.u1 - dom.u0) / (gN - 1);
+  const double dv = (dom.v1 - dom.v0) / (gN - 1);
+  Domain k;
+  k.u0 = dom.u0 + (rect.i0 + 0.5) * du;
+  k.u1 = dom.u0 + (rect.i1 - 0.5) * du;
+  k.v0 = dom.v0 + (rect.j0 + 0.5) * dv;
+  k.v1 = dom.v0 + (rect.j1 - 0.5) * dv;
+  if (!(k.u1 > k.u0) || !(k.v1 > k.v0)) return false;
+  kept = k;
+  return true;
+}
+}  // namespace
 
 OffsetResult offsetSurfaceTrimmed(const BsplineSurfaceData& surface, double d, double tol,
                                   int startGrid, int maxGrid) {
@@ -507,15 +527,9 @@ OffsetResult offsetSurfaceTrimmed(const BsplineSurfaceData& surface, double d, d
 
   // Map the node-index rectangle to a parameter rectangle, shrunk INWARD by ½ cell on each
   // side so its interior is bounded by regular nodes (no fold on the trimmed edge).
-  const double du = (dom.u1 - dom.u0) / (gN - 1);
-  const double dv = (dom.v1 - dom.v0) / (gN - 1);
   Domain kept;
-  kept.u0 = dom.u0 + (rect.i0 + 0.5) * du;
-  kept.u1 = dom.u0 + (rect.i1 - 0.5) * du;
-  kept.v0 = dom.v0 + (rect.j0 + 0.5) * dv;
-  kept.v1 = dom.v0 + (rect.j1 - 0.5) * dv;
-  // A one-node-thick strip cannot form a rectangle after the ½-cell inset; decline honestly.
-  if (!(kept.u1 > kept.u0) || !(kept.v1 > kept.v0)) {
+  if (!rectToDomain(rect, dom, gN, kept)) {
+    // A one-node-thick strip cannot form a rectangle after the ½-cell inset; decline honestly.
     r.status = OffsetStatus::SelfIntersection;
     return r;
   }
@@ -524,6 +538,73 @@ OffsetResult offsetSurfaceTrimmed(const BsplineSurfaceData& surface, double d, d
   r.trimmed = true;
   r.keptU0 = kept.u0; r.keptU1 = kept.u1; r.keptV0 = kept.v0; r.keptV1 = kept.v1;
   return r;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MULTI-REGION fold-trimmed offset — greedy maximal-rectangle COVER of the fold-free map.
+// ─────────────────────────────────────────────────────────────────────────────
+
+std::vector<OffsetResult> offsetSurfaceMultiTrimmed(const BsplineSurfaceData& surface, double d,
+                                                    double tol, int startGrid, int maxGrid) {
+  std::vector<OffsetResult> out;
+
+  OffsetResult probe;
+  SurfaceGrid grid;
+  Domain dom;
+  if (!prepare(surface, startGrid, maxGrid, grid, dom, probe)) return out;  // degenerate → empty
+
+  const int gN = std::max(11, startGrid);
+  const FoldMap fm = analyzeFold(surface, grid, d, dom, gN);
+  if (fm.degenerate) return out;  // degenerate normal → honest empty (no valid region)
+  const double minR = std::isfinite(fm.minRadius) ? fm.minRadius : 0.0;
+
+  // Whole domain fold-free → a single full-domain offset (identical to offsetSurface).
+  if (fm.worstFactor > 0.0) {
+    OffsetResult r;
+    r.minCurvatureRadius = minR;
+    offsetFitRefine(surface, grid, d, tol, startGrid, maxGrid, dom, /*rational=*/false, r);
+    r.trimmed = false;
+    r.keptU0 = dom.u0; r.keptU1 = dom.u1; r.keptV0 = dom.v0; r.keptV1 = dom.v1;
+    if (r.status != OffsetStatus::FitFailed) out.push_back(std::move(r));
+    return out;
+  }
+
+  // The offset folds somewhere. GREEDILY cover the fold-free node map with maximal rectangles:
+  // extract the largest all-fold-free rectangle, mask its nodes out, and repeat, until no
+  // remaining rectangle covers at least kMinKeptFraction of the domain. Each rectangle is a
+  // provably fold-free (½-cell inset) sub-region offset independently. This recovers BOTH
+  // sides of a fold BAND, not just the single largest side offsetSurfaceTrimmed keeps.
+  std::vector<char> regular = fm.regular;  // mutable working copy (mask extracted rects out)
+  const long total = static_cast<long>(gN - 1) * (gN - 1);  // full-domain cell area
+
+  for (;;) {
+    const IndexRect rect = maximalRegularRect(regular, gN);
+    const long keptCells = (rect.i1 > rect.i0 && rect.j1 > rect.j0)
+                               ? static_cast<long>(rect.i1 - rect.i0) * (rect.j1 - rect.j0)
+                               : 0;
+    if (keptCells <= 0 ||
+        static_cast<double>(keptCells) < kMinKeptFraction * static_cast<double>(total))
+      break;  // no further meaningful fold-free rectangle
+
+    // Mask this rectangle's nodes out of the working map so the next iteration finds a
+    // DISJOINT rectangle (the extracted region is never re-covered).
+    for (int i = rect.i0; i <= rect.i1; ++i)
+      for (int j = rect.j0; j <= rect.j1; ++j)
+        regular[static_cast<std::size_t>(i) * gN + j] = 0;
+
+    Domain kept;
+    if (!rectToDomain(rect, dom, gN, kept)) continue;  // collapsed after inset — skip, keep going
+
+    OffsetResult r;
+    r.minCurvatureRadius = minR;
+    offsetFitRefine(surface, grid, d, tol, startGrid, maxGrid, kept, /*rational=*/false, r);
+    if (r.status == OffsetStatus::FitFailed) continue;  // a region that will not fit is dropped
+    r.trimmed = true;
+    r.keptU0 = kept.u0; r.keptU1 = kept.u1; r.keptV0 = kept.v0; r.keptV1 = kept.v1;
+    out.push_back(std::move(r));
+  }
+  // Empty ⇔ no meaningful fold-free region (honest-decline, same bar as offsetSurfaceTrimmed).
+  return out;
 }
 
 }  // namespace cybercad::native::math

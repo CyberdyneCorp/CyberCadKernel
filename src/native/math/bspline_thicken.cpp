@@ -444,6 +444,61 @@ ThickenResult thickenTrimmed(const BsplineSurfaceData& surface, double d, double
   return r;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MULTI-REGION self-intersection-trimmed thicken (additive; thickenTrimmed byte-unchanged).
+// ─────────────────────────────────────────────────────────────────────────────
+
+std::vector<ThickenResult> thickenMultiTrimmed(const BsplineSurfaceData& surface, double d,
+                                               double tol, int gridU, int gridV) {
+  std::vector<ThickenResult> out;
+
+  if (!wellFormed(surface)) return out;                  // malformed → honest empty
+  if (std::fabs(d) <= kLinearTolerance) return out;      // zero thickness → nothing to build
+  const int nu = std::max(2, gridU);
+  const int nv = std::max(2, gridV);
+
+  // Reuse the offset layer's MULTI-region fold decomposition: one OffsetResult per meaningful
+  // fold-free rectangle (empty ⇔ fully-folding / degenerate → honest-decline). This is the
+  // SAME machinery thickenTrimmed uses (offsetSurfaceTrimmed), just returning every region
+  // instead of only the largest. We build a closed shell over EACH kept rectangle.
+  const std::vector<OffsetResult> regions = offsetSurfaceMultiTrimmed(surface, d, tol);
+  if (regions.empty()) return out;  // no valid fold-free region — never emit a folded solid
+
+  const SurfaceGrid grid{std::span<const Point3>(surface.poles), surface.nPolesU,
+                         surface.nPolesV};
+  const double fu0 = knotLo(surface.knotsU, surface.degreeU);
+  const double fu1 = knotHi(surface.knotsU, surface.degreeU);
+  const double fv0 = knotLo(surface.knotsV, surface.degreeV);
+  const double fv1 = knotHi(surface.knotsV, surface.degreeV);
+  if (!(fu1 > fu0) || !(fv1 > fv0)) return out;
+
+  for (const OffsetResult& reg : regions) {
+    ThickenResult r;
+    r.offsetError = reg.maxError;
+    r.minCurvatureRadius = reg.minCurvatureRadius;
+
+    if (!reg.trimmed) {
+      // No interpenetration anywhere: a single full-domain solid, byte-identical to
+      // thickenSurface (there is exactly one region in this case).
+      ThickenResult full = thickenSurface(surface, d, tol, gridU, gridV);
+      if (full.ok) out.push_back(std::move(full));
+      continue;
+    }
+
+    Domain kept{reg.keptU0, reg.keptU1, reg.keptV0, reg.keptV1};
+    kept.u0 = std::max(kept.u0, fu0); kept.u1 = std::min(kept.u1, fu1);
+    kept.v0 = std::max(kept.v0, fv0); kept.v1 = std::min(kept.v1, fv1);
+    if (!(kept.u1 > kept.u0) || !(kept.v1 > kept.v0)) continue;  // degenerate region — skip
+
+    assembleShell(surface, grid, d, kept, nu, nv, r);
+    if (!r.ok) continue;  // a region that fails closure is dropped, never returned open
+    r.trimmed = true;
+    r.keptU0 = kept.u0; r.keptU1 = kept.u1; r.keptV0 = kept.v0; r.keptV1 = kept.v1;
+    out.push_back(std::move(r));
+  }
+  return out;
+}
+
 }  // namespace cybercad::native::math
 
 #endif  // CYBERCAD_HAS_NUMSCI

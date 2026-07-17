@@ -310,6 +310,7 @@ if(CYBERCAD_BUILD_TESTS)
         test_native_trimmed_nurbs_seam
         test_native_trim_boolean
         test_native_split_healing
+        test_native_holed_face_split
         test_native_topology
         test_native_tessellate
         test_native_display_mesh
@@ -1325,6 +1326,17 @@ if(CYBERCAD_BUILD_TESTS)
     # in the always-on native suite. Additive header-only verb; no lib / cc_* ABI change.
     set(test_native_split_healing_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_split_healing.cpp")
+    # MULTI-HOLE-SPLIT (boolean/holed_face_split.h) — split a face that ALREADY carries a
+    # seam-hole (an annulus) by a SECOND closed interior seam, PRESERVING the existing hole
+    # (the readiness doc's §4 multi-crossing split, the enabler for BOOL-READMIT's general
+    # genuine-overlap ≥3 weld). Host closed-form + mesh-tiling oracle on a PLANAR annulus
+    # (identity UV map ⇒ exact net-area tiling): hole preserved, Σ net area == parent (≤ε),
+    # two sub-annuli mesh + tile + weld along the shared seam, the simply-connected split
+    # DROPS the hole (the measured contrast), and the honest-decline envelope (seam crosses
+    # hole / hole-free face / non-interior seam). No SSI — always-on suite. Additive
+    # header-only verb; no lib / cc_* ABI change.
+    set(test_native_holed_face_split_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_holed_face_split.cpp")
     set(test_native_tessellate_SRC
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_tessellate.cpp")
     # Render-quality DISPLAY mesh (src/native/render) — host GATE (a), the OCCT-free

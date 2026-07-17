@@ -623,6 +623,46 @@ watertight sew is MISSING.
 > the operand is ADMITTED and its seam is TRACED — only the multi-hole split remains, and when it
 > lands the SAME fold extends to the general genuine-overlap ≥3 case with no change to this header.
 
+> **✅ LANDED — MULTI-HOLE-SPLIT (`src/native/boolean/holed_face_split.h`), the general holed-face
+> second-seam split.** `splitFaceSmoothTrimHoled(face, seam)` resolves exactly the residual named
+> above: it splits a face carrying **N ≥ 1 existing hole loops** by ONE closed interior second seam
+> into two genuinely-trimmed sub-faces that **PRESERVE every existing hole**, tiling the parent's NET
+> (holes-subtracted) area exactly. `faceInside` = the seam-enclosed region (seam as outer wire +
+> every nested hole reused VERBATIM); `faceOutside` = the parent (outer wire + the reversed seam as a
+> HOLE + every non-nested hole). The seam is built ONCE and laid FORWARD on `faceInside` /
+> REVERSED-as-hole on `faceOutside` ⇒ their bit-identical shared boundary (the smooth-trim
+> watertight-share idiom). Every predicate is a geometry test: it honest-declines (nullopt) a
+> hole-free face (`NoHole`), a non-interior / self-intersecting seam, a seam that **crosses** an
+> existing hole (`SeamCrossesHole`, the genuinely-harder multi-crossing case, out of this
+> two-region-per-seam slice), a degenerate sub-region, or a net-area tiling gap — **no tolerance is
+> weakened; no partial/leaky split is emitted.** Result is a `SmoothFaceSplit`, so the byte-frozen
+> `pickByMembership` survivor selector consumes it with NO change. Host gate
+> `tests/native/test_native_holed_face_split.cpp` **8/8 GREEN** (planar-annulus identity-UV oracle):
+> the single-hole annulus split (hole preserved, exact π-net tiling, sub-faces MESH + TILE + weld the
+> seam 1:1 by radius-localized boundary count, contrast vs `splitFaceSmoothTrim` which DROPS the
+> hole), the general **≥2-hole** case (seam encloses exactly one hole → 1 inside / 1 outside) and the
+> general **≥3-hole** case (seam encloses two → 2 nested inside / 1 outside), plus the four
+> honest-decline branches. `boolean_readmit.h::splitAccWall` routes an already-holed acc wall through
+> it (simply-connected walls keep the frozen `splitFaceSmoothTrim` path bit-identically); readmit
+> suite **5/5**. `src/native` stays **OCCT-free**; **no `cc_*` ABI**.
+>
+> **REMAINING WIRING (documented, deferred — a valid partial deliverable).** The completed
+> holed-face split is a face-level verb over trimmed parametric faces; the transversal CUT/FUSE
+> families (S5-k cyl∩sphere, S5-p torus∩cyl, S5-q cone∩sphere, S5-s cone∩cyl in `ssi_boolean.cpp`)
+> assemble a **shared-VertexPool planar-facet SHELL**, a different meshing paradigm. Their residual
+> is the **sphere/torus/cone OUTER ZONE between the two NON-PLANAR traced seams** (the long way round,
+> outside the bore) — a topological BAND, not a 2-holed disk. Wiring the holed-face split to land
+> S5-k CUT/FUSE therefore requires a NEW shell primitive `appendSphereBandBetweenSeams(seamLo,
+> seamHi, …)`: a spherical band between the two index-aligned (already resampled by azimuth)
+> non-planar loops, `rings` intermediate rows placed ON the sphere by slerping the two seams' unit
+> radial directions the **LONG way** (over the equator, away from the bore — the short-arc slerp
+> would cut through the removed caps), each row welded ring-to-ring, sharing seamLo/seamHi nodes
+> through the pool. This is the sound generalisation of `appendSphereCap`'s slerp discipline to a
+> band, and the honest gate (watertight χ=2 + ΔV ≤ 1% vs OCCT `BRepAlgoAPI_{Cut,Fuse}`) is
+> unchanged. It was deferred rather than half-landed to preserve the SACRED DISAGREED=0 / never-leaky
+> invariant (correct long-way band orientation + pole/periodic weld is a full wave of its own). Until
+> it lands the four transversal CUT/FUSE builders keep their `return {}` honest-decline → OCCT.
+
 ### Summary table
 
 | stage | readiness | one-line evidence |
@@ -632,7 +672,7 @@ watertight sew is MISSING.
 | 3 Face split | **PARTIAL** | `classify` inside-test WORKS; split = convex-1-chord + closed-interior-seam only; multi-crossing + healing MISSING |
 | 4 Region classification | **WORKS** | single-face In/Out + elementary set-algebra land; general point-in-NURBS-solid membership across MULTIPLE trimmed faces now LANDED (`nurbs_solid_membership.h`, exact ray-cast: `intersectCurveSurface` ∩ `classify`, tangent/on-edge → re-cast → honest `Unknown`): 945-pt grid **100% crisp-correct**, fragment vote well-defined |
 | 2 Pcurve construction | **PARTIAL** | `constructPcurve` declines the iso-curve round-trip (parametrisation + non-rational fit); data model + fidelity guard land |
-| 3 Face split | **PARTIAL** | `classify` inside-test WORKS; split = convex-1-chord + closed-interior-seam; **tolerant-topology healing pre-pass LANDED** (`split_healing.h`, L3-HEAL: gap-close + snap + G5 pinch-resolve + area-preservation gate + honest over-gap decline); general multi-crossing / re-entrant split MISSING |
+| 3 Face split | **PARTIAL** | `classify` inside-test WORKS; split = convex-1-chord + closed-interior-seam; **tolerant-topology healing pre-pass LANDED** (`split_healing.h`, L3-HEAL); **general HOLED-face second-seam split LANDED** (`holed_face_split.h` `splitFaceSmoothTrimHoled`, MULTI-HOLE-SPLIT: split a face with N≥1 existing holes by a closed interior seam, holes preserved, exact net-area tiling, honest SeamCrossesHole decline; host 8/8 incl. ≥2/≥3-hole general cases); the harder seam-CROSSES-hole multi-crossing / re-entrant split MISSING |
 | 4 Region classification | **PARTIAL** | single-face In/Out + elementary set-algebra land; general NURBS solid membership MISSING |
 | 5 Reassembly / sew | **PARTIAL** | `pcurveFidelity` welds good / rejects drifted seam; single-transversal-seam freeform↔freeform sew WELDS (tracks S3/W, both legs); **multi-seam split+classify RESOLVED (exact tiling + per-region vote), and the annulus↔annulus inner seam-as-hole sew now WELDS watertight** (M0-WELD, `uv_triangulate.h`: the CDT hole-cull is a TOPOLOGICAL flood fill so both annuli triangulate the shared strip identically — inner-seam boundaryEdges **59→0**, volume converges to the closed-form lens, DISAGREED=0 by OCCT-agreement); residual = a small non-manifold count only at deflections finer than the working band |
 | **COMPOSED boolean (Fuse/Cut/Common)** | **LANDED (BOOL-INT)** | the general two-freeform-solid orchestrator `nurbsSolidBoolean(A,B,op)` (`nurbs_solid_boolean.h`) COMPOSES all five stages (byte-unchanged); single-transversal-seam **COMMON/CUT/FUSE all weld watertight** at the closed-form volumes, converging, **DISAGREED=0 vs OCCT `BRepAlgoAPI_{Common,Cut,Fuse}`** (SIM 14/14); FUSE is the group-flip outer-envelope compose; op-algebra V(fuse)+V(common)=V(A)+V(B) holds; the multi-seam annulus↔annulus sew honest-declines with the residual map (never leaky). Host 7/7 + SIM 14/14 |

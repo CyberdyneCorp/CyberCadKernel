@@ -57,6 +57,7 @@
 
 #include "native/boolean/freeform_freeform_cut.h"
 #include "native/boolean/freeform_operand.h"
+#include "native/boolean/holed_face_split.h"
 #include "native/boolean/nurbs_solid_boolean.h"
 #include "native/boolean/smooth_trim_split.h"
 #include "native/ssi/marching.h"
@@ -208,6 +209,27 @@ inline std::optional<SeamPick> pickSeamSharingWall(const FreeformOperand& acc,
   }
   if (nSharing != 1) return std::nullopt;  // exactly-one-participating-wall pose only
   return found;
+}
+
+/// Split a participating ACC wall by the shared seam, PRESERVING an existing seam-hole.
+/// If the wall is an ALREADY-HOLED annulus (a prior boolean's seam is an interior hole),
+/// route through the MULTI-HOLE-SPLIT verb `splitFaceSmoothTrimHoled` (existing hole
+/// preserved, two-annulus tiling); if it is simply-connected, the plain single-seam
+/// `splitFaceSmoothTrim` is bit-identical. Returns nullopt on an honest split decline
+/// (the harder seam-crosses-hole case, degenerate sub-region, tiling gap) — never a
+/// partial/wrong split. The result is a `SmoothFaceSplit` the frozen survivor selector
+/// (`pickByMembership`) consumes unchanged.
+inline std::optional<SmoothFaceSplit> splitAccWall(const topo::Shape& wall,
+                                                   const ssi::WLine& seam) {
+  const tess::UVRegion reg = tess::buildRegion(wall, 24);
+  if (reg.holes.empty()) {  // simply-connected ⇒ the frozen closed-interior-seam split
+    const SmoothSplitResult sr = splitFaceSmoothTrim(wall, seam);
+    if (!sr.ok()) return std::nullopt;
+    return *sr.split;
+  }
+  const HoledSplitResult hr = splitFaceSmoothTrimHoled(wall, seam);  // preserve the hole
+  if (!hr.ok()) return std::nullopt;
+  return *hr.split;
 }
 
 /// Membership `want` of a whole (unsplit) freeform wall in `other`'s mesh — the
@@ -415,24 +437,23 @@ inline topo::Shape nurbsSolidBooleanReadmit(const topo::Shape& acc, const topo::
   if (!pick) return fail(SolidBoolDecline::NoSeam);
   const OperandFace& accWallFace = foAcc->faces[foAcc->freeform[pick->accWallIdx]];
 
-  // (3) Split BOTH participating walls by the shared seam. NOTE (MEASURED re-admission
-  // boundary): when the participating acc wall is an ALREADY-HOLED annulus (the seam of a
-  // PRIOR boolean is an interior hole), splitting it by this SECOND seam is a MULTI-HOLE /
-  // multi-crossing face split — `splitFaceSmoothTrim` treats the face as simply-connected
-  // and does NOT preserve the existing hole, so the OUT/IN sub-faces are geometrically
-  // incomplete and the downstream weld honest-declines `NotWatertight` (never leaky). This
-  // is the readiness doc's UNLANDED §4 multi-crossing split; the general genuine-overlap
-  // ≥3-operand weld is gated on it. The REDUNDANT-operand short-circuit above handles the
-  // reachable idempotent folds without ever reaching this split.
-  const SmoothSplitResult srAcc = splitFaceSmoothTrim(accWallFace.face, pick->seam);
+  // (3) Split BOTH participating walls by the shared seam. When the participating acc wall
+  // is an ALREADY-HOLED annulus (the seam of a PRIOR boolean is an interior hole), splitting
+  // it by this SECOND seam is a MULTI-HOLE face split: `splitAccWall` routes it through
+  // `splitFaceSmoothTrimHoled`, which PRESERVES the existing hole (two-annulus tiling) —
+  // the readiness doc's §4 multi-hole split. A simply-connected acc wall keeps the frozen
+  // `splitFaceSmoothTrim` path (bit-identical). The operand wall is a pristine disk (no
+  // hole), so its split is the plain closed-interior-seam split. Either split declines
+  // honestly on the harder sub-cases (seam-crosses-hole, degenerate) — never leaky.
+  const auto srAcc = splitAccWall(accWallFace.face, pick->seam);
   const SmoothSplitResult srOp = splitFaceSmoothTrim(opWallFace.face, rekeyToB(pick->seam));
-  if (!srAcc.ok() || !srOp.ok()) return fail(SolidBoolDecline::SplitFailed);
+  if (!srAcc || !srOp.ok()) return fail(SolidBoolDecline::SplitFailed);
 
   // (4) Select survivors (multi-wall aware) — acc split + carried whole walls + lids, then
   // the operand split cap (+ operand lids for FUSE).
   std::vector<topo::Shape> faces;
   std::size_t nFromAcc = 0;
-  if (!selectReadmitSurvivors(op, *foAcc, *foOp, pick->accWallIdx, *srAcc.split, *srOp.split,
+  if (!selectReadmitSurvivors(op, *foAcc, *foOp, pick->accWallIdx, *srAcc, *srOp.split,
                               meshAcc, meshOp, bbAcc, bbOp, deflection, faces, nFromAcc))
     return fail(SolidBoolDecline::ClassifyAmbiguous);
   if (faces.size() < 2) return fail(SolidBoolDecline::WeldOpen);

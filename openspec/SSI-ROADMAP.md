@@ -884,6 +884,36 @@ harness runs each of the sphere FUSE/CUT as an equal-R AND an unequal-R fixture;
   missing loop). A grazing / internally-tangent offset (NearTangent), a fat cylinder (Rc ≥ Rs), a
   cylinder that does not pierce both poles (offset+Rc ≥ Rs, single loop), and a skew (non-parallel)
   axis all decline → NULL → OCCT.
+- **MULTI-HOLE-SPLIT — general holed-face second-seam split** (`src/native/boolean/holed_face_split.h`,
+  `splitFaceSmoothTrimHoled`; the enabler the S5-k/p/q/s CUT/FUSE residual + the BOOL-READMIT
+  genuine-overlap ≥3 weld both name). ◐ CAPABILITY LANDED + GREEN; transversal shell-wiring DEFERRED.
+  The verb splits a face carrying **N ≥ 1 existing hole loops** by ONE closed interior second seam into
+  two genuinely-trimmed sub-faces that PRESERVE every existing hole, tiling the parent NET
+  (holes-subtracted) area exactly: `faceInside` = the seam-enclosed region (seam as outer wire + every
+  NESTED existing hole reused verbatim); `faceOutside` = the parent outer wire + the REVERSED seam as a
+  hole + every non-nested existing hole. The seam is built ONCE, laid FORWARD on faceInside /
+  REVERSED-as-hole on faceOutside ⇒ their bit-identical shared boundary (the smooth-trim
+  watertight-share idiom); result is a `SmoothFaceSplit` the frozen `pickByMembership` consumes
+  unchanged. Honest declines (nullopt, never leaky, no tolerance weakened): NoHole (hole-free →
+  `splitFaceSmoothTrim`), SeamNotInterior/NotClosed/TooShort, SelfIntersecting, **SeamCrossesHole** (the
+  genuinely-harder multi-crossing case, out of this two-region-per-seam slice), DegenerateSubRegion,
+  TilingGap. Host gate `test_native_holed_face_split.cpp` **8/8 GREEN** on a planar-annulus identity-UV
+  oracle: single-hole annulus (hole preserved, exact π-net tiling, sub-faces MESH+TILE+weld the seam 1:1
+  by radius-localized boundary count, contrast vs `splitFaceSmoothTrim` DROPPING the hole), the general
+  **≥2-hole** (seam encloses one → 1 in/1 out) and **≥3-hole** (seam encloses two → 2 nested in/1 out)
+  cases, + the four decline branches. `boolean_readmit.h::splitAccWall` routes an already-holed acc wall
+  through it (readmit 5/5). `src/native` OCCT-free; no `cc_*` ABI.
+  **REMAINING (deferred, valid partial):** landing S5-k CUT/FUSE via this needs a NEW shared-VertexPool
+  shell primitive `appendSphereBandBetweenSeams(seamLo, seamHi, rings, …)` — a spherical BAND between
+  the two index-aligned (already `resampleByAzimuth`-gridded) non-planar loops, interior rows placed ON
+  the sphere by slerping the two seams' unit radial directions the **LONG way** (over the equator, away
+  from the bore — the short-arc slerp cuts through the removed caps), welded ring-to-ring, sharing
+  seamLo/seamHi through the pool (the `appendSphereCap` slerp discipline generalised to a band). The
+  transversal outer zone is a topological BAND, not a 2-holed disk, so the holed-face verb informs the
+  UV-region reasoning but the actual weld is this facet-shell band. Deferred (not half-landed) to keep
+  DISAGREED=0 / never-leaky SACRED — correct long-way orientation + pole/periodic weld + ΔV≤1% vs OCCT
+  `BRepAlgoAPI_{Cut,Fuse}` is a full wave. Until then the four transversal CUT/FUSE builders keep
+  `return {}` honest-decline → OCCT.
 - **S5-l — coaxial TORUS(ring)∩CYLINDER COMMON / FUSE / CUT** (the TORUS surface family opened;
   op-set COMPLETE 3/3 native). A ring torus (major R, minor r, axis) and a COAXIAL cylinder (radius
   Rc, same axis) whose wall crosses the torus TUBE at TWO latitudes → TWO analytic circle seams. In

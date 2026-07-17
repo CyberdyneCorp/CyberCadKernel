@@ -375,10 +375,11 @@ widens ~40× from idx=23 to idx=33 as the surfaces approach tangency, but native
 true curve — confirming the divergence is the ill-conditioned band + fitted-spline coverage, not
 a corrector error that worsens with conditioning.
 
-**OCCT cross-check (SIM, `GeomAPI_IntSS` oracle, same seed, `DISAGREED == 0`).** The additive
-`[GRAZE-3WAY]` decline line emits, per declined trial, native's worst-gap NODE (its root), its
-worst FITTED-spline sample, and the nearest OCCT curve point to each, fed back through the SAME
-independent host oracle. Two declines were captured:
+**OCCT cross-check (SIM, `GeomAPI_IntSS` oracle, seed `0x5515D1FF0F0F`: `AGREED=45 DECLINED=3
+DISAGREED=0 ORACLE-INACCURATE=0`, N=48 — the bar holds).** The three declines are exactly the
+near-tangent graze poses idx 23/24/33. The additive `[GRAZE-3WAY]` decline line emits, per
+declined trial, native's worst-gap NODE (its root), its worst FITTED-spline sample, and the
+nearest OCCT curve point to each, fed back through the SAME independent host oracle. All three:
 
 - **`idx=24` — the single-loop near-tangent graze (the target moat pose; `reason=small-loop`,
   `traced=1`, `occtLines=1`, `natOnOcct=1.7e-7`, `genuineOcctOnNat=1.818e-3`).** At the worst

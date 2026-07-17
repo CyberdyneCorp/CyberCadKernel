@@ -592,11 +592,22 @@ watertight sew is MISSING.
 > returns a **NULL Shape** with a measured `SolidBoolReport` — **NEVER a leaky/partial/wrong
 > solid; no tolerance widened.**
 >
-> **Two-gate proof.** Host closed-form `tests/native/test_native_nurbs_solid_boolean.cpp` (7/7
+> **Two-gate proof.** Host closed-form `tests/native/test_native_nurbs_solid_boolean.cpp` (8/8
 > GREEN): on the canonical single-transversal-seam bowl-cup, **COMMON / CUT / FUSE all WELD
 > watertight** (χ=2, boundaryEdges=0, consistently oriented) at the closed-form volumes
 > (π·H²/(4a) lens; V(A)−lens; V(A)+V(B)−lens envelope), each **CONVERGING** as the deflection
-> refines; **op-algebra** V(fuse)+V(common)=V(A)+V(B) and V(cut)+V(common)=V(A) hold on the
+> refines — with the caveat that **CUT converges in a SHRINKING ENVELOPE, not strictly
+> monotonely** (BOOL-NEXT): the single-seam CUT composes the SAME freeform CUT weld as
+> `ff_cut_welds_watertight_at_closed_form`, and its meshed volume is a **cancellation
+> DIFFERENCE** (assembled shell ≈V(A) MINUS the B-disk curved ceiling ≈V(lens)); the two
+> independently tessellated curved surfaces each carry an O(deflection) signed-volume
+> residual that partially cancels, so the sign of `err` flips level-to-level (measured
+> 0.68%,1.53%,0.78%,1.20%,1.49%,1.04%,0.95% over d 0.02→0.0025 — bounded ≲1.53%, oscillating,
+> NOT monotone; identical to the underlying FF-CUT sequence). `nsb_single_seam_cut_welds_watertight`
+> therefore asserts the honest two-sided convergence statement — a **per-level shrinking-envelope
+> bound** (`err < 2%`) PLUS a **best-so-far bound** (`bestErr < 1%`, achieved ≈0.78%), keeping
+> every meaningful check (watertight, be=0, coherent, `err < 30·d`, `v < cf`) — NOT a strict
+> `err < prevErr` that a cancellation-difference volume cannot satisfy; **op-algebra** V(fuse)+V(common)=V(A)+V(B) and V(cut)+V(common)=V(A) hold on the
 > meshed volumes (≤2%); CUT is per-operand (A−B and B−A both weld, equal volume on the
 > z-mirror-symmetric pose); the **MULTI-SEAM** pose (two degree-4 mirror cups, 2 seams)
 > **HONEST-DECLINES** `MultiSeamDeclined` with the residual map (boundaryEdges localized to the

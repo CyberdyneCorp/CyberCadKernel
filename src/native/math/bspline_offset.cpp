@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <span>
 #include <vector>
@@ -237,6 +238,33 @@ IndexRect maximalRegularRect(const std::vector<char>& regular, int gN) {
   return best;
 }
 
+// A parametric warp from the unit square [0,1]² to (u,v) space. The rectangular domain uses
+// the identity affine map; the fold-locus trim uses a per-column v-band warp so the sampled
+// region FOLLOWS the fold. `s`,`t` ∈ [0,1]. Returns the (u,v) the sample is taken at.
+using Warp = std::function<void(double s, double t, double& u, double& v)>;
+
+// Sample the true offset locus O = S + d·N on a g×g grid over the WARPED domain `warp`. When
+// `rational`, also fills `outW` with each node's effective input weight (else leaves it empty).
+void buildOffsetSamplesWarp(const BsplineSurfaceData& surface, const SurfaceGrid& grid, double d,
+                            const Warp& warp, int g, bool rational, std::vector<Point3>& out,
+                            std::vector<double>& outW) {
+  out.resize(static_cast<std::size_t>(g) * g);
+  outW.clear();
+  if (rational) outW.assign(static_cast<std::size_t>(g) * g, 1.0);
+  for (int i = 0; i < g; ++i) {
+    const double s = static_cast<double>(i) / (g - 1);
+    for (int j = 0; j < g; ++j) {
+      const double t = static_cast<double>(j) / (g - 1);
+      double u, v;
+      warp(s, t, u, v);
+      const Dir3 nrm = evalN(surface, grid, u, v);
+      const std::size_t idx = static_cast<std::size_t>(i) * g + j;
+      out[idx] = evalS(surface, grid, u, v) + nrm.vec() * d;
+      if (rational) outW[idx] = evalWeight(surface, u, v);
+    }
+  }
+}
+
 // Sample the true offset locus O = S + d·N on a g×g grid over `dom`. When `rational`, also
 // fills `outW` with each node's effective input weight (else leaves it empty).
 void buildOffsetSamples(const BsplineSurfaceData& surface, const SurfaceGrid& grid, double d,
@@ -361,6 +389,67 @@ void offsetFitRefine(const BsplineSurfaceData& surface, const SurfaceGrid& grid,
   } else {
     r.ok = false;
     r.status = OffsetStatus::ToleranceNotMet;  // honest achieved error, never widened
+  }
+}
+
+// ── Sample → fit → refine the offset locus over a WARPED domain ───────────────────
+// The fold-locus analogue of offsetFitRefine: samples the offset locus over the warped band
+// `warp` (an [0,1]² → (u,v) map that follows the fold), fits, and refines. Deviation is
+// measured by projecting the fitted surface onto S over the band's bounding box `bbox`
+// (on-locus points project to distance |d|; the interior-foot filter drops boundary artefacts).
+// Fits NON-RATIONAL (the fold-trim path is non-rational, like offsetSurfaceTrimmed).
+void offsetFitRefineWarp(const BsplineSurfaceData& surface, const SurfaceGrid& grid, double d,
+                         double tol, int startGrid, int maxGrid, const Warp& warp,
+                         const Domain& bbox, OffsetResult& r) {
+  const int degU = std::min(3, surface.degreeU);
+  const int degV = std::min(3, surface.degreeV);
+  const int kCheck = 7;
+  const double absd = std::fabs(d);
+
+  BsplineSurfaceData best;
+  double bestErr = std::numeric_limits<double>::infinity();
+  int bestGU = 0, bestGV = 0;
+  bool anyFit = false;
+
+  const numerics::SurfaceEval Seval = [&](double uu, double vv) {
+    return evalS(surface, grid, uu, vv);
+  };
+
+  std::vector<Point3> samples;
+  std::vector<double> sampW;
+  for (int g = startGrid; ; g = std::min(maxGrid, (g - 1) * 2 + 1)) {
+    buildOffsetSamplesWarp(surface, grid, d, warp, g, /*rational=*/false, samples, sampW);
+    const PointGrid pg{std::span<const Point3>(samples), g, g};
+    const SurfaceFitResult fit = interpolateSurface(pg, degU, degV);
+    if (fit.ok) {
+      const double maxErr = measureOffsetDeviation(Seval, fit.surface, bbox, absd, kCheck);
+      if (maxErr < bestErr) {
+        bestErr = maxErr;
+        best = fit.surface;
+        bestGU = g;
+        bestGV = g;
+        anyFit = true;
+      }
+      if (maxErr <= tol) break;
+    }
+    if (g >= maxGrid) break;
+  }
+
+  if (!anyFit) {
+    r.status = OffsetStatus::FitFailed;
+    r.ok = false;
+    return;
+  }
+  r.surface = std::move(best);
+  r.maxError = bestErr;
+  r.gridU = bestGU;
+  r.gridV = bestGV;
+  if (bestErr <= tol) {
+    r.ok = true;
+    r.status = OffsetStatus::Ok;
+  } else {
+    r.ok = false;
+    r.status = OffsetStatus::ToleranceNotMet;
   }
 }
 
@@ -604,6 +693,223 @@ std::vector<OffsetResult> offsetSurfaceMultiTrimmed(const BsplineSurfaceData& su
     out.push_back(std::move(r));
   }
   // Empty ⇔ no meaningful fold-free region (honest-decline, same bar as offsetSurfaceTrimmed).
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FOLD-LOCUS-following trim — column-band region bounded by the actual fold locus.
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+// 4-connected component labels of the fold-free node map. Every regular node gets a component
+// id ≥ 0; folded nodes get -1. `nComp` is the number of components. A diagonal / curved fold
+// BAND separates the fold-free map into ≥ 2 components (one per side); a corner-only fold
+// leaves one. Using 4-connectivity (not 8) makes the band a genuine SEPARATOR — two regions
+// touching only at a diagonal corner across the band stay distinct.
+std::vector<int> labelComponents(const std::vector<char>& regular, int gN, int& nComp) {
+  std::vector<int> label(static_cast<std::size_t>(gN) * gN, -1);
+  nComp = 0;
+  std::vector<int> stack;
+  for (int si = 0; si < gN; ++si)
+    for (int sj = 0; sj < gN; ++sj) {
+      const std::size_t s0 = static_cast<std::size_t>(si) * gN + sj;
+      if (!regular[s0] || label[s0] != -1) continue;
+      const int id = nComp++;
+      label[s0] = id;
+      stack.clear();
+      stack.push_back(si * gN + sj);
+      while (!stack.empty()) {
+        const int cur = stack.back();
+        stack.pop_back();
+        const int ci = cur / gN, cj = cur % gN;
+        const int di[4] = {-1, 1, 0, 0};
+        const int dj[4] = {0, 0, -1, 1};
+        for (int k = 0; k < 4; ++k) {
+          const int ni = ci + di[k], nj = cj + dj[k];
+          if (ni < 0 || ni >= gN || nj < 0 || nj >= gN) continue;
+          const std::size_t ns = static_cast<std::size_t>(ni) * gN + nj;
+          if (regular[ns] && label[ns] == -1) {
+            label[ns] = id;
+            stack.push_back(ni * gN + nj);
+          }
+        }
+      }
+    }
+  return label;
+}
+
+// A per-u-column contiguous fold-free v-interval for one component. `iLo..iHi` is the inclusive
+// u-node range the component spans; `jLo[k]`,`jHi[k]` (k over the range) are the component's
+// contiguous v-node interval on u-column iLo+k. A component whose column intervals are all
+// well-formed maps to a column-BAND warp that follows the fold locus.
+struct ColumnBand {
+  int iLo = 0, iHi = -1;
+  std::vector<int> jLo, jHi;  // size iHi-iLo+1
+  long nodeArea = 0;          // Σ (jHi-jLo) per column × 1 (proxy for kept area)
+};
+
+// Extract the column-band of component `id`: on each u-column, the [min,max] j of nodes labelled
+// `id`. Requires each occupied column's labelled nodes to be CONTIGUOUS (a single run) — a
+// column with a gap (the component wraps around a hole) is not a simple band and the band is
+// rejected (empty). This keeps the warped fit valid: each column maps to one v-interval.
+ColumnBand extractColumnBand(const std::vector<int>& label, int gN, int id) {
+  ColumnBand band;
+  int iLo = gN, iHi = -1;
+  std::vector<int> lo(gN, -1), hi(gN, -1);
+  for (int i = 0; i < gN; ++i) {
+    int first = -1, last = -1, runs = 0;
+    bool inRun = false;
+    for (int j = 0; j < gN; ++j) {
+      const bool here = label[static_cast<std::size_t>(i) * gN + j] == id;
+      if (here) {
+        if (!inRun) { ++runs; inRun = true; }
+        if (first < 0) first = j;
+        last = j;
+      } else {
+        inRun = false;
+      }
+    }
+    if (first >= 0) {
+      if (runs > 1) return ColumnBand{};  // non-contiguous column — not a simple band
+      lo[i] = first; hi[i] = last;
+      iLo = std::min(iLo, i); iHi = std::max(iHi, i);
+    }
+  }
+  if (iHi < iLo) return band;
+  band.iLo = iLo; band.iHi = iHi;
+  band.jLo.reserve(iHi - iLo + 1);
+  band.jHi.reserve(iHi - iLo + 1);
+  for (int i = iLo; i <= iHi; ++i) {
+    if (lo[i] < 0) return ColumnBand{};  // a column with no node inside the u-span → not a band
+    band.jLo.push_back(lo[i]);
+    band.jHi.push_back(hi[i]);
+    band.nodeArea += (hi[i] - lo[i]);
+  }
+  return band;
+}
+
+}  // namespace
+
+std::vector<OffsetResult> offsetSurfaceFoldTrim(const BsplineSurfaceData& surface, double d,
+                                                double tol, int startGrid, int maxGrid) {
+  std::vector<OffsetResult> out;
+
+  OffsetResult probe;
+  SurfaceGrid grid;
+  Domain dom;
+  if (!prepare(surface, startGrid, maxGrid, grid, dom, probe)) return out;  // degenerate → empty
+
+  // A DENSE fold map: the fold-locus trace needs finer resolution than the rectangle scan so the
+  // traced per-column intervals hug the diagonal / curved fold. This is honest measurement (a
+  // finer analysis of the SAME (1 + d·κ) map), never a widened tolerance.
+  const int gN = std::max(41, startGrid);
+  const FoldMap fm = analyzeFold(surface, grid, d, dom, gN);
+  if (fm.degenerate) return out;  // degenerate normal → honest empty
+  const double minR = std::isfinite(fm.minRadius) ? fm.minRadius : 0.0;
+
+  // Whole domain fold-free → a single full-domain offset (identical to offsetSurface).
+  if (fm.worstFactor > 0.0) {
+    OffsetResult r;
+    r.minCurvatureRadius = minR;
+    offsetFitRefine(surface, grid, d, tol, startGrid, maxGrid, dom, /*rational=*/false, r);
+    r.trimmed = false;
+    r.foldTrimmed = false;
+    r.keptU0 = dom.u0; r.keptU1 = dom.u1; r.keptV0 = dom.v0; r.keptV1 = dom.v1;
+    if (r.status != OffsetStatus::FitFailed) out.push_back(std::move(r));
+    return out;
+  }
+
+  // The offset folds somewhere. Label the fold-free node map into connected components (a
+  // diagonal band leaves ≥ 2). Each component becomes a COLUMN-BAND that FOLLOWS the fold: on
+  // every u-column its contiguous fold-free v-interval, inset ½ cell so the interior is provably
+  // fold-free. The warped fit over that band recovers the triangular corner a rectangle drops.
+  int nComp = 0;
+  const std::vector<int> label = labelComponents(fm.regular, gN, nComp);
+  const double du = (dom.u1 - dom.u0) / (gN - 1);
+  const double dv = (dom.v1 - dom.v0) / (gN - 1);
+  const long total = static_cast<long>(gN - 1) * (gN - 1);
+
+  // Collect (component, band, nodeArea), then emit in descending area order.
+  struct Cand { int id; ColumnBand band; };
+  std::vector<Cand> cands;
+  for (int id = 0; id < nComp; ++id) {
+    ColumnBand band = extractColumnBand(label, gN, id);
+    if (band.iHi < band.iLo) continue;
+    // Meaningful-area gate (same bar as the rectangle trim): the band must cover ≥ kMinKeptFraction.
+    if (static_cast<double>(band.nodeArea) < kMinKeptFraction * static_cast<double>(total)) continue;
+    // The band must be ≥ 2 columns wide AND have some column with a ≥ 2-node interval, else the
+    // ½-cell inset collapses it (a one-node sliver is not a fittable region).
+    if (band.iHi - band.iLo < 2) continue;
+    cands.push_back({id, std::move(band)});
+  }
+  std::sort(cands.begin(), cands.end(),
+            [](const Cand& a, const Cand& b) { return a.band.nodeArea > b.band.nodeArea; });
+
+  for (const Cand& c : cands) {
+    const ColumnBand& band = c.band;
+    const int nCol = band.iHi - band.iLo + 1;
+
+    // Per-column parameter (u, vLo, vHi). The fold-side edge is inset from the fold boundary by
+    // kFoldEdgeCells cells (not just ½): the offset locus curvature is EXTREME approaching the
+    // fold, so a strip hugging the fold pushes the fit error up. Insetting a cell keeps the
+    // retained region genuinely fold-free with margin. An edge on the DOMAIN boundary (v=0 or
+    // v=1) is a true patch boundary, not a high-curvature fold, so it is inset only ½ cell.
+    constexpr double kFoldEdgeCells = 1.0;
+    std::vector<double> uS(nCol), vLo(nCol), vHi(nCol);
+    Domain bbox{dom.u1, dom.u0, dom.v1, dom.v0};  // accumulate the band bounding box
+    bool anyCol = false;
+    for (int k = 0; k < nCol; ++k) {
+      const int i = band.iLo + k;
+      uS[k] = dom.u0 + i * du;
+      const double loMargin = (band.jLo[k] <= 0) ? 0.5 : kFoldEdgeCells;
+      const double hiMargin = (band.jHi[k] >= gN - 1) ? 0.5 : kFoldEdgeCells;
+      double lo = dom.v0 + (band.jLo[k] + loMargin) * dv;
+      double hi = dom.v0 + (band.jHi[k] - hiMargin) * dv;
+      if (!(hi > lo)) { lo = hi = dom.v0 + 0.5 * (band.jLo[k] + band.jHi[k]) * dv; }
+      else anyCol = true;
+      vLo[k] = lo; vHi[k] = hi;
+      bbox.u0 = std::min(bbox.u0, uS[k]); bbox.u1 = std::max(bbox.u1, uS[k]);
+      bbox.v0 = std::min(bbox.v0, lo);    bbox.v1 = std::max(bbox.v1, hi);
+    }
+    if (!anyCol) continue;  // every column collapsed after the inset — skip
+
+    // Inset the u-extent by ½ cell on each end too (the extreme columns border the fold).
+    const double uInset = 0.5 * du;
+    const double bandU0 = uS.front() + uInset, bandU1 = uS.back() - uInset;
+    if (!(bandU1 > bandU0)) continue;
+
+    // The warp: s ∈ [0,1] → u across the band (inset), interpolate the (vLo,vHi) envelope at u by
+    // piecewise-linear lookup on the per-column stations, t ∈ [0,1] → v across [vLo(u),vHi(u)].
+    const std::vector<double> uSc = uS, vLoc = vLo, vHic = vHi;  // capture by value
+    const int nc = nCol;
+    Warp warp = [uSc, vLoc, vHic, nc, bandU0, bandU1](double s, double t, double& u, double& v) {
+      u = bandU0 + (bandU1 - bandU0) * s;
+      // locate u in the station array (ascending, uniform) → linear interp of the envelope.
+      double lo, hi;
+      if (u <= uSc.front()) { lo = vLoc.front(); hi = vHic.front(); }
+      else if (u >= uSc.back()) { lo = vLoc.back(); hi = vHic.back(); }
+      else {
+        int seg = 0;
+        while (seg + 1 < nc && uSc[seg + 1] < u) ++seg;
+        const double a = (u - uSc[seg]) / (uSc[seg + 1] - uSc[seg]);
+        lo = vLoc[seg] + a * (vLoc[seg + 1] - vLoc[seg]);
+        hi = vHic[seg] + a * (vHic[seg + 1] - vHic[seg]);
+      }
+      v = lo + (hi - lo) * t;
+    };
+
+    OffsetResult r;
+    r.minCurvatureRadius = minR;
+    offsetFitRefineWarp(surface, grid, d, tol, startGrid, maxGrid, warp, bbox, r);
+    if (r.status == OffsetStatus::FitFailed) continue;  // a band that will not fit is dropped
+    r.trimmed = true;
+    r.foldTrimmed = true;
+    r.keptU0 = bbox.u0; r.keptU1 = bbox.u1; r.keptV0 = bbox.v0; r.keptV1 = bbox.v1;
+    r.foldU = uS; r.foldVLo = vLo; r.foldVHi = vHi;
+    out.push_back(std::move(r));
+  }
+  // Empty ⇔ no meaningful fold-free component (honest-decline; never emit a folded region).
   return out;
 }
 

@@ -254,6 +254,31 @@ static BsplineSurfaceData centralRidgeBump() {
   return s;
 }
 
+// A DIAGONAL-RIDGE bump: a tall narrow Gaussian ridge running along the (i == j) DIAGONAL in
+// index space (peaked where i == j, flat away from the diagonal), spanning the whole patch. An
+// offset toward the ridge's centre of curvature folds ONLY the diagonal band, leaving TWO large
+// TRIANGULAR fold-free regions (upper-left where i−j ≪ 0, lower-right where i−j ≫ 0). Used to
+// exercise FOLD-LOCUS trimming: the axis-aligned rectangle staircase (offsetSurfaceMultiTrimmed)
+// inscribes a small rectangle in each triangle and drops the corner; offsetSurfaceFoldTrim
+// follows the diagonal fold and recovers far more of each triangle.
+static BsplineSurfaceData diagonalRidgeBump() {
+  BsplineSurfaceData s;
+  s.degreeU = 3;
+  s.degreeV = 3;
+  s.nPolesU = 7;
+  s.nPolesV = 7;
+  s.knotsU = {0, 0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1, 1};
+  s.knotsV = {0, 0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1, 1};
+  for (int i = 0; i < 7; ++i)
+    for (int j = 0; j < 7; ++j) {
+      const double x = i * 0.35, y = j * 0.35;
+      const double t = i - j;                          // ridge along the i == j diagonal
+      const double z = 0.9 * std::exp(-1.4 * t * t);    // narrow ridge, diagonal in (u,v)
+      s.poles.push_back({x, y, z});
+    }
+  return s;
+}
+
 // A degenerate patch: a control net that collapses to a line along U (all V-columns
 // identical points) — the ∂S/∂v tangent is null, so the normal is undefined.
 static BsplineSurfaceData degenerateNormalPatch() {
@@ -750,6 +775,135 @@ int main() {
     const std::vector<OffsetResult> allFold = offsetSurfaceMultiTrimmed(dome, 1.5 * 0.5, 1e-3);
     expectTrue(allFold.empty(),
                "central-ridge: fully-folding offset returns empty (never a folded region)");
+  }
+
+  // ═══ 9. FOLD-LOCUS TRIMMING — follow a DIAGONAL fold, beat the rectangle staircase ═══
+  {
+    // A diagonal ridge whose offset folds the diagonal band, leaving TWO TRIANGULAR fold-free
+    // regions. The axis-aligned rectangle staircase (offsetSurfaceMultiTrimmed) inscribes a
+    // small rectangle in each triangle and drops the corner; offsetSurfaceFoldTrim follows the
+    // fold locus (per-u fold-free v-interval) and recovers a column-band that hugs the diagonal.
+    const BsplineSurfaceData S = diagonalRidgeBump();
+    const double d = 0.6;  // toward the ridge's centre of curvature → fold the diagonal band
+    const double tol = 1e-2;  // the warped-band fit floor near the high-curvature fold (honest)
+
+    const double su0 = domLo(S.knotsU, S.degreeU), su1 = domHi(S.knotsU, S.degreeU);
+    const double sv0 = domLo(S.knotsV, S.degreeV), sv1 = domHi(S.knotsV, S.degreeV);
+    SurfaceGrid sg{std::span<const Point3>(S.poles), S.nPolesU, S.nPolesV};
+
+    // Baseline: the plain offset declines (fold somewhere).
+    const OffsetResult plain = offsetSurface(S, d, tol);
+    expectTrue(plain.status == OffsetStatus::SelfIntersection,
+               "diagonal-fold: plain offset declines as self-intersection");
+
+    // The axis-aligned staircase recovers only the inscribed rectangles.
+    const std::vector<OffsetResult> stair = offsetSurfaceMultiTrimmed(S, d, tol);
+    double stairArea = 0.0;
+    for (const OffsetResult& r : stair)
+      stairArea += (r.keptU1 - r.keptU0) * (r.keptV1 - r.keptV0);  // axis-aligned ⇒ bbox == area
+
+    // The fold-locus trim: follows the diagonal fold on each side.
+    const std::vector<OffsetResult> fold = offsetSurfaceFoldTrim(S, d, tol);
+    expectTrue(fold.size() >= 2, "diagonal-fold: fold-trim recovers >= 2 fold-free regions");
+
+    bool sawUL = false, sawLR = false;
+    double foldArea = 0.0;
+    for (const OffsetResult& r : fold) {
+      expectTrue(r.foldTrimmed && r.trimmed, "diagonal-fold: each region is a fold-locus trim");
+      expectTrue(r.foldU.size() >= 2 && r.foldU.size() == r.foldVLo.size() &&
+                     r.foldU.size() == r.foldVHi.size(),
+                 "diagonal-fold: the column-band polyline is well-formed");
+      // TRUE band area from the polyline envelope (trapezoid per column pair). This is the
+      // curved-boundary region's actual area — the honest measure to compare with the staircase.
+      double band = 0.0;
+      for (std::size_t k = 0; k + 1 < r.foldU.size(); ++k) {
+        const double w0 = r.foldVHi[k] - r.foldVLo[k];
+        const double w1 = r.foldVHi[k + 1] - r.foldVLo[k + 1];
+        band += 0.5 * (w0 + w1) * (r.foldU[k + 1] - r.foldU[k]);
+      }
+      foldArea += band;
+      // Which triangular side (upper-left = high v, lower-right = low v)?
+      const double midV = 0.5 * (r.keptV0 + r.keptV1);
+      if (midV > 0.5) sawUL = true;
+      if (midV < 0.5) sawLR = true;
+
+      // VALIDITY 1 — the recovered band is FOLD-FREE: (1 + d·κ) stays strictly positive over
+      // the whole traced column-band (evaluated on the true surface S along the envelope).
+      double worstFactor = std::numeric_limits<double>::infinity();
+      const int N = 15;
+      for (std::size_t kk = 0; kk < r.foldU.size(); ++kk) {
+        const double u = r.foldU[kk];
+        for (int j = 0; j < N; ++j) {
+          const double v = r.foldVLo[kk] + (r.foldVHi[kk] - r.foldVLo[kk]) * (j / (double)(N - 1));
+          Vec3 dbuf[9];
+          surfaceDerivs(S.degreeU, S.degreeV, sg, S.knotsU, S.knotsV, u, v, 2,
+                        std::span<Vec3>(dbuf, 9));
+          const Vec3 Su = dbuf[3], Sv = dbuf[1], Suu = dbuf[6], Suv = dbuf[4], Svv = dbuf[2];
+          const Vec3 nRaw = cross(Su, Sv);
+          const double nLen = norm(nRaw);
+          if (nLen < 1e-12) continue;
+          const Vec3 nn = nRaw / nLen;
+          const double E = dot(Su, Su), F = dot(Su, Sv), G = dot(Sv, Sv);
+          const double det1 = E * G - F * F;
+          if (det1 < 1e-14) continue;
+          const double L = dot(Suu, nn), M = dot(Suv, nn), Nn = dot(Svv, nn);
+          const double K = (L * Nn - M * M) / det1;
+          const double H = (E * Nn - 2.0 * F * M + G * L) / (2.0 * det1);
+          double disc = H * H - K;
+          if (disc < 0.0) disc = 0.0;
+          const double root = std::sqrt(disc);
+          for (double k : {H + root, H - root})
+            worstFactor = std::min(worstFactor, 1.0 + d * k);
+        }
+      }
+      expectTrue(worstFactor > 0.0,
+                 "diagonal-fold: recovered band is fold-free (Jacobian factor positive)");
+
+      // VALIDITY 2 — the fitted surface lies at distance ≈ |d| from S. Project a dense set of
+      // fitted-surface points onto S; interior feet must be at distance |d| within tolerance.
+      const BsplineSurfaceData& f = r.surface;
+      SurfaceGrid fg{std::span<const Point3>(f.poles), f.nPolesU, f.nPolesV};
+      const double fu0 = domLo(f.knotsU, f.degreeU), fu1 = domHi(f.knotsU, f.degreeU);
+      const double fv0 = domLo(f.knotsV, f.degreeV), fv1 = domHi(f.knotsV, f.degreeV);
+      num::SurfaceEval Sev = [&](double u, double v) { return evalSurf(S, u, v); };
+      double maxDistErr = 0.0;
+      int interior = 0;
+      const int NC = 9;
+      for (int i = 0; i < NC; ++i)
+        for (int j = 0; j < NC; ++j) {
+          const double fu = fu0 + (fu1 - fu0) * ((i + 0.5) / NC);
+          const double fv = fv0 + (fv1 - fv0) * ((j + 0.5) / NC);
+          const Point3 p = surfacePoint(f.degreeU, f.degreeV, fg, f.knotsU, f.knotsV, fu, fv);
+          const num::SurfaceProjection pr =
+              num::closest_point_on_surface(Sev, su0, su1, sv0, sv1, p, 30, 30);
+          if (pr.success && pr.u > su0 + 1e-4 && pr.u < su1 - 1e-4 && pr.v > sv0 + 1e-4 &&
+              pr.v < sv1 - 1e-4) {
+            ++interior;
+            maxDistErr = std::max(maxDistErr, std::fabs(pr.distance - d));
+          }
+        }
+      expectTrue(interior > 0, "diagonal-fold: fitted band has interior projection feet");
+      // The fitted offset sits at distance |d| from S to the honest warped-band fit tolerance.
+      expectLE(maxDistErr, 5.0 * tol, "diagonal-fold: fitted band lies at distance ~|d| from S");
+    }
+    expectTrue(sawUL && sawLR,
+               "diagonal-fold: fold-trim recovers BOTH the upper-left and lower-right triangles");
+
+    // THE HEADLINE: the fold-locus trim recovers strictly MORE area than the rectangle staircase
+    // — a curved-boundary region following the fold beats the inscribed axis-aligned rectangles.
+    expectTrue(foldArea > stairArea + 1e-3,
+               "diagonal-fold: fold-locus trim beats the rectangle staircase on recovered area");
+
+    // PASSTHROUGH — a small fold-free offset yields a SINGLE full-domain region (foldTrimmed=false).
+    const std::vector<OffsetResult> gentle = offsetSurfaceFoldTrim(S, 0.03, 1e-3);
+    expectTrue(gentle.size() == 1 && gentle[0].ok && !gentle[0].foldTrimmed && !gentle[0].trimmed,
+               "diagonal-fold: fold-free offset returns one full-domain region");
+
+    // FULLY-FOLDING dome: no meaningful fold-free region → EMPTY vector (honest-decline).
+    const BsplineSurfaceData dome = tightDome(0.5);
+    const std::vector<OffsetResult> allFold = offsetSurfaceFoldTrim(dome, 1.5 * 0.5, 1e-3);
+    expectTrue(allFold.empty(),
+               "diagonal-fold: fully-folding offset returns empty (never a folded region)");
   }
 
   std::printf("nurbs_offset: %d checks, %d failures\n", g_checks, g_failures);

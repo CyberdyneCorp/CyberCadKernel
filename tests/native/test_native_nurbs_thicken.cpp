@@ -220,6 +220,29 @@ static BsplineSurfaceData centralRidgePatch() {
   return s;
 }
 
+// A DIAGONAL-RIDGE patch: a tall narrow Gaussian ridge running along the (i == j) DIAGONAL in
+// index space. A large offset folds ONLY the diagonal band, leaving TWO TRIANGULAR fold-free
+// regions (upper-left, lower-right). thickenMultiTrimmed inscribes an axis-aligned rectangle in
+// each triangle (dropping the corner); thickenFoldTrim follows the diagonal fold and recovers a
+// column-band that hugs the diagonal — a strictly larger closed solid on each side.
+static BsplineSurfaceData diagonalRidgePatch() {
+  BsplineSurfaceData s;
+  s.degreeU = 3;
+  s.degreeV = 3;
+  s.nPolesU = 7;
+  s.nPolesV = 7;
+  s.knotsU = {0, 0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1, 1};
+  s.knotsV = {0, 0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1, 1};
+  for (int i = 0; i < 7; ++i)
+    for (int j = 0; j < 7; ++j) {
+      const double x = i * 0.35, y = j * 0.35;
+      const double t = i - j;                          // ridge along the i == j diagonal
+      const double z = 0.9 * std::exp(-1.4 * t * t);    // narrow ridge, diagonal in (u,v)
+      s.poles.push_back({x, y, z});
+    }
+  return s;
+}
+
 // ── Robust triangle-pair PIERCING self-intersection oracle (edge-vs-triangle) ──────
 // True iff any two NON-adjacent triangles of the solid properly cross (an edge of one pierces
 // the interior of the other). Ignores coplanar skin contact (scale-relative det skip) so a
@@ -569,6 +592,67 @@ int main() {
                                                                    1e-3, 16, 16);
     expectTrue(allFold.empty(),
                "central-ridge: fully-folding thicken returns empty (honest-decline)");
+  }
+
+  // ═══ 7. FOLD-LOCUS TRIM — follow a DIAGONAL fold, beat the rectangle staircase ═══
+  {
+    // A diagonal ridge whose offset folds the diagonal band, leaving TWO TRIANGULAR fold-free
+    // regions. thickenMultiTrimmed inscribes an axis-aligned rectangle in each triangle (dropping
+    // the corner); thickenFoldTrim follows the diagonal fold and thickens the column-band that
+    // hugs it — a strictly larger closed watertight solid on each side.
+    const BsplineSurfaceData S = diagonalRidgePatch();
+    const double d = 0.6;      // toward the ridge's centre of curvature → fold the diagonal band
+    const double tol = 1e-2;   // the warped-band fit floor near the high-curvature fold (honest)
+
+    // Baseline: thickenSurface declines (fold); the axis-aligned staircase recovers rectangles.
+    const ThickenResult base = thickenSurface(S, d, tol, 16, 16);
+    expectTrue(!base.ok && base.status == ThickenStatus::SelfIntersection,
+               "diagonal-fold: thickenSurface declines (SelfIntersection)");
+    const std::vector<ThickenResult> stair = thickenMultiTrimmed(S, d, tol, 16, 16);
+    double stairVol = 0.0;
+    for (const ThickenResult& r : stair)
+      if (r.ok) stairVol += r.enclosedVolume;
+
+    // Fold-locus trim: >= 2 closed watertight solids, each following the diagonal fold.
+    const std::vector<ThickenResult> fold = thickenFoldTrim(S, d, tol, 16, 16);
+    expectTrue(fold.size() >= 2, "diagonal-fold: thickenFoldTrim recovers >= 2 solids");
+
+    bool sawUL = false, sawLR = false;
+    double foldVol = 0.0;
+    for (std::size_t k = 0; k < fold.size(); ++k) {
+      const ThickenResult& r = fold[k];
+      char tag[64];
+      std::snprintf(tag, sizeof tag, "diagonal-fold fold[%zu]", k);
+      assertClosed(r, tag);  // ok, watertight, χ==2, zero boundary, oriented, positive volume
+      if (!r.ok) continue;
+      expectTrue(r.trimmed, "diagonal-fold: each recovered solid reports trimmed == true");
+      // Each recovered solid is self-intersection-FREE (the diagonal fold band was cut out).
+      char sbuf[80];
+      std::snprintf(sbuf, sizeof sbuf, "diagonal-fold fold[%zu]: self-intersection-free", k);
+      expectTrue(!selfIntersects(r.solid, 1e-6), sbuf);
+      foldVol += r.enclosedVolume;
+      const double midV = 0.5 * (r.keptV0 + r.keptV1);
+      if (midV > 0.5) sawUL = true;
+      if (midV < 0.5) sawLR = true;
+    }
+    expectTrue(sawUL && sawLR,
+               "diagonal-fold: recovered BOTH the upper-left and lower-right triangles");
+
+    // THE HEADLINE: the fold-locus trim recovers strictly MORE volume than the rectangle
+    // staircase — following the diagonal fold beats the inscribed axis-aligned rectangles.
+    expectTrue(foldVol > stairVol + 1e-3,
+               "diagonal-fold: fold-locus thicken beats the rectangle staircase on volume");
+
+    // PASSTHROUGH: a small fold-free thicken yields a SINGLE full-domain solid.
+    const std::vector<ThickenResult> gentle = thickenFoldTrim(S, 0.03, 1e-4, 16, 16);
+    expectTrue(gentle.size() == 1 && gentle[0].ok && !gentle[0].trimmed,
+               "diagonal-fold: fold-free thicken returns one full-domain solid");
+
+    // FULLY-FOLDING dome: no fold-free region → EMPTY vector (never a self-intersecting solid).
+    const std::vector<ThickenResult> allFold = thickenFoldTrim(tightDome(0.5), -1.5 * 0.5,
+                                                               1e-3, 16, 16);
+    expectTrue(allFold.empty(),
+               "diagonal-fold: fully-folding thicken returns empty (honest-decline)");
   }
 
   std::printf("nurbs_thicken: %d checks, %d failures\n", g_checks, g_failures);

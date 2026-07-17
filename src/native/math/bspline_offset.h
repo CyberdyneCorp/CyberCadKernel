@@ -103,6 +103,18 @@ struct OffsetResult {
   double keptV0 = 0.0, keptV1 = 0.0;  ///< (u,v) coordinates; equals the full domain when
                                       ///< `trimmed == false`. The complement is the region
                                       ///< trimmed away because the offset folded there.
+
+  // ── Fold-LOCUS trim (offsetSurfaceFoldTrim only; default-valued for every other path) ──
+  bool foldTrimmed = false;    ///< true ⇔ the kept region is bounded by the actual (diagonal /
+                               ///< curved) FOLD LOCUS, not the axis-aligned rectangle staircase.
+                               ///< When true the kept region is the COLUMN-BAND swept by the
+                               ///< per-u v-interval [foldVLo[k], foldVHi[k]] below (a curved-
+                               ///< boundary region that follows the fold), keptU0..keptV1 is its
+                               ///< bounding box, and the fitted surface is parametrized over the
+                               ///< warped band (fold-free everywhere, at distance |d| from S).
+  std::vector<double> foldU;   ///< the sample u-stations of the kept column-band (ascending).
+  std::vector<double> foldVLo; ///< per-station lower v of the fold-free interval (‖foldU‖).
+  std::vector<double> foldVHi; ///< per-station upper v of the fold-free interval (‖foldU‖).
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -216,6 +228,47 @@ OffsetResult offsetSurfaceTrimmed(const BsplineSurfaceData& surface, double d,
 std::vector<OffsetResult> offsetSurfaceMultiTrimmed(const BsplineSurfaceData& surface, double d,
                                                     double tol = 1e-4, int startGrid = 9,
                                                     int maxGrid = 33);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FOLD-LOCUS-following trim (additive; every routine above stays byte-unchanged).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Construct the OFFSET of `surface` at signed distance `d`, trimming to the actual FOLD
+/// LOCUS rather than to an axis-aligned rectangle (or staircase of rectangles).
+///
+/// The multi-region trim above covers the fold-free parameter map with AXIS-ALIGNED
+/// rectangles. When the fold runs DIAGONALLY in (u,v) (a ridge along a slanted line) or along
+/// a CURVED locus, each fold-free side is a TRIANGULAR / curved-boundary region, and an
+/// axis-aligned rectangle inscribed in a triangle recovers only a fraction of its area — the
+/// documented "staircase" residual. This entry point instead traces the fold boundary as a
+/// per-u v-interval and returns a valid offset over the COLUMN-BAND that FOLLOWS the fold:
+///
+///   1. Build the fold-free node map (the same (1 + d·κᵢ) > 0 test as the rectangle trim).
+///   2. Split the fold-free map into connected COMPONENTS (a diagonal band leaves two).
+///   3. For each component, at every sample u-column record the maximal contiguous fold-free
+///      v-interval [vLo(u), vHi(u)] (½-cell inset so the interval interior is provably
+///      fold-free). The interval endpoints trace the fold locus as u varies.
+///   4. Fit the offset over the WARPED band (s,t) ↦ (u(s), vLo(u)+t·(vHi(u)−vLo(u))): sample
+///      the true offset locus O = S + d·N on that curved-boundary region and interpolate a
+///      NURBS surface through the samples (same sample→fit→refine core as offsetSurface, over
+///      a warped rather than rectangular domain). The fitted patch is fold-free everywhere and
+///      lies at distance |d| from S.
+///
+/// Behaviour contract:
+///   * FOLD-FREE everywhere — returns a SINGLE result identical to offsetSurface
+///     (`foldTrimmed == false`, `trimmed == false`, full-domain kept box).
+///   * DIAGONAL / CURVED fold — returns ONE result per fold-free component, each with
+///     `foldTrimmed == true`, the column-band polyline (foldU / foldVLo / foldVHi) reported,
+///     and keptU0..keptV1 the band's bounding box. Their union follows the fold locus and
+///     recovers strictly MORE area than the rectangle staircase (offsetSurfaceMultiTrimmed).
+///   * FULLY FOLDING / degenerate — returns an EMPTY vector (honest-decline; a folded surface
+///     is NEVER returned as valid). A degenerate-normal input likewise returns empty.
+///
+/// Every returned patch is provably fold-free (½-cell inset on the traced interval) and within
+/// tolerance. Never widens tolerance; never emits a folded region.
+std::vector<OffsetResult> offsetSurfaceFoldTrim(const BsplineSurfaceData& surface, double d,
+                                                double tol = 1e-4, int startGrid = 9,
+                                                int maxGrid = 33);
 
 }  // namespace cybercad::native::math
 

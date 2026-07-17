@@ -319,6 +319,115 @@ void assembleShell(const BsplineSurfaceData& surface, const SurfaceGrid& grid, d
   r.status = ThickenStatus::Ok;
 }
 
+// ── Warped shell assembly over a fold-locus COLUMN-BAND ──────────────────────────
+// The fold-locus analogue of assembleShell: instead of a rectangular (u,v) domain, S and its
+// offset O = S + d·N are sampled over the column-band whose per-u fold-free v-interval is the
+// polyline (bandU[k], bandVLo[k], bandVHi[k]). The (i,j) sample sits at
+//   u = lerp(bandU across s=i/(nu-1)),   v = lerp(vLo,vHi at that u) blended by t=j/(nv-1).
+// The two side walls along j=0 / j=nv-1 then trace the fold boundary. The six-panel shell is
+// assembled, oriented, and verified EXACTLY as assembleShell (shared boundary vertices ⇒
+// watertight by construction). This recovers the triangular corner a rectangle band drops.
+void assembleShellBand(const BsplineSurfaceData& surface, const SurfaceGrid& grid, double d,
+                       const std::vector<double>& bandU, const std::vector<double>& bandVLo,
+                       const std::vector<double>& bandVHi, int nu, int nv, ThickenResult& r) {
+  const int nc = static_cast<int>(bandU.size());
+  if (nc < 2) { r.status = ThickenStatus::DegenerateInput; return; }
+  const double u0 = bandU.front(), u1 = bandU.back();
+  if (!(u1 > u0)) { r.status = ThickenStatus::DegenerateInput; return; }
+
+  // Piecewise-linear envelope lookup: at parameter u return the (vLo,vHi) interval.
+  auto envelope = [&](double u, double& lo, double& hi) {
+    if (u <= bandU.front()) { lo = bandVLo.front(); hi = bandVHi.front(); return; }
+    if (u >= bandU.back())  { lo = bandVLo.back();  hi = bandVHi.back();  return; }
+    int seg = 0;
+    while (seg + 1 < nc && bandU[seg + 1] < u) ++seg;
+    const double a = (u - bandU[seg]) / (bandU[seg + 1] - bandU[seg]);
+    lo = bandVLo[seg] + a * (bandVLo[seg + 1] - bandVLo[seg]);
+    hi = bandVHi[seg] + a * (bandVHi[seg + 1] - bandVHi[seg]);
+  };
+
+  std::vector<Point3> sPts(static_cast<std::size_t>(nu) * nv);
+  std::vector<Point3> oPts(static_cast<std::size_t>(nu) * nv);
+  for (int i = 0; i < nu; ++i) {
+    const double u = u0 + (u1 - u0) * (static_cast<double>(i) / (nu - 1));
+    double lo, hi;
+    envelope(u, lo, hi);
+    for (int j = 0; j < nv; ++j) {
+      const double v = lo + (hi - lo) * (static_cast<double>(j) / (nv - 1));
+      const Point3 p = evalS(surface, grid, u, v);
+      const Dir3 n = evalN(surface, grid, u, v);
+      if (!n.valid()) { r.status = ThickenStatus::DegenerateNormal; return; }
+      sPts[static_cast<std::size_t>(i) * nv + j] = p;
+      oPts[static_cast<std::size_t>(i) * nv + j] = p + n.vec() * d;
+    }
+  }
+
+  // ── Assemble the closed shell (identical topology to assembleShell) ──
+  tess::Mesh mesh;
+  const std::uint32_t sBase = 0;
+  for (const Point3& p : sPts) mesh.addVertex(p);
+  const std::uint32_t oBase = static_cast<std::uint32_t>(mesh.vertexCount());
+  for (const Point3& p : oPts) mesh.addVertex(p);
+
+  for (int i = 0; i < nu - 1; ++i)
+    for (int j = 0; j < nv - 1; ++j) emitQuad(mesh, sBase, i, j, nv, /*flip=*/false);
+  for (int i = 0; i < nu - 1; ++i)
+    for (int j = 0; j < nv - 1; ++j) emitQuad(mesh, oBase, i, j, nv, /*flip=*/true);
+
+  auto wallQuad = [&](std::uint32_t s0, std::uint32_t s1, std::uint32_t o0, std::uint32_t o1) {
+    mesh.addTriangle(s0, s1, o1);
+    mesh.addTriangle(s0, o1, o0);
+  };
+  for (int i = 0; i < nu - 1; ++i)
+    wallQuad(sBase + gidx(i, 0, nv), sBase + gidx(i + 1, 0, nv),
+             oBase + gidx(i, 0, nv), oBase + gidx(i + 1, 0, nv));
+  for (int i = 0; i < nu - 1; ++i)
+    wallQuad(sBase + gidx(i + 1, nv - 1, nv), sBase + gidx(i, nv - 1, nv),
+             oBase + gidx(i + 1, nv - 1, nv), oBase + gidx(i, nv - 1, nv));
+  for (int j = 0; j < nv - 1; ++j)
+    wallQuad(sBase + gidx(0, j + 1, nv), sBase + gidx(0, j, nv),
+             oBase + gidx(0, j + 1, nv), oBase + gidx(0, j, nv));
+  for (int j = 0; j < nv - 1; ++j)
+    wallQuad(sBase + gidx(nu - 1, j, nv), sBase + gidx(nu - 1, j + 1, nv),
+             oBase + gidx(nu - 1, j, nv), oBase + gidx(nu - 1, j + 1, nv));
+
+  if (!orientCoherently(mesh)) { r.status = ThickenStatus::NotClosed; return; }
+  double vol = tess::enclosedVolume(mesh);
+  if (vol < 0.0) {
+    for (tess::Triangle& t : mesh.triangles) std::swap(t.b, t.c);
+    vol = -vol;
+  }
+
+  r.watertight = tess::isWatertight(mesh);
+  r.consistentlyOriented = tess::isConsistentlyOriented(mesh);
+  r.boundaryEdges = tess::boundaryEdgeCount(mesh);
+  r.eulerCharacteristic = eulerChar(mesh);
+  if (!r.watertight || !r.consistentlyOriented || r.boundaryEdges != 0 ||
+      r.eulerCharacteristic != 2) {
+    r.status = ThickenStatus::NotClosed;
+    return;
+  }
+
+  double midArea2 = 0.0;
+  for (int i = 0; i < nu - 1; ++i)
+    for (int j = 0; j < nv - 1; ++j) {
+      const Point3& a = sPts[static_cast<std::size_t>(i) * nv + j];
+      const Point3& b = sPts[static_cast<std::size_t>(i + 1) * nv + j];
+      const Point3& c = sPts[static_cast<std::size_t>(i + 1) * nv + (j + 1)];
+      const Point3& e = sPts[static_cast<std::size_t>(i) * nv + (j + 1)];
+      midArea2 += norm(cross(b - a, c - a));
+      midArea2 += norm(cross(c - a, e - a));
+    }
+  r.surfaceAreaMid = 0.5 * midArea2;
+
+  r.solid = std::move(mesh);
+  r.enclosedVolume = vol;
+  r.gridU = nu;
+  r.gridV = nv;
+  r.ok = true;
+  r.status = ThickenStatus::Ok;
+}
+
 }  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -494,6 +603,50 @@ std::vector<ThickenResult> thickenMultiTrimmed(const BsplineSurfaceData& surface
     if (!r.ok) continue;  // a region that fails closure is dropped, never returned open
     r.trimmed = true;
     r.keptU0 = kept.u0; r.keptU1 = kept.u1; r.keptV0 = kept.v0; r.keptV1 = kept.v1;
+    out.push_back(std::move(r));
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FOLD-LOCUS-following thicken (additive; every routine above stays byte-unchanged).
+// ─────────────────────────────────────────────────────────────────────────────
+
+std::vector<ThickenResult> thickenFoldTrim(const BsplineSurfaceData& surface, double d,
+                                           double tol, int gridU, int gridV) {
+  std::vector<ThickenResult> out;
+
+  if (!wellFormed(surface)) return out;                  // malformed → honest empty
+  if (std::fabs(d) <= kLinearTolerance) return out;      // zero thickness → nothing to build
+  const int nu = std::max(2, gridU);
+  const int nv = std::max(2, gridV);
+
+  // The offset layer's fold-LOCUS decomposition: one region per fold-free component, each with
+  // its column-band polyline (foldU / foldVLo / foldVHi) following the diagonal / curved fold.
+  // Empty ⇔ fully-folding / degenerate → honest-decline (never emit a self-intersecting solid).
+  const std::vector<OffsetResult> regions = offsetSurfaceFoldTrim(surface, d, tol);
+  if (regions.empty()) return out;
+
+  const SurfaceGrid grid{std::span<const Point3>(surface.poles), surface.nPolesU,
+                         surface.nPolesV};
+
+  for (const OffsetResult& reg : regions) {
+    ThickenResult r;
+    r.offsetError = reg.maxError;
+    r.minCurvatureRadius = reg.minCurvatureRadius;
+
+    if (!reg.foldTrimmed) {
+      // No fold anywhere: a single full-domain solid, byte-identical to thickenSurface.
+      ThickenResult full = thickenSurface(surface, d, tol, gridU, gridV);
+      if (full.ok) out.push_back(std::move(full));
+      continue;
+    }
+
+    if (reg.foldU.size() < 2) continue;  // degenerate band — skip
+    assembleShellBand(surface, grid, d, reg.foldU, reg.foldVLo, reg.foldVHi, nu, nv, r);
+    if (!r.ok) continue;  // a region that fails closure is dropped, never returned open
+    r.trimmed = true;
+    r.keptU0 = reg.keptU0; r.keptU1 = reg.keptU1; r.keptV0 = reg.keptV0; r.keptV1 = reg.keptV1;
     out.push_back(std::move(r));
   }
   return out;

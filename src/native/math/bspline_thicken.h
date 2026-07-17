@@ -232,6 +232,36 @@ std::vector<ThickenResult> thickenMultiTrimmed(const BsplineSurfaceData& surface
                                                double tol = 1e-4, int gridU = 24,
                                                int gridV = 24);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FOLD-LOCUS-following thicken (additive; every routine above stays byte-unchanged).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// THICKEN `surface` by signed distance `d`, trimming to the actual FOLD LOCUS rather than to
+/// an axis-aligned rectangle staircase.
+///
+/// When the inward offset interpenetrates as a DIAGONAL or CURVED band, the fold-free space on
+/// each side is a TRIANGULAR / curved-boundary region. thickenMultiTrimmed covers each side
+/// with an axis-aligned rectangle inscribed in the triangle — recovering only a fraction of
+/// its area (the "staircase" residual). thickenFoldTrim instead thickens EACH fold-free region
+/// over the COLUMN-BAND that FOLLOWS the fold locus (via offsetSurfaceFoldTrim's per-u
+/// fold-free v-interval), sewing a closed six-panel (2 caps + 4 walls) shell whose two side
+/// walls along the fold trace the diagonal / curved fold boundary. The recovered solid volume
+/// exceeds the rectangle-staircase solid's on a diagonal-fold fixture.
+///
+/// Behaviour contract mirrors offsetSurfaceFoldTrim:
+///   * FOLD-FREE everywhere — returns a SINGLE solid byte-identical to thickenSurface.
+///   * DIAGONAL / CURVED fold — returns ONE closed watertight solid per fold-free region, each
+///     `trimmed == true`, in descending area order; each verified (watertight, χ = 2, zero
+///     boundary edges, consistently oriented) before inclusion.
+///   * FULLY FOLDING / degenerate — returns an EMPTY vector (honest-decline; a self-intersecting
+///     solid is NEVER returned). A degenerate-normal / malformed input likewise returns empty.
+///
+/// Every returned solid is a valid closed shell over a provably fold-free region; a region that
+/// fails closure is dropped, never returned open. Never widens tolerance; never emits a
+/// self-intersecting solid. `tol`, `gridU`, `gridV` have the same meaning as thickenSurface.
+std::vector<ThickenResult> thickenFoldTrim(const BsplineSurfaceData& surface, double d,
+                                           double tol = 1e-4, int gridU = 24, int gridV = 24);
+
 }  // namespace cybercad::native::math
 
 #endif  // CYBERCAD_NATIVE_MATH_BSPLINE_THICKEN_H

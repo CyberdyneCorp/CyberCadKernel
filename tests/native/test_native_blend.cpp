@@ -505,6 +505,37 @@ CC_TEST(g2_variable_fillet_self_intersection_guard_declines_fast_ramp) {
   CC_CHECK(v < 1000.0 && v > 980.0);
 }
 
+CC_TEST(g2_variable_fillet_on_face_guard_declines_over_radius) {
+  // ON-FACE GUARD (regression): a radius LARGER than the face is DEEP overruns the far
+  // edge of that face — the tangent line leaves the finite face, the setback clip folds,
+  // and the loft pokes through the opposite face → a silently-wrong / non-watertight solid.
+  // The fast-ramp guard does NOT catch this: a big-but-FLAT radius (small |r1−r0|) recedes
+  // slowly along the edge, so |r1−r0| ≪ L clears the ramp bound while the ABSOLUTE radius is
+  // still far too large for a shallow face. The builder must DECLINE (→ OCCT), never emit an
+  // invalid blend. Fixture: a 10×4×4 bar whose top edge's two faces are only 4 units deep.
+  topo::Shape bar = box(10, 4, 4);
+  const int e = findEdgeId(bar, {0, 4, 4}, {10, 4, 4});
+  CC_CHECK(e != 0);
+  int ids[] = {e};
+  // Over-radius: r > 4 (the face depth) — MUST decline, and never a broken solid.
+  CC_CHECK(blend::fillet_edges_g2_variable(bar, ids, 1, 4.5, 4.6, 0.01).isNull());
+  CC_CHECK(blend::fillet_edges_g2_variable(bar, ids, 1, 5.5, 5.6, 0.01).isNull());
+  // A near-equal ramp that clears the fast-ramp bound (|5.5−5.6|=0.1 ≪ 0.999·L≈10) but is
+  // grossly over-radius still declines — the on-face guard is what catches it, not the ramp.
+  CC_CHECK(std::fabs(5.6 - 5.5) < 0.999 * 10.0);  // sanity: the ramp guard would PASS this
+  // A valid radius (below the 4-deep face) DOES land, watertight — the guard is not
+  // over-eager, and every landed variable fillet is a valid watertight shrink.
+  bool wt = false;
+  const double v = vol(blend::fillet_edges_g2_variable(bar, ids, 1, 3.0, 3.1, 0.01), wt);
+  CC_CHECK(wt);              // a real, watertight blend — no silent-wrong emission
+  CC_CHECK(v < 160.0 && v > 140.0);  // removes material from the V0=160 bar (a genuine shrink)
+  // Clean transition just below vs just above the face depth (no flakey borderline emit).
+  bool wOk = false;
+  CC_CHECK(!blend::fillet_edges_g2_variable(bar, ids, 1, 3.9, 3.95, 0.01).isNull());  // < depth
+  CC_CHECK(vol(blend::fillet_edges_g2_variable(bar, ids, 1, 3.9, 3.95, 0.01), wOk) > 0.0 && wOk);
+  CC_CHECK(blend::fillet_edges_g2_variable(bar, ids, 1, 4.1, 4.15, 0.01).isNull());   // > depth
+}
+
 CC_TEST(g2_variable_fillet_scope_defers) {
   // Honest declines (→ OCCT), the deep-residual boundary + no cross-firing.
   topo::Shape b = box(10, 10, 10);

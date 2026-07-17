@@ -90,6 +90,45 @@ namespace detail {
 // keep a safety margin below 1 so the trimmed faces stay comfortably simple.
 inline constexpr double kG2VarMaxRampSlope = 0.999;
 
+// Is `p` (assumed to lie in the face's plane) inside the CONVEX planar face polygon
+// `f`? Tests that the point stays on the interior side of every boundary edge, using
+// each edge-cross against the face normal (a consistent-sign winding test valid for a
+// convex face — the prism-face scope of this slice). A small negative tolerance `slack`
+// (in world units) lets a point sit right on the boundary (the tangent point may land
+// exactly on a face edge) without a false reject. A non-convex face yields at least one
+// sign flip, so the caller conservatively DECLINES (→ OCCT), never emitting a blend whose
+// tangent line has left the face. This is the on-face guard the constant path leaves to
+// its downstream self-verify; the variable path needs it up front because a big-but-flat
+// (small |r1−r0|) radius passes the ramp-slope guard yet can still overrun a shallow face.
+inline bool pointWithinConvexFace(const nb::Polygon& f, const math::Point3& p, double slack) {
+  const std::size_t m = f.vertices.size();
+  if (m < 3) return false;
+  const math::Vec3 nf = f.plane.normal;
+  // Winding-agnostic convex test: the signed cross of each boundary edge against nf must
+  // have the SAME sign for every edge (all interior on one side). A single opposite sign
+  // (beyond the boundary slack) means p is outside — or the face is non-convex, in which
+  // case we conservatively report "outside" so the caller declines (→ OCCT), never a blend
+  // whose tangent line has left the face.
+  int sign = 0;
+  for (std::size_t i = 0; i < m; ++i) {
+    const math::Point3& a = f.vertices[i];
+    const math::Point3& b = f.vertices[(i + 1) % m];
+    const math::Vec3 edge = b - a;
+    const math::Vec3 inwardN = math::cross(nf, edge);  // in-plane, perpendicular to the edge
+    const double len = math::norm(inwardN);
+    if (len < kBlendEps) continue;  // degenerate edge — skip, don't false-reject
+    const double d = math::dot(inwardN, p - a) / len;  // signed world distance to the edge
+    if (d > slack) {
+      if (sign < 0) return false;
+      sign = 1;
+    } else if (d < -slack) {
+      if (sign > 0) return false;
+      sign = -1;
+    }
+  }
+  return true;
+}
+
 // Number of stations along the edge for the loft. The section changes only in SIZE (its
 // shape is the fixed-fullness quintic), so a modest station count captures the linear
 // ramp faithfully; we tie it to the facet deflection so a finer request refines the sweep
@@ -156,6 +195,18 @@ inline std::optional<G2VarSweep> g2VarSweep(const math::Point3& ea, const math::
     const math::Point3 sb{E.x + tdir.x * h, E.y + tdir.y * h, E.z + tdir.z * h};
     const auto sec = g2Section(sa, sb, f1, f2, r);
     if (!sec) return std::nullopt;
+    // ON-FACE GUARD (the missing check the constant path defers to its downstream self-
+    // verify): the tangent point on each face must lie WITHIN that face. filletArc/g2Section
+    // only place the tangent point geometrically; they do NOT verify it is on the finite
+    // face. A big-but-flat radius (small |r1−r0|) clears the ramp-slope guard yet, on a
+    // shallow face (r > face depth), pushes the tangent line PAST the far edge — the setback
+    // clip then folds and the loft overruns the opposite face, yielding a silently-wrong /
+    // non-watertight solid. We DECLINE (→ OCCT) instead. Slack ~ the deflection so a tangent
+    // point landing exactly on a face boundary is not falsely rejected.
+    const double onFaceSlack = std::max(deflection, kBlendEps * 16.0);
+    if (!pointWithinConvexFace(f1, sec->poles[0], onFaceSlack) ||
+        !pointWithinConvexFace(f2, sec->poles[5], onFaceSlack))
+      return std::nullopt;
     G2VarStation st;
     st.poles = sec->poles;
     st.t1 = sec->poles[0];  // P0 = T1

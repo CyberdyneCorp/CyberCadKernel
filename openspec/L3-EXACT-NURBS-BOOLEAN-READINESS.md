@@ -717,8 +717,21 @@ watertight sew is MISSING.
 > in real exports (an exporter places a mid-vertex or shares the reversed edge) and is left as the
 > honest documented residual; the loop-threaded branch continuity handles it once a vertex splits it.
 
-### The NATIVE TORUS primitive + order-sensitive CUT closure · **LANDED (BOOL-COMPLETE)**
+### The NATIVE TORUS primitive + order-sensitive CUT closure · **LANDED (BOOL-COMPLETE → BOOL-TAIL: FULLY COMPLETE)**
 
+> **UPDATE (BOOL-TAIL — the last three order-sensitive reverse CUTs land; the elementary curved
+> boolean is now FULLY complete, track BOOL-TAIL):** the residual reverse tail BOOL-COMPLETE
+> mapped as declining — coaxial `sphere − torus` (S5-m), coaxial `cone − torus` (S5-n), and
+> transversal `cyl − torus` (S5-p) — now ALL LAND (`buildSphereTorusCut`, `buildConeTorusCut`,
+> `buildTransCylTorusCut`): each is a hole-split of the minuend's OUTER surface + a reversed inner
+> tube arc / tube inner-cap notch, watertight, partition-correct, ΔV <1% vs the Pappus/numeric
+> oracle, DISAGREED=0. The only primitive changes are optional `outwardSign` params on
+> `appendTorusSphereTubeArc` / `appendTorusConeTubeArc` / `appendTorusConeInnerArc` /
+> `appendTransTorusCap` (default 1.0, all existing callers byte-unchanged). `src/native` stays
+> OCCT-free; the `cc_*` facade is untouched. **So the elementary curved boolean
+> (cyl/sphere/cone/torus/plane, coaxial + transversal, COMMON/CUT/FUSE incl. every order-sensitive
+> reverse CUT) is now FULLY complete on the pure-native path.**
+>
 > **UPDATE (BOOL-COMPLETE — the native torus primitive is shipped, and two order-sensitive
 > reverse CUTs land, track BOOL-COMPLETE):** the headline Layer-3 boolean gap named in the
 > S5 roadmap — *pure-native torus booleans defer to OCCT because no native/`cc_*` entry
@@ -759,19 +772,29 @@ watertight sew is MISSING.
 > - **`cyl − cone` / `cone − cyl` (transversal S5-s)** — ALREADY land BOTH orders (the earlier
 >   "reverse declines" note was stale; `buildTransConeCylCut` handles the cyl stub AND the holed
 >   cone wall). No change needed; verified by `cone_cyl_transversal_offset_common_watertight_matches_numeric`.
+> - **`sphere − torus` (coaxial S5-m) / `cone − torus` (coaxial S5-n)** — LANDED (BOOL-TAIL,
+>   `buildSphereTorusCut` / `buildConeTorusCut`). The measured topology is a solid of revolution
+>   with a concave TOROIDAL GROOVE scooped into the minuend's wall — the SAME idiom as `cyl − torus`
+>   (S5-l), not a separate holed-grid split: the minuend surface OUTSIDE the tube (the two sphere
+>   polar caps for the sphere; the two cone wall stubs + terminal discs for the cone) welded to the
+>   INNER tube arc REVERSED (outwardSign=−1) as the groove wall, the two analytic seam rings shared.
+>   Watertight, DISAGREED=0, partition `(minuend − torus) + COMMON = minuend`, ΔV <1% vs the Pappus
+>   `V_minuend − V_common`.
+> - **`cyl − torus` (transversal S5-p)** — LANDED (BOOL-TAIL, `buildTransCylTorusCut`). The thin
+>   offset cylinder pierces THROUGH the tube, so its two traced seams wrap the FULL cylinder-wall
+>   azimuth (each end stub cylLo→seamLo / seamHi→cylHi is a full revolved band); the reverse is two
+>   disc-capped cylinder stubs welded to the reversed tube INNER cap patches (`appendTransTorusCap`,
+>   outwardSign=−1) between the two localized seams — exactly the "tube inner cap patches between
+>   the localized seams" this doc named. Watertight, DISAGREED=0, partition `COMMON + (cyl − torus)
+>   = cyl`, ΔV <1% vs the numeric oracle.
 > - **HONEST-DECLINE, mapped (the genuine residual tail):**
->   - `sphere − torus` (S5-m) / `cone − torus` (S5-n): the sphere/cone with a toroidal NOTCH — the
->     tube bites a **ring-shaped hole** into the outer surface, so the reverse needs a HOLED
->     outer-surface split (the S5-p `appendTorusTubeOuterZone` idiom, NOT the belt/reversed-bore
->     idiom) — tractable but not a two-band weld; declined honestly pending that split.
->   - `cyl − torus` (transversal S5-p): the cylinder with a toroidal bite — the tube surface is the
->     doubly-holed grid the torus-minuend uses, but the cyl-minuend additionally needs the tube
->     INNER cap patches between the two localized seams — a distinct hole-split, declined honestly.
 >   - `torus − torus` B−A (S5-o) is built by operand-swap where the swap is a valid ring-of-
 >     revolution; the genuinely nested/engulfing poses decline at recognition.
 >   All declines are the SACRED honest-decline → OCCT, never a leaky/wrong solid, no tolerance
 >   widened. Each landed reverse CUT is regression-pinned in its family test; each residual decline
->   stays pinned as a `…isNull()` assertion where present.
+>   stays pinned as a `…isNull()` assertion where present. **With BOOL-TAIL the ELEMENTARY curved
+>   boolean is now FULLY complete on the pure-native path** — cyl/sphere/cone/torus/plane, coaxial +
+>   transversal, COMMON/CUT/FUSE including every order-sensitive reverse CUT.
 >
 > **Invariants confirmed:** `src/native` stays OCCT-free (the torus primitive is pure native
 > topology/math); `cc_*` ABI byte-unchanged / additive-only (`cc_torus` is a new symbol,
@@ -792,7 +815,7 @@ watertight sew is MISSING.
 | 4 Region classification | **PARTIAL** | single-face In/Out + elementary set-algebra land; general NURBS solid membership MISSING |
 | 5 Reassembly / sew | **PARTIAL** | `pcurveFidelity` welds good / rejects drifted seam; single-transversal-seam freeform↔freeform sew WELDS (tracks S3/W, both legs); **multi-seam split+classify RESOLVED (exact tiling + per-region vote), and the annulus↔annulus inner seam-as-hole sew now WELDS watertight** (M0-WELD, `uv_triangulate.h`: the CDT hole-cull is a TOPOLOGICAL flood fill so both annuli triangulate the shared strip identically — inner-seam boundaryEdges **59→0**, volume converges to the closed-form lens, DISAGREED=0 by OCCT-agreement); residual = a small non-manifold count only at deflections finer than the working band |
 | **COMPOSED boolean (Fuse/Cut/Common)** | **LANDED (BOOL-INT)** | the general two-freeform-solid orchestrator `nurbsSolidBoolean(A,B,op)` (`nurbs_solid_boolean.h`) COMPOSES all five stages (byte-unchanged); single-transversal-seam **COMMON/CUT/FUSE all weld watertight** at the closed-form volumes, converging, **DISAGREED=0 vs OCCT `BRepAlgoAPI_{Common,Cut,Fuse}`** (SIM 14/14); FUSE is the group-flip outer-envelope compose; op-algebra V(fuse)+V(common)=V(A)+V(B) holds; the multi-seam annulus↔annulus sew honest-declines with the residual map (never leaky). Host 7/7 + SIM 14/14 |
-| **Analytic curved-boolean (S5 families)** | **LANDED (BOOL-COMPLETE)** | the elementary curved boolean (cyl/sphere/cone/**torus** ∩ cyl/sphere/cone/torus/plane, coaxial + transversal, COMMON/CUT/FUSE, S5-a…s) now has a **native TORUS primitive** — `construct::build_torus` + additive `cc_torus` emit a bare periodic `Kind::Torus` face (a revolve builds B-spline bands that decline), so the torus families fire in the **pure-native path from a shipping primitive**, DISAGREED=0; two order-sensitive reverse CUTs land (`cyl−torus` grooved cylinder, `sphere−cyl` tunnelled sphere); residual reverse tail (`sphere−torus`/`cone−torus` notch, transversal `cyl−torus` bite) honestly maps to a holed-outer-surface split → OCCT. `test_abi` unchanged |
+| **Analytic curved-boolean (S5 families)** | **LANDED (BOOL-TAIL — FULLY COMPLETE)** | the elementary curved boolean (cyl/sphere/cone/**torus** ∩ cyl/sphere/cone/torus/plane, coaxial + transversal, COMMON/CUT/FUSE **incl. every order-sensitive reverse CUT**, S5-a…s) is now FULLY complete on the pure-native path: the native TORUS primitive (`construct::build_torus` + additive `cc_torus`, bare periodic `Kind::Torus`) fires the torus families from a shipping primitive; the reverse CUTs `cyl−torus` (grooved cyl), `sphere−cyl` (tunnelled sphere) — and now (BOOL-TAIL) `sphere−torus` (grooved ball, `buildSphereTorusCut`), `cone−torus` (grooved cone, `buildConeTorusCut`), transversal `cyl−torus` (lens-bitten cylinder, `buildTransCylTorusCut`) — all land watertight, partition-correct, ΔV <1%, DISAGREED=0. `test_abi` unchanged |
 
 ---
 

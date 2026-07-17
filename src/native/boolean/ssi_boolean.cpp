@@ -2550,7 +2550,8 @@ topo::Shape buildConeSphere2Cut(const CurvedSolid& A, const CurvedSolid& B,
 // cylinder's axial extent, Rs > Rc (a strict two-circle poke-through). A single-crossing sphere
 // (sphere pole outside the cylinder — the sphere just dents ONE end face), a tangent sphere
 // (Rs==Rc → double root), a sphere fully containing / contained by the cylinder segment, and a
-// non-coaxial (transversal) pair all decline → OCCT. A sphere-minuend CUT (sphere−cyl) declines.
+// non-coaxial (transversal) pair all decline → OCCT. The sphere-minuend CUT (sphere−cyl) LANDS via
+// buildSphereCyl2Cut (the tunnel solid: sphere belt + reversed bore) — order-sensitive but tractable.
 struct CylSphere2Setup {
   bool ok = false;
   const CurvedSolid* cyl = nullptr;
@@ -4698,7 +4699,8 @@ topo::Shape buildTorusCylCommon(const CurvedSolid& A, const CurvedSolid& B,
 // buildTorusCylCut(A,B) = A − B with TORUS the minuend: the ρ > Rc solid of revolution —
 // the OUTER tube arc (v ∈ [−v0, v0], through the outer equator ρ = R+r) + the cylinder
 // chord band REVERSED (inward normal, bounding the carved bore). A SHRINK; a single closed
-// ring-of-revolution component. A cylinder-minuend (cyl − torus) declines → OCCT.
+// ring-of-revolution component. The cylinder-minuend (cyl − torus) LANDS via buildCylTorusCut (the
+// grooved-cylinder solid) — order-sensitive but tractable.
 topo::Shape buildTorusCylCut(const CurvedSolid& A, const CurvedSolid& B,
                              const std::vector<Seam>& seams) {
   const TorusCylSetup s = torusCylSetup(A, B, seams);

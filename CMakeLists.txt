@@ -1007,6 +1007,29 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_freeform_freeform_multiseam)
         set(test_native_freeform_freeform_multiseam_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_freeform_freeform_multiseam.cpp")
+        # BOOL-MULTISEAM (measurement) — the ASYMMETRIC (curvature-mismatched) multi-seam
+        # measurement harness. A degree-4 valley (a=4) ∩ a degree-4 dome of a DIFFERENT
+        # amplitude (b=6): the two walls still meet in TWO concentric seams but with
+        # MISMATCHED curvature, so the M0 mesher refines the two annuli differently across
+        # each shared seam — the general (non-mirror) multi-seam assembly. Reports the verb's
+        # decline/watertight/boundaryEdges + the raw survivor-mesh edge-use histogram so the
+        # asymmetric residual is mapped to its mechanism. Real S3 seams ⇒ numsci-gated;
+        # measurement only, no lib / cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS measure_multiseam_asym)
+        set(measure_multiseam_asym_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/measure_multiseam_asym.cpp")
+        # BOOL-MULTISEAM host GATE — the ASYMMETRIC (curvature-mismatched) multi-seam sew:
+        # a degree-4 valley (a=4) ∩ a degree-4 dome of a DIFFERENT amplitude (b=6), so the
+        # two walls meet in TWO concentric seams with MISMATCHED curvature (z* = a·H/(a+b),
+        # NOT H/2) and A ≠ B — the general (non-mirror) multi-seam assembly. Proves all
+        # three ops COMMON/CUT/FUSE WELD watertight (χ=2, be=0, coherent) at the closed-form
+        # op-volume within the tessellation band, converging — the shared-seam-strip weld
+        # (seam_strip.h) is curvature-parity-INDEPENDENT, so the curvature-mismatched seam
+        # welds (overturning the symmetric fixture's stale "honest-declines" claim). Real S3
+        # seams ⇒ numsci-gated. Additive; no lib / cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_multiseam_asym)
+        set(test_native_multiseam_asym_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_multiseam_asym.cpp")
         # MESH-STRIP-IMPL — the SHARED-SEAM-STRIP CACHE WELD (seam_strip.h + face_mesher.h /
         # solid_mesher.h) at FINE deflection on the SAME two-mirror-cup multi-seam fixture.
         # Pins the honest behaviour: (1) the FUSE outer envelope welds watertight at d=0.0045

@@ -530,6 +530,41 @@ watertight sew is MISSING.
 > `cc_*` ABI touched; `src/native` stays OCCT-free; the measurement harness
 > (`tests/native/measure_shared_strip.cpp`) reproduces the histogram for the next track.
 
+> **UPDATE (BOOL-MULTISEAM — the ASYMMETRIC / curvature-MISMATCHED multi-seam sew is
+> MEASURED to WELD; the symmetric fixture's "curvature-mismatch honest-declines" claim is
+> STALE, track `worktree-agent-ac3394326d056f453`):** the multi-seam SPLIT+CLASSIFY+SEW was
+> only ever PROVEN on the z-mirror-SYMMETRIC pose (B = A mirrored about z=H/2), the friendliest
+> multi-seam case — the two annuli sharing every seam have IDENTICAL curvature, so the M0
+> mesher's curvature-driven refinement matches on both sides. The symmetric fixture's own header
+> (`freeform_freeform_multiseam_fixture.h`, lines 18-21) CLAIMED — but never measured — that a
+> curvature-MISMATCHED pair "would leave a small T-junction residual at the higher-curvature
+> seam, which the verb HONEST-DECLINES." **A measurement-first attack on exactly that case
+> overturns the claim.** New fixture `tests/native/freeform_multiseam_asym_fixture.h`: a degree-4
+> VALLEY (amplitude a=4) ∩ a degree-4 DOME of a DIFFERENT amplitude (b=6). The two walls still
+> meet in TWO concentric seams (r₁≈0.154, r₂≈0.365, SSI-traced on-surface to ≤1.5e-11) but with
+> **MISMATCHED curvature** at each seam (z* = a·H/(a+b) = 0.012, NOT H/2), and the operands are
+> genuinely asymmetric (V(A)=0.02917 ≠ V(B)=0.04375). The degree-4 poles are derived by LINEAR
+> amplitude scaling of the symmetric fixture's exact a=4 tensor-Bézier grid (z-poles of
+> amplitude·(a fixed degree-4 polynomial) scale linearly — verified against the a=4 grid).
+> **Measured (host, `freeformFreeformMultiSeamCutWithSeams`, raw survivor-mesh histogram +
+> verb self-verify over d 0.01→0.0025):** **ALL THREE ops WELD WATERTIGHT** — COMMON (annular
+> lens), CUT (A−lens), FUSE (outer envelope) each `decline=Ok`, `watertight`, `coherent`,
+> `boundaryEdges=0`, raw histogram `open=0 nonmanif=0` at EVERY deflection, converging to the
+> closed-form op-volume (COMMON relErr 0.172→0.048 monotone; CUT ≤0.5% at the noise floor; FUSE
+> 1.5%→0.65% monotone). **The mechanism:** the shared-seam-strip cache weld (`seam_strip.h`,
+> MESH-STRIP-IMPL) meshes each seam collar ONCE from the SHARED seam geometry, so both annuli
+> emit the IDENTICAL near-seam triangles REGARDLESS of the two walls' curvature — the weld is
+> **curvature-parity-INDEPENDENT**, so the curvature-mismatch that the symmetric fixture feared
+> is a non-issue. So the general (non-mirror) multi-seam annulus↔annulus assembly + sew is
+> **LANDED**, not honest-declined. Regression: host `tests/native/test_native_multiseam_asym.cpp`
+> (4/4 GREEN — 2-seam trace at the asymmetric radii, an asymmetric-partition oracle unit-check,
+> COMMON/CUT/FUSE weld watertight in-band) + the measurement harness
+> `tests/native/measure_multiseam_asym.cpp`. `src/native` stays **OCCT-free** and **byte-unchanged**
+> (`git diff` on `src/native`/`src/facade` empty — purely additive tests + CMake targets); no
+> `cc_*` ABI. **Net: the multi-seam sew's residual is NOT a curvature-mismatch wall.** The genuine
+> remaining multi-seam residuals are the fine-deflection sliver below each op's working band
+> (MESH-FINE / MESH-STRIP-IMPL, honest-declined never-leaky) and the closed-loop seeding recall.
+
 ### The COMPOSED two-freeform-solid NURBS boolean ORCHESTRATOR · **LANDED (BOOL-INT)**
 
 > **UPDATE (BOOL-INT — the general two-freeform-solid boolean ORCHESTRATOR that COMPOSES all
@@ -813,7 +848,7 @@ watertight sew is MISSING.
 | 2 Pcurve construction | **PARTIAL** | `constructPcurve` declines the iso-curve round-trip (parametrisation + non-rational fit); data model + fidelity guard land |
 | 3 Face split | **PARTIAL** | `classify` inside-test WORKS; split = convex-1-chord + closed-interior-seam; **tolerant-topology healing pre-pass LANDED** (`split_healing.h`, L3-HEAL); **general HOLED-face second-seam split LANDED** (`holed_face_split.h` `splitFaceSmoothTrimHoled`, MULTI-HOLE-SPLIT: split a face with N≥1 existing holes by a closed interior seam, holes preserved, exact net-area tiling, honest SeamCrossesHole decline; host 8/8 incl. ≥2/≥3-hole general cases); the harder seam-CROSSES-hole multi-crossing / re-entrant split MISSING |
 | 4 Region classification | **PARTIAL** | single-face In/Out + elementary set-algebra land; general NURBS solid membership MISSING |
-| 5 Reassembly / sew | **PARTIAL** | `pcurveFidelity` welds good / rejects drifted seam; single-transversal-seam freeform↔freeform sew WELDS (tracks S3/W, both legs); **multi-seam split+classify RESOLVED (exact tiling + per-region vote), and the annulus↔annulus inner seam-as-hole sew now WELDS watertight** (M0-WELD, `uv_triangulate.h`: the CDT hole-cull is a TOPOLOGICAL flood fill so both annuli triangulate the shared strip identically — inner-seam boundaryEdges **59→0**, volume converges to the closed-form lens, DISAGREED=0 by OCCT-agreement); residual = a small non-manifold count only at deflections finer than the working band |
+| 5 Reassembly / sew | **PARTIAL** | `pcurveFidelity` welds good / rejects drifted seam; single-transversal-seam freeform↔freeform sew WELDS (tracks S3/W, both legs); **multi-seam split+classify RESOLVED (exact tiling + per-region vote), and the annulus↔annulus inner seam-as-hole sew now WELDS watertight** (M0-WELD, `uv_triangulate.h`: the CDT hole-cull is a TOPOLOGICAL flood fill so both annuli triangulate the shared strip identically — inner-seam boundaryEdges **59→0**, volume converges to the closed-form lens, DISAGREED=0 by OCCT-agreement); the **ASYMMETRIC / curvature-MISMATCHED** multi-seam pose (degree-4 valley a=4 ∩ degree-4 dome b=6, mismatched curvature at both seams, V(A)≠V(B)) also WELDS COMMON/CUT/FUSE watertight (BOOL-MULTISEAM, `test_native_multiseam_asym`: be=0, converging — the shared-seam-strip weld is curvature-parity-independent, overturning the symmetric fixture's stale "curvature-mismatch declines" claim); residual = a small non-manifold count only at deflections finer than each op's working band |
 | **COMPOSED boolean (Fuse/Cut/Common)** | **LANDED (BOOL-INT)** | the general two-freeform-solid orchestrator `nurbsSolidBoolean(A,B,op)` (`nurbs_solid_boolean.h`) COMPOSES all five stages (byte-unchanged); single-transversal-seam **COMMON/CUT/FUSE all weld watertight** at the closed-form volumes, converging, **DISAGREED=0 vs OCCT `BRepAlgoAPI_{Common,Cut,Fuse}`** (SIM 14/14); FUSE is the group-flip outer-envelope compose; op-algebra V(fuse)+V(common)=V(A)+V(B) holds; the multi-seam annulus↔annulus sew honest-declines with the residual map (never leaky). Host 7/7 + SIM 14/14 |
 | **Analytic curved-boolean (S5 families)** | **LANDED (BOOL-TAIL — FULLY COMPLETE)** | the elementary curved boolean (cyl/sphere/cone/**torus** ∩ cyl/sphere/cone/torus/plane, coaxial + transversal, COMMON/CUT/FUSE **incl. every order-sensitive reverse CUT**, S5-a…s) is now FULLY complete on the pure-native path: the native TORUS primitive (`construct::build_torus` + additive `cc_torus`, bare periodic `Kind::Torus`) fires the torus families from a shipping primitive; the reverse CUTs `cyl−torus` (grooved cyl), `sphere−cyl` (tunnelled sphere) — and now (BOOL-TAIL) `sphere−torus` (grooved ball, `buildSphereTorusCut`), `cone−torus` (grooved cone, `buildConeTorusCut`), transversal `cyl−torus` (lens-bitten cylinder, `buildTransCylTorusCut`) — all land watertight, partition-correct, ΔV <1%, DISAGREED=0. `test_abi` unchanged |
 

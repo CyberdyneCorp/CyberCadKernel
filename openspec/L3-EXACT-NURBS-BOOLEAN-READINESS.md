@@ -646,22 +646,40 @@ watertight sew is MISSING.
 > it (simply-connected walls keep the frozen `splitFaceSmoothTrim` path bit-identically); readmit
 > suite **5/5**. `src/native` stays **OCCT-free**; **no `cc_*` ABI**.
 >
-> **REMAINING WIRING (documented, deferred — a valid partial deliverable).** The completed
-> holed-face split is a face-level verb over trimmed parametric faces; the transversal CUT/FUSE
-> families (S5-k cyl∩sphere, S5-p torus∩cyl, S5-q cone∩sphere, S5-s cone∩cyl in `ssi_boolean.cpp`)
-> assemble a **shared-VertexPool planar-facet SHELL**, a different meshing paradigm. Their residual
-> is the **sphere/torus/cone OUTER ZONE between the two NON-PLANAR traced seams** (the long way round,
-> outside the bore) — a topological BAND, not a 2-holed disk. Wiring the holed-face split to land
-> S5-k CUT/FUSE therefore requires a NEW shell primitive `appendSphereBandBetweenSeams(seamLo,
-> seamHi, …)`: a spherical band between the two index-aligned (already resampled by azimuth)
-> non-planar loops, `rings` intermediate rows placed ON the sphere by slerping the two seams' unit
-> radial directions the **LONG way** (over the equator, away from the bore — the short-arc slerp
-> would cut through the removed caps), each row welded ring-to-ring, sharing seamLo/seamHi nodes
-> through the pool. This is the sound generalisation of `appendSphereCap`'s slerp discipline to a
-> band, and the honest gate (watertight χ=2 + ΔV ≤ 1% vs OCCT `BRepAlgoAPI_{Cut,Fuse}`) is
-> unchanged. It was deferred rather than half-landed to preserve the SACRED DISAGREED=0 / never-leaky
-> invariant (correct long-way band orientation + pole/periodic weld is a full wave of its own). Until
-> it lands the four transversal CUT/FUSE builders keep their `return {}` honest-decline → OCCT.
+> **✅ LANDED — TRANS-BAND (the seam-band shell primitive; S5-k + S5-q CUT/FUSE now assemble
+> watertight).** The transversal CUT/FUSE residual was the **sphere OUTER ZONE between the two
+> NON-PLANAR traced seams** (the long way round, outside the bore) — and the prior claim that no
+> parametrisation tiles that two-non-planar-seam zone watertight was **wrong**. The new primitive
+> `appendSphereOuterZoneBetweenSeams(C, Rs, axis, seamHi, seamLo, …)` (`ssi_boolean.cpp`) tiles it
+> **exactly on-surface** using the sphere's OWN spherical coordinates about the CYLINDER/CONE axis:
+> each seam node decodes to (θ around axis, φ from axis); the two index-aligned nodes share θ, and
+> the zone is swept at CONSTANT θ by interpolating φ LINEARLY from φ_hi (near the +axis pole) to
+> φ_lo (near the −axis pole) — i.e. **crossing the equator the far way**, never approaching either
+> pole. The raw 3-D great-circle slerp is ambiguous for the (near-antipodal) seam pair and picks
+> the SHORT arc through the bore; the θ/φ sweep is unambiguous and every interior row point is placed
+> at `C + unit(dir)·Rs` (on-surface to machine precision). The outer rows ARE the pooled seam nodes,
+> so the zone welds ring-to-ring to the reversed cylinder/cone bore (CUT sphere−solid) or the
+> cylinder/cone end stubs (FUSE). Gated on **both sphere poles strictly inside the cyl/cone**
+> (`polesInsideCyl` / `polesInsideCone`) so the two-cap+outer-zone topology holds; a pole-grazing
+> thin pose keeps the honest CUT/FUSE decline → OCCT.
+>
+> **Numeric-oracle parity** (deterministic fine-grid integration; V(A)/V(B) − numeric COMMON, the
+> inclusion–exclusion cross-check):
+> - **S5-k cyl∩sphere** (Rc=1, Rs=2, off=0.5): CUT sph−cyl **22.213 vs 22.235** (0.10%), CUT cyl−sph
+>   **7.569 vs 7.574** (0.07%), FUSE **41.058 vs 41.085** (0.07%) — all watertight, all ≪ the 1% bar.
+> - **S5-q cone∩sphere** (r 0.5→1.5, Rs=2, off=0.5): CUT sph−cone **22.204 vs 22.232** (0.13%), CUT
+>   cone−sph **9.136 vs 9.142** (0.07%), FUSE **42.619 vs 42.652** (0.08%) — all watertight, ≪ 1%.
+>   (The cone end rings use `coneRingAxial` — placed at the TRUE axial station — because the cone
+>   surface's own (u,v) `point` uses the SLANT v, which is axially short and would tilt the end disc.)
+>
+> **SHARPENED RESIDUAL (S5-p, S5-s).** The sphere-outer-zone primitive generalises to any pair whose
+> outer zone is a SPHERE band (S5-k, S5-q). It does NOT cover: **S5-p torus∩cyl** — the outer zone is
+> a TUBE band (a per-index sweep of the torus MINOR-angle the long way round the tube, a distinct
+> exact-on-surface parametrisation, not a sphere φ-sweep); and **S5-s cone∩cyl** — a SINGLE-seam pose
+> (the parallel-offset cylinder crosses the monotone cone wall exactly once) whose CUT/FUSE need a
+> single-seam outer weld, not a between-two-seams zone. Both keep their `return {}` honest-decline →
+> OCCT (COMMON lands for all four). The SACRED DISAGREED=0 / never-leaky invariant is preserved:
+> nothing outside the 1% bar or non-watertight is emitted; unhandled poses defer to OCCT.
 
 ### Summary table
 

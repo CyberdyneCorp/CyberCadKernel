@@ -576,7 +576,7 @@ S4-f DETECTS + REPORTS + traces-through, it does not repair topology.
 
 Archived change `openspec/changes/archive/2026-07-05-add-native-ssi-s4f-completeness`.
 
-### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g/h/i/j landed + S5-k FIRST TRANSVERSAL (non-coaxial) slice + S5-l/m/n/o TORUS surface family (CONE surface family opened — coaxial cone∩cylinder, single- AND two-circle cone∩sphere, coaxial cone∩cone (frustum AND apex-to-apex hourglass), AND two-circle cylinder∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; S5-k lands the FIRST non-coaxial pose — the offset cylinder∩sphere COMMON from a NON-PLANAR traced seam; S5-l opens the TORUS family — coaxial torus∩cylinder COMMON/FUSE/CUT COMPLETE 3/3 native; S5-m extends it — coaxial torus∩sphere (sphere at torus centre) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-n extends it again — coaxial torus∩cone (oblique-chord generalisation of S5-l) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-o closes the family with the FIRST curved∩curved pair where BOTH operands are tori — coaxial torus∩torus COMMON/FUSE/CUT COMPLETE 3/3 native; S5-p lands the SECOND transversal (non-coaxial) slice and the FIRST transversal TORUS pair — the offset (axis-parallel) torus∩cylinder COMMON from a NON-PLANAR traced seam (CUT/FUSE honest-decline, the same two-non-planar-seam residual as S5-k); S5-q lands the THIRD transversal (non-coaxial) slice and the FIRST transversal CONE pair — the offset cone∩sphere COMMON from a NON-PLANAR traced seam (CUT/FUSE honest-decline, the same two-non-planar-seam residual as S5-k/S5-p); S5-r lands the FIRST curved∩PLANAR-half-space slice — the coaxial torus∩(axis-perpendicular plane) COMMON+CUT as a Pappus-exact revolution (tube-arc + annulus cap), FUSE + the plane-parallel/degenerate poses honest-decline; S5-s lands the FOURTH transversal (non-coaxial) slice and the FIRST transversal cone∩cylinder pair — the offset (axis-parallel) cone∩cylinder COMMON from a SINGLE NON-PLANAR traced seam (the KEY finding that a parallel-axis cone∩cyl crosses in ONE loop, not two, because the cone wall is monotonic → a distinct SINGLE-SEAM assembler, cone cap + cyl band + end disc; CUT/FUSE honest-decline, the same non-planar-seam outer-zone residual as S5-k/S5-p/S5-q); ~months for full coverage)
+### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g/h/i/j landed + S5-k FIRST TRANSVERSAL (non-coaxial) slice + S5-l/m/n/o TORUS surface family (CONE surface family opened — coaxial cone∩cylinder, single- AND two-circle cone∩sphere, coaxial cone∩cone (frustum AND apex-to-apex hourglass), AND two-circle cylinder∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; S5-k lands the FIRST non-coaxial pose — the offset cylinder∩sphere, COMMON/CUT/FUSE now COMPLETE 3/3 native via the TRANS-BAND seam-band shell (`appendSphereOuterZoneBetweenSeams` tiles the sphere outer zone on-surface, ΔV <0.1%); S5-l opens the TORUS family — coaxial torus∩cylinder COMMON/FUSE/CUT COMPLETE 3/3 native; S5-m extends it — coaxial torus∩sphere (sphere at torus centre) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-n extends it again — coaxial torus∩cone (oblique-chord generalisation of S5-l) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-o closes the family with the FIRST curved∩curved pair where BOTH operands are tori — coaxial torus∩torus COMMON/FUSE/CUT COMPLETE 3/3 native; S5-p lands the SECOND transversal (non-coaxial) slice and the FIRST transversal TORUS pair — the offset (axis-parallel) torus∩cylinder COMMON from a NON-PLANAR traced seam (CUT/FUSE honest-decline, the SHARPENED residual: a distinct TUBE-band outer zone, not a sphere φ-sweep); S5-q lands the THIRD transversal (non-coaxial) slice and the FIRST transversal CONE pair — the offset cone∩sphere, COMMON/CUT/FUSE now COMPLETE 3/3 native via the SAME TRANS-BAND seam-band shell about the cone axis (ΔV <0.15%); S5-r lands the FIRST curved∩PLANAR-half-space slice — the coaxial torus∩(axis-perpendicular plane) COMMON+CUT as a Pappus-exact revolution (tube-arc + annulus cap), FUSE + the plane-parallel/degenerate poses honest-decline; S5-s lands the FOURTH transversal (non-coaxial) slice and the FIRST transversal cone∩cylinder pair — the offset (axis-parallel) cone∩cylinder COMMON from a SINGLE NON-PLANAR traced seam (the KEY finding that a parallel-axis cone∩cyl crosses in ONE loop, not two, because the cone wall is monotonic → a distinct SINGLE-SEAM assembler, cone cap + cyl band + end disc; CUT/FUSE honest-decline, the SHARPENED residual: a SINGLE-seam outer weld, distinct from the two-seam TRANS-BAND primitive); ~months for full coverage)
 Use SSI curves to **split** the curved faces of two solids, **classify**
 fragments inside/outside (reuse the BSP-CSG classifier + a curved point-in-solid
 test), **assemble** the surviving shell watertight (curved-seam weld from the
@@ -873,15 +873,24 @@ harness runs each of the sphere FUSE/CUT as an equal-R AND an unequal-R fixture;
   numerical-integration oracle (no closed form exists for a non-analytic seam): host fixture
   (Y-cylinder Rc=1.0 over y∈[−3,3]; sphere Rs=2.0 centre (0.5,0,0), offset 0.5), COMMON volN≈11.275
   vs numeric 11.279, ΔV≈3.5e-4, watertight, symmetric (both operand orders), inside the 1%
-  curved-parity bar — no tolerance weakened. CUT/FUSE both additionally need the sphere OUTER SHELL
-  (the sphere ZONE between the two NON-PLANAR seams, the long way round outside the bore); welding
-  that zone as a watertight shared-pool planar-facet shell is the UNRESOLVED transversal residual
-  (no revolved-band / single-far-pole meridian tiles a two-non-planar-seam zone watertight), so they
-  HONEST-DECLINE → OCCT. The residual map (measured): the S3/S2 co-resident seeding recall returns
-  BOTH loops only up to offset ≈ 0.5·Rc; at larger offsets ONLY ONE of the two co-resident loops is
-  traced (the documented co-resident seeding-recall limit — same one S5-h/S5-i work around
-  analytically, impossible here), so S5-k's two-loop gate declines beyond that (no faking from a
-  missing loop). A grazing / internally-tangent offset (NearTangent), a fat cylinder (Rc ≥ Rs), a
+  curved-parity bar — no tolerance weakened. **CUT/FUSE now LAND (TRANS-BAND).** They need the sphere
+  OUTER SHELL (the sphere ZONE between the two NON-PLANAR seams, the long way round outside the bore),
+  and the new primitive `appendSphereOuterZoneBetweenSeams(C, Rs, axis, seamHi, seamLo, …)` tiles it
+  **exactly on-surface**: each seam node decodes to (θ around the cyl axis, φ from it); the two
+  index-aligned nodes share θ, and the zone is swept at CONSTANT θ by interpolating φ LINEARLY from
+  φ_hi (near the +axis pole) to φ_lo (near −axis) — CROSSING THE EQUATOR the far way, never near a
+  pole (the raw 3-D great-circle slerp is ambiguous for the near-antipodal seam pair and picks the
+  SHORT arc through the bore — the corrected long-way sweep does not). Every interior row is placed at
+  `C + unit(dir)·Rs` (on-surface to machine precision) and the outer rows are the pooled seam nodes, so
+  the zone welds ring-to-ring to the reversed cyl bore (CUT sphere−cyl) or the cyl end stubs (FUSE).
+  Verified vs the numeric oracle (V(A)/V(B) − numeric COMMON): CUT sph−cyl 22.213 vs 22.235 (0.10%),
+  CUT cyl−sph 7.569 vs 7.574 (0.07%), FUSE 41.058 vs 41.085 (0.07%) — all watertight, ≪ 1% bar. Gated
+  on **both sphere poles strictly inside the cylinder** (`polesInsideCyl`) so the two-cap+outer-zone
+  topology holds; a pole-grazing thin cylinder (offset+Rc→Rs, a pole falls outside the cyl) keeps the
+  honest CUT/FUSE decline → OCCT (regression-pinned). The COMMON residual map (measured): the S3/S2
+  co-resident seeding recall returns BOTH loops only up to offset ≈ 0.5·Rc; at larger offsets ONLY ONE
+  loop is traced (the documented co-resident seeding-recall limit), so the two-loop gate declines
+  beyond that. A grazing / internally-tangent offset (NearTangent), a fat cylinder (Rc ≥ Rs), a
   cylinder that does not pierce both poles (offset+Rc ≥ Rs, single loop), and a skew (non-parallel)
   axis all decline → NULL → OCCT.
 - **MULTI-HOLE-SPLIT — general holed-face second-seam split** (`src/native/boolean/holed_face_split.h`,
@@ -903,17 +912,15 @@ harness runs each of the sphere FUSE/CUT as an equal-R AND an unequal-R fixture;
   **≥2-hole** (seam encloses one → 1 in/1 out) and **≥3-hole** (seam encloses two → 2 nested in/1 out)
   cases, + the four decline branches. `boolean_readmit.h::splitAccWall` routes an already-holed acc wall
   through it (readmit 5/5). `src/native` OCCT-free; no `cc_*` ABI.
-  **REMAINING (deferred, valid partial):** landing S5-k CUT/FUSE via this needs a NEW shared-VertexPool
-  shell primitive `appendSphereBandBetweenSeams(seamLo, seamHi, rings, …)` — a spherical BAND between
-  the two index-aligned (already `resampleByAzimuth`-gridded) non-planar loops, interior rows placed ON
-  the sphere by slerping the two seams' unit radial directions the **LONG way** (over the equator, away
-  from the bore — the short-arc slerp cuts through the removed caps), welded ring-to-ring, sharing
-  seamLo/seamHi through the pool (the `appendSphereCap` slerp discipline generalised to a band). The
-  transversal outer zone is a topological BAND, not a 2-holed disk, so the holed-face verb informs the
-  UV-region reasoning but the actual weld is this facet-shell band. Deferred (not half-landed) to keep
-  DISAGREED=0 / never-leaky SACRED — correct long-way orientation + pole/periodic weld + ΔV≤1% vs OCCT
-  `BRepAlgoAPI_{Cut,Fuse}` is a full wave. Until then the four transversal CUT/FUSE builders keep
-  `return {}` honest-decline → OCCT.
+  **UPDATE (TRANS-BAND landed the sphere-outer-zone families):** the S5-k/S5-q CUT/FUSE weld is the
+  shell primitive `appendSphereOuterZoneBetweenSeams` (a sphere BAND between the two index-aligned
+  `resampleByAzimuth`-gridded non-planar loops, tiled on-surface by the cyl/cone-axis θ/φ sweep the
+  LONG way over the equator — see the S5-k / S5-q entries). It confirms the holed-face verb's role as
+  UV-region reasoning while the actual weld is this facet-shell band, and it retires the deferral for
+  the two SPHERE-outer-zone families. Still deferred (distinct primitives, sharpened residual): **S5-p**
+  torus∩cyl (a TUBE-band outer zone — a minor-angle long-way sweep, not a sphere φ-sweep) and **S5-s**
+  cone∩cyl (a SINGLE-seam pose needing a single-seam outer weld). Those two keep `return {}`
+  honest-decline → OCCT; DISAGREED=0 / never-leaky stays SACRED.
 - **S5-l — coaxial TORUS(ring)∩CYLINDER COMMON / FUSE / CUT** (the TORUS surface family opened;
   op-set COMPLETE 3/3 native). A ring torus (major R, minor r, axis) and a COAXIAL cylinder (radius
   Rc, same axis) whose wall crosses the torus TUBE at TWO latitudes → TWO analytic circle seams. In
@@ -1108,10 +1115,12 @@ harness runs each of the sphere FUSE/CUT as an equal-R AND an unequal-R fixture;
   z∈[−2,2]), COMMON volN≈2.153 vs numeric 2.150, ΔV≈0.1%, watertight, symmetric (both operand orders),
   inside the 1% curved-parity bar — no tolerance weakened, DISAGREED=0. CUT/FUSE both additionally need
   the TORUS OUTER SHELL (the tube ZONE between the two NON-PLANAR seams, the long way round outside the
-  bore); welding that two-non-planar-seam zone watertight is the UNRESOLVED transversal residual (the
-  same class as S5-k), so they HONEST-DECLINE → OCCT. A skew (non-parallel) cylinder axis, a single-sheet
-  grazing cylinder (< two closed loops), and the coaxial pose (offset ≤ tol, owned by S5-l) all decline
-  → NULL → OCCT (honest, never faked).
+  bore). This is the SHARPENED residual: the S5-k/S5-q seam-band primitive resolved the SPHERE
+  outer-zone families, but the torus outer zone is a distinct surface — its exact-on-surface tiling is a
+  per-index sweep of the torus MINOR-angle the long way round the TUBE (not a sphere φ-sweep about an
+  axis), a separate primitive not yet built. So CUT/FUSE HONEST-DECLINE → OCCT. A skew (non-parallel)
+  cylinder axis, a single-sheet grazing cylinder (< two closed loops), and the coaxial pose (offset ≤
+  tol, owned by S5-l) all decline → NULL → OCCT (honest, never faked).
 - **S5-q — TRANSVERSAL (NON-COAXIAL) CONE(frustum)∩SPHERE COMMON** (the THIRD transversal / non-coaxial
   slice after S5-k and S5-p, and the FIRST transversal CONE pair). Where S5-f/S5-h handle the COAXIAL
   cone∩sphere pose (sphere centre ON the cone axis → ANALYTIC circle seams, planar rings), S5-q handles
@@ -1134,13 +1143,17 @@ harness runs each of the sphere FUSE/CUT as an equal-R AND an unequal-R fixture;
   deterministic numerical-integration oracle (no closed form for a non-analytic seam) AND OCCT
   `BRepAlgoAPI_Common` (sim): host fixture (cone r(y)=0.5→1.5 over y∈[−3,3] about +Y; sphere Rs=2, centre
   offset 0.5 in +X), COMMON volN≈11.278 vs numeric 11.280, ΔV≈1.4e-4 (0.014%), watertight, symmetric
-  (both operand orders), inside the 1% curved-parity bar — no tolerance weakened, DISAGREED=0. CUT/FUSE
-  both additionally need the SPHERE OUTER SHELL (the sphere ZONE between the two NON-PLANAR seams, the
-  long way round outside the cone); welding that two-non-planar-seam zone watertight is the UNRESOLVED
-  transversal residual (the same class as S5-k/S5-p), so they HONEST-DECLINE → OCCT. A near-cylindrical
-  cone (tanα≈0, S5-k territory), a single-loop / tangent pose (< two closed loops), a large-offset pose
-  whose band fails the watertight gate, and the coaxial pose (offset ≤ tol, owned by S5-f/S5-h) all
-  decline → NULL → OCCT (honest, never faked).
+  (both operand orders), inside the 1% curved-parity bar — no tolerance weakened, DISAGREED=0. **CUT/FUSE
+  now LAND (TRANS-BAND)** — the SAME seam-band primitive as S5-k about the CONE axis:
+  `appendSphereOuterZoneBetweenSeams` tiles the sphere OUTER ZONE (the long way round outside the cone)
+  on-surface via the cone-axis θ/φ sweep, and the cone side is exact via straight-ruling revolved bands +
+  cone end discs. The end rings use `coneRingAxial` — placed at the TRUE axial station, since the cone
+  surface's own (u,v) `point` uses the SLANT v (axially short, would tilt the disc). Verified vs the
+  numeric oracle (V(A)/V(B) − numeric COMMON): CUT sph−cone 22.204 vs 22.232 (0.13%), CUT cone−sph 9.136
+  vs 9.142 (0.07%), FUSE 42.619 vs 42.652 (0.08%) — all watertight, ≪ 1% bar; gated on `polesInsideCone`.
+  A near-cylindrical cone (tanα≈0, S5-k territory), a single-loop / tangent pose (< two closed loops), a
+  pole-grazing pose (a pole outside the cone → CUT/FUSE keep the honest decline), and the coaxial pose
+  (offset ≤ tol, owned by S5-f/S5-h) all decline → NULL → OCCT (honest, never faked).
 - **S5-r — coaxial TORUS(ring)∩HALF-SPACE (PLANE ⟂ AXIS) COMMON + CUT** (the FIRST curved∩PLANAR-half-
   space slice; the plane operand is not a `CurvedSolid`, so it is dispatched by the dedicated
   `tryTorusHalfspace` entry ABOVE the both-operands-curved gate). A ring torus (major R, minor r, axis
@@ -1191,8 +1204,11 @@ harness runs each of the sphere FUSE/CUT as an equal-R AND an unequal-R fixture;
   no tolerance weakened, DISAGREED=0. The reduction hand-off is pinned as a real (non-trivial) boundary: the
   same thin cylinder taken COAXIAL sits fully inside the cone (analytic overlap = the whole cylinder, ≈1.131),
   strictly LARGER than the offset wedge (≈0.546); a coaxial CROSSING cylinder (Rc=1.0) lands via S5-e. CUT/FUSE
-  both need the outer-zone weld across the non-planar seam (the cone-outer-shell / cyl-outer-stub) — the SAME
-  UNRESOLVED transversal residual as S5-k/S5-p/S5-q — so they HONEST-DECLINE → OCCT. A near-cylindrical cone
+  both need the outer-zone weld across the non-planar seam (the cone-outer-shell / cyl-outer-stub). This is the
+  SHARPENED residual: S5-s is a SINGLE-seam pose (the parallel-offset cylinder crosses the monotone cone wall
+  exactly ONCE), so — unlike the two-loop S5-k/S5-q that the seam-band primitive now lands — its CUT/FUSE need a
+  SINGLE-seam outer weld (a distinct construction from `appendSphereOuterZoneBetweenSeams`, which spans a zone
+  between TWO seams), not yet built. So they HONEST-DECLINE → OCCT. A near-cylindrical cone
   (tanα≈0), a skew (non-parallel) cylinder axis, a straddling/fat pose without a clean single crossing (≠ one
   fully-OUT + one fully-IN end disc), and the coaxial pose (offset ≤ tol, owned by S5-e) all decline → NULL →
   OCCT (honest, never faked).

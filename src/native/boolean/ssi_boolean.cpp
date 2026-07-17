@@ -3320,7 +3320,8 @@ math::Vec3 tubeOutwardAt(const CurvedSolid& tor, const math::Point3& p) {
 // (u,v) track (uvA or uvB per operand order). Mirrors appendMouthCap (torus normal, not axis).
 void appendTransTorusCap(const CurvedSolid& tor, const Seam& seam,
                          const std::vector<std::pair<double, double>>& torUv, int rings,
-                         VertexPool& pool, std::vector<topo::Shape>& faces) {
+                         VertexPool& pool, std::vector<topo::Shape>& faces,
+                         double outwardSign = 1.0) {
   const int n = static_cast<int>(seam.pts.size());
   if (n < 3 || rings < 1 || static_cast<int>(torUv.size()) != n) return;
   // Cap centre in (u,v): mean of the boundary track, u unwrapped contiguously around the first
@@ -3339,7 +3340,9 @@ void appendTransTorusCap(const CurvedSolid& tor, const Seam& seam,
   const math::Point3 centre = tor.point(uc, vc);
   auto tri = [&](const math::Point3& a, const math::Point3& b, const math::Point3& c) {
     const math::Point3 ctr{(a.x + b.x + c.x) / 3, (a.y + b.y + c.y) / 3, (a.z + b.z + c.z) / 3};
-    pushPlanarTri(a, b, c, tubeOutwardAt(tor, ctr), pool, faces);
+    const math::Vec3 t = tubeOutwardAt(tor, ctr);
+    pushPlanarTri(a, b, c, math::Vec3{t.x * outwardSign, t.y * outwardSign, t.z * outwardSign},
+                  pool, faces);
   };
   for (int k = 0; k < n; ++k) tri(centre, ringPt(1, k), ringPt(1, (k + 1) % n));
   for (int r = 2; r <= rings; ++r)
@@ -3687,6 +3690,50 @@ topo::Shape buildTransTorusCylFuse(const CurvedSolid& A, const CurvedSolid& B,
   appendRevolvedBand(s.seamHi.pts, ringHi, s.O, s.zc, pool, faces, 1.0);
   appendDiskCap(*s.cyl, s.cylHi, ringHi, s.zc, pool, faces);
   if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildTransCylTorusCut(A,B) = A − B with the CYLINDER the minuend (the ORDER-SENSITIVE reverse of
+// buildTransTorusCylCut): the transversal (offset) finite cylinder MINUS the part of the torus tube
+// inside it — the cylinder with a lens-shaped bite scooped out of its middle where the tube pierces
+// through. Landed here as the tractable reverse (previously honest-declined → OCCT). The tube
+// pierces THROUGH the thin offset cylinder, so the two traced seams wrap the FULL azimuth of the
+// cylinder wall (each cylinder end stub cylLo→seamLo / seamHi→cylHi is a full revolved band, the
+// SAME topology the S5-p transversal FUSE end stubs use). The retained cylinder is therefore the two
+// end stubs, each capped by its terminal disc and closed by the INNER cap patch between the seams —
+// exactly the "tube INNER cap patches between the localized seams" the readiness audit names. Its
+// boundary walks: the cylLo terminal disc + the cyl wall stub (cylLo→seamLo) + the torus LOWER cap
+// (the tube sheet inside the cylinder toward −zc) REVERSED + the torus UPPER cap (toward +zc)
+// REVERSED + the cyl wall stub (seamHi→cylHi) + the cylHi terminal disc. Both torus caps are
+// REVERSED (outwardSign=−1) because the retained cylinder material sits OUTSIDE the tube, so the
+// notch's outward normal points INTO the removed tube region. The two traced seam rings are shared
+// through one VertexPool so the notch caps weld to the wall stubs. Gated on the SAME clean pierce-
+// through (`cylPierces`) the S5-p COMMON needs. V = V_cyl − V_common. The engine's watertight +
+// two-sided volume self-verify is the safety net; a pose that cannot weld robustly HONEST-DECLINES
+// → OCCT.
+topo::Shape buildTransCylTorusCut(const CurvedSolid& A, const CurvedSolid& B,
+                                  const std::vector<Seam>& seams) {
+  const TransTorusCylSetup s = transTorusCylSetup(A, B, seams);
+  if (!s.ok || !s.cylPierces) return {};
+  if (A.kind != CurvedKind::Cylinder) return {};  // order-sensitive: cylinder must be the minuend
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const std::vector<math::Point3> ringLo = s.cylRing(s.cylLo);
+  const std::vector<math::Point3> ringHi = s.cylRing(s.cylHi);
+  const auto& uvLo = s.torIsA ? s.seamLo.uvA : s.seamLo.uvB;
+  const auto& uvHi = s.torIsA ? s.seamHi.uvA : s.seamHi.uvB;
+  // Lower stub: cylLo terminal disc + cyl wall (cylLo→seamLo) + torus LOWER cap REVERSED (the notch).
+  appendDiskCap(*s.cyl, s.cylLo, ringLo, math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool, faces);
+  appendRevolvedBand(ringLo, s.seamLo.pts, s.O, s.zc, pool, faces, 1.0);
+  appendTransTorusCap(*s.tor, s.seamLo, uvLo, transTorusCapRings(s, s.seamLo), pool, faces,
+                      /*outwardSign=*/-1.0);
+  // Upper stub: torus UPPER cap REVERSED (the notch) + cyl wall (seamHi→cylHi) + cylHi terminal disc.
+  appendTransTorusCap(*s.tor, s.seamHi, uvHi, transTorusCapRings(s, s.seamHi), pool, faces,
+                      /*outwardSign=*/-1.0);
+  appendRevolvedBand(s.seamHi.pts, ringHi, s.O, s.zc, pool, faces, 1.0);
+  appendDiskCap(*s.cyl, s.cylHi, ringHi, s.zc, pool, faces);
+  if (faces.size() < 8) return {};  // two stubs → ≥8 faces
   const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
   return topo::ShapeBuilder::makeSolid({shell});
 }
@@ -6789,6 +6836,10 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-p: TRANSVERSAL torus∩cylinder CUT (torus − cyl: tube outer zone + reversed cyl bore).
       const topo::Shape transTC = buildTransTorusCylCut(*csA, *csB, seams);
       if (!transTC.isNull()) return transTC;
+      // S5-p reverse: TRANSVERSAL cylinder∩torus CUT (cyl − torus: two disc-capped stubs + reversed
+      // tube inner cap notch between the localized seams).
+      const topo::Shape transCT = buildTransCylTorusCut(*csA, *csB, seams);
+      if (!transCT.isNull()) return transCT;
       // S5-l: COAXIAL torus∩cylinder CUT (torus − cyl: outer tube arc + reversed cylinder bore).
       const topo::Shape torCyl = buildTorusCylCut(*csA, *csB, seams);
       if (!torCyl.isNull()) return torCyl;

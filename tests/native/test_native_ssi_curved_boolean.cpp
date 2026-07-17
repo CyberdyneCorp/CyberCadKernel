@@ -1952,8 +1952,19 @@ CC_TEST(torus_cyl_transversal_offset_common_watertight_matches_numeric) {
   CC_CHECK(std::fabs(vCutTC - vCutTorNumeric) <= 1e-2 * vCutTorNumeric);
   CC_CHECK(vCutTC < vTorus + 1e-9);                                    // A − B ≤ A
 
-  // CUT cylinder − torus is a DIFFERENT topology (order-sensitive) → declines here → OCCT.
-  CC_CHECK(nb::ssi_boolean_solid(cyl, tor, nb::Op::Cut).isNull());
+  // ── REVERSE CUT = cylinder − torus (order-sensitive) now LANDS (buildTransCylTorusCut): the
+  // thin offset cylinder with a lens-shaped bite scooped out where the tube pierces through — two
+  // disc-capped cylinder stubs + reversed tube INNER cap patches between the localized seams. A
+  // DIFFERENT topology from the torus-minuend tube ring; watertight, on-surface, ΔV within 1%. ──
+  const double vCutCylNumeric = vCyl - vCommonNumeric;                 // cyl − torus = cyl − ∩
+  const ntopo::Shape cutCT = nb::ssi_boolean_solid(cyl, tor, nb::Op::Cut);
+  CC_CHECK(!cutCT.isNull());
+  const double vCutCT = watertightMeshVolume(cutCT);
+  CC_CHECK(vCutCT > 0.0);                                              // watertight → engine accepts
+  CC_CHECK(std::fabs(vCutCT - vCutCylNumeric) <= 1e-2 * vCutCylNumeric);
+  CC_CHECK(vCutCT < vCyl + 1e-9);                                      // cyl − torus ≤ cyl
+  // Partition identity: COMMON + (cyl − torus) = cyl (the numeric oracle self-consistency).
+  CC_CHECK(std::fabs((vCommon + vCutCT) - vCyl) <= 2e-2 * vCyl);
 
   // FUSE (both operand orders): watertight union envelope; ΔV within 1%; symmetric.
   const ntopo::Shape fuseTC = nb::ssi_boolean_solid(tor, cyl, nb::Op::Fuse);

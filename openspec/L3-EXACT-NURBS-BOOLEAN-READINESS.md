@@ -681,6 +681,34 @@ watertight sew is MISSING.
 > OCCT (COMMON lands for all four). The SACRED DISAGREED=0 / never-leaky invariant is preserved:
 > nothing outside the 1% bar or non-watertight is emitted; unhandled poses defer to OCCT.
 
+### External STEP import: SEAM-CROSSING trim loop on a periodic surface · **LANDED (L8-HEAL)**
+
+> A real-CAD AP203/214 export of a cylinder/cone/sphere/torus wall split into faces routinely
+> produces a face whose outer loop STRADDLES the parametric `u`-seam (the `atan2` ±π branch
+> cut). `readStepBrepExternal` derives each trim edge's 2-D pcurve by inverting the 3-D edge
+> into `(u,v)`; before this slice each edge started from a FRESH `atan2` branch, so adjacent
+> edges of one loop could land on different `2π` periods. A seam-crossing loop then carried a
+> spurious `~2π` jump in its flattened polyline — measured on a radius-2 cylinder face spanning
+> `u` 135°→225°: **max consecutive `u`-jump 6.283 (=2π)**. `classify()` read that jump as a
+> self-touching pinch and returned **`Unknown` for EVERY query** (interior AND exterior), and
+> `classifySeam()` mis-unwrapped it into a fabricated FULL-`u`-band that classified the OPPOSITE
+> side (u=0) **`In`**. So a seam-straddling face imported but was UNUSABLE (or silently wrong).
+>
+> **Fix (additive, `src/native/exchange/step_brep.cpp`):** thread ONE continuous unwrapped-`u`
+> branch through a loop's edges — `derivePcurve` takes an in/out `loopUHint` seeded per loop and
+> carried edge→edge, so every edge continues on the predecessor's branch — AND pick the **MINOR
+> arc** (`|Δ| ≤ π`) for a partial circular edge in `setEdgeRange` instead of forcing CCW (`+2π`),
+> which had sent a clockwise return arc the long way round (turning a 90° patch into a spurious
+> near-full-period band). After the fix the same face flattens to a SIMPLE loop, `u`-extent
+> **[2.356, 3.927]** (exactly the subtended π/2, **max jump 0.065**), and classifies correctly:
+> `classify(u=π,v=1.5)=In`, `classify(u=0,v=1.5)=Out`, `classifySeam` agreeing. Region-preserving
+> (`u` and `u±2π` are the same physical point on a periodic surface — no tolerance widened, no
+> point moved off S). Regression: **`testSeamCrossingCylinder`** in `test_native_step_import.cpp`
+> (the verbatim failing pose). **Residual:** a genuine arc that subtends `> π` on ONE edge with no
+> intermediate vertex is imported as its minor complement — such a reflex single-edge trim is rare
+> in real exports (an exporter places a mid-vertex or shares the reversed edge) and is left as the
+> honest documented residual; the loop-threaded branch continuity handles it once a vertex splits it.
+
 ### Summary table
 
 | stage | readiness | one-line evidence |

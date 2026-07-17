@@ -97,6 +97,43 @@ inline ChartCond chartConditionAt(const SurfaceAdapter& S, double u, double v, d
   return c;
 }
 
+// ── degenerate-v-edge (collapsed-row) pole detector ────────────────────────────────
+//
+// The per-node `chartConditionAt` collapse test is a POINTWISE ‖dU‖/‖dV‖ ratio. On a CIRCULAR
+// collapsed-row pole (a sphere / a surface of revolution) ‖dU‖ = R·… → 0 uniformly along the
+// whole u circle, so the ratio dips below `collapseFrac` on every meridian at the same latitude
+// and the pointwise witness fires reliably. On a NON-CIRCULAR (elliptical / lumpy) collapsed-row
+// pole ‖dU‖ still → 0 (the whole row maps to ONE point — a genuine chart pole), but at DIFFERENT
+// RATES per meridian: it collapses fast along the ellipse's major axis and slowly along the minor
+// axis, so the pointwise ratio only crosses `collapseFrac` in a razor-thin band the marcher's
+// finite step overshoots — it reaches the non-periodic v edge and spuriously BoundaryExits before
+// the pointwise witness ever fires. This detector recognises the collapse as a SURFACE PROPERTY of
+// the v EDGE (not a pointwise ratio at the current node): the v-domain edge nearest `v` is
+// DEGENERATE iff sampling the WHOLE u row at that edge collapses to essentially one 3D point
+// (max spread ≪ collapseFrac·scale). That is exactly a chart pole (every u → one point) and is
+// FALSE at a genuine finite boundary (a cylinder v-cap, where the edge row is a full circle of
+// radius R, spread = 2R ≫ 0). Point-only (never the degenerate dU); a wrong verdict cannot
+// fabricate geometry — the crossing that consumes it still emits only nodes verified on both
+// surfaces ≤ onSurfTol, else it defers. Returns the degenerate edge's v (v0 or v1) in `edgeV`.
+inline bool degenerateVEdge(const SurfaceAdapter& S, double v, double scale, double collapseFrac,
+                            double& edgeV) {
+  const ParamBox& dom = S.domain;
+  // Only meaningful for a non-periodic v (a pole edge is an open latitude limit).
+  if (S.vPeriod > 0.0) return false;
+  edgeV = (std::fabs(v - dom.v0) <= std::fabs(v - dom.v1)) ? dom.v0 : dom.v1;
+  // Sample the u row at the edge; a genuine pole collapses it to one point.
+  const int nu = 12;
+  const Point3 p0 = S.point(dom.u0, edgeV);
+  double spread = 0.0;
+  for (int i = 1; i <= nu; ++i) {
+    const double u = dom.u0 + (dom.u1 - dom.u0) * (static_cast<double>(i) / nu);
+    spread = std::max(spread, math::norm(S.point(u, edgeV) - p0));
+  }
+  // Collapsed row ⇔ spread ≪ scale (use collapseFrac·scale, the same order the pointwise
+  // witness uses for ‖dU‖). A finite v-cap has spread = O(scale) and is rejected.
+  return spread < collapseFrac * scale;
+}
+
 // ── pole-longitude continuity map ──────────────────────────────────────────────
 //
 // At a sphere pole the whole u circle collapses to one point, so the longitude u is a FREE

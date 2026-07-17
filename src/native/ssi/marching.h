@@ -341,6 +341,18 @@ struct MarchOptions {
   double chartCollapseFrac = -1.0;  ///< ‖dU‖ < chartCollapseFrac·‖dV‖ (and ·scale) ⇒ chart collapse (≤ 0 → 1e-3)
   double chartStepFrac = -1.0;      ///< fine step off the singular point when crossing = chartStepFrac·h0 (≤ 0 → 1/16)
   int chartMaxSteps = 256;          ///< max fine point-based steps spent crossing one pole/apex before deferring
+  // ── S4-e GENERAL: NON-CIRCULAR (elliptical / lumpy) collapsed-row pole. On a CIRCULAR pole
+  // ‖dU‖ → 0 uniformly, so the pointwise chartCollapseFrac test fires; on a NON-CIRCULAR pole
+  // ‖dU‖ collapses SLOWLY along the minor axis, so a meridian marched there reaches the v edge
+  // and spuriously BoundaryExits before the pointwise test fires. When enableChartSingularities
+  // is on, a node APPROACHING a genuine degenerate v-edge (the whole edge row collapses to one
+  // point — a chart pole, FALSE at a finite v-cap) with ‖dU‖ already < chartEdgeCollapseFrac·‖dV‖
+  // within chartEdgeApproachV of the edge is ALSO treated as a collapse, so the crossing engages.
+  // Both are looser than chartCollapseFrac and only widen WHERE the crossing fires — the crossing
+  // still emits only nodes verified on both surfaces ≤ onSurfTol, else it defers. Circular poles /
+  // cone apexes / finite boundaries are unaffected (they never trip the degenerate-edge test). ──
+  double chartEdgeApproachV = -1.0;    ///< edge-pole band = this·|v-domain| around a degenerate v-edge (≤ 0 → 0.02)
+  double chartEdgeCollapseFrac = -1.0; ///< ‖dU‖ < this·‖dV‖ inside the edge band ⇒ non-circular pole (≤ 0 → 0.05)
 };
 
 /// The full S3 result (design.md TraceSet): one WLine per distinct traced branch plus

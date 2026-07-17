@@ -169,7 +169,7 @@ gap, within the deflection/step tol).
 - **Unlocks:** S5 curved booleans — the `TraceSet` (WLines with (u1,v1,u2,v2) per node) is
   its input contract.
 
-### S4 — Tangent / degeneracy robustness · ◐ CLASSIFICATION LAYER (S4-a/b) + MARCHING-CORE SLICES (S4-c graze, S4-d branch points, S4-e sphere-pole/cone-apex chart singularities, S4-f robust closure + self-intersection guard + completeness critic) DONE AT THE BAR; S4-d/e general/freeform + S4-f general topology repair pending
+### S4 — Tangent / degeneracy robustness · ◐ CLASSIFICATION LAYER (S4-a/b) + MARCHING-CORE SLICES (S4-c graze, S4-d branch points, S4-e sphere-pole/cone-apex + freeform (circular + asymmetric) chart singularities, S4-f robust closure + self-intersection guard + completeness critic) DONE AT THE BAR; S4-d general branches + S4-e higher-order/edge-seam + S4-f general topology repair pending
 Near-tangent stepping (n₁×n₂→0: step control, higher-order predictor),
 coincident/overlapping-surface detection, branch points & singularities,
 self-intersection guards. **This is the moat** — OCCT's decades of tuning. Lands
@@ -429,7 +429,7 @@ already cancels odd-order terms, κ at B is O(δ²)-accurate ~1e-7) and is NOT s
 - **Unlocks:** **Steinmetz is now unblocked** natively; the multi-arm `TraceSet` +
   `BranchNode` connectivity is available to S5 curved booleans for self-crossing loci.
 
-#### S4-e — Singularities · ◐ TWO HONEST SLICES DONE AT THE BAR (analytic sphere-pole + cone-apex crossed; FREEFORM parametric pole crossed; curve cusp declined by IFT; asymmetric/higher-order + edge/seam degeneracies remain)
+#### S4-e — Singularities · ◐ THREE HONEST SLICES DONE AT THE BAR (analytic sphere-pole + cone-apex crossed; FREEFORM circular parametric pole crossed; ASYMMETRIC / non-circular freeform pole crossed; curve cusp declined by IFT; higher-order + edge/seam degeneracies remain)
 A **chart (removable) singularity** is where ONE surface's own `(u,v)` parametrization
 degenerates while its 3D point + normal stay finite: a **sphere parametric pole**
 (`v = ±π/2`, where `‖dU‖ = R·cos v → 0`) or a **cone apex** (signed radius
@@ -501,6 +501,52 @@ whose pole sits on the `v=1` DOMAIN BOUNDARY (a genuine surface ENDPOINT, no far
 witness fires but the far-side re-seed cannot verify past a nonexistent surface, so it correctly
 DEFERS (`singularitiesCrossed = 0`, `NearTangent` → OCCT) — no fabricated point past a real tip.
 
+**Third slice — ASYMMETRIC (NON-CIRCULAR) freeform pole (this change, gated
+`CYBERCAD_HAS_NUMSCI`, additive):** the second slice's freeform crossing relies on the
+POINTWISE `‖dU‖ ≪ collapseFrac·‖dV‖` witness, which fires reliably on a CIRCULAR collapsed-row
+pole (`‖dU‖ → 0` uniformly along the whole `u` row) but only in a razor-thin band on a
+NON-CIRCULAR (elliptical / lumpy) collapsed-row pole — there `‖dU‖` collapses FAST along the
+major axis but SLOWLY along the minor axis, so a meridian marched along the minor axis reaches
+the non-periodic `v` edge and spuriously `BoundaryExit`s before the pointwise ratio ever crosses
+`collapseFrac` (the "asymmetric freeform pole" the second slice deferred). This slice adds two
+strictly-additive, FREEFORM-only, default-gated pieces:
+- **Degenerate-`v`-edge witness (`chartsing::degenerateVEdge` + `chartCondAugmented`)** — the
+  collapse is recognised as a SURFACE property of the `v`-edge, not a pointwise ratio at the
+  current node: the nearest non-periodic `v`-edge is DEGENERATE iff sampling the WHOLE `u` row at
+  that edge collapses to essentially one 3D point (`spread ≪ collapseFrac·scale`). That is exactly
+  a chart pole (every `u` → one point) and is FALSE at a finite `v`-cap (the edge row is a full
+  circle of radius `R`, `spread = 2R`). A node APPROACHING such an edge (within
+  `chartEdgeApproachV` = 2% of the `v`-domain) whose `‖dU‖` has already dropped below
+  `chartEdgeCollapseFrac·‖dV‖` (5%) is ALSO flagged collapsed, so the slow minor-axis collapse
+  fires BEFORE the boundary. Both knobs are looser than `chartCollapseFrac` and only widen WHERE
+  the crossing fires; the augmentation is skipped entirely on ANALYTIC surfaces (`uPeriod > 0` —
+  they keep the exact pointwise+`u+π` path BIT-IDENTICAL) and never trips at a cone apex (interior
+  `v`, not near a `v`-edge) or a finite cap. `chartRecovered` uses the same augmented condition so
+  the far side is recognised as recovered once `v` steps back out of the band.
+- **Reflected-far-point crossing pin** — because the witness fires a finite distance BEFORE the
+  pole (the minor-axis `‖dU‖` collapses slowly), the far meridian is `~2·(P_pole − anchor)` away,
+  which the fine step `h` cannot reach. On the single CROSSING step of a freeform pole,
+  `crossChartSingularity` pins the fixed-plane reproject at the along-`t★` distance to the
+  REFLECTED far point `2·P_pole − anchor` (point-only, `P_pole = S.point(u, edgeV)`), which only
+  ever WIDENS `pinDist` (never shrinks below `h`, never weakens `onSurfTol`) and only sets WHERE
+  along `t★` the verified far node sits. `freeformChartInvert` then recovers the far longitude at
+  that reflected target. Circular poles keep `h` (the witness fires AT the pole; jump ≈ `h`) and
+  stay bit-identical.
+
+**At the bar (host, `CYBERCAD_HAS_NUMSCI` ON):** a NATIVE NURBS ELLIPTICAL teardrop (`x` stretched
+`1.6×`, both `v`-edges genuine collapsed-row poles — a `uPeriod == 0` freeform surface, NOT a
+surface of revolution) `∩` the `x=0` plane traces the MINOR-axis meridian, which pre-slice reached
+each `v`-edge and spuriously `BoundaryExit`ed at HALF the loop (`len ≈ π`). AFTER: the
+degenerate-`v`-edge witness fires on approach, the crossing reflects through each pole point to the
+far meridian, and BOTH non-circular poles are crossed — one closed loop, `singularitiesCrossed = 2`,
+`nearTangentGaps = 0`, `len ≈ 2π`, `v ∈ [~0, ~2]`, every node on both surfaces ≤ `1e-6` (the `x=0`
+minor-axis cross-section is exactly the unit circle, so the traced loop is the unit great circle).
+The controls stay bit-identical: analytic sphere-pole / cone-apex / freeform-circular-pole
+fixtures unchanged (they never trip the freeform edge-augmentation), the freeform Bézier cone-tip
+still DEFERS at its `v=1` domain-boundary endpoint (a degenerate edge but a genuine surface end —
+the far-side reproject cannot verify past a nonexistent surface), and the S4-c graze / S4-d
+Steinmetz still cross with the flag on (`singularitiesCrossed = 0`).
+
 **Curve cusp — DECLINED (no dead code):** a cusp of the intersection curve (arclength velocity
 → 0) requires `‖n_A×n_B‖ → 0`; by the implicit-function theorem, with regular charts AND healthy
 pair sine the intersection is a smooth regular curve, so "a curve cusp with regular charts and
@@ -509,18 +555,21 @@ owned by S4-c (graze march-through), S4-d (branch routing), or an honest OCCT de
 standalone single-surface cusp witness would be unreachable dead code, so NONE is added; curve
 cusps route to the existing S4-c/S4-d/OCCT path.
 
-- **Honest scope / risk:** the two **analytic chart singularities** (sphere pole, cone apex) and
-  now the **freeform parametric pole** (collapsed spline/NURBS row) are crossed, each verified
-  node-by-node on both surfaces + on the OCCT locus. Still DEFERRED → OCCT (reported, never
-  faked): **asymmetric freeform poles** whose continued-tangent re-seed does not verify;
-  **higher-order / edge / seam** degeneracies; a full brep **degenerate-pole B-spline SOLID
+- **Honest scope / risk:** the two **analytic chart singularities** (sphere pole, cone apex), the
+  **freeform circular parametric pole** (collapsed spline/NURBS row), and now the **asymmetric
+  (non-circular / elliptical) freeform pole** (via the degenerate-`v`-edge witness + reflected-far
+  crossing pin) are crossed, each verified node-by-node on both surfaces + on the OCCT locus. Still
+  DEFERRED → OCCT (reported, never faked): **higher-order / edge / seam** degeneracies (and any
+  asymmetric pole so extreme its reflected-far reproject does not verify — it defers the same
+  honest way); a full brep **degenerate-pole B-spline SOLID
   through the boolean pipeline** (no native construct feeds a freeform-pole face to the marcher —
   the freeform-pole fixtures are hand-seeded, exactly as the analytic S4-e fixtures are); the
   **curve cusp** (declined above); and the **general self-intersection residual (S4-f)**. Any
   pole whose point-based crossing does not verify on both surfaces defers the same honest way.
 - **Unlocks:** transversal intersection curves that pass through a sphere pole / cone apex / a
-  freeform (collapsed-row spline) parametric pole are now traced end-to-end natively instead of
-  truncating at the chart singularity.
+  freeform (collapsed-row spline) parametric pole — including a NON-CIRCULAR (elliptical / lumpy)
+  freeform pole where `‖dU‖` collapses anisotropically — are now traced end-to-end natively
+  instead of truncating at the chart singularity.
 
 #### S4-f — Self-intersection / small-loops · ◐ FIRST COMPLETENESS + LOOP-ROBUSTNESS SLICE DONE AT THE BAR
 Adds no new geometry capability — it HARDENS the correctness/completeness of the curves S3

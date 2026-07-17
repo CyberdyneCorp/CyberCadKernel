@@ -149,6 +149,43 @@ double distToUnitSphereO(const Point3& x) {  // distance to the unit sphere at t
 }
 double distToPlaneX0(const Point3& x) { return std::fabs(x.x); }
 
+// A NURBS surface of revolution profile scaled ANISOTROPICALLY per axis (x by ax, y by ay): an
+// ELLIPTICAL "teardrop". BOTH v-edges (v=0, v=2) are GENUINE collapsed rows (radius 0 → all u map
+// to one 3D point — a real chart pole, spread 0), but the cross-sections are ELLIPSES (ax ≠ ay),
+// so it is NOT a surface of revolution: ‖dU‖ collapses toward the pole at DIFFERENT rates along
+// the major vs minor axis. Along the MINOR-axis meridian the pointwise ‖dU‖/‖dV‖ witness only
+// crosses chartCollapseFrac in a razor-thin band the marcher's step overshoots — so pre-S4-e-
+// general the marcher reached the v-edge and spuriously BoundaryExited (half the loop). This is
+// the ASYMMETRIC (non-circular) freeform pole the roadmap documented as deferred. u∈[0,4] → 2π,
+// v∈[0,2] → south-pole → equator(v=1) → north-pole.
+ssi::SurfaceAdapter nurbsEllipticalTeardrop(double ax, double ay) {
+  const int degU = 2, degV = 2, nU = 9, nV = 5;
+  const double px[5] = {0.0, 1.0, 1.0, 1.0, 0.0};    // profile radius R
+  const double pz[5] = {-1.0, -1.0, 0.0, 1.0, 1.0};  // profile height z
+  const double pw[5] = {1.0, kC, 1.0, kC, 1.0};      // profile rational weights
+  std::vector<Point3> poles(static_cast<std::size_t>(nU) * nV);
+  std::vector<double> w(static_cast<std::size_t>(nU) * nV);
+  for (int k = 0; k < nU; ++k) {
+    const double ang = k * 45.0 * kPi / 180.0;
+    const bool corner = (k % 2) == 1;
+    const double wc = corner ? kC : 1.0, rs = corner ? (1.0 / kC) : 1.0;
+    const double ck = std::cos(ang), sk = std::sin(ang);
+    for (int j = 0; j < nV; ++j) {
+      const double R = px[j] * rs;
+      poles[static_cast<std::size_t>(k) * nV + j] = Point3{ax * R * ck, ay * R * sk, pz[j]};
+      w[static_cast<std::size_t>(k) * nV + j] = wc * pw[j];
+    }
+  }
+  std::vector<double> kU{0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4};
+  std::vector<double> kV{0, 0, 0, 1, 1, 2, 2, 2};
+  return ssi::makeNurbsAdapter(degU, degV, poles, w, nU, nV, kU, kV);
+}
+// Distance to the ellipsoid (x/ax)² + y² + z² = 1 for the ay==1 teardrop (a prolate/oblate
+// spheroid: the elliptical-teardrop surface is exactly the unit sphere stretched by ax in x).
+double distToSpheroid(const Point3& x, double ax) {
+  return std::fabs(std::sqrt((x.x / ax) * (x.x / ax) + x.y * x.y + x.z * x.z) - 1.0);
+}
+
 }  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -414,6 +451,66 @@ CC_TEST(s4e_freeform_tip_endpoint_still_defers) {
     CC_CHECK(distToPlaneX0(n.point) < tol);
     CC_CHECK(n.v1 <= 1.0 + tol);                // never stepped past the v=1 tip boundary
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (g) S4-e GENERAL — ASYMMETRIC (NON-CIRCULAR) FREEFORM POLE. A NURBS ELLIPTICAL teardrop
+// (x stretched 1.6×, both v-edges genuine collapsed-row poles) cut by the x=0 plane traces the
+// MINOR-axis meridian, where ‖dU‖ collapses toward each pole SLOWLY — so the pointwise ‖dU‖/‖dV‖
+// witness (which fires reliably on a CIRCULAR pole) only crosses chartCollapseFrac in a razor-thin
+// band the marcher's step overshoots. BEFORE this slice the marcher reached each v-edge and
+// spuriously BoundaryExited at HALF the loop (len ≈ π). AFTER: the degenerate-v-edge witness fires
+// on approach and the crossing REFLECTS through the pole point (2·P_pole − anchor) to jump to the
+// far meridian, so BOTH poles are crossed and the FULL closed loop is traced (len ≈ 2π,
+// singularitiesCrossed ≥ 2), every node on both surfaces ≤ tol — the honest asymmetric-pole
+// capability the roadmap deferred. The x=0 (minor-axis) cross-section is exactly the unit circle
+// (x is 0 there), so the traced loop is the unit great circle regardless of the x-stretch.
+// ─────────────────────────────────────────────────────────────────────────────
+CC_TEST(s4e_asymmetric_elliptical_pole_full_loop) {
+  const double ax = 1.6;
+  auto A = nurbsEllipticalTeardrop(ax, 1.0);
+  auto B = planeX0(ssi::ParamBox{-3.0, 3.0, -3.0, 3.0});
+  // Seed on the equator (v=1) at world (0, 1, 0): teardrop (u=1, v=1), plane (u=y=1, v=z=0).
+  const Point3 sp = A.point(1.0, 1.0);
+  auto seeds = handSeed(1.0, 1.0, sp.y, sp.z, sp);
+  const double tol = 1e-6;
+
+  // BEFORE — chart switch OFF: the S3 marcher truncates at the first pole (arc ≈ π, one meridian).
+  ssi::MarchOptions off;
+  auto before = ssi::trace_from_seeds(A, B, seeds, off);
+  CC_CHECK(before.singularitiesCrossed == 0);
+  CC_CHECK(before.curveCount() == 1);
+  if (before.curveCount() == 1) {
+    CC_CHECK(before.lines[0].status == ssi::TraceStatus::BoundaryExit);  // spurious exit at the pole
+    CC_CHECK(polylineLength(before.lines[0]) < 0.75 * (2.0 * kPi));      // only HALF the loop (≈ π)
+  }
+
+  // AFTER — chart switch ON: BOTH non-circular poles crossed, the full closed great circle traced.
+  ssi::MarchOptions on;
+  on.enableChartSingularities = true;
+  auto tr = ssi::trace_from_seeds(A, B, seeds, on);
+
+  CC_CHECK(tr.curveCount() == 1);
+  if (tr.curveCount() != 1) return;
+  const ssi::WLine& w = tr.lines[0];
+  CC_CHECK(w.isClosed());                       // full closed loop, not a truncated meridian
+  CC_CHECK(tr.closedCurves == 1);
+  CC_CHECK(tr.nearTangentGaps == 0);            // the asymmetric poles were crossed, not deferred
+  CC_CHECK(tr.singularitiesCrossed >= 2);       // BOTH non-circular poles stepped across
+  CC_CHECK(w.chartSingularCrossed >= 2);
+
+  const double len = polylineLength(w);
+  CC_CHECK(len <= 2.0 * kPi + 1e-4);            // never longer than the true circumference
+  CC_CHECK(len >= 0.90 * (2.0 * kPi));          // the FULL loop (not the truncated π half)
+  double v1lo = 1e9, v1hi = -1e9;
+  for (const auto& n : w.points) {
+    CC_CHECK(distToSpheroid(n.point, ax) < tol); // every node on the teardrop (spheroid)
+    CC_CHECK(distToPlaneX0(n.point) < tol);      // and on the plane (no fabricated pole point)
+    v1lo = std::min(v1lo, n.v1);
+    v1hi = std::max(v1hi, n.v1);
+  }
+  CC_CHECK(v1lo < 0.05);                         // reaches the south non-circular pole (v→0)
+  CC_CHECK(v1hi > 1.95);                         // and the north non-circular pole (v→2)
 }
 
 int main() { return cctest::run_all(); }

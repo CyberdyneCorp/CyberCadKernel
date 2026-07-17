@@ -26,6 +26,7 @@ buffers into NumPy, and frees those buffers with the matching ``cc_*_free``.
 from __future__ import annotations
 
 import ctypes
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterable, Sequence
 
@@ -1532,6 +1533,110 @@ class Kernel:
         return self._shape(
             _cffi.lib().cc_solid_revolve(arr, n, float(angle_radians)), "revolve"
         )
+
+    # ── Typed-profile solids (analytic B-rep: cylinder / sphere / cone / torus) ──
+    # These wrap the FROZEN cc_solid_revolve_profile / cc_solid_extrude_profile C ABI
+    # (no ABI change). A revolved TYPED profile yields TRUE analytic faces — a line
+    # sweeps a Plane/Cylinder/Cone, an arc whose centre is on the axis sweeps a Sphere —
+    # so the resulting solids are recognised by the native curved-boolean dispatch
+    # (recogniseCurvedSolid) and, under the OCCT engine, by OCCT's analytic booleans.
+    # This is the operand path the curved-boolean families (S5) are reached through.
+    def revolve_profile(
+        self,
+        segments: Sequence["CCProfileSeg"],
+        axis_point: Sequence[float] = (0.0, 0.0),
+        axis_dir: Sequence[float] = (0.0, 1.0),
+        angle_radians: float = 2.0 * math.pi,
+    ) -> Shape:
+        """Revolve a TYPED profile (``CCProfileSeg`` loop: kind 0 line / 1 arc /
+        2 full-circle) about the in-plane axis through ``axis_point`` with in-plane
+        direction ``axis_dir`` by ``angle_radians`` (a full ``2π`` closes the solid).
+
+        Line segments sweep plane/cylinder/cone faces; an arc whose circle centre lies
+        on the axis sweeps a sphere. Returns the analytic B-rep :class:`Shape`. Raises
+        on a degenerate profile. The natural way to construct the analytic operands
+        (cylinder, sphere, cone) the curved-boolean families consume.
+        """
+        segs = list(segments)
+        if not segs:
+            raise ValueError("revolve_profile needs >= 1 segment")
+        arr = (CCProfileSeg * len(segs))(*segs)
+        nul = ctypes.POINTER(ctypes.c_double)()
+        sid = _cffi.lib().cc_solid_revolve_profile(
+            arr, len(segs),
+            float(axis_point[0]), float(axis_point[1]),
+            float(axis_dir[0]), float(axis_dir[1]),
+            nul, 0, float(angle_radians),
+        )
+        return self._shape(sid, "revolve_profile")
+
+    def extrude_profile(
+        self, segments: Sequence["CCProfileSeg"], depth: float
+    ) -> Shape:
+        """Extrude a TYPED closed profile (``CCProfileSeg`` loop) along +Z by ``depth``.
+
+        Yields a prism whose curved boundary edges (arcs/circles) become TRUE B-rep
+        edges. A rectangular profile makes an axis-perpendicular slab / half-space box
+        — the planar operand of the curved∩plane families. Raises on a degenerate
+        profile.
+        """
+        segs = list(segments)
+        if not segs:
+            raise ValueError("extrude_profile needs >= 1 segment")
+        arr = (CCProfileSeg * len(segs))(*segs)
+        nul = ctypes.POINTER(ctypes.c_double)()
+        sid = _cffi.lib().cc_solid_extrude_profile(arr, len(segs), nul, 0, nul, 0, float(depth))
+        return self._shape(sid, "extrude_profile")
+
+    # -- analytic-solid convenience builders (thin wrappers over revolve_profile) --
+    @staticmethod
+    def _seg_line(x0, y0, x1, y1) -> "CCProfileSeg":
+        s = CCProfileSeg(); s.kind = 0
+        s.x0, s.y0, s.x1, s.y1 = float(x0), float(y0), float(x1), float(y1)
+        return s
+
+    @staticmethod
+    def _seg_arc(cx, cy, r, a0, a1, x0, y0, x1, y1) -> "CCProfileSeg":
+        s = CCProfileSeg(); s.kind = 1
+        s.cx, s.cy, s.r = float(cx), float(cy), float(r)
+        s.a0, s.a1 = float(a0), float(a1)
+        s.x0, s.y0, s.x1, s.y1 = float(x0), float(y0), float(x1), float(y1)
+        return s
+
+    def cylinder_solid(self, radius: float, y0: float, y1: float) -> Shape:
+        """A finite Y-axis cylinder solid of ``radius`` over ``y ∈ [y0, y1]`` — a true
+        Cylinder wall closed by two planar discs (an analytic curved-boolean operand)."""
+        r, lo, hi = float(radius), float(y0), float(y1)
+        return self.revolve_profile([
+            self._seg_line(0, lo, r, lo), self._seg_line(r, lo, r, hi),
+            self._seg_line(r, hi, 0, hi), self._seg_line(0, hi, 0, lo)])
+
+    def sphere_solid(self, radius: float, center_y: float = 0.0) -> Shape:
+        """A full sphere solid of ``radius`` centred on the Y axis at ``center_y`` — a
+        semicircle (centre on the axis) revolved a full turn → a true Sphere."""
+        R, cy = float(radius), float(center_y)
+        return self.revolve_profile([
+            self._seg_arc(0, cy, R, -math.pi / 2, math.pi / 2, 0, cy - R, 0, cy + R),
+            self._seg_line(0, cy + R, 0, cy - R)])
+
+    def cone_solid(self, r0: float, y0: float, r1: float, y1: float) -> Shape:
+        """A finite cone / frustum solid: radius ``r0`` at ``y0`` → ``r1`` at ``y1``
+        about the Y axis — a true Cone wall closed by planar disc caps."""
+        return self.revolve_profile([
+            self._seg_line(r0, y0, r1, y1), self._seg_line(r1, y1, 0, y1),
+            self._seg_line(0, y1, 0, y0), self._seg_line(0, y0, r0, y0)])
+
+    def slab_box(self, half: float, z0: float, z1: float) -> Shape:
+        """An axis-perpendicular slab / half-space box: footprint ``[-half,half]²``
+        extruded over ``z ∈ [z0, z1]`` (a planar operand of the curved∩plane families)."""
+        h = float(half)
+        box = self.extrude_profile([
+            self._seg_line(-h, -h, h, -h), self._seg_line(h, -h, h, h),
+            self._seg_line(h, h, -h, h), self._seg_line(-h, h, -h, -h)], float(z1) - float(z0))
+        if z0 == 0.0:
+            return box
+        with box:
+            return box.translate(0.0, 0.0, float(z0))
 
     def loft(
         self,

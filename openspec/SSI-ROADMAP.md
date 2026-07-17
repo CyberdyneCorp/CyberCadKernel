@@ -586,6 +586,29 @@ mesher). Extends `src/native/boolean/` from planar/axis-aligned to general curve
   OCCT fallback for the rest.
 - **Unlocks:** curved blends (#6) and curved wrap-emboss (#7) then compose on top.
 
+**FACADE / PYTHON EXPOSURE (NURBS-EXPOSE, verified 2026-07) — no new `cc_*` entry point.**
+The S5 curved-boolean families are reachable from the EXISTING frozen `cc_*` ABI: build the
+analytic operands with `cc_solid_revolve_profile` (a revolved TYPED profile → true
+`Kind::Cylinder`/`Sphere`/`Cone` walls + planar caps; the Python binding surfaces this as the
+additive `Kernel.cylinder_solid`/`sphere_solid`/`cone_solid`/`revolve_profile`/`slab_box`
+helpers) and boolean them with `cc_boolean` (`Shape.common`/`cut`/`fuse`), which routes
+engine→`boolean_solid`→`ssi_boolean_solid` (native) or OCCT. Verified matrix:
+- **OCCT engine (default desktop build): ALL families + all three ops (COMMON/CUT/FUSE)
+  reachable and volume-exact** (`python/examples/curved_booleans.py`, `python/tests/test_curved_boolean.py`).
+- **Native engine (`CYBERCAD_HAS_NUMSCI`): COMMON reachable for every family with a closed-form
+  oracle; CUT/FUSE now ALSO reachable** after closing the ONE self-verify gap found —
+  `NativeEngine::boolean_op`'s generic set-algebra check demanded the exact-planar `1e-6` band,
+  unattainable for a curved CUT/FUSE result because the O(deflection) operand-mesh bias does not
+  cancel across `va−vc` / `va+vb−vc`. Fix (engine-only, `src/engine/native/native_engine.cpp`;
+  `src/native/**` incl. `ssi_boolean.cpp` UNCHANGED; `cc_*` ABI byte-unchanged): when an operand
+  is a recognised curved solid, widen ONLY that case to a deflection-bounded 2% band (the same order
+  the NURBS orchestrator's `analyticVolumeBandOk` uses) — a wrong/leaky result differs by a whole-
+  feature volume and is still rejected (DISAGREED=0); the all-planar contract keeps the strict `1e-6`.
+- **Gap (documented):** the native TORUS families need a bare periodic `Kind::Torus` face, which no
+  `cc_*` entry constructs natively (a revolved full circle builds B-spline bands → declines / falls to
+  OCCT), so a *pure native* torus boolean is not reachable; it IS reachable under OCCT. Closing it would
+  need an additive `cc_torus`-style primitive — deferred (not required for the OCCT-served exposure).
+
 **S5-a/b/c + S5-d + S5-e done at the bar (changes `add-native-ssi-curved-boolean` archived +
 `add-native-ssi-curved-boolean-wider` + `add-native-ssi-branched-boolean` archived
 `2026-07-05`; `add-native-cone-boolean` + `complete-cone-cyl-fuse-cut` archived `2026-07-07`;

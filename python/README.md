@@ -68,6 +68,44 @@ The library is discovered via `$CYBERCADKERNEL_DYLIB`, then a `lib/` folder
 bundled *inside* the installed package (see the wheel below), then `build-mac/`
 relative to the repo root, then the bare name on the loader path.
 
+### Curved booleans (cylinder / sphere / cone / torus)
+
+The curved-boolean families (the kernel's S5 cylinder / sphere / cone / torus
+booleans, including the transversal / non-coaxial slices) are reached by building
+**analytic B-rep solids** and booleaning them with `cc_boolean` (`Shape.common` /
+`cut` / `fuse`). The operands are built through the frozen `cc_solid_revolve_profile`
+C ABI, surfaced by these additive `Kernel` helpers:
+
+```python
+k = Kernel()
+cyl = k.cylinder_solid(radius=1.0, y0=-3, y1=3)   # true Cylinder wall + disc caps
+sph = k.sphere_solid(radius=1.6)                  # true Sphere (revolved semicircle)
+cone = k.cone_solid(r0=0.5, y0=0, r1=2.5, y1=4)   # true Cone frustum
+box = k.slab_box(half=5.0, z0=-1, z1=1)           # axis-perpendicular half-space
+# a torus is a full circle revolved about the axis:
+from cybercadkernel._cffi import CCProfileSeg
+c = CCProfileSeg(); c.kind = 2; c.cx, c.cy, c.r = 3.0, 0.0, 1.0
+tor = k.revolve_profile([c])
+
+with cyl.common(sph) as lens:                     # cylinder ∩ sphere
+    print(lens.mass_properties().volume)          # matches the closed form
+    assert lens.check_solid().closed_manifold     # watertight
+```
+
+Reachability matrix (verified — `python/examples/curved_booleans.py`):
+
+- **OCCT engine (default desktop build)**: every family and all three ops
+  (COMMON / CUT / FUSE) are reachable and volume-exact.
+- **Native engine (`CYBERCAD_HAS_NUMSCI`, `set_engine(True)`)**: the native S5
+  assemblers fire for the coaxial families they implement (e.g. sphere∩sphere,
+  cone∩cone, cylinder∩sphere — all three ops), verified against the closed form
+  within the tessellation band. The **torus** families need a bare periodic
+  `Kind::Torus` face, which no `cc_*` entry builds natively, so a *pure* native
+  torus boolean is not reachable (it is under OCCT); this is a documented gap.
+
+Run the gallery: `python python/examples/curved_booleans.py` (each family asserts
+watertightness + the closed-form volume — no fabricated numbers).
+
 ### Engine selection & build-flag caveats
 
 The default build is **OCCT** (`kernel.engine == "occt"`). A few capabilities are

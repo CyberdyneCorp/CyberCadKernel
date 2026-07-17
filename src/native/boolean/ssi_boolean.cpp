@@ -5179,7 +5179,8 @@ TorusSphereSetup torusSphereSetup(const CurvedSolid& A, const CurvedSolid& B,
 // appendTubeArc keys off TorusCylSetup; the geometry is identical — a revolved tube band
 // oriented by the true tube-outward reference radiating from the tube-centre circle).
 void appendTorusSphereTubeArc(const TorusSphereSetup& s, double vA, double vB,
-                              VertexPool& pool, std::vector<topo::Shape>& faces) {
+                              VertexPool& pool, std::vector<topo::Shape>& faces,
+                              double outwardSign = 1.0) {
   const int m = s.M;
   auto tubeCentreAt = [&](int i) {
     const double u = kSsiTwoPi * i / s.N;
@@ -5200,7 +5201,8 @@ void appendTorusSphereTubeArc(const TorusSphereSetup& s, double vA, double vB,
         const math::Point3 mid{(prev[i].x + prev[j].x + cur[j].x + cur[i].x) / 4,
                                (prev[i].y + prev[j].y + cur[j].y + cur[i].y) / 4,
                                (prev[i].z + prev[j].z + cur[j].z + cur[i].z) / 4};
-        const math::Vec3 out{mid.x - tc.x, mid.y - tc.y, mid.z - tc.z};
+        const math::Vec3 out{(mid.x - tc.x) * outwardSign, (mid.y - tc.y) * outwardSign,
+                             (mid.z - tc.z) * outwardSign};
         pushPlanarTri(prev[i], prev[j], cur[j], out, pool, faces);
         pushPlanarTri(prev[i], cur[j], cur[i], out, pool, faces);
       }
@@ -5288,6 +5290,43 @@ topo::Shape buildTorusSphereFuse(const CurvedSolid& A, const CurvedSolid& B,
   const math::Point3 poleM = s.axisPt(-s.Rs);
   // apex = the sphere pole; appendSphereCap picks the surface point nearest otherCentre
   // (outer=false). Pass otherCentre = the pole itself so the apex resolves to that pole.
+  appendSphereCap(*s.sph, poleP, seamHi, torusSphereCapRings(s, seamHi.pts, poleP), pool, faces,
+                  /*outer=*/false, /*reversed=*/false);
+  appendSphereCap(*s.sph, poleM, seamLo, torusSphereCapRings(s, seamLo.pts, poleM), pool, faces,
+                  /*outer=*/false, /*reversed=*/false);
+  if (faces.size() < 6) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildSphereTorusCut(A,B) = A − B with the SPHERE the minuend (the ORDER-SENSITIVE reverse of
+// buildTorusSphereCut): the ball MINUS the part of the torus tube inside it — a single closed
+// solid of revolution (the sphere with a concave TOROIDAL GROOVE scooped into its equatorial
+// belt over |z| ≤ z0), NOT the torus-minuend's outer ring. Landed here as the tractable reverse
+// (previously honest-declined → OCCT) via a HOLE-SPLIT of the OUTER (sphere) surface: the ball's
+// surface OUTSIDE the tube = the two SPHERE POLAR CAPS beyond the seams (|z| > z0, the SAME caps
+// the S5-m FUSE emits — the belt between the seams sits inside the tube and is removed), welded to
+// the INNER tube arc as the groove wall, REVERSED (the retained ball material is on the OUTSIDE of
+// the tube, so the groove's outward normal points INTO the removed tube region). The two seam rings
+// (ρ = ρ*, z = ±z0) are shared through one VertexPool so the caps weld to the groove. Gated on the
+// SAME symmetric two-circle poke-through the S5-m COMMON needs. V = V_sph − V_common. The engine's
+// watertight + two-sided volume self-verify is the safety net; a pose that cannot weld robustly
+// HONEST-DECLINES → OCCT.
+topo::Shape buildSphereTorusCut(const CurvedSolid& A, const CurvedSolid& B,
+                                const std::vector<Seam>& seams) {
+  const TorusSphereSetup s = torusSphereSetup(A, B, seams);
+  if (!s.ok) return {};
+  if (A.kind != CurvedKind::Sphere) return {};  // order-sensitive: sphere must be the minuend
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  // Inner tube arc from the +z seam (v0) THROUGH the inner equator (π) to the −z seam (2π−v0) as
+  // the concave groove, REVERSED (material on the OUTSIDE of the tube → outward normal points in).
+  appendTorusSphereTubeArc(s, s.v0, kSsiTwoPi - s.v0, pool, faces, /*outwardSign=*/-1.0);
+  // Two sphere polar caps beyond the seams: the sphere surface OUTSIDE the tube (outward radial).
+  const Seam seamLo = s.seamRing(s.rhoStar, -s.z0);
+  const Seam seamHi = s.seamRing(s.rhoStar, s.z0);
+  const math::Point3 poleP = s.axisPt(s.Rs);
+  const math::Point3 poleM = s.axisPt(-s.Rs);
   appendSphereCap(*s.sph, poleP, seamHi, torusSphereCapRings(s, seamHi.pts, poleP), pool, faces,
                   /*outer=*/false, /*reversed=*/false);
   appendSphereCap(*s.sph, poleM, seamLo, torusSphereCapRings(s, seamLo.pts, poleM), pool, faces,
@@ -5502,7 +5541,8 @@ TorusConeSetup torusConeSetup(const CurvedSolid& A, const CurvedSolid& B,
 // the S5-l appendTubeArc — a revolved tube band oriented by the true tube-outward reference
 // radiating from the tube-centre circle).
 void appendTorusConeTubeArc(const TorusConeSetup& s, double vA, double vB,
-                            VertexPool& pool, std::vector<topo::Shape>& faces) {
+                            VertexPool& pool, std::vector<topo::Shape>& faces,
+                            double outwardSign = 1.0) {
   const int m = s.M;
   auto tubeCentreAt = [&](int i) {
     const double u = kSsiTwoPi * i / s.N;
@@ -5523,7 +5563,8 @@ void appendTorusConeTubeArc(const TorusConeSetup& s, double vA, double vB,
         const math::Point3 mid{(prev[i].x + prev[j].x + cur[j].x + cur[i].x) / 4,
                                (prev[i].y + prev[j].y + cur[j].y + cur[i].y) / 4,
                                (prev[i].z + prev[j].z + cur[j].z + cur[i].z) / 4};
-        const math::Vec3 out{mid.x - tc.x, mid.y - tc.y, mid.z - tc.z};
+        const math::Vec3 out{(mid.x - tc.x) * outwardSign, (mid.y - tc.y) * outwardSign,
+                             (mid.z - tc.z) * outwardSign};
         pushPlanarTri(prev[i], prev[j], cur[j], out, pool, faces);
         pushPlanarTri(prev[i], cur[j], cur[i], out, pool, faces);
       }
@@ -5535,11 +5576,11 @@ void appendTorusConeTubeArc(const TorusConeSetup& s, double vA, double vB,
 // The inner (COMMON) / outer (CUT) tube arcs by minor-angle endpoints, honouring innerFwd.
 // The inner arc goes through the inner equator (ρ=R−r, v=π); the outer through ρ=R+r (v=0).
 void appendTorusConeInnerArc(const TorusConeSetup& s, VertexPool& pool,
-                             std::vector<topo::Shape>& faces) {
+                             std::vector<topo::Shape>& faces, double outwardSign = 1.0) {
   double va = s.innerFwd ? s.v1 : s.v2;
   double vb = s.innerFwd ? s.v2 : s.v1;
   while (vb < va) vb += kSsiTwoPi;   // forward sweep va→vb (through the inner equator)
-  appendTorusConeTubeArc(s, va, vb, pool, faces);
+  appendTorusConeTubeArc(s, va, vb, pool, faces, outwardSign);
 }
 void appendTorusConeOuterArc(const TorusConeSetup& s, VertexPool& pool,
                              std::vector<topo::Shape>& faces) {
@@ -5613,6 +5654,45 @@ topo::Shape buildTorusConeFuse(const CurvedSolid& A, const CurvedSolid& B,
   // Outer tube-arc bulge between the two seams (ρ > line, outside the cone).
   appendTorusConeOuterArc(s, pool, faces);
   // Cone wall above the z2 seam, top disc cap (outward normal +z).
+  appendRevolvedBand(ringS2, ring1, s.O, s.zc, pool, faces, 1.0);
+  appendAxisDiscCap(s.axisPt(s.coneS1), ring1, s.zc, pool, faces);
+  if (faces.size() < 6) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildConeTorusCut(A,B) = A − B with the CONE the minuend (the ORDER-SENSITIVE reverse of
+// buildTorusConeCut): the cone-solid MINUS the part of the torus tube inside it — a single closed
+// solid of revolution (the cone with a concave TOROIDAL GROOVE scooped into its slanted wall over
+// z ∈ [z1, z2]), NOT the torus-minuend's outer ring. Landed here as the tractable reverse
+// (previously honest-declined → OCCT) via the SAME hole-split idiom as buildCylTorusCut: the cone
+// surface OUTSIDE the tube = the two cone wall stubs (coneS0→z1 seam, z2 seam→coneS1) beyond the
+// seams, plus the two cone terminal discs, welded to the INNER tube arc as the groove wall,
+// REVERSED (the retained cone material is inside the cone AND on the axis side of the inner arc, so
+// the groove's outward normal points INTO the removed tube region). The two seam rings (ρ = ρ_i,
+// z = z_i) are shared through one VertexPool so the wall stubs weld to the groove. Gated on the
+// SAME coaxial two-circle poke-through the S5-n COMMON needs (both seams interior to the cone
+// frustum). V = V_cone − V_common. The engine's watertight + two-sided volume self-verify is the
+// safety net; a pose that cannot weld robustly HONEST-DECLINES → OCCT.
+topo::Shape buildConeTorusCut(const CurvedSolid& A, const CurvedSolid& B,
+                              const std::vector<Seam>& seams) {
+  const TorusConeSetup s = torusConeSetup(A, B, seams);
+  if (!s.ok) return {};
+  if (A.kind != CurvedKind::Cone) return {};  // order-sensitive: cone must be the minuend
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const double r0 = s.rCone(s.coneS0), r1 = s.rCone(s.coneS1);
+  if (!(r0 > 1e-9) || !(r1 > 1e-9)) return {};  // a terminal disc collapses on the axis → decline
+  const std::vector<math::Point3> ring0 = s.ring(r0, s.coneS0);        // bottom cap rim
+  const std::vector<math::Point3> ringS1 = s.ring(s.rho1, s.z1);       // z1 seam
+  const std::vector<math::Point3> ringS2 = s.ring(s.rho2, s.z2);       // z2 seam
+  const std::vector<math::Point3> ring1 = s.ring(r1, s.coneS1);        // top cap rim
+  // Bottom disc cap (outward normal −z), cone wall stub up to the z1 seam.
+  appendAxisDiscCap(s.axisPt(s.coneS0), ring0, math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool, faces);
+  appendRevolvedBand(ring0, ringS1, s.O, s.zc, pool, faces, 1.0);
+  // The INNER tube arc as the concave groove, REVERSED (retained cone material on the inner side).
+  appendTorusConeInnerArc(s, pool, faces, /*outwardSign=*/-1.0);
+  // Cone wall stub above the z2 seam, top disc cap (outward normal +z).
   appendRevolvedBand(ringS2, ring1, s.O, s.zc, pool, faces, 1.0);
   appendAxisDiscCap(s.axisPt(s.coneS1), ring1, s.zc, pool, faces);
   if (faces.size() < 6) return {};
@@ -6706,7 +6786,7 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-k: TRANSVERSAL (offset) cylinder∩sphere CUT (sphere − cyl: sphere shell + reversed bore).
       const topo::Shape transCS = buildTransCylSphereCut(*csA, *csB, seams);
       if (!transCS.isNull()) return transCS;
-      // S5-p: TRANSVERSAL torus∩cylinder CUT (honest-decline — torus-outer-zone residual → OCCT).
+      // S5-p: TRANSVERSAL torus∩cylinder CUT (torus − cyl: tube outer zone + reversed cyl bore).
       const topo::Shape transTC = buildTransTorusCylCut(*csA, *csB, seams);
       if (!transTC.isNull()) return transTC;
       // S5-l: COAXIAL torus∩cylinder CUT (torus − cyl: outer tube arc + reversed cylinder bore).
@@ -6718,9 +6798,17 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-m: COAXIAL torus∩sphere CUT (torus − sphere: outer tube arc + reversed sphere zone).
       const topo::Shape torSph = buildTorusSphereCut(*csA, *csB, seams);
       if (!torSph.isNull()) return torSph;
+      // S5-m reverse: COAXIAL sphere∩torus CUT (sphere − torus: two sphere polar caps + reversed
+      // inner tube arc groove).
+      const topo::Shape sphTor = buildSphereTorusCut(*csA, *csB, seams);
+      if (!sphTor.isNull()) return sphTor;
       // S5-n: COAXIAL torus∩cone CUT (torus − cone: outer tube arc + reversed cone chord band).
       const topo::Shape torCone = buildTorusConeCut(*csA, *csB, seams);
       if (!torCone.isNull()) return torCone;
+      // S5-n reverse: COAXIAL cone∩torus CUT (cone − torus: cone wall stubs + discs + reversed
+      // inner tube arc groove).
+      const topo::Shape coneTor = buildConeTorusCut(*csA, *csB, seams);
+      if (!coneTor.isNull()) return coneTor;
       // S5-o: COAXIAL torus∩torus CUT (A − B: outer arc of A + reversed inner arc of B).
       const topo::Shape torTor = buildTorusTorusCut(*csA, *csB, seams);
       if (!torTor.isNull()) return torTor;

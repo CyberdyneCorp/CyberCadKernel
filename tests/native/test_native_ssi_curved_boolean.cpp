@@ -2117,9 +2117,20 @@ CC_TEST(torus_sphere_coaxial_common_fuse_cut_watertight_matches_analytic) {
   CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
   CC_CHECK(vCut <= vTorus + 1e-9);                                // CUT shrinks below the minuend
   CC_CHECK(!nb::boolean_solid(tor, sph, nb::Op::Cut).isNull());
-  // CUT is order-sensitive: sphere − torus is a DIFFERENT topology; the S5-m CUT builder only
-  // handles the TORUS minuend, so sphere − torus declines here → OCCT.
-  CC_CHECK(nb::ssi_boolean_solid(sph, tor, nb::Op::Cut).isNull());
+
+  // ── REVERSE CUT = sphere − torus (order-sensitive) now LANDS (buildSphereTorusCut): the ball
+  // with a concave TOROIDAL GROOVE scooped into its equatorial belt — two sphere polar caps +
+  // reversed inner tube arc groove. A DIFFERENT topology from the torus-minuend outer ring;
+  // watertight, on-surface, ΔV within 1% vs the closed-form V_sph − V_common. ──
+  const double vCutRevTrue = vSph - vCommonTrue;                   // sphere − torus = sphere − ∩
+  const ntopo::Shape cutRev = nb::ssi_boolean_solid(sph, tor, nb::Op::Cut);
+  CC_CHECK(!cutRev.isNull());
+  const double vCutRev = watertightMeshVolume(cutRev);
+  CC_CHECK(vCutRev > 0.0);                                         // watertight → engine accepts
+  CC_CHECK(std::fabs(vCutRev - vCutRevTrue) <= 1e-2 * vCutRevTrue);
+  CC_CHECK(vCutRev <= vSph + 1e-9);                                // sphere − torus ≤ sphere
+  // Partition identity: (sphere − torus) + COMMON = sphere (the closed-form self-consistency).
+  CC_CHECK(std::fabs((vCutRev + vCommonTrue) - vSph) <= 2e-2 * vSph);
 }
 
 // ── (17) TORUS∩SPHERE HONEST DECLINES: spindle / off-centre / off-axis / non-crossing → OCCT ──
@@ -2249,9 +2260,20 @@ CC_TEST(torus_cone_coaxial_common_fuse_cut_watertight_matches_analytic) {
   CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
   CC_CHECK(vCut <= vTorus + 1e-9);                                // CUT shrinks below the minuend
   CC_CHECK(!nb::boolean_solid(tor, cone, nb::Op::Cut).isNull());
-  // CUT is order-sensitive: cone − torus is a DIFFERENT topology; the S5-n CUT builder only
-  // handles the TORUS minuend, so cone − torus declines here → OCCT.
-  CC_CHECK(nb::ssi_boolean_solid(cone, tor, nb::Op::Cut).isNull());
+
+  // ── REVERSE CUT = cone − torus (order-sensitive) now LANDS (buildConeTorusCut): the cone with a
+  // concave TOROIDAL GROOVE scooped into its slanted wall — cone wall stubs + terminal discs +
+  // reversed inner tube arc groove. A DIFFERENT topology from the torus-minuend outer ring;
+  // watertight, on-surface, ΔV within 1% vs the closed-form V_cone − V_common. ──
+  const double vCutRevTrue = vConeFull - vCommonTrue;             // cone − torus = cone − ∩
+  const ntopo::Shape cutRev = nb::ssi_boolean_solid(cone, tor, nb::Op::Cut);
+  CC_CHECK(!cutRev.isNull());
+  const double vCutRev = watertightMeshVolume(cutRev);
+  CC_CHECK(vCutRev > 0.0);                                        // watertight → engine accepts
+  CC_CHECK(std::fabs(vCutRev - vCutRevTrue) <= 1e-2 * vCutRevTrue);
+  CC_CHECK(vCutRev <= vConeFull + 1e-9);                          // cone − torus ≤ cone
+  // Partition identity: (cone − torus) + COMMON = cone (the closed-form self-consistency).
+  CC_CHECK(std::fabs((vCutRev + vCommonTrue) - vConeFull) <= 2e-2 * vConeFull);
 }
 
 // ── (19) TORUS∩CONE HONEST DECLINES: spindle / near-cylindrical / non-crossing / off-axis → OCCT ──

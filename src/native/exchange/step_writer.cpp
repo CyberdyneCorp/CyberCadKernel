@@ -17,6 +17,7 @@
 #include "native/topology/explore.h"
 #include "native/topology/shape.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -261,15 +262,59 @@ class StepBuilder {
     if (kids.size() >= 2) v1 = vertex(kids.back().located(edge.location()));
     if (v1 == 0) v1 = v0;  // degenerate/closed edge — same vertex both ends
 
+    // A MAJOR arc emitted with ASCENDING trims [min,max] (see edgeGeometry) reads
+    // back with its start vertex bound to C(min). The native edge stores v0 = C(first);
+    // when the sweep is DESCENDING (first > last) C(first) = C(max), so the stored v0/v1
+    // must be swapped to keep the emitted (v0,v1) = (C(min),C(max)) — otherwise the
+    // reader binds C(min) to the wrong physical vertex and the arc's ends flip, breaking
+    // the watertight weld. A non-trimmed edge keeps its stored order (byte-stable).
+    if (cr && needsArcTrim(*cr->curve, cr->first, cr->last) && cr->first > cr->last)
+      std::swap(v0, v1);
+
     const std::string gkey = edgeGeomKey(v0, v1, cr ? cr->curve : nullptr, cr ? cr->location
                                                                              : topo::Location{});
     if (auto it = edgeGeomCache_.find(gkey); it != edgeGeomCache_.end()) return it->second;
 
-    const int crv = cr ? curve(*cr->curve, cr->location) : 0;
+    const int crv = cr ? edgeGeometry(*cr) : 0;
     const int id = w_.emit("EDGE_CURVE('',#" + std::to_string(v0) + ",#" + std::to_string(v1) +
                            ",#" + std::to_string(crv) + ",.T.)");
     edgeGeomCache_.emplace(gkey, id);
     return id;
+  }
+
+  // The 3D curve #id referenced by an EDGE_CURVE. For a MAJOR (span > π) circle /
+  // ellipse ARC this is a TRIMMED_CURVE wrapping the basis CIRCLE with the two
+  // PARAMETER_VALUE trims of the edge — otherwise the reader cannot recover the sweep:
+  // a major arc shares BOTH endpoints with its minor complement, so a bare CIRCLE reads
+  // back as the wrong (shorter) 90°-class arc and the round-trip solid is non-watertight
+  // (the L8 writer-side residual). The trims are emitted ASCENDING [min,max] in the
+  // curve's OWN parametrization (radians, C(t)=O+r·cost·X+r·sint·Y) — exactly the
+  // convention step_reader.cpp's trimmedRange consumes (it sorts and binds the edge's
+  // start vertex to C(min)) and validates against the edge vertices. A ≤π arc (its minor
+  // complement IS the intended sweep) and a full-turn closed circle stay a bare CIRCLE,
+  // byte-for-byte unchanged — the reader's vertex-derived range already reconstructs
+  // those.
+  int edgeGeometry(const topo::EdgeCurveResult& cr) {
+    const topo::EdgeCurve& c = *cr.curve;
+    const int basis = curve(c, cr.location);
+    if (!needsArcTrim(c, cr.first, cr.last)) return basis;
+    const double lo = std::min(cr.first, cr.last), hi = std::max(cr.first, cr.last);
+    return w_.emit("TRIMMED_CURVE('',#" + std::to_string(basis) + ",(PARAMETER_VALUE(" +
+                   real(lo) + ")),(PARAMETER_VALUE(" + real(hi) + ")),.T.,.PARAMETER.)");
+  }
+
+  // A circle/ellipse edge whose directed sweep exceeds π (a MAJOR arc) is ambiguous
+  // under the reader's vertex-only, shortest-CCW range reconstruction and MUST carry
+  // explicit trims. A near-full turn (span ≈ 2π, i.e. a closed rim) is handled by the
+  // reader's closed-rim path and stays untrimmed; a ≤π arc is unambiguous.
+  static bool needsArcTrim(const topo::EdgeCurve& c, double first, double last) {
+    using K = topo::EdgeCurve::Kind;
+    if (c.kind != K::Circle && c.kind != K::Ellipse) return false;
+    const double kPi = 3.14159265358979323846;
+    const double span = std::fabs(last - first);
+    // A full turn (closed rim) or degenerate span is not a disambiguable arc.
+    if (span >= 2.0 * kPi - 1e-9 || span <= 1e-9) return false;
+    return span > kPi + 1e-9;
   }
 
   // ORIENTED_EDGE wrapping an EDGE_CURVE with the edge's orientation in the wire.

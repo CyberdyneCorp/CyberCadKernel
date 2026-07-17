@@ -94,6 +94,14 @@ bool watertight(const topo::Shape& s, double deflection = 0.005) {
   return ntess::isWatertight(ntess::SolidMesher{p}.mesh(s));
 }
 
+// Count non-overlapping occurrences of `needle` in `hay`.
+int countOf(const std::string& hay, const std::string& needle) {
+  int n = 0;
+  for (std::size_t pos = 0; (pos = hay.find(needle, pos)) != std::string::npos; pos += needle.size())
+    ++n;
+  return n;
+}
+
 // Count faces / edges / vertices of a shape (dedup explorer).
 int countType(const topo::Shape& s, topo::ShapeType t) {
   int n = 0;
@@ -2696,6 +2704,149 @@ CC_TEST(major_arc_unfaithful_trim_falls_back_to_vertices) {
   const double span = circleArcSpan(ex::readStepString(majorArcFaceStep(
       "(PARAMETER_VALUE(1.0)),(PARAMETER_VALUE(2.0)),.T.,.PARAMETER.")));  // ≠ vertex angles
   CC_CHECK(std::fabs(span - kHalfPi) < 1e-6);  // ignored the bogus trim, kept the vertices
+}
+
+// ── L8-HARDEN (WRITER SIDE) — a native >π arc rim round-trips WATERTIGHT ─────────
+// The writer-side twin of the two reader tests above. A NATIVE solid carrying a
+// genuine MAJOR (>π) circle-arc rim must write→read back to the SAME watertight
+// solid. The fixture is a hand-built 270° partial cylinder (a full cylinder with a
+// 90° pie wedge removed): a single 270° CYLINDRICAL_SURFACE side patch, two 270° pie
+// PLANE caps, and two planar notch walls closing the wedge. Its top and bottom rim
+// edges are SINGLE 270° CIRCLE arcs — the ambiguous case. The arc is oriented
+// CLOCKWISE (first=0, last=−3π/2), the exact orientation the reader's shortest-CCW
+// vertex-only reconstruction gets WRONG: without the writer emitting the disambiguating
+// TRIMMED_CURVE trims, each rim reads back as its 90° MINOR complement and the round-
+// trip solid is non-watertight (volume collapses to the 90° wedge ≈ 78.5, NOT 235.6).
+// With the trims the writer now emits (ascending [min,max] + the matching vertex order),
+// the reader rebuilds the true 270° arcs and the solid welds watertight at the source
+// volume. A non-watertight round-trip MUST fail this test (never widen a tolerance).
+namespace {
+namespace mm = cybercad::native::math;
+
+topo::Shape rtVertex(double x, double y, double z) {
+  return topo::ShapeBuilder::makeVertex(mm::Point3{x, y, z});
+}
+topo::Shape rtLine(const topo::Shape& a, const topo::Shape& b) {
+  topo::EdgeCurve c{};
+  c.kind = topo::EdgeCurve::Kind::Line;
+  return topo::ShapeBuilder::makeEdge(c, 0.0, 1.0, a, b);
+}
+// A CIRCLE arc edge over the directed param range [t0,t1] (radians), centre on the
+// axis at height z, radius R, sharing the two rim vertices.
+topo::Shape rtArc(double R, double z, double t0, double t1, const topo::Shape& v0,
+                  const topo::Shape& v1) {
+  topo::EdgeCurve c{};
+  c.kind = topo::EdgeCurve::Kind::Circle;
+  c.frame = mm::Ax3{mm::Point3{0, 0, z}, mm::Dir3{1, 0, 0}, mm::Dir3{0, 1, 0}, mm::Dir3{0, 0, 1}};
+  c.radius = R;
+  return topo::ShapeBuilder::makeEdgeWithVertices(c, t0, t1, {v0, v1});
+}
+
+// A 270° partial cylinder, R radius, h height, arc swept CLOCKWISE (first=0 → last=−1.5π).
+topo::Shape partialCylinder270(double R, double h) {
+  const double kPi = 3.14159265358979323846;
+  const double t0 = 0.0, t1 = -1.5 * kPi;  // clockwise 270° — the ambiguous orientation
+  auto pcLine = [](mm::Point3 o, mm::Vec3 d) {
+    topo::PCurve pc{};
+    pc.kind = topo::EdgeCurve::Kind::Line;
+    pc.origin2d = o;
+    pc.dir2d = d;
+    return pc;
+  };
+  auto pcCircle = [](mm::Point3 o, double r) {
+    topo::PCurve pc{};
+    pc.kind = topo::EdgeCurve::Kind::Circle;
+    pc.origin2d = o;
+    pc.dir2d = mm::Vec3{r, 0, 0};  // dir2d.x carries the pcurve radius
+    return pc;
+  };
+  auto vb0 = rtVertex(R * std::cos(t0), R * std::sin(t0), 0);
+  auto vb1 = rtVertex(R * std::cos(t1), R * std::sin(t1), 0);
+  auto vt0 = rtVertex(R * std::cos(t0), R * std::sin(t0), h);
+  auto vt1 = rtVertex(R * std::cos(t1), R * std::sin(t1), h);
+  auto cb = rtVertex(0, 0, 0), ct = rtVertex(0, 0, h);
+
+  // Cylinder side patch (one 270° non-periodic patch): bottom arc (v=0), right seam
+  // (u=t1), top arc reversed, left seam (u=t0).
+  topo::FaceSurface side{};
+  side.kind = topo::FaceSurface::Kind::Cylinder;
+  side.frame = mm::Ax3{mm::Point3{0, 0, 0}, mm::Dir3{1, 0, 0}, mm::Dir3{0, 1, 0}, mm::Dir3{0, 0, 1}};
+  side.radius = R;
+  auto sf = topo::ShapeBuilder::makeFace(side, topo::Shape{});
+  auto bArc = rtArc(R, 0, t0, t1, vb0, vb1), tArc = rtArc(R, h, t0, t1, vt0, vt1);
+  auto lSeam = rtLine(vb0, vt0), rSeam = rtLine(vb1, vt1);
+  auto bA = topo::ShapeBuilder::addPCurve(bArc, sf.tshape(), pcLine({0, 0, 0}, {1, 0, 0}));
+  auto tA = topo::ShapeBuilder::addPCurve(tArc, sf.tshape(), pcLine({0, h, 0}, {1, 0, 0}));
+  auto lS = topo::ShapeBuilder::addPCurve(lSeam, sf.tshape(), pcLine({t0, 0, 0}, {0, h, 0}));
+  auto rS = topo::ShapeBuilder::addPCurve(rSeam, sf.tshape(), pcLine({t1, 0, 0}, {0, h, 0}));
+  auto sideFace = topo::ShapeBuilder::makeFace(
+      side, topo::ShapeBuilder::makeWire({bA, rS, tA.reversedShape(), lS.reversedShape()}));
+
+  // Bottom + top pie caps (arc + two radial lines to the centre).
+  auto pieCap = [&](double z, const topo::Shape& arc, const topo::Shape& vc, const topo::Shape& v0,
+                    const topo::Shape& v1, topo::Orientation orient) {
+    topo::FaceSurface disk{};
+    disk.kind = topo::FaceSurface::Kind::Plane;
+    disk.frame =
+        mm::Ax3{mm::Point3{0, 0, z}, mm::Dir3{1, 0, 0}, mm::Dir3{0, 1, 0}, mm::Dir3{0, 0, 1}};
+    auto df = topo::ShapeBuilder::makeFace(disk, topo::Shape{});
+    auto arcOn = topo::ShapeBuilder::addPCurve(arc, df.tshape(), pcCircle({0, 0, 0}, R));
+    auto r0 = rtLine(vc, v0), r1 = rtLine(v1, vc);
+    auto r0On = topo::ShapeBuilder::addPCurve(
+        r0, df.tshape(), pcLine({0, 0, 0}, {R * std::cos(t0), R * std::sin(t0), 0}));
+    auto r1On = topo::ShapeBuilder::addPCurve(
+        r1, df.tshape(),
+        pcLine({R * std::cos(t1), R * std::sin(t1), 0}, {-R * std::cos(t1), -R * std::sin(t1), 0}));
+    return topo::ShapeBuilder::makeFace(disk, topo::ShapeBuilder::makeWire({r0On, arcOn, r1On}), {},
+                                        orient);
+  };
+  auto botCap = pieCap(0, bArc, cb, vb0, vb1, topo::Orientation::Reversed);
+  auto topCap = pieCap(h, tArc, ct, vt0, vt1, topo::Orientation::Forward);
+
+  // Two planar notch walls (radial quads through the axis) closing the wedge.
+  auto n0 = mm::cross(mm::Vec3{R * std::cos(t0), R * std::sin(t0), 0}, mm::Vec3{0, 0, 1});
+  auto n1 = mm::cross(mm::Vec3{0, 0, 1}, mm::Vec3{R * std::cos(t1), R * std::sin(t1), 0});
+  auto wall0 = cst::detail::planarFace({cb, vb0, vt0, ct}, mm::Dir3{n0}, topo::Orientation::Forward);
+  auto wall1 = cst::detail::planarFace({cb, ct, vt1, vb1}, mm::Dir3{n1}, topo::Orientation::Forward);
+
+  return topo::ShapeBuilder::makeSolid(
+      {topo::ShapeBuilder::makeShell({sideFace, botCap, topCap, wall0, wall1})});
+}
+}  // namespace
+
+CC_TEST(native_major_arc_partial_cylinder_round_trips_watertight) {
+  const double kPi = 3.14159265358979323846;
+  const double R = 5.0, h = 4.0;
+  const topo::Shape orig = partialCylinder270(R, h);
+  CC_CHECK(!orig.isNull());
+  if (orig.isNull()) return;
+  CC_CHECK(watertight(orig));  // the source is a valid closed 270° sector
+
+  // The writer MUST emit a TRIMMED_CURVE for each >π rim arc (2 rims → 2 trims); the
+  // basis geometry is still a bare CIRCLE (radius 5, one per rim).
+  const std::string step = ex::writeStepString(orig, "pc270");
+  CC_CHECK(!step.empty());
+  CC_CHECK(countOf(step, "TRIMMED_CURVE(") == 2);   // the disambiguating major-arc trims
+  CC_CHECK(countOf(step, "PARAMETER_VALUE(") == 4);  // two directed trims per TRIMMED_CURVE
+  CC_CHECK(countOf(step, "CIRCLE(") == 2);           // the two basis rim circles
+
+  // Read it back: WITHOUT the trims each rim would collapse to its 90° minor complement
+  // and the solid would be non-watertight with the 90°-wedge volume (~78.5); with them
+  // the reader rebuilds the true 270° arcs and the solid welds watertight at the source
+  // volume (~0.75·π·R²·h ≈ 235.6).
+  const topo::Shape back = ex::readStepString(step);
+  CC_CHECK(!back.isNull());
+  if (back.isNull()) return;
+  CC_CHECK(watertight(back));  // FAILS (as required) if the major arc reads back as minor
+
+  const double v0 = volumeOf(orig), v1 = volumeOf(back);
+  CC_CHECK(v0 > 0.0 && v1 > 0.0);
+  CC_CHECK(std::fabs(v1 - v0) / v0 < 1e-9);  // reconstructs the SAME solid
+  const double truth = 0.75 * kPi * R * R * h;  // 235.619…
+  CC_CHECK(std::fabs(v0 - truth) / truth < 5e-3);
+  // Guard against the exact residual: the collapsed 90°-minor solid would be a quarter
+  // wedge (~78.5). Assert we are decisively NOT there.
+  CC_CHECK(v1 > 0.5 * truth);
 }
 
 CC_RUN_ALL()

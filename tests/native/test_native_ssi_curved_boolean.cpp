@@ -1594,12 +1594,43 @@ CC_TEST(cyl_sphere_transversal_offset_common_watertight_matches_numeric) {
   CC_CHECK(vSwapped > 0.0);
   CC_CHECK(std::fabs(vSwapped - vCommonNumeric) <= 1e-2 * vCommonNumeric);
 
-  // CUT / FUSE honest-decline for the transversal pose (the sphere-outer-zone weld between two
-  // non-planar seams is the transversal residual) → NULL → OCCT. Never a leaky solid.
-  CC_CHECK(nb::ssi_boolean_solid(sph, cyl, nb::Op::Cut).isNull());
-  CC_CHECK(nb::ssi_boolean_solid(cyl, sph, nb::Op::Cut).isNull());
-  CC_CHECK(nb::ssi_boolean_solid(cyl, sph, nb::Op::Fuse).isNull());
-  CC_CHECK(nb::ssi_boolean_solid(sph, cyl, nb::Op::Fuse).isNull());
+  // ── CUT / FUSE now LAND (S5-k transversal band via appendSphereOuterZoneBetweenSeams). ──
+  // The integration box above is sized for the COMMON (it does NOT enclose the whole sphere in
+  // z or the whole finite cylinder), so the COMMON is the only region measured directly on the
+  // grid; every CUT/FUSE oracle is the exact analytic V(A)/V(B) minus that numeric COMMON
+  // (inclusion–exclusion) — the deterministic numeric cross-check the task requires.
+  const double vCutSphNumeric = vSph - vCommonNumeric;                // sphere − cyl = sph − ∩
+  const double vCutCylNumeric = vCyl - vCommonNumeric;                // cyl − sphere = cyl − ∩
+  const double vFuseNumeric = vSph + vCyl - vCommonNumeric;           // A ∪ B (inclusion–excl.)
+
+  // CUT sphere − cylinder: watertight, on-surface outer zone + reversed bore; ΔV within 1%.
+  const ntopo::Shape cutSC = nb::ssi_boolean_solid(sph, cyl, nb::Op::Cut);
+  CC_CHECK(!cutSC.isNull());
+  const double vCutSC = watertightMeshVolume(cutSC);
+  CC_CHECK(vCutSC > 0.0);                                              // watertight → engine accepts
+  CC_CHECK(std::fabs(vCutSC - vCutSphNumeric) <= 1e-2 * vCutSphNumeric);
+  CC_CHECK(vCutSC < vSph + 1e-9);                                     // A − B ≤ A
+
+  // CUT cylinder − sphere: two dimpled cylinder stubs; watertight; ΔV within 1%.
+  const ntopo::Shape cutCS = nb::ssi_boolean_solid(cyl, sph, nb::Op::Cut);
+  CC_CHECK(!cutCS.isNull());
+  const double vCutCS = watertightMeshVolume(cutCS);
+  CC_CHECK(vCutCS > 0.0);
+  CC_CHECK(std::fabs(vCutCS - vCutCylNumeric) <= 1e-2 * vCutCylNumeric);
+  CC_CHECK(vCutCS < vCyl + 1e-9);
+
+  // FUSE (both operand orders): watertight union envelope; ΔV within 1%; symmetric.
+  const ntopo::Shape fuseCS = nb::ssi_boolean_solid(cyl, sph, nb::Op::Fuse);
+  const ntopo::Shape fuseSC = nb::ssi_boolean_solid(sph, cyl, nb::Op::Fuse);
+  CC_CHECK(!fuseCS.isNull() && !fuseSC.isNull());
+  const double vFuseCS = watertightMeshVolume(fuseCS), vFuseSC = watertightMeshVolume(fuseSC);
+  CC_CHECK(vFuseCS > 0.0 && vFuseSC > 0.0);
+  CC_CHECK(std::fabs(vFuseCS - vFuseNumeric) <= 1e-2 * vFuseNumeric);
+  CC_CHECK(std::fabs(vFuseSC - vFuseNumeric) <= 1e-2 * vFuseNumeric);
+  CC_CHECK(vFuseCS >= std::max(vSph, vCyl) - 1e-9);                   // union ≥ max(A,B)
+
+  // Partition identity: COMMON + (sphere − cyl) = sphere (the numeric oracle self-consistency).
+  CC_CHECK(std::fabs((vCommon + vCutSC) - vSph) <= 2e-2 * vSph);
 }
 
 // ── (13) TRANSVERSAL cyl∩sphere REDUCES TO COAXIAL: the offset→0 guarantee ────────────────────
@@ -1636,6 +1667,32 @@ CC_TEST(cyl_sphere_transversal_reduces_to_coaxial_at_zero_offset) {
   const double vOff = watertightMeshVolume(offCommon);
   CC_CHECK(vOff > 0.0);
   CC_CHECK(vCoax - vOff > 1e-2);   // coaxial overlap strictly larger than the offset overlap
+}
+
+// ── (13b) TRANSVERSAL cyl∩sphere CUT/FUSE still HONEST-DECLINE for a POLE-GRAZING pose ────────
+// The S5-k seam-band CUT/FUSE need the two-cap+outer-zone topology, valid ONLY when both sphere
+// poles sit strictly INSIDE the cylinder. A THIN cylinder offset so far that a sphere pole falls
+// OUTSIDE it (offset + Rc close to Rs — the cylinder grazes past the pole region) makes the
+// sphere-outside-cyl set no longer two-cap-complementary, so a single monotone φ-sweep cannot
+// tile the outer zone. Rather than emit a leaky shell, S5-k HONEST-DECLINES those ops → NULL →
+// OCCT (the DISAGREED=0 discipline). COMMON still lands (it needs only the two inner caps + the
+// cylinder band). This regression pins the decline boundary — no silent-wrong solid.
+CC_TEST(cyl_sphere_transversal_pole_grazing_cut_fuse_decline) {
+  const double Rc = 0.4, Rs = 2.0, off = 1.55, cLo = -3.0, cHi = 3.0;  // off+Rc=1.95 → poles OUTSIDE
+  const ntopo::Shape cyl = makeCyl(/*Y*/ 1, Rc, cLo, cHi);
+  const ntopo::Shape sph = makeSphere(off, Rs);
+  CC_CHECK(!cyl.isNull() && !sph.isNull());
+  const auto csCyl = sd::recogniseCurvedSolid(cyl);
+  const auto csSph = sd::recogniseCurvedSolid(sph);
+  CC_CHECK(csCyl && csSph);
+  // The cylinder still pierces the sphere (two closed loops), so COMMON lands …
+  const ntopo::Shape common = nb::ssi_boolean_solid(cyl, sph, nb::Op::Common);
+  if (!common.isNull()) CC_CHECK(watertightMeshVolume(common) > 0.0);
+  // … but CUT / FUSE HONEST-DECLINE (pole outside cyl → outer-zone untileable) → NULL → OCCT.
+  CC_CHECK(nb::ssi_boolean_solid(sph, cyl, nb::Op::Cut).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(cyl, sph, nb::Op::Cut).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(cyl, sph, nb::Op::Fuse).isNull());
+  CC_CHECK(nb::ssi_boolean_solid(sph, cyl, nb::Op::Fuse).isNull());
 }
 
 // ── (14) COAXIAL TORUS∩CYLINDER COMMON / FUSE / CUT (S5-l) — the TORUS surface family ──

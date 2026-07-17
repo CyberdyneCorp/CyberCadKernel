@@ -2808,12 +2808,38 @@ struct TransCylSphereSetup {
   double offset = 0.0;       ///< perpendicular distance of the sphere centre from the cyl axis
   int N = 0;                 ///< common azimuth sample count (seam-chord bounded)
   Seam seamLo{}, seamHi{};   ///< the two traced seams, resampled + ordered lo/hi along zc
+  double cylLo = 0.0, cylHi = 0.0;  ///< cylinder axial extent (v param) ordered along +zc
+  // The two-cap+outer-zone topology (COMMON caps = the sphere's two polar caps INSIDE the
+  // cylinder; the CUT/FUSE outer zone = the rest of the sphere OUTSIDE the cylinder, the long
+  // way round) is only valid when BOTH sphere poles (along ±zc from the centre) sit strictly
+  // INSIDE the cylinder. When a pole falls outside (a very thin cylinder grazing the pole
+  // region) the sphere-outside-cylinder set is no longer two-cap-complementary and the outer
+  // zone cannot be tiled by a single monotone φ-sweep → decline (kept honest). Gated in setup.
+  bool polesInsideCyl = false;
   // A point on the cylinder axis far beyond the lower / upper seam (selects each cap's apex).
   math::Point3 axisFarM() const {
     return math::Point3{O.x - zc.x * 1e4, O.y - zc.y * 1e4, O.z - zc.z * 1e4};
   }
   math::Point3 axisFarP() const {
     return math::Point3{O.x + zc.x * 1e4, O.y + zc.y * 1e4, O.z + zc.z * 1e4};
+  }
+  // Sphere pole along −zc / +zc (the two cap apices; the caps' furthest-from-equator points).
+  math::Point3 poleM() const {
+    return math::Point3{C.x - zc.x * Rs, C.y - zc.y * Rs, C.z - zc.z * Rs};
+  }
+  math::Point3 poleP() const {
+    return math::Point3{C.x + zc.x * Rs, C.y + zc.y * Rs, C.z + zc.z * Rs};
+  }
+  // A cylinder wall ring at axial station v, sampled at the SAME N azimuths as seamLo/seamHi
+  // (index i ↔ seam index i), so an end disc / wall band welds ring-to-ring through the pool.
+  // The seam azimuth is read from the cylinder (u,v) track (uvB if the cylinder is operand B).
+  std::vector<math::Point3> cylRing(double v, bool cylIsB) const {
+    std::vector<math::Point3> r(seamLo.pts.size());
+    for (size_t i = 0; i < seamLo.pts.size(); ++i) {
+      const double u = cylIsB ? seamLo.uvB[i].first : seamLo.uvA[i].first;
+      r[i] = cyl->point(u, v);
+    }
+    return r;
   }
 };
 
@@ -2904,6 +2930,10 @@ TransCylSphereSetup transCylSphereSetup(const CurvedSolid& A, const CurvedSolid&
 
   st.cyl = cylPtr; st.sph = sphPtr; st.O = O; st.zc = zc; st.C = C;
   st.Rc = Rc; st.Rs = Rs; st.offset = offset; st.N = N;
+  // Cylinder axial extent, ordered so cylLo ≤ cylHi along +zc (vLo/vHi already are, but the
+  // recognised axis may be flipped relative to zc; keep the ordered pair for the end discs).
+  st.cylLo = std::min(cyl.vLo, cyl.vHi);
+  st.cylHi = std::max(cyl.vLo, cyl.vHi);
   const double m0 = seamAxialMean(st, s0), m1 = seamAxialMean(st, s1);
   if (std::fabs(m0 - m1) < 1e-4) return st;                // both loops at one station → not two poles
   st.seamLo = (m0 <= m1) ? s0 : s1;
@@ -2925,6 +2955,13 @@ TransCylSphereSetup transCylSphereSetup(const CurvedSolid& A, const CurvedSolid&
   if (classifyPoint(cyl, capApex(st.axisFarM()), kSsiTol) != 1) return st;
   if (classifyPoint(cyl, capApex(st.axisFarP()), kSsiTol) != 1) return st;
 
+  // OUTER-ZONE gate (used by CUT/FUSE, not COMMON): both sphere poles (±zc from the centre)
+  // must be strictly INSIDE the cylinder. Then the sphere splits cleanly into the two polar
+  // caps (inside the cyl → the COMMON caps) and one connected outer zone (outside the cyl →
+  // the CUT/FUSE band, the long way round), tileable by a monotone equator-crossing φ-sweep.
+  st.polesInsideCyl = classifyPoint(cyl, st.poleM(), kSsiTol) == 1 &&
+                      classifyPoint(cyl, st.poleP(), kSsiTol) == 1;
+
   st.ok = true;
   return st;
 }
@@ -2943,6 +2980,92 @@ int transCapRings(const TransCylSphereSetup& s, const Seam& seam, const math::Po
   return std::clamp(
       static_cast<int>(std::ceil(std::max(theta, 1e-6) * std::sqrt(s.Rs / (2.0 * kCapSagitta)))), 4,
       48);
+}
+
+// ── SPHERE OUTER ZONE between two NON-PLANAR seams (the transversal seam-band primitive) ──
+// The band of the sphere surface that lies OUTSIDE the cylinder — the sphere ZONE between the
+// two traced seams taken the LONG way round (away from the bore). This is the primitive the
+// transversal CUT / FUSE need and that the coaxial `appendSphereZone` cannot supply: the two
+// seams are NON-PLANAR (generalised Viviani) curves that do NOT lie on a common latitude, and
+// the two seam nodes at a shared cylinder azimuth are (near-)antipodal on the sphere, so a raw
+// 3-D great-circle slerp between them is ambiguous and picks the SHORT arc — which cuts THROUGH
+// the bore (through the two polar caps that belong to the COMMON), not around the outside.
+//
+// The fix uses the sphere's OWN spherical coordinates about the CYLINDER AXIS zc (as the polar
+// axis, at the sphere centre): every seam node has a polar angle φ (from zc) and an azimuth θ
+// (around zc). Because both seams pass through the same cylinder-wall azimuth per index, the
+// two nodes at index i share θ; seamHi sits near the +zc pole (small φ) and seamLo near the −zc
+// pole (large φ). The outer zone is then swept at CONSTANT θ by interpolating φ LINEARLY from
+// φ_hi(i) UP to φ_lo(i) — i.e. crossing the EQUATOR (the far side, away from the bore) — never
+// approaching either pole. Every interior row point is placed EXACTLY on the sphere (centre +
+// unit(dir)·Rs), so it is on-surface to machine precision; the outer rows ARE the pooled seam
+// nodes, so the zone welds ring-to-ring to whatever bounds the seams (the reversed cylinder
+// tunnel for CUT sphere−cyl, the cylinder end stubs for FUSE). Outward radial normal by
+// default; `outwardSign=-1` for a reversed (inward) orientation. Row count from the zone's
+// polar span + kCapSagitta (the appendSphereZone discipline). Pre: both poles inside the cyl
+// (the setup's polesInsideCyl gate) so the sweep is a clean monotone equator crossing.
+//
+// systems-band (~16 — θ/φ decode + monotone φ-sweep + quad emit); flagged per the policy.
+void appendSphereOuterZoneBetweenSeams(const math::Point3& C, double Rs, const math::Vec3& zc,
+                                       const Seam& seamHi, const Seam& seamLo, VertexPool& pool,
+                                       std::vector<topo::Shape>& faces, double outwardSign = 1.0) {
+  const int n = static_cast<int>(seamHi.pts.size());
+  if (n < 3 || static_cast<int>(seamLo.pts.size()) != n) return;
+  // Orthonormal (ex,ey) spanning the plane ⟂ zc, at C, for the azimuth θ about zc.
+  const math::Vec3 seed =
+      std::fabs(zc.x) < 0.9 ? math::Vec3{1, 0, 0} : math::Vec3{0, 1, 0};
+  math::Vec3 ex = seed - zc * math::dot(seed, zc);
+  ex = ex * (1.0 / std::max(math::norm(ex), 1e-12));
+  const math::Vec3 ey = math::cross(zc, ex);
+  auto decode = [&](const math::Point3& p) {
+    math::Vec3 d{p.x - C.x, p.y - C.y, p.z - C.z};
+    d = d * (1.0 / std::max(math::norm(d), 1e-12));
+    const double phi = std::acos(std::clamp(math::dot(d, zc), -1.0, 1.0));  // from +zc pole
+    const double th = std::atan2(math::dot(d, ey), math::dot(d, ex));
+    return std::pair<double, double>{th, phi};
+  };
+  auto dirOf = [&](double th, double phi) {
+    const double sp = std::sin(phi), cp = std::cos(phi);
+    return math::Vec3{sp * (std::cos(th) * ex.x + std::sin(th) * ey.x) + cp * zc.x,
+                      sp * (std::cos(th) * ex.y + std::sin(th) * ey.y) + cp * zc.y,
+                      sp * (std::cos(th) * ex.z + std::sin(th) * ey.z) + cp * zc.z};
+  };
+  // Per-index (θ,φ) of the two seams; φ_hi (small) → φ_lo (large) is the equator-crossing span.
+  std::vector<double> thHi(n), phHi(n), thLo(n), phLo(n);
+  double spanMax = 0.0;
+  for (int i = 0; i < n; ++i) {
+    auto h = decode(seamHi.pts[i]);
+    auto l = decode(seamLo.pts[i]);
+    thHi[i] = h.first; phHi[i] = h.second;
+    thLo[i] = l.first; phLo[i] = l.second;
+    // Unwrap θ_lo onto θ_hi's branch (shared azimuth per index; guard the ±π seam).
+    double dth = thLo[i] - thHi[i];
+    if (dth > kSsiPi) thLo[i] -= kSsiTwoPi;
+    else if (dth < -kSsiPi) thLo[i] += kSsiTwoPi;
+    spanMax = std::max(spanMax, std::fabs(phLo[i] - phHi[i]));
+  }
+  const int rows = std::clamp(
+      static_cast<int>(std::ceil(std::max(spanMax, 1e-6) * std::sqrt(Rs / (2.0 * kCapSagitta)))), 2,
+      64);
+  auto rowPt = [&](int r, int i) -> math::Point3 {
+    if (r == 0) return seamHi.pts[i];       // top ring = pooled upper-seam node
+    if (r == rows) return seamLo.pts[i];    // bottom ring = pooled lower-seam node
+    const double t = static_cast<double>(r) / rows;
+    const math::Vec3 d = dirOf(thHi[i] + (thLo[i] - thHi[i]) * t, phHi[i] + (phLo[i] - phHi[i]) * t);
+    return math::Point3{C.x + d.x * Rs, C.y + d.y * Rs, C.z + d.z * Rs};
+  };
+  for (int r = 0; r < rows; ++r)
+    for (int i = 0; i < n; ++i) {
+      const int j = (i + 1) % n;
+      const math::Point3 a = rowPt(r, i), b = rowPt(r, j);
+      const math::Point3 c = rowPt(r + 1, j), dd = rowPt(r + 1, i);
+      const math::Point3 ctr{(a.x + b.x + c.x + dd.x) / 4, (a.y + b.y + c.y + dd.y) / 4,
+                             (a.z + b.z + c.z + dd.z) / 4};
+      const math::Vec3 ref{(ctr.x - C.x) * outwardSign, (ctr.y - C.y) * outwardSign,
+                           (ctr.z - C.z) * outwardSign};  // ±sphere radial
+      pushPlanarTri(a, b, c, ref, pool, faces);
+      pushPlanarTri(a, c, dd, ref, pool, faces);
+    }
 }
 
 // buildTransCylSphereCommon(A,B) = COMMON of the TRANSVERSAL (offset) cylinder∩sphere: the
@@ -2967,29 +3090,89 @@ topo::Shape buildTransCylSphereCommon(const CurvedSolid& A, const CurvedSolid& B
 }
 
 // buildTransCylSphereCut / buildTransCylSphereFuse — the transversal CUT / FUSE of the offset
-// cylinder∩sphere. Both need the sphere OUTER SHELL: the sphere surface OUTSIDE the cylinder,
-// i.e. the sphere ZONE between the two NON-PLANAR traced seams taken the LONG way round (away
-// from the bore). Unlike the coaxial S5-i zone (a REVOLVED band between two planar circles —
-// `appendSphereZone`), this zone is bounded by two non-planar space curves that do NOT lie on
-// a common latitude, so no revolved-band / single-far-pole meridian parametrisation tiles it
-// watertight (a far-pole fan pinches to a degenerate row; a direct short-arc slerp cuts
-// through the bore). Assembling that zone as a shared-pool planar-facet shell that welds
-// byte-clean to both seams is the UNRESOLVED transversal residual (see the roadmap S5-k
-// residual map). So CUT/FUSE HONEST-DECLINE (→ NULL → OCCT); COMMON (which needs only the two
-// INNER caps + the cylinder band — all seam-driven and verified) is the landed slice. Nothing
-// is faked: rather than emit a leaky sphere-zone shell, we defer to OCCT.
+// cylinder∩sphere, LANDED via the seam-band primitive `appendSphereOuterZoneBetweenSeams` (the
+// sphere ZONE OUTSIDE the cylinder, the long way round between the two NON-PLANAR seams). This
+// resolves the former transversal residual: the earlier claim that no parametrisation tiles the
+// two-non-planar-seam zone watertight was wrong — the sphere's OWN spherical coordinates about
+// the CYLINDER axis (a constant-θ, equator-crossing φ-sweep) tile it exactly on-surface. Every
+// zone row point is placed EXACTLY on the sphere, and the outer rows ARE the pooled seam nodes
+// so the zone welds byte-clean to the cylinder tunnel (CUT) or the cylinder end stubs (FUSE).
+//
+// Both need the two-cap+outer-zone topology, valid only when both sphere poles are INSIDE the
+// cylinder (`polesInsideCyl`); otherwise the sphere-outside-cyl set is not two-cap-complementary
+// and we HONEST-DECLINE → OCCT. Nothing is faked: any pose that cannot weld robustly returns NULL.
+//
+// buildTransCylSphereCut(A,B) = A − B:
+//   * SPHERE − CYLINDER (A = sphere): the sphere with the cylinder rod bored straight through.
+//     Boundary = sphere OUTER ZONE (outward normal) + the cylinder tunnel wall between the two
+//     seams (INWARD normal — the reversed bore) — one shell, watertight along both seams. The
+//     two sphere polar caps (inside the cyl) are removed. V = V(sph) − V(COMMON).
+//   * CYLINDER − SPHERE (A = cylinder): the cylinder rod with the sphere-shaped bite scooped out
+//     of its middle → TWO disconnected end pieces (like the coaxial S5-i cut) — a lower cylinder
+//     stub (cylLo end disc + wall + sphere LOWER cap REVERSED) + an upper stub (sphere UPPER cap
+//     REVERSED + wall + cylHi end disc). The caps are the two COMMON polar caps reversed (the
+//     dimples). V = V(cyl) − V(COMMON).
 topo::Shape buildTransCylSphereCut(const CurvedSolid& A, const CurvedSolid& B,
                                    const std::vector<Seam>& seams) {
   const TransCylSphereSetup s = transCylSphereSetup(A, B, seams);
-  if (!s.ok) return {};
-  return {};  // sphere-outer-zone weld is the transversal residual → OCCT (never faked)
+  if (!s.ok || !s.polesInsideCyl) return {};
+  const bool cylIsB = (&B == s.cyl);
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  if (&A == s.sph) {
+    // SPHERE − CYLINDER: outer sphere zone + reversed cylinder tunnel band (the bore).
+    appendSphereOuterZoneBetweenSeams(s.C, s.Rs, s.zc, s.seamHi, s.seamLo, pool, faces,
+                                      /*outwardSign=*/1.0);
+    // Cylinder tunnel wall (seamLo→seamHi), INWARD normal (material is OUTSIDE the tunnel).
+    appendRevolvedBand(s.seamLo.pts, s.seamHi.pts, s.O, s.zc, pool, faces, /*outwardSign=*/-1.0);
+    if (faces.size() < 4) return {};
+  } else {
+    // CYLINDER − SPHERE: two disconnected cylinder stubs, each dimpled by a reversed COMMON cap.
+    const math::Point3 apexM = s.axisFarM(), apexP = s.axisFarP();
+    const std::vector<math::Point3> ringLo = s.cylRing(s.cylLo, cylIsB);
+    const std::vector<math::Point3> ringHi = s.cylRing(s.cylHi, cylIsB);
+    // Lower stub: end disc at cylLo + wall (cylLo→seamLo) + sphere lower cap REVERSED (dimple).
+    appendDiskCap(*s.cyl, s.cylLo, ringLo, math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool, faces);
+    appendRevolvedBand(ringLo, s.seamLo.pts, s.O, s.zc, pool, faces);
+    appendSphereCap(*s.sph, apexM, s.seamLo, transCapRings(s, s.seamLo, apexM), pool, faces,
+                    /*outer=*/false, /*reversed=*/true);
+    // Upper stub: sphere upper cap REVERSED (dimple) + wall (seamHi→cylHi) + end disc at cylHi.
+    appendSphereCap(*s.sph, apexP, s.seamHi, transCapRings(s, s.seamHi, apexP), pool, faces,
+                    /*outer=*/false, /*reversed=*/true);
+    appendRevolvedBand(s.seamHi.pts, ringHi, s.O, s.zc, pool, faces);
+    appendDiskCap(*s.cyl, s.cylHi, ringHi, s.zc, pool, faces);
+    if (faces.size() < 8) return {};  // two components → ≥8 faces
+  }
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
 }
 
+// buildTransCylSphereFuse(A,B) = A ∪ B: the union outer envelope. Boundary = sphere OUTER ZONE
+// (the sphere surface outside the cylinder) + the two cylinder end stubs beyond the seams
+// (cylLo→seamLo and seamHi→cylHi walls) + the two cylinder end discs. The two sphere polar caps
+// (inside the cyl) and the cylinder mid-band (inside the sphere) are interior → dropped. All
+// four fragments weld through the pooled seam rings + shared cylinder rings. V = V(A)+V(B)−V(∩).
 topo::Shape buildTransCylSphereFuse(const CurvedSolid& A, const CurvedSolid& B,
                                     const std::vector<Seam>& seams) {
   const TransCylSphereSetup s = transCylSphereSetup(A, B, seams);
-  if (!s.ok) return {};
-  return {};  // sphere-outer-zone weld is the transversal residual → OCCT (never faked)
+  if (!s.ok || !s.polesInsideCyl) return {};
+  const bool cylIsB = (&B == s.cyl);
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const std::vector<math::Point3> ringLo = s.cylRing(s.cylLo, cylIsB);
+  const std::vector<math::Point3> ringHi = s.cylRing(s.cylHi, cylIsB);
+  // Cylinder lower end disc + lower stub wall (cylLo→seamLo).
+  appendDiskCap(*s.cyl, s.cylLo, ringLo, math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool, faces);
+  appendRevolvedBand(ringLo, s.seamLo.pts, s.O, s.zc, pool, faces);
+  // Sphere outer zone (the bulge, outward normal), the long way round between the two seams.
+  appendSphereOuterZoneBetweenSeams(s.C, s.Rs, s.zc, s.seamHi, s.seamLo, pool, faces,
+                                    /*outwardSign=*/1.0);
+  // Upper stub wall (seamHi→cylHi) + cylinder upper end disc.
+  appendRevolvedBand(s.seamHi.pts, ringHi, s.O, s.zc, pool, faces);
+  appendDiskCap(*s.cyl, s.cylHi, ringHi, s.zc, pool, faces);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
 }
 
 // ═══ S5-p — TRANSVERSAL (NON-COAXIAL) TORUS ∩ CYLINDER COMMON (CUT/FUSE decline) ══════

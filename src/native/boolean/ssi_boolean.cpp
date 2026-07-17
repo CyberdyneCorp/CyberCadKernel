@@ -2775,6 +2775,35 @@ topo::Shape buildCylSphere2Cut(const CurvedSolid& A, const CurvedSolid& B,
   return topo::ShapeBuilder::makeSolid({shell});
 }
 
+// buildSphereCyl2Cut(A,B) = A − B with the SPHERE the minuend (the ORDER-SENSITIVE reverse of
+// buildCylSphere2Cut): the sphere with a coaxial cylindrical TUNNEL drilled through it — a single
+// annular solid of revolution (topologically a tube), NOT the cylinder-minuend's two-piece dimpled
+// stack. Boundary: the sphere OUTER ZONE between the two analytic seam latitudes (seamLo→seamHi, the
+// equatorial belt at ρ ≥ Rc, outward +1) + the cylinder BORE band between the same two seams,
+// REVERSED (inward normal, bounding the drilled tunnel). The two seam rings (ρ = Rc, station sLo/sHi)
+// are shared so the belt welds to the bore. Gated on the SAME clean two-circle poke-through the S5-i
+// COMMON needs (the cylinder pierces both sphere poles → the two seams bound the belt + tunnel). The
+// sphere polar caps (ρ < Rc, near the poles) are entirely inside the drill → removed. V = V_sph −
+// V_common. The engine's watertight + two-sided volume self-verify is the safety net; a pose that
+// cannot weld robustly HONEST-DECLINES → OCCT.
+topo::Shape buildSphereCyl2Cut(const CurvedSolid& A, const CurvedSolid& B,
+                               const std::vector<Seam>& seams) {
+  const CylSphere2Setup s = cylSphere2Setup(A, B, seams);
+  if (!s.ok) return {};
+  if (&A != s.sph) return {};  // A must be the sphere minuend; cyl−sphere is buildCylSphere2Cut
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const std::vector<math::Point3> ringLo = s.ring(s.Rc, s.sLo);
+  const std::vector<math::Point3> ringHi = s.ring(s.Rc, s.sHi);
+  // Sphere OUTER equatorial zone between the two seams (the belt the FUSE uses), outward +1.
+  appendSphereZone(s.C, s.Rs, ringLo, ringHi, pool, faces, /*outwardSign=*/1.0);
+  // Cylinder BORE band between the two seams, REVERSED (inward) — the drilled tunnel wall.
+  appendRevolvedBand(ringLo, ringHi, s.O, s.zc, pool, faces, /*outwardSign=*/-1.0);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
 // ── S5-k — TRANSVERSAL (NON-COAXIAL) CYLINDER∩SPHERE COMMON / CUT / FUSE ─────────────
 // The FIRST transversal (non-coaxial) curved-boolean slice. Where S5-i handles the COAXIAL
 // finite-cylinder∩sphere pose (sphere centre ON the cylinder axis → two ANALYTIC circle
@@ -6669,6 +6698,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-i: TWO-CIRCLE coaxial cylinder∩sphere CUT (two disconnected cyl-end dimpled pieces).
       const topo::Shape cylSph2 = buildCylSphere2Cut(*csA, *csB, seams);
       if (!cylSph2.isNull()) return cylSph2;
+      // S5-i reverse: coaxial sphere∩cylinder CUT (sphere − cyl: sphere belt + reversed bore tunnel).
+      const topo::Shape sphCyl2 = buildSphereCyl2Cut(*csA, *csB, seams);
+      if (!sphCyl2.isNull()) return sphCyl2;
       // S5-k: TRANSVERSAL (offset) cylinder∩sphere CUT (sphere − cyl: sphere shell + reversed bore).
       const topo::Shape transCS = buildTransCylSphereCut(*csA, *csB, seams);
       if (!transCS.isNull()) return transCS;

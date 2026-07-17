@@ -1489,9 +1489,21 @@ CC_TEST(cyl_sphere_two_circle_common_fuse_cut_watertight_matches_analytic) {
   CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
   CC_CHECK(vCut <= vCylFull + 1e-9);                             // CUT shrinks below the minuend
   CC_CHECK(!nb::boolean_solid(cyl, sph, nb::Op::Cut).isNull());
-  // CUT is order-sensitive: sphere − cylinder is a DIFFERENT topology; the S5-i CUT builder only
-  // handles the cylinder minuend, so sphere − cyl declines here → OCCT.
-  CC_CHECK(nb::ssi_boolean_solid(sph, cyl, nb::Op::Cut).isNull());
+
+  // ── REVERSE CUT = sphere − cyl (order-sensitive) now LANDS (buildSphereCyl2Cut): the sphere
+  // with a coaxial cylindrical TUNNEL drilled through — an annular solid of revolution (sphere
+  // equatorial belt + reversed cylinder bore), a DIFFERENT topology from the two-piece cyl-minuend
+  // dimpled stack. Watertight, matching the closed form V_sph − V_common; a SHRINK below the sphere. ──
+  const double vCutSphTrue = vSph - vCommonTrue;                  // sphere − cyl = sph − ∩
+  const ntopo::Shape cutSph = nb::ssi_boolean_solid(sph, cyl, nb::Op::Cut);
+  CC_CHECK(!cutSph.isNull());
+  const double vCutSph = watertightMeshVolume(cutSph);
+  CC_CHECK(vCutSph > 0.0);                                        // watertight → engine accepts
+  CC_CHECK(std::fabs(vCutSph - vCutSphTrue) <= 1e-2 * vCutSphTrue);
+  CC_CHECK(vCutSph <= vSph + 1e-9);                              // sphere − cyl ≤ sphere
+  CC_CHECK(!nb::boolean_solid(sph, cyl, nb::Op::Cut).isNull());  // engine self-verify accepts it
+  // Partition identity: (sphere − cyl) + COMMON = sphere (the closed-form self-consistency).
+  CC_CHECK(std::fabs((vCutSph + vCommon) - vSph) <= 2e-2 * vSph);
 }
 
 // ── (11) TWO-CIRCLE cyl∩sphere HONEST DECLINES: tangent + pole-outside + off-axis → OCCT. ──

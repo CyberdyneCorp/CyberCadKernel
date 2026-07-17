@@ -60,10 +60,12 @@
 // (`ok = false`, with a reason) on a mismatched-corner / incompatible / degenerate
 // boundary — it never emits a surface that silently misses its own boundary.
 //
-// SCOPE — NON-RATIONAL boundary curves only (all weights = 1) and exactly FOUR
-// boundaries (a topological quad). Rational (weighted) Coons patches, N-SIDED fill
-// (5+ boundaries, degenerate-corner / triangular patches), and the Gregory /
-// energy-minimizing PLATE blends that achieve tangent (G1) / curvature (G2)
+// SCOPE — `coonsPatch` fills a NON-RATIONAL four-sided boundary (all weights = 1);
+// `coonsPatchRational` fills a RATIONAL (weighted) four-sided boundary via the SAME
+// boolean sum carried out in homogeneous R⁴ (so a boundary of rational circular arcs
+// fills to the exact conic strip). Both take exactly FOUR boundaries (a topological
+// quad). N-SIDED fill (5+ boundaries, degenerate-corner / triangular patches) and the
+// Gregory / energy-minimizing PLATE blends that achieve tangent (G1) / curvature (G2)
 // continuity to the surrounding surfaces are documented residuals for later slices —
 // this module never fakes them. See docs/NURBS-SCOPE.md Layer-6 row.
 //
@@ -127,6 +129,40 @@ struct CoonsResult {
   double maxCornerError = 0.0; ///< the boundary's corner consistency error (from the check)
   std::string reason;          ///< decline reason when !ok
 };
+
+/// Verify that the four boundaries of `b` form a consistent RATIONAL quad: every boundary
+/// is RATIONAL (one strictly-positive weight per pole) and well-formed, AND the four shared
+/// corners coincide BOTH in position (`c0(0)==d0(0)`, …) AND in HOMOGENEOUS weight — the two
+/// curves meeting at a corner must carry the SAME control weight there, or the rational boolean
+/// sum's bilinear term cannot cancel the ruled terms on the boundary. Reports the worst corner
+/// mismatch (a combined position+weight homogeneous distance). On any violation returns
+/// `ok = false` with a reason, never a silently-wrong rational quad and never a crash.
+CoonsCornerCheck verifyRationalCoonsBoundary(const CoonsBoundary& b, double tol = 1e-7);
+
+/// RATIONAL COONS patch — the rational analogue of `coonsPatch`. All four boundaries MUST be
+/// RATIONAL (non-empty, strictly-positive weights, one per pole). The boolean sum
+/// `Coons = L_v ⊕ L_u ⊖ B` is formed ENTIRELY in HOMOGENEOUS R⁴: each summand's poles are
+/// lifted to `(w·P, w)` (the ruled summands linearly blend the boundary curves' homogeneous
+/// nets; the bilinear term `B` is the homogeneous tensor of the four corner homogeneous points),
+/// the three homogeneous nets are brought to a common basis by the exact RATIONAL-AWARE Layer-1
+/// ops (weights ride through) and added/subtracted pointwise, then projected back to
+/// (pole, weight). Because the corner homogeneous points match the curves' endpoint homogeneous
+/// points, `L_u − B` cancels along every edge exactly as in the non-rational case, so the
+/// rational Coons surface INTERPOLATES every rational boundary curve pointwise.
+///
+/// GUARANTEE (the rational core oracle): the surface's four edge iso-curves reproduce the four
+/// rational boundary curves pointwise, and the four corners are interpolated exactly. Rational
+/// Coons is EXACT for rational bilinearly-blended surfaces (feed a rational ruled surface's own
+/// four boundary iso-curves back in → the original is recovered). The strongest oracle: filling
+/// a boundary whose two opposing edges are rational circular ARCS (with a straight rational start/
+/// end) reproduces the analytic ruled/conic patch pointwise — e.g. a boundary of two coaxial
+/// circular arcs + two straight radial edges fills to the exact annular/conical strip.
+///
+/// Declines (`ok = false`, with a reason) on: a NON-rational boundary (empty weights — use
+/// `coonsPatch`); a non-positive / mismatched weight; a mismatched corner (position OR weight);
+/// a degenerate/malformed boundary; or a projected non-positive weight in the boolean sum
+/// (a documented guard — never a divide by ≤ 0, never a faked rational net).
+CoonsResult coonsPatchRational(const CoonsBoundary& b, double tol = 1e-7);
 
 /// COONS patch — fill the four-sided boundary `b` with the non-rational tensor-product
 /// B-spline surface that INTERPOLATES all four boundary curves, as the BOOLEAN SUM

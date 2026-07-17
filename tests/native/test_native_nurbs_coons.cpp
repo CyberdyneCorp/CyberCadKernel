@@ -335,6 +335,209 @@ int main() {
     expectTrue(coonsPatch(curvedBoundary()).ok, "consistent boundary still succeeds");
   }
 
+  // ═══ 6. RATIONAL COONS PATCH (boolean sum in homogeneous R⁴) ═════════════════════
+  // Rational analogue of the boundary-containment oracle, plus the strongest oracle: a
+  // boundary of two coaxial rational circular ARCS + two straight radial edges fills to
+  // the EXACT rational conical/annular strip (every arc iso-curve is a true circle).
+  {
+    // A rational quarter circle of radius R in the z-plane, centred at the origin, from
+    // the +x axis to the +y axis (degree 2, one interior weight cos45°). Endpoints weight 1.
+    auto ratQuarterArc = [](double R, double z) {
+      BsplineCurveData c;
+      c.degree = 2;
+      c.knots = {0, 0, 0, 1, 1, 1};  // single Bézier segment, 3 poles
+      const double w = 0.7071067811865476;  // 1/√2
+      c.poles = {{R, 0, z}, {R, R, z}, {0, R, z}};
+      c.weights = {1.0, w, 1.0};
+      return c;
+    };
+    // A straight RATIONAL radial edge from inner radius Ri to outer radius Ro along a
+    // direction. Degree-1, weights 1 (a straight line is trivially rational).
+    auto ratRadial = [](const Point3& a, const Point3& b) {
+      BsplineCurveData c;
+      c.degree = 1;
+      c.knots = {0, 0, 1, 1};
+      c.poles = {a, b};
+      c.weights = {1.0, 1.0};
+      return c;
+    };
+
+    const double Ri = 2.0, Ro = 5.0, z = 0.0;
+    // c0 (v=0): inner arc radius Ri; c1 (v=1): outer arc radius Ro (both run in u = angle).
+    // d0 (u=0): radial edge at angle 0 from (Ri,0)→(Ro,0); d1 (u=1): radial at 90° (0,Ri)→(0,Ro).
+    CoonsBoundary b;
+    b.c0 = ratQuarterArc(Ri, z);
+    b.c1 = ratQuarterArc(Ro, z);
+    b.d0 = ratRadial({Ri, 0, z}, {Ro, 0, z});
+    b.d1 = ratRadial({0, Ri, z}, {0, Ro, z});
+
+    CoonsResult r = coonsPatchRational(b);
+    expectTrue(r.ok, "coonsPatchRational ok on a rational arc/radial boundary");
+    expectTrue(!r.surface.weights.empty(), "rational Coons surface IS rational (has weights)");
+    expectLE(r.maxCornerError, 1e-12, "rational boundary corners coincide in R⁴ (exact)");
+
+    // Rational surface evaluator.
+    auto evalRatSurface = [](const BsplineSurfaceData& s, double u, double v) {
+      SurfaceGrid g{std::span<const Point3>(s.poles), s.nPolesU, s.nPolesV};
+      return nurbsSurfacePoint(s.degreeU, s.degreeV, g,
+                               std::span<const double>(s.weights), s.knotsU, s.knotsV, u, v);
+    };
+    auto evalRatCurve = [](const BsplineCurveData& c, double t) {
+      return nurbsCurvePoint(c.degree, c.poles, c.weights, c.knots, t);
+    };
+
+    // Boundary containment: each edge iso-curve reproduces its rational boundary pointwise.
+    double worst = 0.0;
+    for (int i = 0; i <= 200; ++i) {
+      const double t = static_cast<double>(i) / 200;
+      worst = std::max(worst, distance(evalRatSurface(r.surface, t, 0.0), evalRatCurve(b.c0, t)));
+      worst = std::max(worst, distance(evalRatSurface(r.surface, t, 1.0), evalRatCurve(b.c1, t)));
+      worst = std::max(worst, distance(evalRatSurface(r.surface, 0.0, t), evalRatCurve(b.d0, t)));
+      worst = std::max(worst, distance(evalRatSurface(r.surface, 1.0, t), evalRatCurve(b.d1, t)));
+    }
+    expectLE(worst, 1e-9, "rational Coons contains all 4 rational boundary curves POINTWISE");
+    std::printf("INFO rational boundary containment worst dev = %.3e\n", worst);
+
+    // The STRONGEST oracle: the two arc iso-curves (v=0, v=1) are TRUE circles — every point
+    // on them is at exactly the ring radius from the origin. (This proves an exact rational
+    // surface, not a facet: only a correctly-weighted rational surface has circular isos.)
+    double radErr = 0.0;
+    for (int i = 0; i <= 200; ++i) {
+      const double t = static_cast<double>(i) / 200;
+      const Point3 pin = evalRatSurface(r.surface, t, 0.0);   // inner arc
+      const Point3 pout = evalRatSurface(r.surface, t, 1.0);  // outer arc
+      radErr = std::max(radErr, std::fabs(std::sqrt(pin.x * pin.x + pin.y * pin.y) - Ri));
+      radErr = std::max(radErr, std::fabs(std::sqrt(pout.x * pout.x + pout.y * pout.y) - Ro));
+    }
+    expectLE(radErr, 1e-9, "rational Coons arc isos are TRUE circles (exact ring radii)");
+    std::printf("INFO rational arc-iso radius error = %.3e\n", radErr);
+  }
+
+  // Rational round-trip: a KNOWN rational RULED surface (linear blend in v between two
+  // rational arcs) — rational Coons of its own four boundary iso-curves recovers it
+  // POINTWISE (rational Coons is EXACT for rational bilinearly-blended surfaces).
+  {
+    auto ratQuarterArc = [](double R) {
+      BsplineCurveData c;
+      c.degree = 2;
+      c.knots = {0, 0, 0, 1, 1, 1};
+      const double w = 0.7071067811865476;
+      c.poles = {{R, 0, 0}, {R, R, 0}, {0, R, 0}};
+      c.weights = {1.0, w, 1.0};
+      return c;
+    };
+    // Rational ruled surface: v-degree-1 blend between an inner (v=0) and outer (v=1) arc.
+    const BsplineCurveData a0 = ratQuarterArc(2.0);
+    const BsplineCurveData a1 = ratQuarterArc(5.0);
+    const int N = static_cast<int>(a0.poles.size());
+    BsplineSurfaceData src;
+    src.degreeU = 2;   src.degreeV = 1;
+    src.nPolesU = N;   src.nPolesV = 2;
+    src.knotsU = a0.knots;   src.knotsV = {0, 0, 1, 1};
+    src.poles.assign(static_cast<std::size_t>(N) * 2, Point3{});
+    src.weights.assign(static_cast<std::size_t>(N) * 2, 1.0);
+    for (int i = 0; i < N; ++i) {
+      src.poles[static_cast<std::size_t>(i) * 2 + 0] = a0.poles[i];
+      src.weights[static_cast<std::size_t>(i) * 2 + 0] = a0.weights[i];
+      src.poles[static_cast<std::size_t>(i) * 2 + 1] = a1.poles[i];
+      src.weights[static_cast<std::size_t>(i) * 2 + 1] = a1.weights[i];
+    }
+
+    auto evalRatSurface = [](const BsplineSurfaceData& s, double u, double v) {
+      SurfaceGrid g{std::span<const Point3>(s.poles), s.nPolesU, s.nPolesV};
+      return nurbsSurfacePoint(s.degreeU, s.degreeV, g,
+                               std::span<const double>(s.weights), s.knotsU, s.knotsV, u, v);
+    };
+
+    // Extract the four rational boundary iso-curves.
+    CoonsBoundary b;
+    // c0 = S(u,0) = inner arc; c1 = S(u,1) = outer arc.
+    b.c0 = a0; b.c1 = a1;
+    // d0 = S(0,v): rational blend of the two arcs' first poles → straight radial (weights 1).
+    // d1 = S(1,v): rational blend of the two arcs' last poles → straight radial (weights 1).
+    auto ratRadial = [](const Point3& p, const Point3& q) {
+      BsplineCurveData c;
+      c.degree = 1; c.knots = {0, 0, 1, 1};
+      c.poles = {p, q}; c.weights = {1.0, 1.0};
+      return c;
+    };
+    b.d0 = ratRadial(a0.poles.front(), a1.poles.front());
+    b.d1 = ratRadial(a0.poles.back(), a1.poles.back());
+
+    CoonsResult r = coonsPatchRational(b);
+    expectTrue(r.ok, "rational round-trip: Coons of a rational ruled surface's boundary ok");
+    double worst = 0.0;
+    for (int iu = 0; iu <= 40; ++iu)
+      for (int iv = 0; iv <= 40; ++iv) {
+        const double u = static_cast<double>(iu) / 40, v = static_cast<double>(iv) / 40;
+        worst = std::max(worst,
+                         distance(evalRatSurface(r.surface, u, v), evalRatSurface(src, u, v)));
+      }
+    expectLE(worst, 1e-9, "rational round-trip: rational ruled surface recovered POINTWISE");
+    std::printf("INFO rational ruled round-trip worst dev = %.3e\n", worst);
+  }
+
+  // ═══ 7. RATIONAL COONS HONEST DECLINES ═══════════════════════════════════════════
+  {
+    auto ratQuarterArc = [](double R, double z) {
+      BsplineCurveData c;
+      c.degree = 2; c.knots = {0, 0, 0, 1, 1, 1};
+      const double w = 0.7071067811865476;
+      c.poles = {{R, 0, z}, {R, R, z}, {0, R, z}};
+      c.weights = {1.0, w, 1.0};
+      return c;
+    };
+    auto ratRadial = [](const Point3& a, const Point3& b) {
+      BsplineCurveData c;
+      c.degree = 1; c.knots = {0, 0, 1, 1};
+      c.poles = {a, b}; c.weights = {1.0, 1.0};
+      return c;
+    };
+    auto goodRatBoundary = [&]() {
+      CoonsBoundary b;
+      b.c0 = ratQuarterArc(2.0, 0.0);
+      b.c1 = ratQuarterArc(5.0, 0.0);
+      b.d0 = ratRadial({2, 0, 0}, {5, 0, 0});
+      b.d1 = ratRadial({0, 2, 0}, {0, 5, 0});
+      return b;
+    };
+
+    // A consistent rational boundary still succeeds (the guard is not over-eager).
+    expectTrue(coonsPatchRational(goodRatBoundary()).ok,
+               "consistent rational boundary still succeeds");
+
+    // NON-rational boundary → rational scope declines (empty weights ⇒ use coonsPatch).
+    CoonsBoundary nonrat = goodRatBoundary();
+    nonrat.c0.weights.clear();
+    expectTrue(!coonsPatchRational(nonrat).ok,
+               "non-rational boundary declines coonsPatchRational (use coonsPatch)");
+    expectTrue(!verifyRationalCoonsBoundary(nonrat).ok,
+               "verifyRationalCoonsBoundary declines non-rational boundary");
+
+    // Non-positive weight → declines (never divides by ≤ 0, never a faked net).
+    CoonsBoundary badw = goodRatBoundary();
+    badw.c0.weights[1] = -0.5;
+    expectTrue(!coonsPatchRational(badw).ok, "non-positive weight declines honestly");
+
+    // WEIGHT-mismatched corner: the two curves meeting at P00 carry different weights there
+    // even though the POSITIONS coincide → homogeneous corner mismatch → declines.
+    CoonsBoundary wmis = goodRatBoundary();
+    wmis.d0.weights.front() = 2.0;  // d0(0) weight ≠ c0(0) weight, same position
+    CoonsResult rw = coonsPatchRational(wmis);
+    expectTrue(!rw.ok, "weight-mismatched corner declines (homogeneous corner check)");
+    expectTrue(rw.maxCornerError > 0.1, "weight-mismatched corner reports a large R⁴ error");
+
+    // POSITION-mismatched corner → declines.
+    CoonsBoundary pmis = goodRatBoundary();
+    pmis.d1.poles.front().z += 0.5;
+    expectTrue(!coonsPatchRational(pmis).ok, "position-mismatched rational corner declines");
+
+    // The non-rational coonsPatch is UNAFFECTED and still declines a rational boundary
+    // (byte-unchanged behaviour of the original entry point).
+    expectTrue(!coonsPatch(goodRatBoundary()).ok,
+               "coonsPatch still declines a rational boundary (unchanged)");
+  }
+
   // ── report ──
   if (g_failures == 0)
     std::printf("OK  test_native_nurbs_coons: %d checks passed\n", g_checks);

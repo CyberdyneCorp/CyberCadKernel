@@ -298,6 +298,19 @@ int main(int argc, char** argv) {
       const auto& ms = w.points[minSineIdx];
       std::printf("       MINSINE node uvA=(%.5f,%.5f) uvB=(%.5f,%.5f) P=(%.5f,%.5f,%.5f)\n",
                   ms.u1, ms.v1, ms.u2, ms.v2, ms.point.x, ms.point.y, ms.point.z);
+      // SSI-GRAZE pinch neighbourhood — FULL-PRECISION params of the min-sine node and its
+      // immediate flanks, so an INDEPENDENT high-precision three-way oracle
+      // (oracle_graze_threeway) can project each onto the true curve and measure the
+      // chord/fit bow at the graze. Gated by REPLAY_DUMP_PINCH (additive; off → byte-identical).
+      if (std::getenv("REPLAY_DUMP_PINCH")) {
+        const std::size_t lo = minSineIdx > 0 ? minSineIdx - 1 : minSineIdx;
+        const std::size_t hi = minSineIdx + 1 < w.points.size() ? minSineIdx + 1 : minSineIdx;
+        for (std::size_t k = lo; k <= hi; ++k) {
+          const auto& n = w.points[k];
+          std::printf("       PINCH node%zu uvA=(%.12f,%.12f) uvB=(%.12f,%.12f) P=(%.12f,%.12f,%.12f) onSurfRes=%.3e\n",
+                      k, n.u1, n.v1, n.u2, n.v2, n.point.x, n.point.y, n.point.z, n.onSurfResidual);
+        }
+      }
     }
   }
   return 0;

@@ -325,6 +325,81 @@ seed, or re-baselining the `onCurve` fit gate — both refused. `DISAGREED == 0`
 marcher's emitted geometry is correct on every node. The moat's next honest frontier is
 **S2 seeding recall for co-resident branches**, not deeper S4-c graze marching.
 
+**SSI-GRAZE — THREE-WAY-ORACLE PROBE OF THE NEAR-TANGENT GRAZE (DEFINITIVE; NO CODE CHANGE
+— MOAT CONFIRMED).** The one untried legitimate angle on the parked near-tangent
+curve-divergence decline: build an INDEPENDENT ultra-high-precision oracle — a third
+reference beside native and OCCT — and measure which root is closer to the TRUE curve at the
+graze pinch. The oracle (`tests/native/oracle_graze_threeway.cpp`, host, OCCT-FREE and
+numsci-FREE) reconstructs the exact fuzz NURBS pose, evaluates both surfaces with EXACT
+ANALYTIC first derivatives (`surfaceDerivs` / `nurbsSurfaceDerivs`, Piegl A3.6/A4.4 — no
+finite differences), and runs its OWN 4×4 damped-Newton foot-point projector (a self-contained
+linear solve; it calls neither `least_squares` nor OCCT) to the true intersection-curve point
+at ~machine ε. Its transversality sine at the pinch matches the tracer's `minSine` to 4
+significant figures, cross-validating the reconstruction.
+
+**Target pose (verbatim fuzz, `0x5515D1FF0F0F` si=0 idx=24 — a near-tangent single Closed
+loop, 714 nodes, `polyLen 3.98`, node-on-both-surfaces ≤ 2e-10).** The graze pinch is
+node283: transversality `sine = 2.6016e-2`, normal-normal angle `1.491°`, two-surface
+corrector-Jacobian condition number `78.6`, sharpest per-node tangent turn `12.26°` right at
+the pinch. Measured at that pinch node (full-precision params):
+
+- **native-root → true-curve = `6.4e-10`.** Native's CORRECTED node sits on the true
+  intersection curve to sub-nanometre — native is not "further from truth"; it is essentially
+  ON truth. (A coarser `%.5f` param readout of the same node measures `5.1e-6` — still
+  0.005× `onCurve` — the residual there is round-off in the printed params, not the node.)
+- **CHORD BOW = `6.2e-4`** — the TRUE curve bows `6.24e-4` off the straight chord between the
+  two nodes flanking the pinch (chord length `1.16e-2`), i.e. `0.62 × onCurve`. A cubic
+  B-spline fitted through sparse nodes across this `12.26°` turn overshoots FURTHER — this is
+  exactly the sub-`onCurve` fitted-spline coverage bow (`≈ 1.1e-3–1.8e-3`) the DECLINE-DIAG
+  reports as `natOnOcct` / `genuineOcctOnNat`. It is a FIT-RESOLUTION artifact of the emitted
+  curve BETWEEN corrected nodes, not a corrected-node accuracy error.
+- **FUZZY-BAND WIDTH = `2.4e-4`** — a point can drift `±1.2e-4` LATERALLY (perpendicular to
+  the curve tangent, in the near-common tangent plane) and still lie within the `onSurf`
+  (scale·1e-6) gate of BOTH surfaces. The graze IS a provably ill-conditioned band; its
+  half-width is the honest conditioning number of "on both surfaces" at `sine ≈ 0.026`.
+
+**OCCT cross-check (SIM, `GeomAPI_IntSS` oracle, same seed, `DISAGREED == 0`).** The additive
+`[GRAZE-3WAY]` decline line emits, per declined trial, native's worst-gap NODE (its root), its
+worst FITTED-spline sample, and the nearest OCCT curve point to each, fed back through the SAME
+independent host oracle. Two declines were captured:
+
+- **`idx=24` — the single-loop near-tangent graze (the target moat pose; `reason=small-loop`,
+  `traced=1`, `occtLines=1`, `natOnOcct=1.7e-7`, `genuineOcctOnNat=1.818e-3`).** At the worst
+  NODE gap: **native-root → truth = `3.4e-10`, OCCT-root → truth = `1.74e-7`, native-root →
+  OCCT-root = `1.73e-7`** — native's corrected node is MORE accurate than OCCT's sampled point,
+  both far below `onCurve`. At the worst FITTED-spline sample: **native-fit → truth = `1.47e-4`,
+  OCCT → truth = `4.2e-9`, native-fit → OCCT = `1.47e-4`.** The divergence lives ENTIRELY in
+  native's fitted-B-spline interpolation BETWEEN exact nodes (bow `1.47e-4`, up to `1.818e-3` in
+  the reverse OCCT-sample→native-segment metric the decline uses), while OCCT samples its own
+  analytic curve on truth to `4e-9`. Native's NODES are on truth to `3.4e-10`; the gap is a
+  fit-resolution artifact of the emitted curve, precisely as the host chord-bow (`6.2e-4`)
+  predicted.
+- **`idx=23` — four-branch near-tangent, one co-resident locus missed.** Native's worst node is
+  `6.48e-8` from the OCCT locus: **native-root → truth = `2.6e-11`, OCCT-root → truth = `6.5e-8`,
+  native-root → OCCT-root = `6.5e-8`.** idx=23's decline is the MISSED co-resident branch
+  (`worstMissLen 0.94`, `genuineOcctOnNat 1.33e-3`), a seeding-recall gap — NOT a graze
+  divergence on a shared curve.
+
+Across both, native is NEVER the further-from-truth root (native `3.4e-10`/`2.6e-11` vs OCCT
+`1.74e-7`/`6.5e-8`); the reported divergence is native's fitted-spline coverage bow, confirmed
+independently AND against OCCT.
+
+**Verdict (measurement-driven): the two candidate roots are NOT distinguishable by accuracy —
+native's node is AT the true curve (6.4e-10; OCCT cross-check idx=23 native 2.6e-11 vs OCCT
+6.5e-8), so it cannot be "measurably further from truth than OCCT." The `~1.8e-3` native↔OCCT lateral divergence is the fitted-spline coverage bow
+through a high-curvature graze turn (true-curve chord bow already `6.2e-4`, fit overshoot
+larger), landing just over the fixed `1e-3` `onCurve` gate — a discretization/coverage
+artifact, NOT a corrector deficit.** Fixing native's corrector conditioning would move a node
+that is already exact; there is nothing to recover. The decline is CORRECT, honest behaviour.
+**MOAT DEFINITIVELY CONFIRMED — NO code change.** This closes the last hypothesis (after
+SSI-SMALLLOOP: not a seeding gap; SSI-MARCH: not marching arc-error; SSI-TERM: not premature
+termination): the near-tangent graze decline is a sub-`onCurve` fitted-B-spline bow on a fully
+and correctly traced loop, and lowering it would require re-baselining the `onCurve` fit gate
+(refused). `DISAGREED == 0` holds; `src/native` stays OCCT-free; `seeding.cpp` byte-unchanged;
+no tolerance widened. Instruments are additive: `oracle_graze_threeway.cpp` (new),
+`replay_freeform_seed.cpp` `REPLAY_DUMP_PINCH` (off → byte-identical),
+`native_ssi_freeform_fuzz.mm` `[GRAZE-3WAY]` decline line (diagnostic only).
+
 **S2 CO-RESIDENT SEEDING-RECALL — FIXED + RE-MEASURED (freeform fuzzer, 3 seeds, N=48,
 `0x5515D1FF0F0F`+2).** The frontier above was diagnosed and closed at the S2 layer (seeding.cpp
 only; src/native stays OCCT-free; cc_* ABI byte-unchanged). Diagnosis (env-gated `CYBERCAD_SSI_SEED_DIAG`

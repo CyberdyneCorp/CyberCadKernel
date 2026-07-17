@@ -412,6 +412,33 @@ double distToOcctCurve(const Handle(Geom_Curve)& c, const Point3& p) {
   return best;
 }
 
+// ── SSI-GRAZE three-way probe: the OCCT curve point nearest a given native world point.
+//    Projects `p` onto the OCCT line set (both the analytic projection and a dense sample),
+//    returning the nearest OCCT world point + its distance. Used by the DECLINE-DIAG
+//    [GRAZE-3WAY] line so an INDEPENDENT host oracle (oracle_graze_threeway) can measure
+//    native-root→truth, OCCT-root→truth and native-root→OCCT-root at the graze pinch.
+Point3 nearestOcctPoint(const std::vector<Handle(Geom_Curve)>& lines, const Point3& p, double& dOut) {
+  const gp_Pnt q(p.x, p.y, p.z);
+  double best = 1e30; Point3 bestP = p;
+  for (const auto& c : lines) {
+    GeomAPI_ProjectPointOnCurve proj(q, c);
+    if (proj.NbPoints() > 0 && proj.LowerDistance() < best) {
+      best = proj.LowerDistance(); const gp_Pnt s = proj.NearestPoint(); bestP = {s.X(), s.Y(), s.Z()};
+    }
+    double f = c->FirstParameter(), l = c->LastParameter();
+    if (!std::isfinite(f)) f = -1e6;
+    if (!std::isfinite(l)) l = 1e6;
+    for (int i = 0; i <= 400; ++i) {
+      const double t = f + (l - f) * (double(i) / 400.0);
+      gp_Pnt s; try { s = c->Value(t); } catch (...) { continue; }
+      const double d = q.Distance(s);
+      if (d < best) { best = d; bestP = {s.X(), s.Y(), s.Z()}; }
+    }
+  }
+  dOut = best;
+  return bestP;
+}
+
 // ── native WLine sampling: polyline nodes + fitted-B-spline samples ───────────────
 std::vector<Point3> sampleWLine(const ssi::WLine& w) {
   std::vector<Point3> pts;
@@ -1002,6 +1029,42 @@ int main(int argc, char** argv) {
                       r.uncovLinesOverCount, r.uncovLinesGenuineMiss, r.maxNativeOnCurve,
                       r.maxOcctOnNative, r.worstGenuineMissLen);
         std::fflush(stdout);
+
+        // ── SSI-GRAZE THREE-WAY: for the declined trial, find the native NODE whose distance
+        //    to the OCCT locus is WORST (native's root at the graze pinch, i.e. where native
+        //    and OCCT diverge most), its params on A, and the nearest OCCT world point (OCCT's
+        //    root). Print both at full precision so the independent host oracle can measure
+        //    native→truth, OCCT→truth and native→OCCT. Also report the worst FITTED-SPLINE
+        //    sample's OCCT gap (the discretization-bow candidate). OCCT-free host consumer.
+        if (!oracle.lines.empty()) {
+          double worstNode = -1.0; Point3 natRoot{}, occtRoot{}; double naU=0, naV=0, nbU=0, nbV=0;
+          for (const auto& w : ts.lines) {
+            for (const auto& node : w.points) {
+              double d; const Point3 op = nearestOcctPoint(oracle.lines, node.point, d);
+              if (d > worstNode) { worstNode = d; natRoot = node.point; occtRoot = op;
+                                   naU=node.u1; naV=node.v1; nbU=node.u2; nbV=node.v2; }
+            }
+          }
+          double worstFit = -1.0; Point3 fitRoot{}, fitOcct{};
+          for (const auto& w : ts.lines) {
+            if (!w.curve.valid()) continue;
+            const auto& c = w.curve; const double t0=c.knots.front(), t1=c.knots.back();
+            for (int i = 0; i <= 128; ++i) {
+              const double t = t0 + (t1-t0)*(double(i)/128.0);
+              const Point3 p = nm::curvePoint(c.degree, c.poles, c.knots, t);
+              double d; const Point3 op = nearestOcctPoint(oracle.lines, p, d);
+              if (d > worstFit) { worstFit = d; fitRoot = p; fitOcct = op; }
+            }
+          }
+          std::printf("[GRAZE-3WAY] seed=0x%llx idx=%d :: worstNodeGap=%.6e natRootP=(%.12f,%.12f,%.12f) "
+                      "natRootUV=A(%.12f,%.12f)B(%.12f,%.12f) occtRootP=(%.12f,%.12f,%.12f) || "
+                      "worstFitGap=%.6e fitRootP=(%.12f,%.12f,%.12f) fitOcctP=(%.12f,%.12f,%.12f)\n",
+                      static_cast<unsigned long long>(thisSeed), idx,
+                      worstNode, natRoot.x, natRoot.y, natRoot.z, naU, naV, nbU, nbV,
+                      occtRoot.x, occtRoot.y, occtRoot.z,
+                      worstFit, fitRoot.x, fitRoot.y, fitRoot.z, fitOcct.x, fitOcct.y, fitOcct.z);
+          std::fflush(stdout);
+        }
       }
       // AGREED yet OCCT emitted MORE arc-components than native traced → the OCCT arc-split
       // over-count the locus-coverage oracle correctly recognizes as the SAME locus (AGREED),

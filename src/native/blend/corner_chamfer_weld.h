@@ -170,7 +170,8 @@ inline topo::Shape chamfer_corner(const topo::Shape& solid, const int* edgeIds, 
     if (facesOnEdgeInSoup(original, ends->a, ends->b, faces) != 2)
       return fail(CornerChamferDecline::NotConvexEdge);
     const auto plane =
-        detail::chamferPlane(ends->a, ends->b, original[faces[0]], original[faces[1]], distance);
+        detail::chamferPlane(ends->a, ends->b, original[faces[0]], original[faces[1]], distance,
+                             distance);
     if (!plane) return fail(CornerChamferDecline::NotConvexEdge);
     planes.push_back(*plane);
   }

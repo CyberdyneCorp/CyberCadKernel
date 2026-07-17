@@ -24,11 +24,24 @@
 // of the previous). The engine self-verify (watertight + volume reduced) accepts the
 // result or falls through to OCCT.
 //
+// ASYMMETRIC (two-distance) chamfer. `chamfer_edges_asym` sets face 1 back by `d1`
+// and face 2 by `d2` (each measured in its own plane, ⊥ the crease) — the standard
+// CAD "chamfer with two distances / distance+angle" cut. The bridging plane still
+// passes through the two edge-parallel setback lines; because the setbacks differ,
+// the plane is OBLIQUE (its normal tilts toward the smaller-setback face). The
+// symmetric `chamfer_edges(…, distance)` is exactly the `d1==d2` case, and mirrors
+// the curved analog `curved_chamfer_edge_asym` (curved_chamfer.h). Removed volume
+// for a box corner = ½·d1·d2·L (a right-triangle prism of legs d1,d2 over length L).
+//
 // SCOPE (honest). Native only for a CONVEX edge shared by exactly TWO PLANAR faces,
 // with a chamfer plane that does not run past either face's extent. A concave edge,
 // a curved adjacent face, an edge shared by ≠2 faces, or a setback larger than a
 // face → NULL for that edge → the whole op returns NULL → OCCT (BRepFilletAPI
-// MakeChamfer) fallthrough. Likely EXACT vs OCCT for a box corner.
+// MakeChamfer) fallthrough. Likely EXACT vs OCCT for a box corner. The
+// larger-than-a-face setback is rejected UP FRONT by an on-face guard (each
+// setback point must lie within its finite face) so an oversized distance
+// HONEST-DECLINES rather than clipping past the far edge and welding a
+// silently-wrong (though watertight, volume-reduced) body.
 //
 // CLEAN-ROOM. clang++ -std=c++20. Header-only.
 //
@@ -69,15 +82,47 @@ inline math::Point3 centroidOf(const std::vector<math::Point3>& loop) {
   return math::Point3{c.x * inv, c.y * inv, c.z * inv};
 }
 
+// On-face guard: is point `p` inside the (convex) planar face `f`, allowing a small
+// world-unit boundary `slack`? Self-contained convex winding test — the signed cross
+// of each boundary edge against the face normal must share one sign for every edge (p
+// on the interior side of all edges). A single opposite sign (beyond slack), OR a
+// non-convex face, reports "outside" so the caller conservatively DECLINES (→ OCCT),
+// never welding a chamfer whose setback line has left the face. This is what makes an
+// oversized `distance` honest-decline instead of clipping past the far face edge.
+inline bool chamferPointOnFace(const nb::Polygon& f, const math::Point3& p, double slack) {
+  const std::size_t m = f.vertices.size();
+  if (m < 3) return false;
+  const math::Vec3 nf = f.plane.normal;
+  int sign = 0;
+  for (std::size_t i = 0; i < m; ++i) {
+    const math::Point3& a = f.vertices[i];
+    const math::Point3& b = f.vertices[(i + 1) % m];
+    const math::Vec3 inwardN = math::cross(nf, b - a);  // in-plane, ⊥ the edge
+    const double len = math::norm(inwardN);
+    if (len < kBlendEps) continue;  // degenerate edge — skip, don't false-reject
+    const double d = math::dot(inwardN, p - a) / len;  // signed world distance to edge
+    if (d > slack) {
+      if (sign < 0) return false;
+      sign = 1;
+    } else if (d < -slack) {
+      if (sign > 0) return false;
+      sign = -1;
+    }
+  }
+  return true;
+}
+
 // The chamfer plane for a convex edge (endpoints ea,eb) between faces f1,f2. Its
-// setback points are p1 = edgeMid + distance·inward1, p2 = edgeMid + distance·inward2;
-// the plane passes through the edge-parallel setback lines, i.e. through p1, p2 and
-// the crease direction t. Normal = t × (p2 − p1), oriented OUTWARD (away from the
-// material, toward the removed corner). Returns nullopt if the config is degenerate
-// or the edge is CONCAVE (the two inward dirs make the corner reflex).
+// setback points are p1 = edgeMid + d1·inward1, p2 = edgeMid + d2·inward2 (face 1 set
+// back by d1, face 2 by d2); the plane passes through the edge-parallel setback lines,
+// i.e. through p1, p2 and the crease direction t. Normal = t × (p2 − p1), oriented
+// OUTWARD (away from the material, toward the removed corner). Returns nullopt if the
+// config is degenerate, the edge is CONCAVE (the two inward dirs make the corner
+// reflex), or EITHER setback point overruns its finite face (the on-face guard, so an
+// oversized distance honest-declines rather than welding a silently-wrong body).
 inline std::optional<nb::Plane> chamferPlane(const math::Point3& ea, const math::Point3& eb,
                                              const nb::Polygon& f1, const nb::Polygon& f2,
-                                             double distance) {
+                                             double d1, double d2) {
   const auto tOpt = creaseDir(ea, eb);
   if (!tOpt) return std::nullopt;
   const math::Vec3 t = tOpt->vec();
@@ -94,8 +139,16 @@ inline std::optional<nb::Plane> chamferPlane(const math::Point3& ea, const math:
   if (math::dot(cornerOut, in1) > -kBlendEps || math::dot(cornerOut, in2) > -kBlendEps)
     return std::nullopt;  // not a clean convex corner
 
-  const math::Point3 p1 = mid + in1 * distance;
-  const math::Point3 p2 = mid + in2 * distance;
+  const math::Point3 p1 = mid + in1 * d1;
+  const math::Point3 p2 = mid + in2 * d2;
+
+  // On-face guard: each setback line (through pk parallel to t) must lie within its
+  // finite face — check its midpoint pk. A distance larger than the face's ⊥ extent
+  // pushes pk past the far edge; declining here (→ OCCT) is honest, versus letting the
+  // clip run past the face and welding a wrong body the self-verify might still accept.
+  const double slack = 1e-9;
+  if (!chamferPointOnFace(f1, p1, slack) || !chamferPointOnFace(f2, p2, slack))
+    return std::nullopt;
 
   math::Vec3 n = math::cross(t, p2 - p1);
   const math::Dir3 nd{n};
@@ -146,13 +199,15 @@ inline std::vector<nb::Polygon> applyCut(const std::vector<nb::Polygon>& in, con
 
 }  // namespace detail
 
-// Chamfer the convex planar-dihedral edges `edgeIds` (1-based, mapShapes order) of
-// `solid` by `distance`. Returns the chamfered solid, or a NULL Shape if any picked
-// edge is not a convex edge between two planar faces / the solid is not planar /
-// input is degenerate (→ OCCT fallthrough).
-inline topo::Shape chamfer_edges(const topo::Shape& solid, const int* edgeIds, int edgeCount,
-                                 double distance) {
-  if (edgeIds == nullptr || edgeCount <= 0 || !(distance > kBlendEps)) return {};
+// Asymmetric chamfer: set the FIRST face on each picked edge back by `d1` and the
+// SECOND by `d2` (each in its own plane, ⊥ the crease). The "first" face is the one
+// facesOnEdgeInSoup returns first for that edge in the current soup; for a symmetric
+// chamfer (d1==d2) the order is immaterial. Returns the chamfered solid, or a NULL
+// Shape on any out-of-domain edge (non-convex / non-planar / ≠2 faces / oversized
+// setback / degenerate input) → OCCT fallthrough.
+inline topo::Shape chamfer_edges_asym(const topo::Shape& solid, const int* edgeIds, int edgeCount,
+                                      double d1, double d2) {
+  if (edgeIds == nullptr || edgeCount <= 0 || !(d1 > kBlendEps) || !(d2 > kBlendEps)) return {};
   PlanarModel model(solid);
   if (!model.isValid()) return {};
 
@@ -167,13 +222,22 @@ inline topo::Shape chamfer_edges(const topo::Shape& solid, const int* edgeIds, i
     if (facesOnEdgeInSoup(polys, ends->a, ends->b, faces) != 2) return {};
 
     const auto plane = detail::chamferPlane(ends->a, ends->b, polys[faces[0]], polys[faces[1]],
-                                            distance);
+                                            d1, d2);
     if (!plane) return {};
     std::vector<nb::Polygon> next = detail::applyCut(polys, *plane);
     if (next.empty()) return {};
     polys = std::move(next);
   }
   return nb::assembleSolid(polys);
+}
+
+// Chamfer the convex planar-dihedral edges `edgeIds` (1-based, mapShapes order) of
+// `solid` by `distance` (SYMMETRIC — both faces set back equally). Returns the
+// chamfered solid, or a NULL Shape if any picked edge is not a convex edge between two
+// planar faces / the solid is not planar / input is degenerate (→ OCCT fallthrough).
+inline topo::Shape chamfer_edges(const topo::Shape& solid, const int* edgeIds, int edgeCount,
+                                 double distance) {
+  return chamfer_edges_asym(solid, edgeIds, edgeCount, distance, distance);
 }
 
 }  // namespace cybercad::native::blend

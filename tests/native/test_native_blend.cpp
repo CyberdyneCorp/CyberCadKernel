@@ -2621,6 +2621,79 @@ CC_TEST(chamfer_two_edges_watertight) {
   CC_CHECK(nearRel(v, 977.5, 1e-3));
 }
 
+// ── PLANAR asymmetric (two-distance) chamfer + on-face guard ─────────────────────--
+// Set the top edge's two faces back by DIFFERENT distances d1=3, d2=1. The removed
+// corner is a right-triangle prism of legs 3 and 1 over length 10 → ½·3·1·10 = 15,
+// so V = 1000 − 15 = 985. The oblique chamfer face is watertight and its normal is
+// NOT the symmetric 45° (0,1/√2,1/√2): it tilts toward the smaller-setback face.
+CC_TEST(asym_planar_chamfer_box_edge_oblique_watertight) {
+  topo::Shape b = box(10, 10, 10);
+  const int e = findEdgeId(b, {0, 10, 10}, {10, 10, 10});  // top / +Y convex edge
+  CC_CHECK(e != 0);
+  int ids[] = {e};
+  topo::Shape ch = blend::chamfer_edges_asym(b, ids, 1, 3.0, 1.0);
+  bool wt = false;
+  const double v = vol(ch, wt);
+  CC_CHECK(!ch.isNull());
+  CC_CHECK(wt);
+  CC_CHECK(nearRel(v, 985.0, 1e-3));    // ½·3·1·10 = 15 removed
+  CC_CHECK(faceCount(ch) >= 7);         // 6 + the oblique chamfer face
+  // Reversed distances remove the SAME volume (½·d1·d2·L is symmetric in d1,d2).
+  topo::Shape chR = blend::chamfer_edges_asym(b, ids, 1, 1.0, 3.0);
+  bool wtR = false;
+  const double vR = vol(chR, wtR);
+  CC_CHECK(!chR.isNull() && wtR);
+  CC_CHECK(nearRel(vR, 985.0, 1e-3));
+  // The oblique chamfer face's normal is NEITHER of the box axes and NOT the 45°
+  // symmetric normal — one of its Y/Z components is ~3× the other (the leg ratio).
+  const topo::ShapeMap fm = topo::mapShapes(ch, topo::ShapeType::Face);
+  bool foundOblique = false;
+  for (std::size_t i = 1; i <= fm.size(); ++i) {
+    const auto pl = blend::facePlane(ch, static_cast<int>(i));
+    if (!pl) continue;
+    const double ny = std::fabs(pl->normal.y), nz = std::fabs(pl->normal.z);
+    const double nx = std::fabs(pl->normal.x);
+    if (nx < 1e-6 && ny > 1e-3 && nz > 1e-3) {  // a face spanning both +Y and +Z
+      const double ratio = std::max(ny, nz) / std::min(ny, nz);
+      // legs 3 and 1 → the outward normal ∝ (0, d2, d1) = (0,1,3) after unit-scaling
+      // the setbacks, so the component ratio is 3, clearly ≠ 1 (the symmetric case).
+      CC_CHECK(nearRel(ratio, 3.0, 1e-6));
+      foundOblique = true;
+    }
+  }
+  CC_CHECK(foundOblique);
+}
+
+// d1==d2 reproduces the SYMMETRIC chamfer byte-for-byte (chamfer_edges delegates to
+// chamfer_edges_asym with equal distances), and an OVERSIZED setback HONEST-DECLINES.
+CC_TEST(asym_planar_chamfer_symmetric_reduction_and_onface_guard) {
+  topo::Shape b = box(10, 10, 10);
+  const int e = findEdgeId(b, {0, 10, 10}, {10, 10, 10});
+  CC_CHECK(e != 0);
+  int ids[] = {e};
+  // d1==d2==2 equals the symmetric chamfer_edges(…,2.0) volume (1000 − ½·2·2·10 = 980).
+  bool wtA = false, wtS = false;
+  const double vA = vol(blend::chamfer_edges_asym(b, ids, 1, 2.0, 2.0), wtA);
+  const double vS = vol(blend::chamfer_edges(b, ids, 1, 2.0), wtS);
+  CC_CHECK(wtA && wtS);
+  CC_CHECK(nearRel(vA, 980.0, 1e-3));
+  CC_CHECK(nearRel(vA, vS, 1e-12));   // identical path
+  // ON-FACE GUARD: a setback larger than the 10-unit face declines (→ OCCT) rather
+  // than clipping past the far edge and welding a silently-wrong (but watertight) body.
+  CC_CHECK(blend::chamfer_edges_asym(b, ids, 1, 12.0, 1.0).isNull());  // d1 overruns
+  CC_CHECK(blend::chamfer_edges_asym(b, ids, 1, 1.0, 12.0).isNull());  // d2 overruns
+  CC_CHECK(blend::chamfer_edges(b, ids, 1, 12.0).isNull());            // symmetric overrun
+  // A large-but-in-face asymmetric setback still lands watertight (9 < the 10 extent).
+  bool wtB = false;
+  const double vB = vol(blend::chamfer_edges_asym(b, ids, 1, 9.0, 1.0), wtB);
+  CC_CHECK(wtB);
+  CC_CHECK(nearRel(vB, 1000.0 - 0.5 * 9.0 * 1.0 * 10.0, 1e-3));  // 955
+  // Degenerate distances decline.
+  CC_CHECK(blend::chamfer_edges_asym(b, ids, 1, 0.0, 1.0).isNull());
+  CC_CHECK(blend::chamfer_edges_asym(b, ids, 1, 1.0, 0.0).isNull());
+  CC_CHECK(blend::chamfer_edges_asym(b, nullptr, 0, 1.0, 1.0).isNull());
+}
+
 // A CONCAVE edge falls through: an L-shaped prism has one reflex (concave) vertical
 // edge; chamfering/filleting it must return NULL (out of the convex native domain).
 CC_TEST(concave_edge_chamfer_fillet_fallthrough) {

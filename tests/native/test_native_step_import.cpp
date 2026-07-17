@@ -262,6 +262,113 @@ static void testAnalyticTorus() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Oracle 2b (REGRESSION): a SEAM-CROSSING cylindrical face. A real CAD export of a
+// cylinder wall split into faces often produces a face whose outer loop straddles the
+// parametric u-seam (the atan2 ±π branch cut). This face is a rectangular patch on a
+// radius-2 cylinder spanning the u-arc 135°→225° (crossing u=180°=π), heights 0..3:
+//   bottom arc (135°→225°), right vertical, top arc (225°→135°, reversed), left vertical.
+//
+// THE BUG (before this fix): the importer derived each edge's pcurve from a FRESH atan2
+// branch, so adjacent edges of the loop landed on different 2π periods — the flattened
+// loop carried a spurious ~2π jump. classify() then read that jump as a self-touching
+// pinch and returned Unknown for EVERY query (interior AND exterior); classifySeam()
+// mis-unwrapped it into a fabricated full-u-band and classified the OPPOSITE side In.
+// The fix threads one continuous unwrapped-u branch through the loop's edges and picks
+// the MINOR arc for a partial circular edge, so the loop is a simple region again.
+static const char* kSeamCylStep = R"STEP(ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION((''),'2;1');
+FILE_NAME('','',(''),(''),'','','');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));
+ENDSEC;
+DATA;
+#1=ADVANCED_FACE('',(#2),#3,.T.);
+#3=CYLINDRICAL_SURFACE('',#4,2.);
+#4=AXIS2_PLACEMENT_3D('',#5,#6,#7);
+#5=CARTESIAN_POINT('',(0.,0.,0.));
+#6=DIRECTION('',(0.,0.,1.));
+#7=DIRECTION('',(1.,0.,0.));
+#2=FACE_OUTER_BOUND('',#8,.T.);
+#8=EDGE_LOOP('',(#10,#11,#12,#13));
+#10=ORIENTED_EDGE('',*,*,#20,.T.);
+#11=ORIENTED_EDGE('',*,*,#21,.T.);
+#12=ORIENTED_EDGE('',*,*,#22,.T.);
+#13=ORIENTED_EDGE('',*,*,#23,.T.);
+#20=EDGE_CURVE('',#30,#31,#40,.T.);
+#21=EDGE_CURVE('',#31,#32,#41,.T.);
+#22=EDGE_CURVE('',#32,#33,#42,.T.);
+#23=EDGE_CURVE('',#33,#30,#43,.T.);
+#30=VERTEX_POINT('',#50);
+#31=VERTEX_POINT('',#51);
+#32=VERTEX_POINT('',#52);
+#33=VERTEX_POINT('',#53);
+#50=CARTESIAN_POINT('',(-1.41421356237,1.41421356237,0.));
+#51=CARTESIAN_POINT('',(-1.41421356237,-1.41421356237,0.));
+#52=CARTESIAN_POINT('',(-1.41421356237,-1.41421356237,3.));
+#53=CARTESIAN_POINT('',(-1.41421356237,1.41421356237,3.));
+#40=CIRCLE('',#4,2.);
+#41=LINE('',#51,#60);
+#42=CIRCLE('',#70,2.);
+#43=LINE('',#53,#61);
+#60=VECTOR('',#80,1.);
+#70=AXIS2_PLACEMENT_3D('',#71,#6,#7);
+#71=CARTESIAN_POINT('',(0.,0.,3.));
+#61=VECTOR('',#81,1.);
+#80=DIRECTION('',(0.,0.,1.));
+#81=DIRECTION('',(0.,0.,-1.));
+ENDSEC;
+END-ISO-10303-21;
+)STEP";
+
+static void testSeamCrossingCylinder() {
+  exchange::ExternalImportReport rep;
+  const std::vector<TrimmedNurbsFace> faces = exchange::readStepBrepExternal(kSeamCylStep, &rep);
+  expectTrue(faces.size() == 1, "seamcyl: 1 face imported");
+  if (faces.empty()) {
+    for (const std::string& s : rep.skipReasons) std::printf("  skip: %s\n", s.c_str());
+    return;
+  }
+  const TrimmedNurbsFace& f = faces[0];
+  expectTrue(f.surface.kind == FaceSurface::Kind::Cylinder, "seamcyl: kind Cylinder");
+  expectNear(f.surface.radius, 2.0, 1e-9, "seamcyl: radius 2");
+  expectTrue(f.hasOuter() && f.outer.size() == 4, "seamcyl: 4-edge outer loop");
+
+  // The flattened loop must be a SIMPLE polyline (no spurious ~2π seam jump). Its
+  // unwrapped u-extent equals the true subtended arc (π/2), NOT a fabricated full band.
+  const std::vector<topo::ParamPoint> poly = topo::flattenTrimLoop(f.outer, 24);
+  double umin = 1e9, umax = -1e9, maxJump = 0.0;
+  for (std::size_t i = 0; i < poly.size(); ++i) {
+    umin = std::min(umin, poly[i].u);
+    umax = std::max(umax, poly[i].u);
+    if (i) maxJump = std::max(maxJump, std::fabs(poly[i].u - poly[i - 1].u));
+  }
+  expectTrue(maxJump < 1.0, "seamcyl: no spurious 2π seam jump in the flattened loop");
+  expectNear(umax - umin, M_PI / 2.0, 1e-2, "seamcyl: unwrapped u-extent = subtended arc π/2");
+
+  // classify (the always-on, non-seam path): the loop is now simple, so it classifies.
+  // Interior u=π (dead-centre of the 135°→225° arc), mid-height → In.
+  const topo::Containment cIn = topo::classify(f, {M_PI, 1.5});
+  expectTrue(cIn == topo::Containment::In || cIn == topo::Containment::OnBoundary,
+             "seamcyl: interior (u=π) classifies In (was Unknown — the bug)");
+  // Exterior u=0 (the OPPOSITE side of the cylinder), mid-height → Out.
+  const topo::Containment cOut = topo::classify(f, {0.0, 1.5});
+  expectTrue(cOut == topo::Containment::Out,
+             "seamcyl: opposite side (u=0) classifies Out (was Unknown — the bug)");
+  // A point outside the height band → Out.
+  const topo::Containment cHi = topo::classify(f, {M_PI, 5.0});
+  expectTrue(cHi == topo::Containment::Out, "seamcyl: above height band classifies Out");
+
+  // classifySeam (the seam-aware path) must agree: In inside the arc, Out on the far side
+  // (it must NOT mis-read this π/2 patch as a full-u-band wrap).
+  const topo::Containment sIn = topo::classifySeam(f, {M_PI, 1.5});
+  const topo::Containment sOut = topo::classifySeam(f, {0.0, 1.5});
+  expectTrue(sIn == topo::Containment::In || sIn == topo::Containment::OnBoundary,
+             "seamcyl: classifySeam interior In");
+  expectTrue(sOut == topo::Containment::Out,
+             "seamcyl: classifySeam far side Out (was In — the seam mis-wrap bug)");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Oracle 3: our own writer's output, imported by the external reader.
 // ─────────────────────────────────────────────────────────────────────────────
 static FaceSurface makeRationalSurface() {
@@ -393,6 +500,7 @@ END-ISO-10303-21;
 int main() {
   testRealCadImport();
   testAnalyticTorus();
+  testSeamCrossingCylinder();
   testRoundTripThroughExternal();
   testRobustnessReorderedIdentical();
   testHonestDeclineUnsupported();

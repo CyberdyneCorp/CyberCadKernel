@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -1524,8 +1525,16 @@ class ExternalMapper {
         double a1 = std::atan2(math::dot(d1, e.frame.y.vec()), math::dot(d1, e.frame.x.vec()));
         // Full-circle edge: the two vertices coincide → sweep the whole 2π (CCW).
         if (math::distance(v0, v1) < 1e-9) { a0 = 0.0; a1 = 2.0 * M_PI; }
-        else a1 = unwrapNear(a1, a0 + 1e-12) < a0 ? unwrapNear(a1, a0) + 2.0 * M_PI
-                                                  : unwrapNear(a1, a0);
+        else {
+          // Partial arc: pick the MINOR arc (|Δ| ≤ π) — the region-correct default for a
+          // trim-loop edge whose sweep direction is not otherwise pinned. The old code
+          // forced CCW (+2π whenever a1<a0), which sent a clockwise arc THE LONG WAY —
+          // on a periodic surface that turned a small seam-crossing patch into a spurious
+          // near-full-period band. Choosing the nearest branch keeps the loop closing and
+          // its unwrapped u-extent equal to the true subtended angle (see derivePcurve's
+          // loop-threaded u-hint, which then keeps the whole loop on one branch).
+          a1 = unwrapNear(a1, a0);
+        }
         e.t0 = a0;
         e.t1 = a1;
         break;
@@ -1543,13 +1552,27 @@ class ExternalMapper {
   // analytic surfaces; sampled projection for a B-spline surface via a coarse grid
   // nearest-point) and build a degree-1 (polyline) pcurve through the (u,v) samples.
   // Region-correct: the flattened trim classification ray-casts exactly this polyline.
+  //
+  // SEAM-CONSISTENT ACROSS A LOOP. On a periodic analytic surface (cylinder/cone/
+  // sphere/torus) the angular u is inverted via atan2 into (-π,π]; an edge whose arc
+  // crosses that branch cut is kept continuous WITHIN the edge by unwrapNear. But a
+  // trim LOOP is a chain of edges, and each edge inverted from a fresh u-branch may
+  // land on a DIFFERENT 2π period than its predecessor — leaving the loop polyline with
+  // a spurious ±2π jump between edges, which classify() then reads as a self-touching
+  // pinch (→ Unknown) and classifySeam() mis-unwraps into a fabricated full band. To
+  // avoid that, the caller (loop()) threads a shared `loopUHint`: the FIRST edge seeds
+  // it from its own start branch and the loop's u lives on ONE continuous unwrapped
+  // branch thereafter. This is an EXACT identity on the periodic surface (u and u±2π are
+  // the same physical point), so it never widens a tolerance or moves a point off S.
   std::optional<PCurve> derivePcurve(const FaceSurface& s, const Edge3d& e, bool reversed,
-                                     std::string& why) const {
+                                     std::string& why, double* loopUHint = nullptr) const {
     const int n = 24;
     std::vector<ParamPoint> uv;
     uv.reserve(n + 1);
-    double uHint = 0.0;
-    bool haveHint = false;
+    // Seed the branch: on a repeat edge of a periodic-surface loop, continue from the
+    // previous edge's final u so the whole loop stays on one unwrapped branch.
+    double uHint = (loopUHint != nullptr) ? *loopUHint : 0.0;
+    bool haveHint = (loopUHint != nullptr) && std::isfinite(*loopUHint);
     for (int i = 0; i <= n; ++i) {
       const double frac = double(i) / n;
       const double t = e.t0 + (e.t1 - e.t0) * frac;
@@ -1559,13 +1582,18 @@ class ExternalMapper {
         if (!invertBspline(s, p, q)) { why = "edge point off B-spline surface"; return std::nullopt; }
       } else {
         if (!inverseSurface(s, p, uHint, q)) { why = "no analytic inverse"; return std::nullopt; }
-        // Keep the angular u continuous along the edge.
+        // Keep the angular u continuous along the edge AND continuous with the prior edge.
         if (haveHint) q.u = unwrapNear(q.u, uHint);
         uHint = q.u;
         haveHint = true;
       }
       uv.push_back(q);
     }
+    // Publish this edge's END u (in loop-traversal order) so the NEXT edge continues on
+    // the same branch. In traversal order the last sample is uv.back() when not reversed,
+    // uv.front() when reversed (the traversal starts at the geometric end).
+    if (loopUHint != nullptr && !uv.empty())
+      *loopUHint = reversed ? uv.front().u : uv.back().u;
     if (reversed) std::reverse(uv.begin(), uv.end());
 
     PCurve c;
@@ -1644,8 +1672,13 @@ class ExternalMapper {
     const Value& edges = r->args[1];
     if (edges.kind != Value::Kind::List) { why = "EDGE_LOOP edge list malformed"; return std::nullopt; }
     TrimLoop tl;
+    // Shared u-branch hint threaded through the loop's edges so a seam-crossing loop on
+    // a periodic surface stays on ONE continuous unwrapped-u branch (see derivePcurve).
+    // NaN on the first edge ⇒ that edge picks its own start branch; every later edge
+    // continues from the previous edge's end u.
+    double loopUHint = std::numeric_limits<double>::quiet_NaN();
     for (const Value& oe : edges.list) {
-      auto seg = segment(s, refOf(oe), why);
+      auto seg = segment(s, refOf(oe), why, &loopUHint);
       if (!seg) return std::nullopt;
       tl.push_back(std::move(*seg));
     }
@@ -1655,7 +1688,7 @@ class ExternalMapper {
 
   // ORIENTED_EDGE('',*,*,#EDGE_CURVE,orient).
   std::optional<PcurveSegment> segment(const FaceSurface& s, long orientedEdgeId,
-                                       std::string& why) const {
+                                       std::string& why, double* loopUHint = nullptr) const {
     const Record* oe = rec(orientedEdgeId);
     if (!oe || oe->isComplex || oe->name != "ORIENTED_EDGE" || oe->args.size() < 5) {
       why = "ORIENTED_EDGE unresolved"; return std::nullopt;
@@ -1677,7 +1710,7 @@ class ExternalMapper {
     Point3 b = v1.value_or(curve->eval(1.0));
     setEdgeRange(*curve, a, b);
     const bool reversed = oeReversed ^ (!sameSense);
-    auto pc = derivePcurve(s, *curve, reversed, why);
+    auto pc = derivePcurve(s, *curve, reversed, why, loopUHint);
     if (!pc) return std::nullopt;
     PcurveSegment seg;
     seg.curve = std::move(*pc);

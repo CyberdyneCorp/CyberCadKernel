@@ -498,6 +498,54 @@ std::vector<int> inliersWithin(std::span<const Point3> pts, const std::vector<in
   return in;
 }
 
+// ── RANSAC-level cone-vs-sphere tie-break (re-scored on the FULL inlier set) ──
+//
+// RANSAC draws minimal-ish subsets (~8 points). On 8 points a cone (7 DOF) and a sphere
+// (4 DOF) BOTH fit near-exactly, so detectPrimitive resolves the genuine subset-size tie
+// to the SIMPLER sphere — the consensus hypothesis over a WIDE cone band comes back a
+// SPHERE (a large-radius sphere that happens to skim the band). That sphere then either
+// leaves the band's far reaches uncovered (declined) or mis-types the whole band as a
+// bogus sphere. The subset is too small to break the tie; the FULL consensus inlier set is
+// not. So when the winner is a Sphere, re-fit BOTH a sphere and a cone on the whole inlier
+// set and compare:
+//   • a GENUINE CONE band → the cone explains the inliers as well as (or better than) the
+//     sphere (comparable RMS, within a decisive factor) AND is a non-degenerate cone with a
+//     real half-angle → the CONE wins (correct type + recovered apex/axis/half-angle);
+//   • a GENUINE SPHERE → the cone is DRAMATICALLY worse (it degenerates to a near-flat
+//     ~0-half-angle "cone" with RMS orders of magnitude above the sphere) → the sphere KEEPS.
+// The decisive factor mirrors detectPrimitive's kTieFactor: only a cone that is comparably
+// good (a real tie) overturns the sphere; a cone worse by more than the factor loses. This
+// widens NO tolerance — both fits are measured by their TRUE RMS on the same inlier set —
+// and cannot fabricate a cone from sphere data (the RMS gap is ~2 decades there).
+//
+// Returns a Cone PrimitiveDetection when the cone wins, else the unchanged sphere `det`.
+PrimitiveDetection breakSphereConeTie(std::span<const Point3> pts,
+                                      const std::vector<int>& inliers,
+                                      const PrimitiveDetection& det) {
+  if (det.type != PrimitiveType::Sphere) return det;
+  const std::vector<Point3> sub = gather(pts, inliers);
+  const SphereFit sf = fitSphere(sub);
+  const ConeFit cf = fitCone(sub);
+  if (!cf.ok || !sf.ok) return det;
+  // A genuine cone has a real half-angle (0 < α < ~π/2); a sphere-fit-as-cone degenerates
+  // to α≈0 (a near-flat sheet). Reject the degenerate limit outright.
+  constexpr double kPi = 3.14159265358979323846;
+  if (!(cf.halfAngle > 1.0 * kPi / 180.0) || cf.halfAngle >= 0.49 * kPi) return det;
+  // Decisive-factor tie test (mirrors detectPrimitive::kTieFactor): the cone must be
+  // comparably good — within ~2 decades of the sphere's RMS. On a genuine sphere the cone
+  // is ~2 decades WORSE, so it fails here and the sphere is kept.
+  constexpr double kTieFactor = 100.0;
+  const double sRms = std::max(sf.rms, 1e-300);
+  if (cf.rms > kTieFactor * sRms) return det;  // cone decisively worse → keep the sphere
+  // The cone explains the band as well as the sphere → it is the correct (wide-cone) type.
+  PrimitiveDetection out = det;
+  out.type = PrimitiveType::Cone;
+  out.cone = cf;
+  out.sphere = sf;
+  out.rms = cf.rms;
+  return out;
+}
+
 // RANSAC-style consensus + IRLS/Huber (trimmed) refine over one candidate index set.
 //
 // CONSENSUS: draw `ransacIters` deterministic minimal-ish subsets, fit each with
@@ -565,6 +613,24 @@ RobustFit robustFit(std::span<const Point3> pts, const std::vector<int>& cand,
     const bool converged = (reIn.size() == inl.size());
     inl = std::move(reIn);
     if (converged) break;
+  }
+
+  // RANSAC-level cone/sphere tie-break: a wide-cone band comes back a SPHERE from the
+  // minimal-subset consensus (a cone and a sphere both fit ~8 points near-exactly, so the
+  // tie resolves to the simpler sphere). Re-score sphere-vs-cone on the FULL inlier set; if
+  // a genuine cone explains the band comparably, adopt it and re-select its inliers (the
+  // cone covers the band's far reaches the sphere left short). A genuine sphere keeps (its
+  // cone challenger is decisively worse). No tolerance is widened.
+  if (det.type == PrimitiveType::Sphere) {
+    const PrimitiveDetection tie = breakSphereConeTie(pts, inl, det);
+    if (tie.type == PrimitiveType::Cone) {
+      std::vector<int> coneIn = inliersWithin(pts, cand, tie, band);
+      if (coneIn.size() >= static_cast<std::size_t>(minReg) &&
+          coneIn.size() >= inl.size()) {
+        det = tie;
+        inl = std::move(coneIn);
+      }
+    }
   }
 
   // Must explain a real majority of the candidate set AND meet the robust size floor —

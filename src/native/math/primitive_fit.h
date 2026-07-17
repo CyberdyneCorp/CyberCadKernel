@@ -154,6 +154,18 @@ ConeFit fitCone(std::span<const Point3> points);
 /// typed as a bogus large-radius sphere while still resolving true ties (an exact plane,
 /// which a degenerate cone also fits to ~machine-zero) to the simpler type. No tolerance
 /// is ever widened — every accepted candidate is already ≤ relTol.
+///
+/// ROBUST-PATH FOLLOW-ON (the RANSAC tie) — RESOLVED one level up. This tie-break runs on
+/// the WHOLE set handed to detectPrimitive. The robust pipeline
+/// (reverse_engineer::segmentAndFitRobust) draws MINIMAL ~8-point RANSAC subsets, and on 8
+/// points a cone (7 DOF) and a sphere (4 DOF) BOTH fit near-exactly — so this tie-break, run
+/// on such a subset, has no cone-vs-sphere margin and returns the SIMPLER sphere. The
+/// consensus hypothesis over a wide-cone band then came back a bogus sphere (declining the
+/// band's far reaches, or mis-typing the whole band as a sphere). That is a DIFFERENT tie at
+/// a DIFFERENT set size, resolved by an ANALOGOUS full-inlier-set re-scoring in
+/// reverse_engineer::robustFit (`breakSphereConeTie`): a genuine cone that explains the whole
+/// consensus inlier set comparably wins; a genuine sphere's cone challenger degenerates
+/// (α≈0, RMS ~2 decades worse) and loses. No tolerance is widened there either.
 PrimitiveDetection detectPrimitive(std::span<const Point3> points,
                                    double relTol = 1e-6);
 

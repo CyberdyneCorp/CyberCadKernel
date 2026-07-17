@@ -417,6 +417,122 @@ int main() {
                "over-noise: produced a result without crashing");
   }
 
+  // ── 5. ROBUST WIDE-CONE tie-break (regression) — a noisy + outlier-laden wide-cone
+  //       band segments to ONE Cone, NOT a bogus sphere / decline ─────────────────
+  // A machined countersink / chamfer scanned over a limited height band is a WIDE
+  // half-angle cone frustum. The NON-robust detectPrimitive fix (test_native_reverse_
+  // engineer §6) already stops it being mis-typed as a huge-radius sphere at the analytic
+  // level. But the ROBUST path draws MINIMAL 8-point RANSAC subsets, and on 8 points a cone
+  // (7 DOF) and a sphere (4 DOF) BOTH fit near-exactly → the subset consensus resolves the
+  // genuine tie to the SIMPLER sphere, so the band used to come back a bogus Sphere (or be
+  // declined, the sphere leaving the band's far reaches uncovered). The fix re-scores
+  // sphere-vs-cone on the FULL consensus inlier set: a genuine cone explains the band
+  // comparably and wins; a genuine sphere's cone challenger is decisively worse and loses.
+  // Here, under noise σ=1e-3·extent + 5% gross outliers, the band MUST segment to a single
+  // Cone with the true apex / axis / half-angle recovered within the noise band.
+  {
+    Rng rng(9001);
+    const Point3 apex{2, -1, 3};
+    Vec3 axis{1, 2, 2};
+    axis = axis / std::sqrt(dot(axis, axis));  // tilted (not covariance-aligned)
+    const double alpha = 55.0 * kPi / 180.0;   // WIDE half-angle
+    Vec3 t = (std::fabs(axis.x) < 0.9) ? Vec3{1, 0, 0} : Vec3{0, 1, 0};
+    Vec3 e1 = cross(axis, t);
+    e1 = e1 / std::sqrt(dot(e1, e1));
+    Vec3 e2 = cross(axis, e1);
+    const double sigma = 1e-3 * 4.0;  // extent-relative noise (extent ~ 4)
+    std::vector<Point3> pts;
+    std::vector<int> trueOutliers;
+    // NARROW height band h ∈ [3, 3.4] over 6 rings — the regime where the minimal-subset
+    // sphere/cone tie used to hand the band to a bogus sphere.
+    for (int i = 0; i < 30; ++i)
+      for (int j = 0; j < 6; ++j) {
+        const double ph = 2 * kPi * i / 30.0;
+        const double h = 3.0 + 0.4 * j / 5.0;
+        const double rho = h * std::tan(alpha);
+        Point3 p = apex + axis * h + (e1 * std::cos(ph) + e2 * std::sin(ph)) * rho;
+        pts.push_back({p.x + sigma * rng.gauss(), p.y + sigma * rng.gauss(),
+                       p.z + sigma * rng.gauss()});
+      }
+    const int nInliers = static_cast<int>(pts.size());
+    const int nOut = nInliers / 20;  // 5% gross outliers scattered around the apex region
+    for (int o = 0; o < nOut; ++o) {
+      trueOutliers.push_back(static_cast<int>(pts.size()));
+      pts.push_back({apex.x + 6.0 * rng.signedUniform(), apex.y + 6.0 * rng.signedUniform(),
+                     apex.z + 6.0 * rng.signedUniform()});
+    }
+
+    RobustSegmentParams prm;
+    prm.base.tol = 1e-9;   // tiny floor: the band comes from the estimated / supplied σ
+    prm.sigma = sigma;
+    const SegmentationResult seg = segmentAndFitRobust(pts, prm);
+
+    expectTrue(countKind(seg, RegionKind::Cone) == 1, "robust-wide-cone: exactly one Cone");
+    expectTrue(countKind(seg, RegionKind::Sphere) == 0,
+               "robust-wide-cone: NOT mis-typed as Sphere");
+    const SegmentRegion* cr = firstKind(seg, RegionKind::Cone);
+    expectTrue(cr != nullptr, "robust-wide-cone: Cone region present");
+    if (cr) {
+      expectNear(absCos(cr->cone.axis, Dir3(axis)), 1.0, 40 * sigma,
+                 "robust-wide-cone: axis recovered in band");
+      expectNear(cr->cone.halfAngle, alpha, 40 * sigma,
+                 "robust-wide-cone: half-angle recovered in band");
+      expectLE(distance(cr->cone.apex, apex), 60 * sigma,
+               "robust-wide-cone: apex recovered in band");
+      // Honest RMS: non-zero and ~σ (a true cone fit, never a widened / fabricated one).
+      expectTrue(cr->rms > 0.1 * sigma, "robust-wide-cone: RMS honest non-zero");
+      expectLE(cr->rms, 4.0 * sigma, "robust-wide-cone: inlier RMS ~ σ");
+      // The whole noisy band (all true inliers) belongs to the one cone.
+      expectLE(0.90 * nInliers, static_cast<double>(cr->inliers.size()),
+               "robust-wide-cone: cone owns ≥90% of the band");
+    }
+    // The injected gross outliers must NOT be swallowed into the cone.
+    std::vector<char> flagged(pts.size(), 0);
+    for (int i : seg.outliers) flagged[i] = 1;
+    int caught = 0;
+    for (int i : trueOutliers) caught += flagged[i];
+    expectLE(0.80 * nOut, static_cast<double>(caught),
+             "robust-wide-cone: majority of outliers isolated");
+  }
+
+  // ── 5b. GENUINE-SPHERE no-regression under the cone tie-break ────────────────
+  // The §5 tie-break re-scores a sphere consensus against a cone. It must NOT flip a REAL
+  // noisy sphere to a cone: on genuine sphere data the cone challenger degenerates (α≈0,
+  // RMS ~2 decades worse), so the sphere keeps. This is the explicit guard that the fix
+  // does not regress genuine-sphere detection (complementing §1b).
+  {
+    Rng rng(2002);
+    const Point3 ctr{5, -3, 2};
+    const double rad = 4.0;
+    const double sigma = 1e-3 * (2 * rad);  // 8e-3
+    std::vector<Point3> pts;
+    for (int i = 1; i < 16; ++i)
+      for (int j = 0; j < 22; ++j) {
+        const double th = kPi * i / 16.0;
+        const double ph = 2 * kPi * j / 22.0;
+        Point3 p{ctr.x + rad * std::sin(th) * std::cos(ph),
+                 ctr.y + rad * std::sin(th) * std::sin(ph),
+                 ctr.z + rad * std::cos(th)};
+        pts.push_back({p.x + sigma * rng.gauss(), p.y + sigma * rng.gauss(),
+                       p.z + sigma * rng.gauss()});
+      }
+    RobustSegmentParams prm;
+    prm.base.tol = 1e-9;
+    prm.sigma = sigma;
+    const SegmentationResult seg = segmentAndFitRobust(pts, prm);
+    expectTrue(countKind(seg, RegionKind::Sphere) == 1,
+               "genuine-sphere-tiebreak: still exactly one Sphere");
+    expectTrue(countKind(seg, RegionKind::Cone) == 0,
+               "genuine-sphere-tiebreak: NOT flipped to Cone");
+    const SegmentRegion* sr = firstKind(seg, RegionKind::Sphere);
+    if (sr) {
+      expectLE(std::fabs(sr->sphere.radius - rad), 30 * sigma,
+               "genuine-sphere-tiebreak: radius still in band");
+      expectLE(distance(sr->sphere.center, ctr), 30 * sigma,
+               "genuine-sphere-tiebreak: center still in band");
+    }
+  }
+
   std::printf("reverse_engineer_robust gate: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

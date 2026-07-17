@@ -853,6 +853,76 @@ CC_TEST(native_chamfer_box_edge_volume_reduced) {
     cc_shape_release(box);
 }
 
+// PLANAR ASYMMETRIC (two-distance) chamfer through the engine + cc_ facade. Chamfer one
+// convex box edge with d1=2, d2=4 on a 10×10×10 box: the OBLIQUE setback plane removes a
+// right-triangle prism of legs d1,d2 over the L=10 edge → ½·2·4·10 = 40, so volume 960,
+// watertight. This exercises the planar candidate (candidate 1) newly wired into
+// NativeEngine::chamfer_edges_asym — previously only the curved path ran, so a planar
+// box edge honest-declined. Governed by the same SHRINK self-verify.
+CC_TEST(native_chamfer_asym_box_edge_volume) {
+    EngineGuard g;
+    cc_set_engine(1);
+    const double sq[] = {0, 0, 10, 0, 10, 10, 0, 10};
+    const CCShapeId box = cc_solid_extrude(sq, 4, 10.0);
+    CC_CHECK(box != 0);
+    const int edges[] = {1};
+    const CCShapeId ch = cc_chamfer_edges_asym(box, edges, 1, 2.0, 4.0);
+    CC_CHECK(ch != 0);
+    if (ch == 0) { std::printf("  last_error=%s\n", cc_last_error()); }
+    else {
+        const CCMassProps mp = cc_mass_properties(ch);
+        CC_CHECK(mp.valid != 0);
+        // 1000 − ½·2·4·10 = 960 exactly (planar clip is exact for a box corner).
+        CC_CHECK(std::fabs(mp.volume - 960.0) < 1e-2);
+        cc_shape_release(ch);
+    }
+    cc_shape_release(box);
+}
+
+// The SYMMETRIC case (d1==d2) through chamfer_edges_asym must reproduce the symmetric
+// planar chamfer: d1=d2=2 removes ½·2·2·10 = 20 → volume 980, matching
+// cc_chamfer_edges(box,edges,1,2.0). Guards the "d1==d2 reproduces symmetric" invariant.
+CC_TEST(native_chamfer_asym_symmetric_matches) {
+    EngineGuard g;
+    cc_set_engine(1);
+    const double sq[] = {0, 0, 10, 0, 10, 10, 0, 10};
+    const CCShapeId box = cc_solid_extrude(sq, 4, 10.0);
+    CC_CHECK(box != 0);
+    const int edges[] = {1};
+    const CCShapeId sym = cc_chamfer_edges(box, edges, 1, 2.0);
+    const CCShapeId asym = cc_chamfer_edges_asym(box, edges, 1, 2.0, 2.0);
+    CC_CHECK(sym != 0 && asym != 0);
+    if (sym != 0 && asym != 0) {
+        const CCMassProps ms = cc_mass_properties(sym);
+        const CCMassProps ma = cc_mass_properties(asym);
+        CC_CHECK(ms.valid != 0 && ma.valid != 0);
+        CC_CHECK(std::fabs(ma.volume - 980.0) < 1e-2);
+        CC_CHECK(std::fabs(ma.volume - ms.volume) < 1e-6);
+    }
+    if (sym != 0) cc_shape_release(sym);
+    if (asym != 0) cc_shape_release(asym);
+    cc_shape_release(box);
+}
+
+// An OVERSIZED asymmetric setback must honest-decline: d2=20 on a 10-wide face pushes the
+// setback point past the far edge → the on-face guard returns NULL → no verified native
+// result → cc_ returns 0 on this OCCT-free host (a wrong-but-watertight body must NOT be
+// welded). Guards the DISAGREED=0 spirit for the new planar asym path.
+CC_TEST(native_chamfer_asym_oversized_declines) {
+    EngineGuard g;
+    cc_set_engine(1);
+    const double sq[] = {0, 0, 10, 0, 10, 10, 0, 10};
+    const CCShapeId box = cc_solid_extrude(sq, 4, 10.0);
+    CC_CHECK(box != 0);
+    const int edges[] = {1};
+    // d2=20 exceeds the 10-unit face extent; the curved path also declines a planar box
+    // edge, so no candidate verifies → 0.
+    const CCShapeId ch = cc_chamfer_edges_asym(box, edges, 1, 2.0, 20.0);
+    CC_CHECK(ch == 0);
+    if (ch != 0) cc_shape_release(ch);
+    cc_shape_release(box);
+}
+
 // Fillet one convex box edge with r=2: watertight, volume reduced but LESS than the
 // chamfer (the fillet keeps the quarter-cylinder material).
 CC_TEST(native_fillet_box_edge_watertight) {

@@ -1623,14 +1623,27 @@ ShapeResult NativeEngine::chamfer_edges_asym(EngineShape body, const int* e, int
                                              double d2) {
     if (!isNative(body)) return fallback().chamfer_edges_asym(body, e, ec, d1, d2);
     const auto* h = static_cast<const NativeShape*>(body.get());
-    // T1: an ASYMMETRIC two-distance chamfer on a CONVEX circular cylinder↔coaxial-cap
+    // Candidates in order; each gated by the identical SHRINK self-verify (a chamfer
+    // REMOVES material). The first passing candidate wins; NULL/failed → next → OCCT.
+
+    // 1. PLANAR asymmetric dihedral chamfer — set face 1 back by d1 and face 2 by d2
+    //    (each in its own plane, ⊥ the crease) and slice the convex corner with the
+    //    OBLIQUE setback plane through both setback lines. Removed volume for a box
+    //    corner = ½·d1·d2·L. Same sequential per-edge clip as the symmetric planar path;
+    //    d1==d2 reproduces the symmetric result. An oversized setback trips the on-face
+    //    guard → NULL → next candidate. Verified SHRINK (wantGrow=false).
+    ntopo::Shape result = nblend::chamfer_edges_asym(h->shape, e, ec, d1, d2);
+    if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
+        return track(wrapNative(std::move(result)));
+
+    // 2. T1: an ASYMMETRIC two-distance chamfer on a CONVEX circular cylinder↔coaxial-cap
     // rim — an OBLIQUE cone-frustum bevel (C0 at two DIFFERENT angles) between the setback
     // circles (Rc, H−s·d1) and (Rc−d2, H). d1 = the axial wall setback, d2 = the radial
     // cap setback. A chamfer REMOVES material → verified SHRINK (wantGrow=false), the same
     // gate the symmetric chamfer uses; d1 == d2 reproduces the symmetric result. NULL /
     // unverified (non-circular / concave / tilted / Rc ≤ d2 / wall < d1 / multi-edge) →
     // honest error → OCCT BRepFilletAPI_MakeChamfer::Add(d1,d2,edge,face).
-    ntopo::Shape result = nblend::curved_chamfer_edge_asym(h->shape, e, ec, d1, d2);
+    result = nblend::curved_chamfer_edge_asym(h->shape, e, ec, d1, d2);
     if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
         return track(wrapNative(std::move(result)));
     return make_error(

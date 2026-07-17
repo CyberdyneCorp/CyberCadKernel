@@ -45,8 +45,18 @@ a leaky / partial / orientation-inconsistent / wrong-volume solid, and SHALL NOT
 tolerance to force a pass. With the M0-rim tessellator weld in place the two-CURVED-side
 closed seam welds watertight at the working deflections, so COMMON (the lens) SHALL weld a
 coherently-oriented solid whose volume matches the closed-form `π·H²/(4a)` within the
-deflection band and CONVERGES as deflection refines; CUT SHALL honest-decline
-(`ClassifyAmbiguous`, its apex-adjacent membership) to NULL → OCCT. The change SHALL be
+deflection band and CONVERGES MONOTONICALLY as deflection refines (a direct positive volume
+whose smooth caps under-estimate it). CUT SHALL likewise weld a coherently-oriented solid
+whose volume matches the closed-form `V(A) − π·H²/(4a)` within the deflection band, once the
+survivor membership probe RESPECTS HOLES (the annulus interior-sample vote, not the apex-
+adjacent outer centroid). Because the CUT volume is a CANCELLATION DIFFERENCE (the shell
+enclosing ≈V(A) minus the B-disk curved ceiling ≈V(lens)), the two independently-tessellated
+curved caps' O(deflection) signed-volume residuals partially cancel, so the CUT relative
+error does NOT shrink strictly monotonically — it stays inside a SHRINKING ENVELOPE (a fixed
+~2% band per level) whose best-so-far minimum converges to within ~1% of the closed form.
+This is normal adaptive-tessellation behaviour, not a mis-weld: every level is watertight,
+boundary-edge-free, consistently oriented, and under-estimates the closed form. The change
+SHALL be
 strictly ADDITIVE: it SHALL NOT modify `splitFaceSmoothTrim`, B2 `splitFace`,
 `recogniseFreeformSolid`, `classifyPointInMesh`, the M0 tessellator (mesher/CDT/rim weld),
 M1, or any landed boolean header, and SHALL consume their primitives BYTE-IDENTICAL (the
@@ -75,10 +85,14 @@ within the backend band.
 - THEN COMMON returns a NON-NULL `Shape` with `why == Ok` that is WATERTIGHT AND
   consistently-oriented (`tess::isConsistentlyOriented`), whose meshed volume equals the
   closed-form lens `π·H²/(4a)` within the deflection-bounded band, under-estimates it (a
-  smooth cap triangulation), and whose relative error SHRINKS as the deflection refines;
-  CUT returns a NULL `Shape` with a measured `FfCutDecline` (`NotWatertight` or
-  `ClassifyAmbiguous`) → OCCT, NEVER a leaky/partial solid; and a non-operand declines
-  `NotAdmittedA`, a non-intersecting second operand declines `SeamUnusable`
+  smooth cap triangulation), and whose relative error SHRINKS MONOTONICALLY as the deflection
+  refines; CUT likewise returns a NON-NULL WATERTIGHT, boundary-edge-free, consistently-
+  oriented `Shape` with `why == Ok` whose volume equals the closed-form `V(A) − π·H²/(4a)`
+  within the band and under-estimates it, but — being a cancellation difference — its relative
+  error need NOT shrink strictly monotonically: it stays inside a fixed ~2% SHRINKING-ENVELOPE
+  band per level with a best-so-far minimum within ~1% of the closed form; NEITHER leg emits a
+  leaky/partial/wrong-volume solid; and a non-operand declines `NotAdmittedA`, a
+  non-intersecting second operand declines `SeamUnusable`
 
 #### Scenario: The shared seam is grounded on OCCT and native COMMON matches the OCCT oracle (sim, native-vs-OCCT)
 

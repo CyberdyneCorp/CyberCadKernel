@@ -133,19 +133,82 @@ CC_TEST(asym_fuse_welds_watertight) {
   }
 }
 
-// ── L3-BAND: the fine-deflection residual is MESHER-limited, NOT assembly-limited ──
+// ── Raw survivor histogram helper (no orientation repair) ─────────────────────────
+// Rebuild the exact survivor set the COMMON verb welds, mesh it, and count the seam-
+// localized non-manifold edges (uses ≥ 3). This is the MESHER's raw weld verdict — the
+// same probe measure_multiseam_fine uses to separate the assembly (deflection-independent
+// split/select) from the frozen-M0-mesher shared-seam-strip weld.
+namespace asymraw {
+namespace ffm = cybercad::native::boolean::ffmdetail;
+namespace ffc = cybercad::native::boolean::ffcdetail;
+struct RawVerdict { std::size_t survivors = 0; int nmInner = 0, nmOuter = 0, nmOther = 0, open = 0; };
+inline RawVerdict commonSurvivorHisto(const topo::Shape& A, const topo::Shape& B,
+                                      const std::vector<bo::ssi::WLine>& seams, double d) {
+  RawVerdict v;
+  const auto foA = bo::recogniseFreeformSolid(A);
+  const auto foB = bo::recogniseFreeformSolid(B);
+  if (!foA || !foB) return v;
+  const bo::OperandFace* wallA = nullptr;
+  const bo::OperandFace* wallB = nullptr;
+  bo::FfCutDecline wA = bo::FfCutDecline::Ok, wB = bo::FfCutDecline::Ok;
+  if (!ffc::freeformWall(*foA, &wallA, wA) || !ffc::freeformWall(*foB, &wallB, wB)) return v;
+  std::vector<bo::ssi::WLine> seamsB;
+  for (const auto& s : seams) seamsB.push_back(ffc::rekeyToB(s));
+  std::vector<ffm::WallRegion> regA, regB;
+  double gA = -1, gB = -1;
+  if (!ffm::splitWallBySeams(wallA->face, seams, regA, gA)) return v;
+  if (!ffm::splitWallBySeams(wallB->face, seamsB, regB, gB)) return v;
+  tess::MeshParams mp; mp.deflection = d;
+  const tess::Mesh meshA = tess::SolidMesher(mp).mesh(foA->solid);
+  const tess::Mesh meshB = tess::SolidMesher(mp).mesh(foB->solid);
+  const bo::Aabb bbA = bo::meshAabb(meshA), bbB = bo::meshAabb(meshB);
+  std::vector<topo::Shape> faces;
+  for (const auto& r : regA)
+    if (ffc::subFaceHasMembership(r.face, meshB, bbB, d, bo::Membership::In)) faces.push_back(r.face);
+  for (const auto& r : regB)
+    if (ffc::subFaceHasMembership(r.face, meshA, bbA, d, bo::Membership::In)) faces.push_back(r.face);
+  v.survivors = faces.size();
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(faces);
+  const topo::Shape solid = topo::ShapeBuilder::makeSolid({shell});
+  const tess::Mesh m = tess::SolidMesher(mp).mesh(solid);
+  const double r1 = ax::seamR1(), r2 = ax::seamR2();
+  for (const auto& [e, uses] : tess::edgeUseCounts(m)) {
+    if (uses == 1) { ++v.open; continue; }
+    if (uses < 3) continue;
+    const auto& a = m.vertices[e.lo];
+    const auto& b = m.vertices[e.hi];
+    const double rr = std::hypot(0.5 * (a.x + b.x), 0.5 * (a.y + b.y));
+    if (std::fabs(rr - r1) < 0.03) ++v.nmInner;
+    else if (std::fabs(rr - r2) < 0.03) ++v.nmOuter;
+    else ++v.nmOther;
+  }
+  return v;
+}
+}  // namespace asymraw
+
+// ── L3-BAND / MESH-COLLAR: the deflection-robust collar EXTENDS the mesher weld band ──
 // BELOW each op's working band the multi-seam sew declines (never leaks). This test PINS
-// where that decline lives: it proves the ASSEMBLY layer (split tiling + survivor set,
-// the boolean/ lane) is CORRECT and deflection-INDEPENDENT at a sub-band deflection, while
-// the verb honest-declines to NULL — so the residual is the frozen-M0-mesher shared-seam-
-// strip weld (tessellate/, out of this lane), not the assembly.
+// where that decline lives, and REGRESSION-GUARDS the deflection-robust-collar fix
+// (seam_strip.h): the shared-seam-strip collar inset used to be δ = min(0.5·segLen,
+// 0.25·rSeam), which SHRINKS with the deflection-driven seam segment length (segLen → 0 as
+// d refines), so the collar suppression band eventually stopped covering the near-seam
+// curvature Steiner pile and a shared seam edge got used 4×. Tying δ to the SEAM RADIUS
+// (0.05·rSeam, deflection-INDEPENDENT) removes that degradation.
 //
-// Measured (measure_multiseam_fine): at d=0.002 (below the [0.0025,…] working band) the
-// COMMON survivor set is IDENTICAL to the welding d=0.0025 case (surv=2), splitWallBySeams
-// tiles BOTH walls with UV gap == 0 (exactly, deflection-independent), yet the raw survivor
-// mesh carries ONE non-manifold edge localized to the OUTER seam r₂ — the per-face-CDT
-// parity collapse of the shared-seam-strip weld. The assembly did its job; the mesher weld
-// is the limiter. This is the SACRED never-leaky honest-decline, pinned to its layer.
+// Measured (measure_multiseam_fine), asym a=4 valley ∩ b=6 dome, seams r₁≈0.154, r₂≈0.365:
+//   • The ASSEMBLY (split tiling + survivor set) is EXACT and deflection-INDEPENDENT at
+//     every d (gap == 0 on both walls, survivors == 2) — the boolean/ lane is sound.
+//   • BEFORE the fix the raw COMMON survivor mesh was non-manifold at d=0.002 (1 edge @
+//     OUTER r₂) and d=0.00125 (4 edges @ INNER r₁). AFTER the fix the OUTER-seam collapse
+//     at d=0.002 is GONE (nonmanif == 0) — the collar band now suppresses the pile at that
+//     refinement. The band is extended.
+//   • Two DEEPER residuals remain, out of the collar-width wave's + this lane's reach, and
+//     the verb HONEST-DECLINES both to NULL (never leaky): at d=0.002 the strip welds the
+//     two annulus survivors into a watertight-but-smaller closed region (the annulus↔annulus
+//     collar-side winding collapse), caught by the two-sided VOLUME self-verify
+//     (VolumeInconsistent); at d=0.00125 the seam is sampled DENSER than the weld tolerance
+//     (weldTol = 0.5·d ≫ seam spacing) so adjacent seam vertices merge into a 4×-used
+//     on-seam edge (NotWatertight). Both are the SACRED never-leaky honest-decline.
 CC_TEST(asym_fine_deflection_residual_is_mesher_not_assembly) {
   namespace ffm = cybercad::native::boolean::ffmdetail;
   namespace ffc = cybercad::native::boolean::ffcdetail;
@@ -173,23 +236,40 @@ CC_TEST(asym_fine_deflection_residual_is_mesher_not_assembly) {
   CC_CHECK(regA.size() == 3 && regB.size() == 3);   // inner disk + middle annulus + background
   CC_CHECK(gapA < 1e-9 && gapB < 1e-9);             // EXACT UV tiling — deflection-independent
 
-  // (2) At a SUB-BAND deflection the verb honest-declines to NULL (never a leaky solid).
-  // The assembly reached the weld (both seams traced, both walls split into 3 regions), so
-  // the decline is a measured mesher-weld self-verify failure — NOT an upstream give-up.
-  const double dSub = 0.002;  // below the COMMON/CUT working band ([0.0025, 0.01])
+  // (2) MESH-COLLAR REGRESSION: the deflection-robust collar CLEARED the d=0.002 OUTER-seam
+  // non-manifold. The raw COMMON survivor mesh (no orientation repair) has the stable
+  // survivor set (2) and ZERO non-manifold edges at d=0.002 — where the pre-fix collar left
+  // ONE at the OUTER seam r₂. The mesher's watertight band is extended one refinement step.
+  const asymraw::RawVerdict v200 = asymraw::commonSurvivorHisto(A, B, seams, 0.002);
+  CC_CHECK(v200.survivors == 2);                    // survivor set stable (deflection-indep.)
+  CC_CHECK(v200.nmOuter == 0);                       // FIXED — the OUTER-seam pile is suppressed
+  CC_CHECK(v200.nmInner == 0 && v200.nmOther == 0);  // fully manifold at d=0.002
+  CC_CHECK(v200.open == 0);                          // no open edges (not the naive sliver-drop)
+
+  // (2b) The DEEPER residual is now localized: at d=0.00125 the raw survivor mesh is still
+  // non-manifold at the INNER seam r₁ (the over-dense-seam weld-tolerance merge — weldTol =
+  // 0.5·d ≫ the r₁ seam spacing), NOT at the outer seam. This is a distinct, deeper residual
+  // than the collar-band width, and it is what the verb honest-declines below.
+  const asymraw::RawVerdict v125 = asymraw::commonSurvivorHisto(A, B, seams, 0.00125);
+  CC_CHECK(v125.survivors == 2);
+  CC_CHECK(v125.nmInner > 0);                        // residual localized to the INNER seam r₁
+
+  // (3) The verb still HONEST-DECLINES below the working band (never a leaky solid). At
+  // d=0.002 the decline is now the deeper annulus-winding VOLUME residual (the raw mesh is
+  // watertight, but the coherent weld encloses a smaller region), caught by the two-sided
+  // volume self-verify — NOT a silent wrong solid.
   bo::MultiSeamCutReport rep;
-  const topo::Shape r =
-      bo::freeformFreeformMultiSeamCutWithSeams(A, B, seams, bo::FfOp::Common, dSub, &rep, ax::volCommon());
+  const topo::Shape r = bo::freeformFreeformMultiSeamCutWithSeams(A, B, seams, bo::FfOp::Common,
+                                                                  0.002, &rep, ax::volCommon());
   CC_CHECK(r.isNull());                              // honest decline, never leaky
-  CC_CHECK(!rep.watertight);
   CC_CHECK(rep.seamLoops == 2);                      // reached the weld
   CC_CHECK(rep.subRegionsA == 3 && rep.subRegionsB == 3);
-  CC_CHECK(rep.decline == bo::MultiSeamCutDecline::NotWatertight);  // mesher-weld failure
+  CC_CHECK(rep.decline == bo::MultiSeamCutDecline::VolumeInconsistent);  // deeper weld residual
 
-  // (3) The in-band deflection STILL welds (the band boundary is real, not a regression).
+  // (4) The in-band deflection STILL welds (the band boundary is real, not a regression).
   bo::MultiSeamCutReport repOk;
-  const topo::Shape rOk =
-      bo::freeformFreeformMultiSeamCutWithSeams(A, B, seams, bo::FfOp::Common, 0.0025, &repOk, ax::volCommon());
+  const topo::Shape rOk = bo::freeformFreeformMultiSeamCutWithSeams(A, B, seams, bo::FfOp::Common,
+                                                                    0.0025, &repOk, ax::volCommon());
   CC_CHECK(!rOk.isNull());
   CC_CHECK(repOk.decline == bo::MultiSeamCutDecline::Ok);
   CC_CHECK(repOk.boundaryEdges == 0);

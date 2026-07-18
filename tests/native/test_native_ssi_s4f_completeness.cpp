@@ -302,4 +302,51 @@ CC_TEST(s4f_control_steinmetz_branch_trace_unperturbed) {
   CC_CHECK(tr.selfIntersections == 0);  // a locus branch, NOT a single-arm self-crossing
 }
 
+// ── (E) FALSE-POSITIVE GUARD: a small CONVEX loop is NOT self-intersecting ──────────
+// A plane grazing a sphere near the pole cuts a SMALL simple CONVEX circle. A circle is
+// topologically simple — it CANNOT self-cross. But when the loop diameter is comparable to
+// the marching step, the polyline's near-by chords fall inside the loose neighbourhood window
+// at a barely-transverse angle, and the pre-fix guard FALSELY recorded 1-3 self-intersections
+// on this circle (measured: z=0.97 -> 3, z=0.99/0.995 -> 1). The TRUE-CROSSING coincidence gate
+// (a real self-crossing must actually COINCIDE, dist <= selfIntersectCoincFrac*h; a convex
+// loop's near-by chords stay a larger fraction of a step apart) removes the false positives.
+// A big transversal circle (z=0.5, control) always had 0 and still does. Necessary-condition
+// tightening: it only REJECTS false hits, so the genuine figure-eight above still records >=1.
+CC_TEST(s4f_convex_small_loop_no_false_self_intersection) {
+  nmath::Sphere sp{frameZ({0, 0, 0}), 1.0};
+  ssi::ParamBox sdom{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
+  ssi::ParamBox pdom{-2.0, 2.0, -2.0, 2.0};
+  auto A = ssi::makeSphereAdapter(sp, sdom);
+
+  // The small-loop poses that pre-fix FALSELY self-intersected (radii ~0.10-0.24).
+  for (double zc : {0.97, 0.98, 0.99, 0.995}) {
+    nmath::Plane pl{frameZ({0, 0, zc})};
+    auto B = ssi::makePlaneAdapter(pl, pdom);
+    ssi::SeedOptions so; so.initialGridU = 3; so.initialGridV = 3;
+    ssi::MarchOptions on; on.maxPoints = 4000; on.enableSelfIntersection = true;
+    auto tr = ssi::trace_intersection(A, B, so, on);
+    CC_CHECK(tr.curveCount() == 1);
+    CC_CHECK(tr.lines[0].isClosed());               // a simple closed circle
+    CC_CHECK(tr.selfIntersections == 0);            // a convex circle cannot self-cross
+    CC_CHECK(tr.branchPoints == 0);
+    // every node still on both surfaces (the loop itself is unchanged — only the spurious
+    // self-crossing COUNT is removed; the polyline is byte-identical)
+    for (const auto& n : tr.lines[0].points) {
+      CC_CHECK(std::fabs(nmath::distance(n.point, sp.pos.origin) - 1.0) < 1e-5);
+      CC_CHECK(std::fabs(n.point.z - zc) < 1e-5);
+    }
+  }
+
+  // Control: a LARGE transversal circle (z=0.5) — always 0 self-intersections, still 0.
+  {
+    nmath::Plane pl{frameZ({0, 0, 0.5})};
+    auto B = ssi::makePlaneAdapter(pl, pdom);
+    ssi::SeedOptions so; so.initialGridU = 3; so.initialGridV = 3;
+    ssi::MarchOptions on; on.maxPoints = 4000; on.enableSelfIntersection = true;
+    auto tr = ssi::trace_intersection(A, B, so, on);
+    CC_CHECK(tr.curveCount() == 1);
+    CC_CHECK(tr.selfIntersections == 0);
+  }
+}
+
 int main() { return cctest::run_all(); }

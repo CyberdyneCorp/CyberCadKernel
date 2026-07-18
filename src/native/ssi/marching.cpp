@@ -56,6 +56,7 @@ struct Tuned {
   double closureTangentCos;           ///< S4-f: close only if dot(fwdNow,seedFwd) ≥ this (BLOCK a false-close)
   bool enableSelfIntersection = false;///< S4-f: record + trace through single-arm self-crossings
   double selfIntersectRadius;         ///< S4-f: self-cross coincidence radius (resolved from selfIntersectRadiusFrac)
+  double selfIntersectCoincDist;      ///< S4-f: TRUE-crossing coincidence gate (resolved from selfIntersectCoincFrac·h0)
   int maxPoints, crossMaxSteps;
   bool adaptiveCrossReanchor = false; ///< S4-c deep tail: re-anchor crossing plane to local curve tangent (M1d)
   double reanchorBlend = 1.0;         ///< blend weight local-tangent↔t★ per crossing step (1 = full local tangent)
@@ -111,6 +112,12 @@ Tuned tune(const MarchOptions& o, double scale) {
   t.enableSelfIntersection = o.enableSelfIntersection;
   t.selfIntersectRadius = (o.selfIntersectRadiusFrac > 0 ? o.selfIntersectRadiusFrac
                                                          : 2.0 * t.loopClose) * t.h0;
+  // COINCIDENCE gate: a genuine self-crossing has the two passes essentially coincident (dist ≈ 0);
+  // a small CONVEX loop's near-by chords stay a substantial fraction of a step apart. Tighten
+  // acceptance to selfIntersectCoincFrac·h0 (default 0.25) — a necessary condition that only
+  // REJECTS false positives, never adds a crossing (so the guard OFF stays byte-identical and every
+  // truly-coincident figure-eight crossing is still recorded). See MarchOptions.selfIntersectCoincFrac.
+  t.selfIntersectCoincDist = (o.selfIntersectCoincFrac > 0.0 ? o.selfIntersectCoincFrac : 0.25) * t.h0;
   t.maxPoints     = std::max(16, o.maxPoints);
   t.crossMaxSteps = std::max(1, o.crossMaxSteps);
   t.adaptiveCrossReanchor = o.adaptiveCrossReanchor;
@@ -1447,7 +1454,14 @@ void detectStitchedSelfIntersections(WLine& line, const Tuned& t) {
       const SegClosest cc = segSegClosest(
           pts[static_cast<std::size_t>(i)].point, pts[static_cast<std::size_t>(i) + 1].point,
           pts[static_cast<std::size_t>(j)].point, pts[static_cast<std::size_t>(j) + 1].point);
-      if (cc.dist > touch) continue;
+      if (cc.dist > touch) continue;                 // in the loose candidate neighbourhood?
+      // TRUE-CROSSING coincidence gate: the two passes must actually COINCIDE (closest approach ≤ a
+      // small fraction of the step), not merely fall inside the loose neighbourhood window. A genuine
+      // transverse self-crossing coincides to ≈ 0.2·h; a small CONVEX loop's near-by chords stay a
+      // larger fraction of a step apart and would otherwise be FALSELY reported (a circle cannot cross
+      // itself). Necessary-condition tightening — only REJECTS, never adds — so real figure-eight
+      // crossings are unchanged and the guard OFF is byte-identical. (S4-f false-positive guard.)
+      if (cc.dist > t.selfIntersectCoincDist) continue;
       const double cos = math::dot(di, dj) / (ni * nj);
       if (std::fabs(cos) >= kCrossCosMax) continue;  // (anti)parallel → retrace, not a crossing
       const Point3 X = cc.pOnA + (cc.pOnB - cc.pOnA) * 0.5;  // crossing = midpoint of closest approach

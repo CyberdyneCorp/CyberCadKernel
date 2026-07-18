@@ -287,6 +287,19 @@ struct MarchOptions {
   // (≤ 0 → 2·loopClose, so the self-cross window matches the loop-closure window).
   bool enableSelfIntersection = false;
   double selfIntersectRadiusFrac = -1.0;  ///< self-cross coincidence radius = this·h (≤ 0 → 2·loopClose·h)
+  // COINCIDENCE gate (S4-f false-positive guard). The `selfIntersectRadiusFrac` window above is a
+  // loose NEIGHBOURHOOD scale used to find candidate segment pairs; a GENUINE self-crossing also
+  // requires the two passes to actually COINCIDE — their segment-segment closest approach must be a
+  // small fraction of the step, not merely inside the neighbourhood window. Without this, a SMALL
+  // simple CONVEX loop (e.g. a tight plane∩sphere circle whose diameter is comparable to the step)
+  // has near-by chords fall inside the loose window at a barely-transverse angle and is FALSELY
+  // reported as self-intersecting — yet a circle cannot cross itself. `selfIntersectCoincFrac`
+  // tightens acceptance to `dist ≤ this·h`: a true transverse crossing coincides to ≈ 0.2·h, a
+  // convex-loop near-miss stays ≥ ~0.3·h apart, so the default cleanly separates them. It is a
+  // NECESSARY-condition tightening — it can only REJECT a candidate, never add one — so every real
+  // figure-eight crossing (which genuinely coincides) is still recorded and the guard OFF is
+  // byte-identical. (≤ 0 → 0.25.)
+  double selfIntersectCoincFrac = -1.0;  ///< accept a self-crossing only if seg-seg dist ≤ this·h (≤ 0 → 0.25)
 
   // ── S4-c near-tangent MARCHING band (all tangentSinTol-derived; no tolerance is
   // weakened — these only decide WHERE the fixed-plane crossing corrector engages) ──

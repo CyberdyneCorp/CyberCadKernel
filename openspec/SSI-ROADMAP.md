@@ -705,7 +705,7 @@ cusps route to the existing S4-c/S4-d/OCCT path.
   freeform pole where `‖dU‖` collapses anisotropically — are now traced end-to-end natively
   instead of truncating at the chart singularity.
 
-#### S4-f — Self-intersection / small-loops · ◐ FIRST COMPLETENESS + LOOP-ROBUSTNESS SLICE DONE AT THE BAR
+#### S4-f — Self-intersection / small-loops · ◐ FIRST COMPLETENESS + LOOP-ROBUSTNESS SLICE + SELF-INTERSECTION FALSE-POSITIVE GUARD (convex small-loop coincidence gate) DONE AT THE BAR
 Adds no new geometry capability — it HARDENS the correctness/completeness of the curves S3
 already traces. Two orthogonal parts, both additive + gated so the S3/S4-c/S4-d/S4-e controls
 stay byte-identical (`src/native/ssi/{marching.h,marching.cpp}` + new OCCT-free
@@ -728,6 +728,22 @@ stay byte-identical (`src/native/ssi/{marching.h,marching.cpp}` + new OCCT-free
   — recorded as a typed `WLine.selfIntersection` (DATA), and the arm marches THROUGH it (never
   stopped, never closed). DISTINCT from an S4-d `BranchNode` (a locus flip, `‖nA×nB‖→0`, that
   spawns arms): a self-crossing keeps ONE arm, so `branchPoints == 0`. Off → byte-identical.
+  - **FALSE-POSITIVE GUARD — TRUE-CROSSING coincidence gate (this slice, `selfIntersectCoincFrac`,
+    default 0.25).** The `touch` window above is a LOOSE candidate-neighbourhood scale; used alone
+    it FALSELY reports a self-intersection on a SMALL simple CONVEX loop (a topologically simple
+    circle CANNOT self-cross) whose diameter is comparable to the marching step — the loop's
+    near-by chords fall inside the loose window at a barely-transverse angle. MEASURED before:
+    a plane∩sphere circle near the pole reported 1–3 spurious crossings (z=0.97 → 3, z=0.99/0.995
+    → 1). A genuine transverse self-crossing must ALSO actually COINCIDE — its segment-segment
+    closest approach ≤ `selfIntersectCoincFrac·h` (a true X coincides to ≈ 0.2·h; a convex loop's
+    near-by chords stay ≥ ~0.3·h apart). NECESSARY-condition tightening — it can only REJECT a
+    candidate, never add one — so the genuine figure-eight (`geronoSheet`) still records ≥ 1, the
+    guard OFF is byte-identical, and no tolerance is weakened. AFTER: 6 of the 7 measured convex-
+    loop poses are cleaned (0 spurious); the ONE residual is a pathologically under-resolved
+    sub-step loop (radius ≈ 0.077, ~29 polyline nodes for the whole circle) where a small convex
+    turn is geometrically indistinguishable from a coarse figure-eight crossing — an honest
+    documented residual, not a wrong curve (the polyline itself is unchanged either way).
+    Regression: `s4f_convex_small_loop_no_false_self_intersection`.
 - **Adaptive completeness critic (default off `completenessCritic`).** After the initial fixed-
   resolution seed + trace, LOOP-UNTIL-DRY: build a coarse coverage grid over A's domain from the
   traced polylines (`critic::coverageOf` / `uncoveredBoxes`), re-seed FINER
@@ -747,9 +763,9 @@ is scoped to that fixture at that floor, never a global claim. NEVER fabricates 
 or a seed; an unrecoverable loop is a reported measured recall < 1, a self-intersection is a
 recorded typed crossing, a false-close is prevented (not a faked continuation).
 
-Host gate green: `test_native_ssi_s4f_completeness` **6 cases, 0 failed** (fixtures A–D + the
-transversal-loop and S4-d Steinmetz controls; NUMSCI ON CTest **33/33**, the S4-f TU ABSENT with
-NUMSCI OFF). No tolerance weakened; `src/native/**` stays OCCT-free.
+Host gate green: `test_native_ssi_s4f_completeness` **7 cases, 0 failed** (fixtures A–D + the
+transversal-loop and S4-d Steinmetz controls + the false-positive convex-loop regression E; the
+S4-f TU ABSENT with NUMSCI OFF). No tolerance weakened; `src/native/**` stays OCCT-free.
 
 **S4-f DE-RISKS (does not unblock/complete) curved blends (#6) + wrap-emboss (#7)** — their
 intersection seams are exactly the small-loop / self-intersecting / many-loop patterns this slice

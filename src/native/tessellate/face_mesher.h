@@ -845,8 +845,15 @@ class FaceMesher {
       }
       if (!isSeam) continue;
       const bool outward = voteOut >= voteIn;  // the loop's material side (per-loop, both faces agree)
-      // PASS 2 — take the collar on the voted side for every vertex.
+      // PASS 2 — take the collar on the voted side for every KEPT vertex. The registry's
+      // weld-resolution decimation (MESH-WELD-TOL, seam_strip.h) flags the subset of seam
+      // vertices spaced ≥ 2·weldTol, so no two strip/collar ring vertices can merge at the
+      // spatial weld (an over-dense seam ring otherwise collapses runs of ring vertices —
+      // and their 1:1 collar ring — into 4×-used edges at fine deflection). Both faces
+      // resolve a seam sample to the SAME registry entry, so they keep the identical subset
+      // and their strips stay bit-identical. An undecimated ring keeps every vertex.
       for (std::size_t i = 0; i < count; ++i) {
+        if (!seamStrips_->keptSeamVertex(seamPts[i])) continue;
         const math::Point3* collar = seamStrips_->collarOnSide(seamPts[i], outward);
         if (!collar) { isSeam = false; break; }
         sc.seam3d.push_back(seamPts[i]);

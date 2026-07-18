@@ -55,9 +55,11 @@
 #include "native/tessellate/trim.h"
 #include "native/topology/native_topology.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace cybercad::native::tessellate {
@@ -89,6 +91,35 @@ struct SeamStrip {
 class SeamStripRegistry {
  public:
   bool empty() const noexcept { return cells_.empty(); }
+
+  // ── WELD-RESOLUTION-AWARE SEAM DECIMATION (MESH-WELD-TOL) ────────────────────
+  // Declare the mesher's spatial weld tolerance BEFORE registering seam loops. A seam
+  // ring sampled DENSER than the weld tolerance (at fine deflection the deflection-driven
+  // seam sampling spacing ≪ weldTol = 0.5·deflection) would have runs of adjacent ring
+  // vertices MERGE at the spatial weld — and because the collar ring mirrors the seam
+  // ring 1:1, the collar (where the CDT fill meets the spliced strip) merges the same
+  // way, collapsing strip quads against per-face CDT boundary triangles into 4×-used
+  // edges (measured: at d=0.00125 on the asym annulus↔annulus pose the strip pass went
+  // non-manifold at BOTH collar rings and the mesher fell back to the non-watertight
+  // baseline). The fix: each registered ring keeps only samples ≥ 2·weldTol apart (two
+  // points ≥ 2·tol apart can never share a weld cell of side tol — cell diagonal is
+  // √3·tol), flagged per Entry; the face mesher builds the strip + collar loop from the
+  // KEPT subset only. This is a TIGHTENING of what the weld may merge (never a widened
+  // weld tolerance): a ring already sampled coarser than 2·weldTol keeps every sample —
+  // bit-identical to the pre-decimation strip. Sagitta cost of the coarser seam chord is
+  // (2·weldTol)²/(8·rSeam) = deflection²/(8·rSeam) ≪ deflection, so the decimated strip
+  // stays within the deflection band.
+  void setWeldResolution(double weldTol) noexcept {
+    minKeepSpacing_ = weldTol > 0.0 ? 2.0 * weldTol : 0.0;
+  }
+
+  // Was the registered seam vertex nearest `p` KEPT by the weld-resolution decimation?
+  // (Every vertex of an undecimated ring is kept.) Both faces resolve a seam sample to
+  // the SAME entry, so they keep the identical subset → their strips stay bit-identical.
+  bool keptSeamVertex(const math::Point3& p) const {
+    const Entry* e = findEntry(p);
+    return e && e->kept;
+  }
 
   // The shared COLLAR 3-D point for the seam vertex at `p` (a seam boundary sample), on
   // the MATERIAL side indicated by `materialProbe` (a 3-D point a hair into the face's
@@ -174,20 +205,27 @@ class SeamStripRegistry {
     if (cellSize_ <= 0.0) cellSize_ = cell;
     else if (cell < cellSize_) rehash(cell);
     const int stripIdx = static_cast<int>(strips_.size());
-    const std::size_t n = ring.size();
+    // Order the ring around the seam axis, then flag the weld-resolution KEPT subset
+    // (MESH-WELD-TOL): consecutive kept samples ≥ minKeepSpacing_ apart, so no two kept
+    // ring vertices can merge at the spatial weld. Registered ONCE and shared, so both
+    // faces read the identical kept subset.
+    const std::vector<math::Point3> ordered = orderRingByAngle(ring, s);
+    const std::vector<bool> kept = decimateRing(ordered, minKeepSpacing_);
+    const std::size_t n = ordered.size();
     for (std::size_t i = 0; i < n; ++i) {
-      const math::Vec3 d = ring[i] - s.centroid;
+      const math::Vec3 d = ordered[i] - s.centroid;
       const double axial = math::dot(d, s.axis);
       const math::Vec3 radial = d - s.axis * axial;
       const double r = math::norm(radial);
       if (r <= s.collarInset) continue;                    // degenerate — skip this vertex
       const math::Vec3 outward = radial / r;               // unit outward radial (in seam plane)
       Entry e;
-      e.seam = ring[i];
-      e.collarIn = ring[i] - outward * s.collarInset;      // toward the axis (decreasing radius)
-      e.collarOut = ring[i] + outward * s.collarInset;     // away from the axis (increasing radius)
+      e.seam = ordered[i];
+      e.collarIn = ordered[i] - outward * s.collarInset;   // toward the axis (decreasing radius)
+      e.collarOut = ordered[i] + outward * s.collarInset;  // away from the axis (increasing radius)
       e.strip = stripIdx;
-      cells_[keyOf(ring[i])].push_back(e);
+      e.kept = kept[i];
+      cells_[keyOf(ordered[i])].push_back(e);
     }
     strips_.push_back(s);
     matchTol_ = std::max(matchTol_, s.collarInset);
@@ -214,7 +252,59 @@ class SeamStripRegistry {
     math::Point3 collarIn;   ///< collar candidate toward the axis (r_seam − δ)
     math::Point3 collarOut;  ///< collar candidate away from the axis (r_seam + δ)
     int strip = -1;          ///< index into strips_ (the collar frame)
+    bool kept = true;        ///< weld-resolution decimation flag (MESH-WELD-TOL)
   };
+
+  // Order the (deduped, unordered) ring samples by angle around the strip axis — the
+  // deterministic cyclic order the weld-resolution decimation walks. Uses an arbitrary
+  // fixed in-plane basis; determinism (not a particular start angle) is all that matters,
+  // and the ONE shared registry serves both faces, so the kept subset is shared too.
+  static std::vector<math::Point3> orderRingByAngle(const std::vector<math::Point3>& ring,
+                                                    const detail::SeamStrip& s) {
+    // In-plane basis ⊥ axis: e1 = normalize(any ⊥ axis), e2 = axis × e1.
+    const math::Vec3 seed = std::fabs(s.axis.z) < 0.9 ? math::Vec3{0, 0, 1} : math::Vec3{1, 0, 0};
+    math::Vec3 e1 = math::cross(s.axis, seed);
+    e1 = e1 / math::norm(e1);
+    const math::Vec3 e2 = math::cross(s.axis, e1);
+    std::vector<std::pair<double, std::size_t>> ang;
+    ang.reserve(ring.size());
+    for (std::size_t i = 0; i < ring.size(); ++i) {
+      const math::Vec3 d = ring[i] - s.centroid;
+      ang.emplace_back(std::atan2(math::dot(d, e2), math::dot(d, e1)), i);
+    }
+    std::sort(ang.begin(), ang.end());
+    std::vector<math::Point3> out;
+    out.reserve(ring.size());
+    for (const auto& [a, i] : ang) out.push_back(ring[i]);
+    return out;
+  }
+
+  // Weld-resolution decimation (MESH-WELD-TOL): walking the angle-ordered ring, keep a
+  // sample only when it is ≥ minSpacing (3-D) from the LAST kept one, so no two kept ring
+  // vertices can land in one weld cell. The wrap pair (last kept → first kept) is closed
+  // by un-keeping the last kept sample if it violates the spacing. A ring already sampled
+  // coarser than minSpacing keeps EVERY sample (bit-identical to the undecimated strip);
+  // if decimation would leave < 3 kept vertices (no valid strip ring), it is disabled and
+  // every sample is kept — the pre-decimation behaviour, never a silently-degenerate ring.
+  static std::vector<bool> decimateRing(const std::vector<math::Point3>& ring,
+                                        double minSpacing) {
+    const std::size_t n = ring.size();
+    std::vector<bool> kept(n, true);
+    if (minSpacing <= 0.0 || n < 3) return kept;
+    std::size_t nKept = 1;      // ring[0] is always kept (the walk anchor)
+    std::size_t last = 0;       // index of the last kept sample
+    for (std::size_t i = 1; i < n; ++i) {
+      if (math::distance(ring[i], ring[last]) >= minSpacing) { last = i; ++nKept; }
+      else kept[i] = false;
+    }
+    // Close the loop: the wrap pair must respect the spacing too.
+    if (nKept > 3 && last != 0 && math::distance(ring[last], ring[0]) < minSpacing) {
+      kept[last] = false;
+      --nKept;
+    }
+    if (nKept < 3) return std::vector<bool>(n, true);  // decimation disabled — keep all
+    return kept;
+  }
 
   long long q(double v) const noexcept {
     const double s = 1.0 / (cellSize_ > 0.0 ? cellSize_ : 1e-7);
@@ -319,8 +409,9 @@ class SeamStripRegistry {
 
   std::unordered_map<Key, std::vector<Entry>, Hash> cells_;
   std::vector<detail::SeamStrip> strips_;
-  double cellSize_ = 0.0;       ///< spatial hash cell size (== the collar inset ≈ match tolerance)
-  double matchTol_ = kSnapEps;  ///< nearest-seam-vertex match radius (grows with the collar inset)
+  double cellSize_ = 0.0;        ///< spatial hash cell size (== the collar inset ≈ match tolerance)
+  double matchTol_ = kSnapEps;   ///< nearest-seam-vertex match radius (grows with the collar inset)
+  double minKeepSpacing_ = 0.0;  ///< weld-resolution decimation spacing (2·weldTol; 0 = keep all)
 };
 
 }  // namespace cybercad::native::tessellate

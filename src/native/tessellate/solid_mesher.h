@@ -325,6 +325,10 @@ class SolidMesher {
     // the SHARED strip and fills only the collar-outward remainder.
     SeamStripRegistry seamStrips;
     if (enableSeamStrip) {
+      // Declare the weld tolerance (same formula as mesh()) so the registry decimates any
+      // over-dense seam ring to ≥ 2·weldTol spacing (MESH-WELD-TOL): ring vertices denser
+      // than the weld resolution would MERGE at the spatial weld and collapse the strip.
+      seamStrips.setWeldResolution(std::max(p_.deflection * 0.5, 1e-7));
       collectSeamStrips(shape, cache, seamStrips);
       fm.setSeamStrips(&seamStrips);
     }

@@ -202,13 +202,24 @@ inline RawVerdict commonSurvivorHisto(const topo::Shape& A, const topo::Shape& B
 //     OUTER r₂) and d=0.00125 (4 edges @ INNER r₁). AFTER the fix the OUTER-seam collapse
 //     at d=0.002 is GONE (nonmanif == 0) — the collar band now suppresses the pile at that
 //     refinement. The band is extended.
-//   • Two DEEPER residuals remain, out of the collar-width wave's + this lane's reach, and
-//     the verb HONEST-DECLINES both to NULL (never leaky): at d=0.002 the strip welds the
-//     two annulus survivors into a watertight-but-smaller closed region (the annulus↔annulus
-//     collar-side winding collapse), caught by the two-sided VOLUME self-verify
-//     (VolumeInconsistent); at d=0.00125 the seam is sampled DENSER than the weld tolerance
-//     (weldTol = 0.5·d ≫ seam spacing) so adjacent seam vertices merge into a 4×-used
-//     on-seam edge (NotWatertight). Both are the SACRED never-leaky honest-decline.
+//   • MESH-WELD-TOL (the next wave, landed here) cleared the d≤0.00125 over-dense-seam
+//     WELD-TOLERANCE merge: the seam was sampled DENSER than the weld tolerance (weldTol =
+//     0.5·d = 6.25e-4 at d=0.00125 ≫ the r₁ seam spacing ≈6.8e-5), so runs of adjacent
+//     seam-ring vertices — and their 1:1 collar-ring mirrors, where the CDT fill meets the
+//     spliced strip — MERGED at the spatial weld and collapsed strip quads into 4×-used
+//     edges (measured: the strip pass went non-manifold at BOTH collar rings, fell back to
+//     the baseline, and the verb declined NotWatertight). The fix (seam_strip.h): the
+//     registry decimates each registered seam ring to ≥ 2·weldTol spacing (kept-flag per
+//     seam vertex; the strip + collar loop are built from the KEPT subset only, shared by
+//     both faces), so no two strip vertices can share a weld cell. This TIGHTENS what the
+//     weld may merge — never a widened tolerance. The raw survivor mesh is now watertight
+//     at d=0.00125 (and finer: measured clean through d=0.0008).
+//   • ONE deeper residual remains, out of this tessellate lane's reach, and the verb
+//     HONEST-DECLINES it to NULL (never leaky): the strip welds the two annulus survivors
+//     into a watertight-but-SMALLER closed region (the annulus↔annulus collar-side winding
+//     collapse, `boolean/weldMultiCoherent`), caught by the two-sided VOLUME self-verify
+//     (VolumeInconsistent) at BOTH d=0.002 and d=0.00125 — the SACRED never-leaky
+//     honest-decline, now unified to a single layer-pinned mechanism.
 CC_TEST(asym_fine_deflection_residual_is_mesher_not_assembly) {
   namespace ffm = cybercad::native::boolean::ffmdetail;
   namespace ffc = cybercad::native::boolean::ffcdetail;
@@ -246,25 +257,32 @@ CC_TEST(asym_fine_deflection_residual_is_mesher_not_assembly) {
   CC_CHECK(v200.nmInner == 0 && v200.nmOther == 0);  // fully manifold at d=0.002
   CC_CHECK(v200.open == 0);                          // no open edges (not the naive sliver-drop)
 
-  // (2b) The DEEPER residual is now localized: at d=0.00125 the raw survivor mesh is still
-  // non-manifold at the INNER seam r₁ (the over-dense-seam weld-tolerance merge — weldTol =
-  // 0.5·d ≫ the r₁ seam spacing), NOT at the outer seam. This is a distinct, deeper residual
-  // than the collar-band width, and it is what the verb honest-declines below.
+  // (2b) MESH-WELD-TOL REGRESSION: the weld-resolution seam decimation CLEARED the
+  // d=0.00125 over-dense-seam merge. The raw COMMON survivor mesh is now fully manifold
+  // and watertight at d=0.00125 — where the pre-fix strip collapsed at both collar rings
+  // and the returned baseline carried 4 non-manifold INNER-seam (r₁) edges. No open edges:
+  // the decimated strip and the CDT fill share the kept collar loop (never a sliver-drop).
   const asymraw::RawVerdict v125 = asymraw::commonSurvivorHisto(A, B, seams, 0.00125);
-  CC_CHECK(v125.survivors == 2);
-  CC_CHECK(v125.nmInner > 0);                        // residual localized to the INNER seam r₁
+  CC_CHECK(v125.survivors == 2);                     // survivor set still stable
+  CC_CHECK(v125.nmInner == 0);                       // FIXED — the weld-tol merge is gone
+  CC_CHECK(v125.nmOuter == 0 && v125.nmOther == 0);  // fully manifold at d=0.00125
+  CC_CHECK(v125.open == 0);                          // watertight, no opened edges
 
   // (3) The verb still HONEST-DECLINES below the working band (never a leaky solid). At
-  // d=0.002 the decline is now the deeper annulus-winding VOLUME residual (the raw mesh is
-  // watertight, but the coherent weld encloses a smaller region), caught by the two-sided
-  // volume self-verify — NOT a silent wrong solid.
-  bo::MultiSeamCutReport rep;
-  const topo::Shape r = bo::freeformFreeformMultiSeamCutWithSeams(A, B, seams, bo::FfOp::Common,
-                                                                  0.002, &rep, ax::volCommon());
-  CC_CHECK(r.isNull());                              // honest decline, never leaky
-  CC_CHECK(rep.seamLoops == 2);                      // reached the weld
-  CC_CHECK(rep.subRegionsA == 3 && rep.subRegionsB == 3);
-  CC_CHECK(rep.decline == bo::MultiSeamCutDecline::VolumeInconsistent);  // deeper weld residual
+  // BOTH d=0.002 and d=0.00125 the decline is now the SAME deeper annulus-winding VOLUME
+  // residual (the raw mesh is watertight, but the coherent weld encloses a smaller
+  // region), caught by the two-sided volume self-verify — NOT a silent wrong solid, and
+  // no longer the weld-tolerance NotWatertight at d=0.00125.
+  for (double dSub : {0.002, 0.00125}) {
+    bo::MultiSeamCutReport rep;
+    const topo::Shape r = bo::freeformFreeformMultiSeamCutWithSeams(A, B, seams, bo::FfOp::Common,
+                                                                    dSub, &rep, ax::volCommon());
+    CC_CHECK(r.isNull());                            // honest decline, never leaky
+    CC_CHECK(rep.seamLoops == 2);                    // reached the weld
+    CC_CHECK(rep.subRegionsA == 3 && rep.subRegionsB == 3);
+    CC_CHECK(rep.watertight);                        // the mesher weld band now covers dSub
+    CC_CHECK(rep.decline == bo::MultiSeamCutDecline::VolumeInconsistent);  // deeper residual
+  }
 
   // (4) The in-band deflection STILL welds (the band boundary is real, not a regression).
   bo::MultiSeamCutReport repOk;

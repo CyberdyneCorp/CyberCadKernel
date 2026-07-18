@@ -27,11 +27,18 @@
 //      into ONE watertight, coherent, positive-volume closed 2-manifold (every edge used
 //      exactly twice, be = 0), at the closed-form V(A)+V(B)−V(A∩B). This is the fine-
 //      deflection multi-seam gate.
-//   2. THE STRIP WELD IS NEVER-LEAKY. Below the working band the weld can still collapse
-//      (the strip converts the 4×-used non-manifold into a small OPEN-edge residual — the
-//      over-dense-seam weld-tolerance sliver mapped in SSI-ROADMAP MESH-STRIP-IMPL). The
-//      mandatory self-verify then HONEST-DECLINES to a NULL Shape with a measured residual
-//      — NEVER a silently non-watertight solid. Asserted at COMMON d = 0.0018.
+//   2. THE STRIP WELD IS NEVER-LEAKY. Below the working band the weld self-verify
+//      HONEST-DECLINES to a NULL Shape with a measured residual — NEVER a silently wrong
+//      solid. Asserted at COMMON d = 0.0018. The DECLINE MECHANISM there has moved as the
+//      mesher weld band extended: the over-dense-seam weld-tolerance sliver this case
+//      originally pinned (NotWatertight — adjacent seam vertices merging under the
+//      deflection-derived weld tolerance) is CLEARED by the weld-resolution seam-ring
+//      decimation (MESH-WELD-TOL, seam_strip.h: each registered seam ring keeps only
+//      samples ≥ 2·weldTol apart, so no two strip vertices can merge at the weld). The
+//      strip now welds WATERTIGHT at d = 0.0018 (be = 0), and the decline is the deeper
+//      annulus↔annulus collar-side WINDING collapse (`boolean/weldMultiCoherent` picks the
+//      first watertight+coherent config, which encloses a smaller region), caught by the
+//      two-sided VOLUME self-verify — VolumeInconsistent, still never-leaky.
 //
 // Requires CYBERCAD_HAS_NUMSCI (the seams are the real S3 trace between two Béziers).
 //
@@ -80,29 +87,39 @@ CC_TEST(seamstrip_fine_deflection_fuse_welds_watertight) {
 }
 
 // ── (2) Below the working band the weld HONEST-DECLINES — never a silent leak ──
-// At COMMON d = 0.0018 the shared inner seam r₁ is sampled so densely that adjacent
-// seam vertices merge under the deflection-derived weld tolerance, collapsing a strip
-// sliver: the strip weld eliminates the 4×-used NON-MANIFOLD but leaves a tiny OPEN-edge
-// residual (the over-dense-seam collapse mapped in SSI-ROADMAP MESH-STRIP-IMPL). The
-// mandatory self-verify must then return a NULL Shape (→ OCCT fallback in the facade),
-// NEVER a silently non-watertight solid. This is the hard "never emit a non-watertight
-// mesh silently" invariant.
+// At COMMON d = 0.0018 the verb must return a NULL Shape with a measured residual (→ OCCT
+// fallback in the facade), NEVER a silently wrong solid. The MECHANISM this case pins was
+// UPDATED by MESH-WELD-TOL (seam_strip.h): the shared inner seam r₁ used to be sampled so
+// densely that adjacent seam/collar ring vertices merged under the deflection-derived weld
+// tolerance and the strip could not weld (NotWatertight). The weld-resolution seam-ring
+// decimation cleared that — the strip now welds WATERTIGHT (be = 0, coherent) at d = 0.0018
+// — and the remaining sub-band residual is the DEEPER annulus↔annulus collar-side winding
+// collapse (`boolean/weldMultiCoherent` takes the first watertight+coherent config, which
+// encloses a SMALLER region than the closed-form lens), caught by the two-sided VOLUME
+// self-verify. Same honest-decline invariant, one layer deeper (measured: vol≈0.00702 vs
+// closed-form 0.00770 at d=0.0018).
 CC_TEST(seamstrip_subthreshold_common_declines_never_leaks) {
   const topo::Shape A = ffx::buildA();
   const topo::Shape B = ffx::buildB();
   const std::vector<bo::ssi::WLine> seams = ffx::closedSeams();
   if (seams.size() != 2) { CC_CHECK(false); return; }
-  const double d = 0.0018;  // below the COMMON working band → the collapse residual
+  const double d = 0.0018;  // below the COMMON working band → the winding residual
   bo::MultiSeamCutReport rep;
   const topo::Shape r =
       bo::freeformFreeformMultiSeamCutWithSeams(A, B, seams, bo::FfOp::Common, d, &rep, ffx::volCommon());
   // The verb declines to NULL with a measured residual — the honest, never-leaky outcome.
   CC_CHECK(r.isNull());
-  CC_CHECK(!rep.watertight);
+  // MESH-WELD-TOL regression: the mesher weld itself now succeeds at this deflection —
+  // the strip mesh is watertight and coherent (the weld-tolerance merge is CLEARED)...
+  CC_CHECK(rep.watertight);
+  CC_CHECK(rep.coherent);
+  CC_CHECK(rep.boundaryEdges == 0);
   // The machinery still reached the weld (both seams traced, both walls split), so the
-  // decline is a measured watertight-verify failure, not an upstream give-up.
+  // decline is a measured self-verify failure, not an upstream give-up.
   CC_CHECK(rep.seamLoops == 2);
-  CC_CHECK(rep.decline == bo::MultiSeamCutDecline::NotWatertight);
+  // ...and the decline is the deeper winding VOLUME residual (boolean/ lane), not the
+  // cleared weld-tolerance NotWatertight.
+  CC_CHECK(rep.decline == bo::MultiSeamCutDecline::VolumeInconsistent);
 }
 
 int main() { return cctest::run_all(); }

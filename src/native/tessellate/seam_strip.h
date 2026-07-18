@@ -57,6 +57,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <unordered_map>
 #include <vector>
 
@@ -71,6 +72,7 @@ struct SeamStrip {
   math::Vec3 axis{0, 0, 1};          ///< seam-loop best-fit normal Ac (unit)
   double rSeam = 0.0;                ///< mean seam radius off the axis
   double collarInset = 0.0;          ///< δ, the inward collar offset (r_collar = rSeam − δ)
+  double bandInset = 0.0;            ///< the near-seam SUPPRESSION band half-width (deflection-INDEPENDENT)
   bool valid = false;
 };
 
@@ -133,11 +135,13 @@ class SeamStripRegistry {
     return radiusOf(probe, strips_[static_cast<std::size_t>(e->strip)]);
   }
 
-  // Is `p` inside the near-seam collar BAND of any registered strip (i.e. its distance
-  // from that seam's axis, in the seam plane, is ≥ r_collar)? Interior Steiner points
-  // in the band are SUPPRESSED so neither face triangulates the shared strip
-  // independently. Tested in the shared 3-D seam frame, so both faces suppress the
-  // identical band.
+  // Is `p` inside the near-seam SUPPRESSION band of any registered strip (i.e. its distance
+  // from that seam's axis, in the seam plane, is within ±bandInset of r_seam)? Interior
+  // Steiner points in the band are SUPPRESSED so neither face triangulates the shared strip
+  // independently. Tested in the shared 3-D seam frame, so both faces suppress the identical
+  // band. The band half-width `bandInset` is DEFLECTION-INDEPENDENT (a fraction of rSeam, not
+  // of the deflection-shrinking segLen) so the suppression does NOT degrade as the mesh
+  // refines — the L3-BAND fine-deflection collapse fix.
   bool inCollarBand(const math::Point3& p) const {
     for (const detail::SeamStrip& s : strips_) {
       if (!s.valid) continue;
@@ -145,11 +149,11 @@ class SeamStripRegistry {
       const double axial = math::dot(d, s.axis);
       const math::Vec3 radial = d - s.axis * axial;
       const double r = math::norm(radial);
-      // Inside the band ⇔ radius within [r_collar, r_seam + δ] AND axially near the seam
-      // plane (within a collar inset of it, so a genuinely-interior far-from-seam point
-      // is never suppressed).
-      if (r >= s.rSeam - s.collarInset - kBandEps && r <= s.rSeam + s.collarInset + kBandEps &&
-          std::fabs(axial) <= s.collarInset + kBandEps)
+      // Inside the band ⇔ radius within [r_seam − bandInset, r_seam + bandInset] AND axially
+      // near the seam plane (within bandInset of it, so a genuinely-interior far-from-seam
+      // point is never suppressed).
+      if (r >= s.rSeam - s.bandInset - kBandEps && r <= s.rSeam + s.bandInset + kBandEps &&
+          std::fabs(axial) <= s.bandInset + kBandEps)
         return true;
     }
     return false;
@@ -261,8 +265,9 @@ class SeamStripRegistry {
 
   // Compute the collar frame from the seam ring: centroid, best-fit axis (normalized sum
   // of successive edge cross-products about the centroid — the loop's own normal), mean
-  // seam radius off the axis, and δ = a small fraction of the mean seam segment length
-  // (so the collar band is one-ring thin and the strip triangles are well-shaped).
+  // seam radius off the axis, and δ = a fixed fraction of the SEAM RADIUS (deflection-
+  // INDEPENDENT — see the L3-BAND note below; NOT tied to the seam segment length, which
+  // shrinks with refinement and used to collapse the collar band at fine deflection).
   static detail::SeamStrip computeStrip(const std::vector<math::Point3>& ring) {
     detail::SeamStrip s;
     const std::size_t n = ring.size();
@@ -271,17 +276,14 @@ class SeamStripRegistry {
     c = c / static_cast<double>(n);
     s.centroid = math::Point3{c.x, c.y, c.z};
     math::Vec3 nrm{0, 0, 0};
-    double segLen = 0.0;
     for (std::size_t i = 0; i < n; ++i) {
       const math::Vec3 a = ring[i] - s.centroid;
       const math::Vec3 b = ring[(i + 1) % n] - s.centroid;
       nrm = nrm + math::cross(a, b);
-      segLen += math::distance(ring[i], ring[(i + 1) % n]);
     }
     const double nl = math::norm(nrm);
     if (nl < 1e-30) return s;             // degenerate (collinear) loop — no strip
     s.axis = nrm / nl;
-    segLen /= static_cast<double>(n);
     double rsum = 0.0;
     for (const math::Point3& p : ring) {
       const math::Vec3 d = p - s.centroid;
@@ -289,10 +291,29 @@ class SeamStripRegistry {
       rsum += math::norm(d - s.axis * axial);
     }
     s.rSeam = rsum / static_cast<double>(n);
-    // δ = half the mean seam segment length, clamped well below the seam radius so the
-    // collar ring stays a strictly-interior concentric ring (never crosses the axis or
-    // self-intersects on a modestly-curved seam).
-    s.collarInset = std::min(0.5 * segLen, 0.25 * s.rSeam);
+    // ── DEFLECTION-ROBUST COLLAR (L3-BAND fix) ─────────────────────────────────────
+    // The collar inset δ = r_seam − r_collar must be tied to the SEAM GEOMETRY, NOT to the
+    // deflection-driven seam segment length. The pre-fix rule δ = min(0.5·segLen, 0.25·rSeam)
+    // SHRINKS with segLen: as the deflection refines, the seam is sampled more densely, segLen
+    // → 0, and δ collapses to a hair (measured 4.3e-5 at d=0.002 on the asym fixture). Below a
+    // threshold the collar band then stops covering the curvature Steiner points each face's CDT
+    // still inserts near the near-vertical wall, and the shared seam edge is used 4× — a
+    // non-manifold whose count GROWS as the mesh refines (L3-BAND: COMMON 0→1→4 over d
+    // 0.0025→0.002→0.00125). Tying δ to r_seam removes the segLen dependence entirely: the collar
+    // band width is now a fixed fraction of the seam radius, so the near-seam suppression does NOT
+    // degrade with refinement. The upper clamp 0.25·rSeam already kept the collar a strictly-
+    // interior concentric ring (never crossing the axis / self-intersecting on a modestly-curved
+    // seam); a lower floor keeps a sensibly-shaped strip on a very coarse (large-segLen) seam.
+    // The collar RING and the SUPPRESSION band use the SAME inset so the CDT fill (collar-outward)
+    // and the spliced strip (seam→collar) tile the annulus with no gap — never opening an edge.
+    // δ = a small FIXED fraction of the seam radius — a stable, one-ring-scale geometric width
+    // that is DEFLECTION-INDEPENDENT. Measured on the asym fixture (r₁≈0.154, r₂≈0.365): the pile
+    // that made the OUTER seam r₂ used 4× at d=0.002 is suppressed for any frac ≳ 0.015; 0.05 is a
+    // comfortable margin that stays one-ring-thin (δ_outer≈0.018, δ_inner≈0.0077) — small enough
+    // not to distort the near-seam surface, large enough to survive arbitrary refinement.
+    constexpr double kCollarFrac = 0.05;
+    s.collarInset = kCollarFrac * s.rSeam;
+    s.bandInset = s.collarInset;
     s.valid = s.collarInset > 0.0 && s.rSeam > 0.0;
     return s;
   }

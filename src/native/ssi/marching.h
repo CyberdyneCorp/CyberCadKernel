@@ -332,6 +332,37 @@ struct MarchOptions {
   // fabricates a point.
   bool   adaptiveCrossReanchor = false;  ///< S4-c deep tail: re-anchor the crossing plane to the local curve tangent
   double reanchorBlend = -1.0;           ///< blend weight local-tangent↔t★ per step (≤ 0 → 1.0 = full local tangent); clamped [0,1]
+  //
+  // M1e WIDE-BAND ORIENTATION. The re-anchor block above resolves the local tangent's SIGN
+  // and its adoption gate against the FROZEN t★ — both are half-spaces of one stale vector,
+  // and both go degenerate at the SAME point: when the intersection curve's tangent has
+  // turned 90° from t★. Past that the sign test flips the true FORWARD tangent to BACKWARD,
+  // the step retreats, one step back the turn is again inside 90°, and the march steps
+  // forward again — a self-sustaining 2-cycle that burns the whole node budget without
+  // traversing (measured: arc 3.86 for net transport 0.21, ~5.6% efficiency, consecutive
+  // displacements exact negatives to normalized dot −1.00). So the shipped reanchor floor is
+  // NOT a transversality limit: it is the locus where the turn accumulated across the band
+  // reaches 90°. Predicted analytically (no marcher involved) at dx★ = 0.592787 for the
+  // offset cyl∩sphere family; the measured shipped boundary is dx = 0.5926 crosses /
+  // 0.5927 declines — agreement to 1e-4.
+  //
+  // `reanchorIncrementalOrientation` (default OFF, and only consulted when
+  // `adaptiveCrossReanchor` is on) re-references BOTH half-space tests to the PREVIOUS
+  // ACCEPTED step direction instead of the frozen t★. Orientation by continuity is monotone
+  // across an arbitrarily large accumulated turn, whereas the global-t★ test inverts the
+  // moment the turn passes 90°. t★ REMAINS the honesty anchor everywhere it is one — the
+  // band-minimum floor, the steep-collapse witness, and the per-step ≥60° branch-flip guard
+  // are unchanged; it is only wrong as an ORIENTATION reference. Re-referencing just the
+  // sign test is NOT sufficient and must not be shipped alone: the adoption gate then
+  // rejects the local tangent, stepDir falls back to the frozen t★, the step lands
+  // perpendicular to the curve and h halves to the floor (decline moves from budget to
+  // minStep, measured). Both tests move together or neither does.
+  //
+  // Also enables a real NET-TRANSPORT termination guard on the same path — see marching.cpp.
+  // The shipped `advanced` test is structurally blind here (it measures progress along the
+  // very direction the step was taken in, which the corrector's 4th residual pins to h:
+  // measured advance/h = 1.000000000 on every accepted step, including every reversing one).
+  bool reanchorIncrementalOrientation = false;  ///< M1e: orient the re-anchored tangent by continuity, not frozen t★
   int maxPoints = 20000;       ///< hard cap on nodes per direction (termination safety)
   int fitDegree = 3;           ///< B-spline fit degree (cubic default)
   int fitMaxPoles = 64;        ///< max poles the least-squares fit uses (0 → interpolate every node)

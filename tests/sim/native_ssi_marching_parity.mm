@@ -926,6 +926,118 @@ void pairDeepNearTangentHonestDeclineS4c() {
   std::fflush(stdout);
 }
 
+// ── S4-c WIDE-BAND (M1e): incremental orientation vs OCCT ─────────────────────────────
+// The M1d re-anchor oriented the local tangent AND gated its adoption against the FROZEN t★.
+// Both degenerate once the curve's tangent turns 90° from t★, flipping forward to backward and
+// trapping the march in a 2-cycle that burns the node budget without traversing. That produced
+// an honest decline, but a SPURIOUS one — the poses are genuinely crossable.
+// `reanchorIncrementalOrientation` re-references both tests to the previous accepted step
+// direction. This gate is the INDEPENDENT check the host suite structurally cannot make: the
+// newly-crossed loops are self-consistent by construction (they satisfy the same corrector that
+// produced them), so they must be confronted with a foreign kernel before they are believed.
+//
+// SCOPE — why dx = 0.595 and not 0.597. The CROSSING succeeds at 0.597 too (Gate A covers it:
+// one closed loop, every corrected node on both surfaces to 2.39e-11). It is excluded HERE
+// because of the FITTED CURVE, not the march. `sampleWLine` samples the convenience B-spline as
+// well as the nodes, and that fit is targeted at `scale·2e-4` ≈ 2.2e-3 — four times LOOSER than
+// this gate's 5e-4 on-curve tolerance — so the one-shot densify-and-refit never fires. Measured
+// off-surface deviation, nodes vs fit: 1.31e-11 / 2.97e-05 at dx=0.593, 1.16e-11 / 3.36e-05 at
+// 0.595, 2.39e-11 / 6.99e-05 at 0.597 — the fit is six orders of magnitude worse than the march
+// it interpolates, and at 0.597 it drags the OCCT distance to 6.00e-04, over tolerance.
+// The honest reading: the marched curve is right, the cubic fit under-resolves the extreme
+// curvature at the graze. Widening onCurveTol here would hide a real defect, so the gate keeps
+// its tolerance and this pose stays out until the fit is fixed. That is the next slice.
+void pairWideBandIncrementalOrientationS4c() {
+  for (const double dx : {0.595}) {
+    nm::Sphere sph{frameZ(), 1.0};
+    nm::Cylinder cyl{frameZ({dx, 0, 0}), 0.4};
+    ssi::ParamBox sdom{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
+    ssi::ParamBox cdom{0.0, 2.0 * kPi, -1.5, 1.5};
+    auto A = ssi::makeSphereAdapter(sph, sdom);
+    auto B = ssi::makeCylinderAdapter(cyl, cdom);
+    Handle(Geom_Surface) sa = new Geom_SphericalSurface(toOcctAx3(frameZ()), 1.0);
+    Handle(Geom_Surface) sb = new Geom_CylindricalSurface(toOcctAx3(frameZ({dx, 0, 0})), 0.4);
+
+    ssi::SeedOptions sopt; sopt.initialGridU = 6; sopt.initialGridV = 6; sopt.minPatchFrac = 1.0 / 64.0;
+
+    // M1d re-anchor WITHOUT incremental orientation: trapped → declines (the defect).
+    ssi::MarchOptions moOff; moOff.tangentSinTol = 0.25;
+    moOff.adaptiveCrossReanchor = true; moOff.reanchorBlend = 0.5;
+    const ssi::TraceSet tsOff = ssi::trace_intersection(A, B, sopt, moOff);
+    const bool declineOff = tsOff.nearTangentCrossed == 0 && tsOff.closedCurves == 0;
+
+    // M1e ON: crosses to one closed loop.
+    ssi::MarchOptions moOn = moOff;
+    moOn.reanchorIncrementalOrientation = true;
+    const ssi::TraceSet ts = ssi::trace_intersection(A, B, sopt, moOn);
+
+    GeomAPI_IntSS iss(sa, sb, 1e-7);
+    const int occtN = iss.IsDone() ? iss.NbLines() : 0;
+    std::vector<OcctBranch> occtBr;
+    for (int i = 1; i <= occtN; ++i) occtBr.push_back(classifyBranch(iss.Line(i), sa, sb, 1e-2));
+
+    const double onCurveTol = 5e-4, onSurfTol = 1e-4;
+    double maxOnCurve = 0.0, maxOnSurf = 0.0, crossResid = 0.0;
+    for (const auto& w : ts.lines) {
+      crossResid = std::max(crossResid, w.crossMaxResidual);
+      for (const Point3& p : sampleWLine(w)) {
+        double best = 1e30;
+        for (const auto& b : occtBr) best = std::min(best, distToOcctCurve(b.curve, p));
+        maxOnCurve = std::max(maxOnCurve, best);
+        maxOnSurf = std::max(maxOnSurf, std::max(distToOcctSurface(sa, p), distToOcctSurface(sb, p)));
+      }
+    }
+
+    const bool ok = declineOff && ts.nearTangentGaps == 0 && ts.nearTangentCrossed >= 1 &&
+                    ts.closedCurves == 1 && occtN > 0 && crossResid <= onSurfTol &&
+                    maxOnCurve <= onCurveTol && maxOnSurf <= onSurfTol;
+    if (ok) ++g_pass; else ++g_fail;
+    char label[32];
+    std::snprintf(label, sizeof(label), "wide-band %.3f", dx);
+    std::printf("[NMARCH] %-4s %-18s declineOff=%d NTgaps=%d crossed=%d closed=%d onCurve=%.2e "
+                "onSurf=%.2e crossResid=%.2e occtBr=%d\n",
+                ok ? "PASS" : "FAIL", label, (int)declineOff, ts.nearTangentGaps,
+                ts.nearTangentCrossed, ts.closedCurves, maxOnCurve, maxOnSurf, crossResid, occtN);
+    std::fflush(stdout);
+  }
+}
+
+// ── S4-c HONEST DECLINE below the M1e floor (minCrossSine) ────────────────────────────
+// dx = 0.598: the band minimum sine falls under `minCrossSine` = 0.075, the DESIGNED honesty
+// tolerance. Even with incremental orientation the crossing refuses at the band-minimum gate.
+// This is where the floor SHOULD sit — a declared tolerance, not an artefact of a stale vector.
+void pairWideBandHonestDeclineS4c() {
+  nm::Sphere sph{frameZ(), 1.0};
+  nm::Cylinder cyl{frameZ({0.598, 0, 0}), 0.4};  // bandMin ≈ 0.063 < minCrossSine 0.075
+  ssi::ParamBox sdom{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
+  ssi::ParamBox cdom{0.0, 2.0 * kPi, -1.5, 1.5};
+  auto A = ssi::makeSphereAdapter(sph, sdom);
+  auto B = ssi::makeCylinderAdapter(cyl, cdom);
+  Handle(Geom_Surface) sa = new Geom_SphericalSurface(toOcctAx3(frameZ()), 1.0);
+  Handle(Geom_Surface) sb = new Geom_CylindricalSurface(toOcctAx3(frameZ({0.598, 0, 0})), 0.4);
+
+  ssi::SeedOptions sopt; sopt.initialGridU = 6; sopt.initialGridV = 6; sopt.minPatchFrac = 1.0 / 64.0;
+  ssi::MarchOptions moOn; moOn.tangentSinTol = 0.25;
+  moOn.adaptiveCrossReanchor = true; moOn.reanchorBlend = 0.5;
+  moOn.reanchorIncrementalOrientation = true;
+  const ssi::TraceSet ts = ssi::trace_intersection(A, B, sopt, moOn);
+
+  GeomAPI_IntSS iss(sa, sb, 1e-7);
+  const int occtN = iss.IsDone() ? iss.NbLines() : 0;
+
+  bool anyFabricatedLoop = false;
+  for (const auto& w : ts.lines)
+    if (w.nearTangentCrossed != 0 || w.isClosed()) anyFabricatedLoop = true;
+
+  const bool ok = ts.nearTangentCrossed == 0 && !anyFabricatedLoop &&
+                  ts.nearTangentGaps >= 1 && occtN > 0;
+  if (ok) ++g_pass; else ++g_fail;
+  std::printf("[NMARCH] %-4s %-18s crossed=%d closed=%d NTgaps=%d occtBr=%d (below minCrossSine → honest)\n",
+              ok ? "PASS" : "FAIL", "wide-band decline", ts.nearTangentCrossed, ts.closedCurves,
+              ts.nearTangentGaps, occtN);
+  std::fflush(stdout);
+}
+
 // ── S4-c: a GENUINE tangency the marcher reaches must STILL STOP (not be crossed) ─────
 // Two equal cylinders crossing at 90° (axes Z and X, both R=1) meet TANGENTIALLY at the
 // saddle points — a BRANCH crossing (S4-d), where the intersection self-crosses and the
@@ -1353,6 +1465,8 @@ int main() {
   pairNearTangentCrossedS4c();   // S4-c: graze marched through, full curve vs OCCT
   pairDeepNearTangentReanchorS4c();      // M1d: DEEPER graze crossed by adaptive re-anchoring (default declines) vs OCCT
   pairDeepNearTangentHonestDeclineS4c(); // M1d: below the extended floor, native honestly declines while OCCT reports
+  pairWideBandIncrementalOrientationS4c(); // M1e: 90°-turn reversal trap fixed → wide-band grazes crossed vs OCCT
+  pairWideBandHonestDeclineS4c();          // M1e: below minCrossSine native declines honestly while OCCT reports
   pairEqualCylindersDefer();     // S4-c: branch saddle still deferred (not crossed) — control
   pairEqualCylindersBranchS4d(); // S4-d: branch points localized + arms routed vs OCCT
   pairFreeformSaddleBranchS4d(); // S4-d-g: FREEFORM saddle open-arm branch localized + routed vs OCCT

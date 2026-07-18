@@ -932,6 +932,165 @@ CC_TEST(march_deep_near_tangent_reanchor_honest_decline_s4c) {
   CC_CHECK(tr.nearTangentGaps >= 1);       // the honest S4 gap is reported (deferred → OCCT)
 }
 
+// ── M1e WIDE-BAND: incremental orientation crosses the 90°-turn reversal trap ─────────
+//
+// REGRESSION for a measured DEFECT, not a breadth extension. The M1d re-anchor block resolved
+// the local tangent's SIGN and its ADOPTION GATE against the FROZEN t★. Both are half-spaces of
+// one stale vector and both go degenerate at the SAME point — when the curve's tangent has
+// turned 90° from t★. Past it the sign test flipped the true FORWARD tangent to BACKWARD: the
+// step retreated, one step back the turn was inside 90° again, and the march stepped forward —
+// a self-sustaining 2-cycle that burned all 256 nodes without traversing (arc 3.86 for net
+// transport 0.21). The decline was reported honestly, so nothing was ever fabricated; but it was
+// a TRAP, not a limit. `reanchorIncrementalOrientation` re-references BOTH tests to the previous
+// accepted step direction (monotone across any accumulated turn), keeping t★ as the honesty
+// anchor where it belongs (band-min floor, steep-collapse, ≥60° branch-flip).
+//
+// The old "floor ≈ 0.14 minSine" was therefore an ARTEFACT of the trap, and minSine was never the
+// governing quantity: the shipped boundary is the locus where the turn across the band reaches
+// 90°, predicted analytically at dx★ = 0.592787 and measured at dx = 0.5926 crosses / 0.5927
+// declines. With the trap removed the limiter becomes `minCrossSine = 0.075` — the DESIGNED
+// honesty tolerance — reached at gate C with ZERO crossing nodes emitted.
+CC_TEST(march_wide_band_incremental_orientation_s4c) {
+  ssi::ParamBox sd{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
+  ssi::ParamBox cd{0.0, 2.0 * kPi, -1.5, 1.5};
+  ssi::SeedOptions so;
+  so.initialGridU = 6;
+  so.initialGridV = 6;
+  so.minPatchFrac = 1.0 / 64;
+
+  // (1) CROSSABLE wide-band poses: the M1d re-anchor alone declines (trapped); incremental
+  // orientation traverses each to a FULL closed loop. minSine 0.118 / 0.100 / 0.077.
+  for (const double dx : {0.593, 0.595, 0.597}) {
+    nmath::Sphere sp{frameZ({0, 0, 0}), 1.0};
+    nmath::Cylinder cy{frameZ({dx, 0, 0}), 0.4};
+    auto A = ssi::makeSphereAdapter(sp, sd);
+    auto B = ssi::makeCylinderAdapter(cy, cd);
+
+    // A ground-truth loop exists (tolerance below the dip) — so the M1d decline is a real miss.
+    ssi::MarchOptions ctrl;
+    ctrl.tangentSinTol = 1e-4;
+    auto ref = ssi::trace_intersection(A, B, so, ctrl);
+    CC_CHECK(ref.closedCurves == 1);
+    const double refLen = ref.curveCount() >= 1 ? polylineLength(ref.lines[0]) : 0.0;
+
+    // M1d re-anchor WITHOUT incremental orientation: trapped → honest decline (the defect).
+    ssi::MarchOptions off;
+    off.tangentSinTol = 0.25;
+    off.adaptiveCrossReanchor = true;
+    off.reanchorBlend = 0.5;
+    auto trOff = ssi::trace_intersection(A, B, so, off);
+    CC_CHECK(trOff.nearTangentCrossed == 0);
+    CC_CHECK(trOff.closedCurves == 0);
+    CC_CHECK(trOff.nearTangentGaps >= 1);
+
+    // M1e incremental orientation: crosses to ONE closed loop.
+    ssi::MarchOptions on = off;
+    on.reanchorIncrementalOrientation = true;
+    auto tr = ssi::trace_intersection(A, B, so, on);
+    CC_CHECK(tr.curveCount() == 1);
+    if (tr.curveCount() != 1) continue;
+
+    const ssi::WLine& w = tr.lines[0];
+    CC_CHECK(tr.nearTangentGaps == 0);
+    CC_CHECK(tr.nearTangentCrossed >= 1);
+    CC_CHECK(w.isClosed());
+    CC_CHECK(!w.truncated());
+    // Every node — including every one spliced across the graze — on BOTH surfaces at the
+    // SAME onSurfTol the rest of the march uses. No tolerance is relaxed to buy the crossing.
+    checkAllNodesOnSurfaces(cc_ok_, w, [&](const Point3& p) { return distToSphere(sp, p); },
+                            [&](const Point3& p) { return distToCylinder(cy, p); }, 1e-9);
+    const double len = polylineLength(w);
+    CC_CHECK(len <= refLen + 1e-4);   // never longer than the ground-truth arc
+    CC_CHECK(len >= refLen * 0.88);   // step-bounded under-estimate
+  }
+
+  // (2) HONEST DECLINE below the new floor. bandMin dips under minCrossSine = 0.075, so the
+  // crossing refuses at the band-minimum gate — with ZERO crossing nodes emitted. That last
+  // assertion is what separates a PRINCIPLED refusal from a burned-budget one: the M1d trap
+  // also "declined" at these poses, but only after emitting and discarding 256 orbit nodes.
+  for (const double dx : {0.5975, 0.598}) {
+    nmath::Sphere sp{frameZ({0, 0, 0}), 1.0};
+    nmath::Cylinder cy{frameZ({dx, 0, 0}), 0.4};
+    auto A = ssi::makeSphereAdapter(sp, sd);
+    auto B = ssi::makeCylinderAdapter(cy, cd);
+
+    ssi::MarchOptions ctrl;
+    ctrl.tangentSinTol = 1e-4;
+    auto ref = ssi::trace_intersection(A, B, so, ctrl);
+    CC_CHECK(ref.closedCurves == 1);  // a loop DOES exist → the decline is honest, not a miss
+
+    ssi::MarchOptions on;
+    on.tangentSinTol = 0.25;
+    on.adaptiveCrossReanchor = true;
+    on.reanchorBlend = 0.5;
+    on.reanchorIncrementalOrientation = true;
+    auto tr = ssi::trace_intersection(A, B, so, on);
+    CC_CHECK(tr.nearTangentCrossed == 0);
+    CC_CHECK(tr.nearTangentGaps >= 1);
+    for (const ssi::WLine& w : tr.lines) {
+      CC_CHECK(w.nearTangentCrossed == 0);
+      CC_CHECK(!w.isClosed());  // nothing stitched across the knife-edge
+    }
+  }
+
+  // (3) TRUE TANGENCY still defers with the flag on — the honesty anchor is intact.
+  {
+    nmath::Sphere sp{frameZ({0, 0, 0}), 1.0};
+    nmath::Cylinder cy{frameZ({0.600, 0, 0}), 0.4};  // r + dx = 1.0 → tangent
+    auto A = ssi::makeSphereAdapter(sp, sd);
+    auto B = ssi::makeCylinderAdapter(cy, cd);
+    ssi::MarchOptions on;
+    on.tangentSinTol = 0.25;
+    on.adaptiveCrossReanchor = true;
+    on.reanchorBlend = 0.5;
+    on.reanchorIncrementalOrientation = true;
+    auto tr = ssi::trace_intersection(A, B, so, on);
+    CC_CHECK(tr.nearTangentCrossed == 0);
+    for (const ssi::WLine& w : tr.lines) CC_CHECK(!w.isClosed());
+  }
+}
+
+// ── M1e FLAG-OFF BYTE-IDENTITY on a pose the new path changes ─────────────────────────
+// The option is default-OFF, so dx = 0.595 must still produce the SHIPPED M1d decline. This is
+// the guard that keeps `march_deep_near_tangent_reanchor_honest_decline_s4c` meaningful: the
+// wide-band crossing is opt-in, and no caller gets new behaviour by upgrading.
+CC_TEST(march_wide_band_flag_off_preserves_m1d_decline_s4c) {
+  nmath::Sphere sp{frameZ({0, 0, 0}), 1.0};
+  nmath::Cylinder cy{frameZ({0.595, 0, 0}), 0.4};
+  ssi::ParamBox sd{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
+  ssi::ParamBox cd{0.0, 2.0 * kPi, -1.5, 1.5};
+  auto A = ssi::makeSphereAdapter(sp, sd);
+  auto B = ssi::makeCylinderAdapter(cy, cd);
+  ssi::SeedOptions so;
+  so.initialGridU = 6;
+  so.initialGridV = 6;
+  so.minPatchFrac = 1.0 / 64;
+
+  ssi::MarchOptions dflt;  // reanchorIncrementalOrientation defaults false
+  dflt.tangentSinTol = 0.25;
+  dflt.adaptiveCrossReanchor = true;
+  dflt.reanchorBlend = 0.5;
+  CC_CHECK(dflt.reanchorIncrementalOrientation == false);
+  auto tr = ssi::trace_intersection(A, B, so, dflt);
+  CC_CHECK(tr.nearTangentCrossed == 0);
+  CC_CHECK(tr.closedCurves == 0);
+  CC_CHECK(tr.nearTangentGaps >= 1);
+
+  // And the option is INERT without adaptiveCrossReanchor: it is AND-ed into the tuned flag, so
+  // setting it alone can never alter the frozen-t★ path.
+  ssi::MarchOptions bare;
+  bare.tangentSinTol = 0.25;
+  bare.reanchorIncrementalOrientation = true;  // no adaptiveCrossReanchor
+  auto trBare = ssi::trace_intersection(A, B, so, bare);
+  ssi::MarchOptions plain;
+  plain.tangentSinTol = 0.25;
+  auto trPlain = ssi::trace_intersection(A, B, so, plain);
+  CC_CHECK(trBare.nearTangentCrossed == trPlain.nearTangentCrossed);
+  CC_CHECK(trBare.closedCurves == trPlain.closedCurves);
+  CC_CHECK(trBare.nearTangentGaps == trPlain.nearTangentGaps);
+  CC_CHECK(trBare.curveCount() == trPlain.curveCount());
+}
+
 // ── REGRESSION: DENSIFY-AND-REFIT the fitted curve on a DENSE high-curvature loop ──────
 // A general rational-NURBS ∩ B-spline pose lifted VERBATIM from the freeform SSI fuzzer
 // (base seed 0x5615d1ff10c2, case 32) — a MEASURED HONESTLY-DECLINED small-loop case whose

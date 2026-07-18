@@ -250,6 +250,57 @@ resolution. The curve *pipeline* exists; this is the *robustness* on adversarial
     curve-following crossing cannot recover to a transversal stretch within budget (still an honest
     defer) — and coincident/overlapping FREEFORM surfaces. The near-tangent floor is now ≈ 0.14; the
     wide-band tail and the true-tangency knife-edge stay the asymptotic moat core.
+    > **RETRACTED by M1e (below) — this explanation is measurably FALSE.** The band is not wide
+    > (6.8→9.3% of the loop), the budget is not binding (64× the step budget changes nothing), and
+    > the declining runs never traverse at all. The M1d floor of ≈ 0.14 was an ARTEFACT of a
+    > reversal trap, and minimum transversality sine was never the governing quantity. Kept here,
+    > struck through rather than deleted, because the moat's value is the honesty of its record.
+
+- **M1e WIDE-BAND declines were a DEFECT, not a limit — 90°-turn reversal trap removed (change
+  `moat-m1e-ssi-wide-band`).** A five-probe, adversarially-verified diagnosis refuted the M1d
+  wide-band hypothesis three independent ways and replaced it with an analytic law.
+  - **Refutation.** Band arc fraction is **6.76 / 7.93 / 8.69 / 9.27 %** at dx = 0.585/0.590/0.593/
+    0.595 (closed form verified against the kernel's own adapter normals to 1.5e-15 over 20 000
+    samples) — 1.37× growth cannot produce a binary cross→decline flip. `crossMaxSteps` 256 → 16384
+    leaves the outcome unchanged with arc growing linearly, because the anti-orbit arc cap is
+    derived FROM the budget and scales with it. And the declining runs show a **period-2 / period-4
+    spatial limit cycle**: consecutive displacements exact negatives (normalized dot −1.00), arc
+    3.86 for net transport 0.21 (5.6% efficiency). It oscillates; it does not crawl.
+  - **Mechanism.** `crossNearTangent` froze `dirStar = t★` at band entry and used that stale vector
+    for BOTH the local tangent's sign (`marching.cpp:552`) and its adoption gate (`:553`). Both
+    degenerate at the same point — a 90° accumulated turn from `t★` — past which the sign test
+    inverts the true FORWARD tangent to BACKWARD, and the march ping-pongs across that boundary.
+  - **Analytic law (no marcher involved).** Turn accumulated by the time the sine recovers to the
+    band-enter threshold: 72.3° / 83.8° / 90.5° / 94.8°, predicting the 90° crossover at
+    **dx★ = 0.592787**. Measured shipped boundary from a 1e-4 sweep: **0.5926 crosses / 0.5927
+    declines** — agreement to 1e-4. It also predicts an observable it was not fitted to (parked sine
+    at dx=0.593: 0.22999 analytic vs 0.230063 measured). **The floor was ANGULAR, not a sine floor.**
+  - **Fix.** `MarchOptions::reanchorIncrementalOrientation` (default OFF, consulted only under
+    `adaptiveCrossReanchor`) re-references BOTH half-space tests to the previous accepted step
+    direction — monotone across any accumulated turn. **Both must move together**: re-referencing
+    only the sign test was tested and FAILS, relocating the decline from budget to step-floor
+    collapse. Plus a net-transport guard (arc vs net displacement, 4×; measured separation 17.8/20.4
+    failing vs 1.19 crossing), because the shipped per-step `advanced` test is structurally blind —
+    the corrector pins `advance/h` to exactly 1.000000000 on every accepted step, reversing ones
+    included.
+  - **New floor: minSine ≈ 0.077**, limited by `minCrossSine = 0.075` — **the DESIGNED honesty
+    tolerance**, reached at the band-minimum gate with ZERO crossing nodes emitted. dx = 0.593/0.595/
+    0.597 now cross to one closed loop, nodes on both surfaces to 1.31e-11 / 1.16e-11 / 2.39e-11.
+    dx = 0.5975/0.598 still decline; true tangency still defers; flag-off is byte-identical (the M1d
+    decline test at dx=0.595 is kept UNMODIFIED and still green).
+  - Host **Gate A 24/24**; host **Gate B 21/0** vs system OCCT (19 prior frozen + 2 new).
+    `src/native` diff confined to `ssi/marching.{h,cpp}`, OCCT-free + additive; `cc_*` unchanged;
+    no tolerance weakened. Sim Gate B left for the Mac.
+  - **Erratum.** The inherited ground-truth map's `scale = 3.4641` is wrong; resolved `scale` at this
+    family is **11.014390**, so every budget figure derived from it was understated 3.18×.
+  - **Next blocker (newly exposed, by the parity gate):** the **fitted convenience B-spline**, not
+    the march. Gate B at dx = 0.597 failed at `onCurve = 6.00e-04` against a 5e-4 tolerance while the
+    corrected nodes sat at 2.39e-11 — the fit deviates 2.97e-05 / 3.36e-05 / 6.99e-05 at
+    dx = 0.593/0.595/0.597, six orders of magnitude worse than the march it interpolates. The
+    one-shot densify-and-refit never fires because its target is `scale·2e-4` ≈ 2.2e-3, four times
+    LOOSER than the parity tolerance. `onCurveTol` was NOT widened; dx = 0.597 is excluded from
+    Gate B and documented. **Fitted-curve resolution at extreme graze curvature is the next slice**,
+    alongside coincident/overlapping FREEFORM surfaces and the true-tangency knife-edge.
 
 ### M2 — General freeform booleans · ~2–4 py · needs M0 + M1
 Lift `recogniseCurvedSolid` to accept **freeform (B-spline/NURBS) operands** (it rejects them

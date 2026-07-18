@@ -60,6 +60,7 @@ struct Tuned {
   int maxPoints, crossMaxSteps;
   bool adaptiveCrossReanchor = false; ///< S4-c deep tail: re-anchor crossing plane to local curve tangent (M1d)
   double reanchorBlend = 1.0;         ///< blend weight local-tangent↔t★ per crossing step (1 = full local tangent)
+  bool reanchorIncrementalOrientation = false; ///< M1e: orient re-anchored tangent by continuity, not frozen t★
   bool enableBranchPoints = false;    ///< S4-d: capture branch stalls for localization + arm routing
   // ── S4-e chart-singularity knobs (single-surface ‖dU‖ collapse; sentinel-resolved) ──
   bool enableChartSingularities = false;  ///< S4-e: step across a sphere pole / cone apex
@@ -122,6 +123,9 @@ Tuned tune(const MarchOptions& o, double scale) {
   t.crossMaxSteps = std::max(1, o.crossMaxSteps);
   t.adaptiveCrossReanchor = o.adaptiveCrossReanchor;
   t.reanchorBlend = o.reanchorBlend > 0.0 ? clampd(o.reanchorBlend, 0.0, 1.0) : 1.0;
+  // Only meaningful under the re-anchor path; AND-ed here so the crossing loop's fast path
+  // stays a single flag test and the option can never act on the frozen-t★ path.
+  t.reanchorIncrementalOrientation = o.adaptiveCrossReanchor && o.reanchorIncrementalOrientation;
   t.enableBranchPoints = o.enableBranchPoints;
   // S4-e: chart-collapse threshold (‖dU‖ ≪ ‖dV‖·scale) and the FINE crossing step. Both
   // sentinel-resolved; neither weakens a solve tolerance — they only decide WHERE the
@@ -533,6 +537,9 @@ CrossOut crossNearTangent(const SurfaceAdapter& A, const SurfaceAdapter& B,
       std::max(hCrossCap, t.loopClose * t.h0) * static_cast<double>(t.crossMaxSteps);
   double crossArc = 0.0;
   int recoveredRun = 0;  // consecutive recovered nodes (reanchor hand-back stability)
+  // M1e incremental orientation reference: the last ACCEPTED step direction. Seeded to the
+  // frozen t★ so the first step is identical either way; thereafter it tracks the curve.
+  Vec3 prevStepDir = dirStar;
 
   for (int i = 0; i < t.crossMaxSteps; ++i) {
     // ADVANCE DIRECTION for this step. By default it is the FROZEN t★ (the shipped S4-c
@@ -545,17 +552,26 @@ CrossOut crossNearTangent(const SurfaceAdapter& A, const SurfaceAdapter& B,
     // is CONTINUITY-ORIENTED toward the crossing way and only adopted (blended, then a bit)
     // when it still heads the CROSSING way (dot(t_local, t★) > 0); otherwise the frozen t★
     // is kept — the honesty anchor never rotates past a U-turn.
+    //
+    // M1e: with `reanchorIncrementalOrientation` the ORIENTATION REFERENCE for both the sign
+    // test and the adoption gate is the PREVIOUS ACCEPTED step direction rather than the
+    // frozen t★. Continuity is monotone across an arbitrarily large accumulated turn; the
+    // frozen reference inverts the true forward tangent the moment the turn passes 90° and
+    // traps the march in a 2-cycle. Both tests use the same `ref` — re-referencing only the
+    // sign test relocates the failure rather than fixing it. t★ stays the honesty anchor in
+    // `crossNodeCrossable` (sine floor + ≥60° branch-flip) and in the band-minimum scan.
     Vec3 stepDir = dirStar;
     if (t.adaptiveCrossReanchor) {
       const Tangent tl = intersectionTangent(A, B, cur);
       if (tl.valid) {
+        const Vec3& ref = t.reanchorIncrementalOrientation ? prevStepDir : dirStar;
         Vec3 loc = tl.dir;
-        if (math::dot(loc, dirStar) < 0.0) loc = loc * -1.0;  // orient toward the crossing way
-        if (math::dot(loc, dirStar) > 0.0) {
+        if (math::dot(loc, ref) < 0.0) loc = loc * -1.0;  // orient toward the crossing way
+        if (math::dot(loc, ref) > 0.0) {
           const double a = t.reanchorBlend;
           Vec3 blended = loc * a + dirStar * (1.0 - a);
           const double bl = math::norm(blended);
-          if (bl > 1e-300 && math::dot(blended, dirStar) > 0.0) stepDir = blended * (1.0 / bl);
+          if (bl > 1e-300 && math::dot(blended, ref) > 0.0) stepDir = blended * (1.0 / bl);
         }
       }
     }
@@ -601,6 +617,7 @@ CrossOut crossNearTangent(const SurfaceAdapter& A, const SurfaceAdapter& B,
     prev = cur; havePrev = true;
     cur = c.s;
     rawPrev = rawNew;
+    prevStepDir = stepDir;  // M1e: orientation reference for the next step
     r.maxResid = std::max(r.maxResid, c.resid);
     ++r.count;
 
@@ -610,6 +627,22 @@ CrossOut crossNearTangent(const SurfaceAdapter& A, const SurfaceAdapter& B,
     if (t.adaptiveCrossReanchor && crossArc > crossArcCap) {
       out.resize(base);
       return r;
+    }
+
+    // M1e NET-TRANSPORT guard (reanchor + incremental orientation only). `crossArcCap` above
+    // is derived from crossMaxSteps, so it scales WITH the budget and can never bind — raising
+    // crossMaxSteps 64× leaves the orbit arc growing linearly and exit F silent. And the
+    // per-step `advanced` test is structurally blind (the corrector pins advance/h to exactly
+    // 1). This measures the one thing neither can see: ARC SPENT vs NET DISPLACEMENT from the
+    // band entry. A traversing crossing is near-ballistic (measured ratio 1.19 at the crossing
+    // pose dx=0.590); an orbit is not (17.8 and 20.4 at dx=0.593/0.595) — a >14× separation, so
+    // the 4× threshold is nowhere near delicate. Floored by hCrossCap so the first few steps,
+    // where net displacement is legitimately tiny, cannot trip it. Termination safety only: it
+    // turns a residual orbit into an immediate HONEST defer instead of a burned budget, and can
+    // never fabricate a close.
+    if (t.reanchorIncrementalOrientation) {
+      const double net = math::distance(stall.p, cur.p);
+      if (crossArc > 4.0 * std::max(net, hCrossCap)) { out.resize(base); return r; }
     }
 
     // Recovered on the far side → hand back to the normal S3 march. Frozen-t★ path uses the

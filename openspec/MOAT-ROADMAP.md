@@ -455,6 +455,17 @@ resolution. The curve *pipeline* exists; this is the *robustness* on adversarial
     `trace_intersection` DISCARDS `SeedSet.coincidentRegions`: a coincident pair's TraceSet is
     field-for-field identical to a genuine no-intersection TraceSet. **A boolean consuming TraceSet
     today cannot tell a shared face from a clear one.**
+    - ✅ **LANDED.** `TraceSet::coincidentRegions` + `hasCoincidenceVerdict()`, propagated in
+      `trace_from_seeds` (the choke point both entry points flow through). Pure propagation — no
+      march path reads it, and an empty list (every transversal pair) leaves those TraceSets
+      unchanged. The accessor is deliberately NOT named `hasCoincidence`: a verdict may be
+      `Undecided` — suspected but not robustly delimitable — and `isCoincident()` excludes that by
+      design. **Coplanar planes land on `Undecided` today** because the agreement runs to the
+      domain edge, so the detector declines to claim bounds it cannot delimit; that is the A3
+      edge-delimitation gap surfacing, and tightening A3 would promote the case to
+      `OverlapSubRegion`. Regression test pins the three-way distinction that was previously
+      impossible: coplanar (no curve, verdict), far-apart parallel (no curve, no verdict),
+      transversal (curve, no verdict). Gate A 26/26, host Gate B 22/0.
   - **REJECTED — the cheap root-box screen.** "Run the interior sample grid at the root, it's 1024×
     safer" is measured wrong IN THE UNSAFE DIRECTION: a tangency's gap grows as r²/2R so it is
     maximal at the patch CORNER, while an interior grid samples where the surfaces are most alike

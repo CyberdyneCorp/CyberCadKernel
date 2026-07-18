@@ -932,6 +932,62 @@ CC_TEST(march_deep_near_tangent_reanchor_honest_decline_s4c) {
   CC_CHECK(tr.nearTangentGaps >= 1);       // the honest S4 gap is reported (deferred → OCCT)
 }
 
+// ── CONTRACT: a shared 2D locus is distinguishable from "no intersection" ─────────────
+//
+// A coincident pair shares a REGION rather than meeting in a curve, so it yields no WLines —
+// exactly like a pair that misses entirely. The S2 seeder already detects, types and suppresses
+// seeds inside such a region, but `trace_intersection` DISCARDED that verdict, leaving the two
+// cases field-for-field identical at the S3 contract. A consumer deciding whether a face survives
+// a boolean therefore could not tell a shared face from a clear one.
+//
+// This pins the distinction on three pairs that all differ in exactly that respect.
+CC_TEST(trace_reports_coincident_shared_locus) {
+  ssi::ParamBox sq{-1, 1, -1, 1};
+
+  // (1) COINCIDENT — two coplanar planes share a 2D region. No curve, but a reported locus.
+  //
+  // The verdict here is `Undecided`, NOT a confirmed `FullSurfaceSame`: the agreement runs all the
+  // way to the domain edge, so the detector cannot delimit the shared region and honestly declines
+  // to claim it — `isCoincident()` is deliberately false for `Undecided`. That is the correct
+  // answer today and is asserted as "a verdict exists and it is not None", so that tightening the
+  // edge-delimitation later (which would promote this to `OverlapSubRegion`) does not spuriously
+  // fail this test.
+  {
+    nmath::Plane p1{frameZ({0, 0, 0})}, p2{frameZ({0, 0, 0})};
+    auto A = ssi::makePlaneAdapter(p1, sq);
+    auto B = ssi::makePlaneAdapter(p2, sq);
+    const ssi::TraceSet ts = ssi::trace_intersection(A, B, ssi::SeedOptions{}, ssi::MarchOptions{});
+    CC_CHECK(ts.curveCount() == 0);            // a 2D locus yields no 1D branch
+    CC_CHECK(ts.hasCoincidenceVerdict());      // ...but the pair is NOT reported as clear
+    CC_CHECK(!ts.coincidentRegions.empty());
+    for (const auto& c : ts.coincidentRegions)
+      CC_CHECK(c.kind != ssi::CoincidenceKind::None);
+  }
+
+  // (2) NO INTERSECTION — parallel planes far apart. Also no curve, and NOT coincident. Before
+  // the verdict was propagated this TraceSet was identical to (1).
+  {
+    nmath::Plane p1{frameZ({0, 0, 0})}, p2{frameZ({0, 0, 5})};
+    auto A = ssi::makePlaneAdapter(p1, sq);
+    auto B = ssi::makePlaneAdapter(p2, sq);
+    const ssi::TraceSet ts = ssi::trace_intersection(A, B, ssi::SeedOptions{}, ssi::MarchOptions{});
+    CC_CHECK(ts.curveCount() == 0);
+    CC_CHECK(!ts.hasCoincidenceVerdict());        // the discriminator that did not exist before
+    CC_CHECK(ts.coincidentRegions.empty());
+  }
+
+  // (3) TRANSVERSAL control — a genuine 1D curve must never be reported as a shared region.
+  {
+    nmath::Sphere s1{frameZ({0, 0, 0}), 1.0}, s2{frameZ({1.0, 0, 0}), 1.0};
+    ssi::ParamBox dom{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
+    auto A = ssi::makeSphereAdapter(s1, dom);
+    auto B = ssi::makeSphereAdapter(s2, dom);
+    const ssi::TraceSet ts = ssi::trace_intersection(A, B, ssi::SeedOptions{}, ssi::MarchOptions{});
+    CC_CHECK(ts.curveCount() == 1);
+    CC_CHECK(!ts.hasCoincidenceVerdict());
+  }
+}
+
 // ── M1f REGRESSION: the densify refit must never reach interpolation ──────────────────
 //
 // The refit pole target was `min(m, kDensifyMaxPoles)`, which for any loop with m ≤ 200 resolved

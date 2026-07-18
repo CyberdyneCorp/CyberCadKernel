@@ -1931,6 +1931,10 @@ TraceSet trace_from_seeds(const SurfaceAdapter& A, const SurfaceAdapter& B,
   TraceSet res;
   res.seededBranches = seeds.branchCount();
   res.deferredTangent = seeds.deferredTangent;
+  // Carry S2's typed shared-locus verdict through to the S3 contract. Without this a coincident
+  // pair (no WLines, because the locus is 2D) is indistinguishable from a pair that simply does
+  // not intersect. Pure propagation — no march path reads it and no WLine depends on it.
+  res.coincidentRegions = seeds.coincidentRegions;
   const double scale = std::max(A.modelScale, B.modelScale);
   const double dedupRadius = (opts.dedupFrac > 0 ? opts.dedupFrac : 1e-4) * scale;
 

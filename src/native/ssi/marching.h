@@ -420,6 +420,31 @@ struct TraceSet {
   int singularitiesCrossed = 0; ///< S4-e: chart poles/apexes STEPPED ACROSS + verified across all branches (would have truncated in S3). `nearTangentGaps` keeps counting ONLY singularities that could NOT be crossed (deferred → OCCT)
   int dedupedRetraces = 0;      ///< seeds whose march retraced an already-traced branch
 
+  // ── COINCIDENT / OVERLAPPING SHARED LOCUS (propagated from S2) ──────────────────────
+  //
+  // A coincident pair shares a 2D REGION rather than meeting in a 1D curve, so it produces no
+  // WLines — exactly like a pair that does not intersect at all. Without this field the two are
+  // INDISTINGUISHABLE at the S3 contract: a `TraceSet` for two surfaces sharing a whole face was
+  // field-for-field identical to one for two surfaces that miss each other entirely, and a
+  // consumer (an S5 boolean deciding whether a face survives) had no way to tell them apart.
+  //
+  // The S2 seeder already detects and types the shared locus (`detectOverlap`), suppresses seeds
+  // inside it, and records it on `SeedSet.coincidentRegions` — that verdict was simply DISCARDED
+  // here. It is now carried through. Empty means "no shared 2D locus was found", which is the
+  // answer for every transversal pair and leaves those TraceSets unchanged.
+  //
+  // Reflects the PRIMARY seeding pass. The S4-f completeness critic re-seeds finer and does not
+  // add to this list, so a shared locus that only a finer pass would notice is not reported here.
+  std::vector<CoincidentRegion> coincidentRegions{};
+
+  /// True when S2 returned ANY shared-locus verdict for this pair — including `Undecided`, which
+  /// means coincidence was SUSPECTED but could not be robustly delimited (an honest defer, not a
+  /// confirmation). A caller that needs CONFIRMED coincidence must test `isCoincident()` on the
+  /// entries, which is true only for `FullSurfaceSame` / `OverlapSubRegion`. The distinction is
+  /// the point: "these surfaces demonstrably share this region" and "something here is not a
+  /// clean transversal intersection and I will not guess" are different answers.
+  bool hasCoincidenceVerdict() const noexcept { return !coincidentRegions.empty(); }
+
   // Extra diagnostics (kept for verification/reporting; not in the minimal contract).
   int seededBranches = 0;       ///< branches the S2 seeder handed us (SeedSet.branchCount)
   int deferredTangent = 0;      ///< S2 near-tangent branches never seeded (echoed S4 gap)

@@ -341,6 +341,111 @@ resolution. The curve *pipeline* exists; this is the *robustness* on adversarial
     true-tangency knife-edge below `minCrossSine`. The near-tangent crossing and its fitted curve are
     now both verified against OCCT down to minSine ≈ 0.077.
 
+- **M1 NEAR-TANGENT LINE CLOSED — `minCrossSine = 0.075` PINNED as the designed honesty tolerance
+  (HONEST DECLINE, no code shipped).** A four-probe adversarially-verified assessment attacked the
+  floor from two independent directions. **Both proposed reductions were REFUTED on the gate
+  corpus**, and a third measurement removed the motive entirely.
+  - **The floor encodes no geometry** — it is literally `0.3 · bandEnterSin`, coupled to a caller
+    knob. That much is true, and it is NOT a geometric limit. But it is LOAD-BEARING.
+  - **Refuted remedy 1 (a "resolution law" chord/h guard).** The guard is inverted, not generous:
+    legitimate crossings that pass today reach chord/h = 1.57 on the reanchor path and **11.64 on
+    the shipped frozen-t★ path**, against 1.94 on the branch-jump step it was meant to catch. Real
+    Gate A: 3 failures — including `march_densify_refit_never_interpolates_s4c`, the M1f slice,
+    unrelated to the target family. Real Gate B: 3 failures, two on the flag-off path the remedy
+    claimed byte-identical. Structurally `chord/h ≡ 1/cos(turn from the frozen anchor)` — it
+    re-constrains exactly the quantity M1e deliberately stopped constraining.
+  - **Refuted remedy 2 (a "√ε conditioning law" floor).** DISQUALIFYING: it **crosses a GENUINE
+    TANGENCY** at a default-adjacent caller setting. At `initialStep = scale/8` (the shipped default
+    `maxStep`) the shipped floor defers honestly with a reported gap, while the remedy's 1.0119e-2
+    floor enters and emits **382 nodes spanning z ∈ [−0.98, +0.98]**, one branch-point traversal,
+    **arc 2.0× truth** — every node on both surfaces to 9.17e-11, i.e. a SILENT double-length
+    fabrication. The claimed conditioning law is itself falsified: sweeping `hFine` with ε fixed
+    moves the exact-tangency reading **187×**, which a conditioning law forbids. The true limiter is
+    scan-lattice resolution, and since `hFine = max(minStep, h0/64)` the tangency reading is
+    CALLER-CONTROLLED — so no absolute floor is safe.
+  - **There is nothing to unlock.** At production `tangentSinTol` (≤ 0.05, default 1e-3) the disputed
+    poses (dx = 0.5975, 0.598) ALREADY trace a correct closed loop, `crossed=0 gaps=0`, arc **100%**
+    of ground truth. The floor only binds when a caller declares a 14.5° normal angle "near-tangent"
+    (`tangentSinTol = 0.25`), and the remedy's own output there is WORSE than doing nothing (arc
+    95.5%). The "frontier extension" buys a lower-quality answer inside a self-inflicted stress pose.
+  - **What the floor stands off from.** The governing quantity is **conjugate-branch separation
+    (2·minSine)**, not pinch curvature — proven by a controlled experiment: restricting the sphere
+    ParamBox to v > 0 to remove the conjugate branch makes every catastrophic failure vanish, while
+    the full domain at the same step returns `closed=1, gaps=0`, all nodes on-surface to 1e-10, and
+    **exactly 2.0000× the true arc**. 0.075 is ≈ **17× standoff from a silent double-length
+    fabrication cliff**; 0.020 would leave 4.5×, only 1.4× above the first wrong-but-flagged result.
+  - **⚠ NO GUARD WITNESSES A BRANCH HOP.** A conjugate-branch jump presents as a ~180° reversal, and
+    `crossNodeCrossable` tests `fabs(contDot) < 0.5` — |cos 153.5°| = 0.895 sails through, after
+    which the code flips the sign "to orient by continuity". **The current defence is an accidental
+    5% deflection-budget margin.** Lowering the floor is therefore not a tolerance tweak: it requires
+    a topological BRANCH-HOP WITNESS (sign change of the local separating quadratic form at the
+    corrected node) — a new capability, with no measured demand at production tolerances.
+  - **VERDICT: declare 0.075 the designed honesty tolerance and stop.** Do not cut another slice
+    against it.
+  - **Two records CORRECTED.** (1) The steep-collapse witness is **NOT inert** — it fires on every
+    genuine tangency and branch at production `tangentSinTol` (ratios 0.011–0.15 against a 0.25
+    trigger) and is the FIRST gate to trip; the "0 firings" note was an artefact of measuring only at
+    `tangentSinTol = 0.25`. (2) The band-min faithfulness table was built with a BIASED estimator —
+    every pose fires `crossNearTangent` twice and only the favourable call was tabulated; worst-case
+    error is 23% at 4.5e-3 and 50% at 1.4e-3, not ≤ 0.6%.
+  - **Pre-existing artefact, recorded not fixed:** exactly AT the floor (whatever its value) the
+    crossing half-admits and emits a retraced open polyline (`gaps=1, closed=0`, +36.6% length at
+    0.075, +42.2% at 0.020). Flagged honest, present at both floors → a property of the band-minimum
+    gate, not of the floor's value.
+
+- **M1 COINCIDENT/OVERLAPPING FREEFORM — CHARACTERIZED; freeform↔freeform HANGS (open defect).**
+  Named as a blocker for several slices without ever being measured. It is NOT one regime:
+  - **Mixed (freeform ↔ elementary): honest, fast, correct.** Terminates in 0.24–3.4 s, emits
+    `seeds=0`, sets a typed `CoincidentRegion` (`OverlapSubRegion` when interior-delimited,
+    `Undecided` at a domain edge), suppresses seeds inside the overlap, and still traces a genuine
+    transversal curve coexisting with the overlap. **Zero fabricated seeds or curves across every
+    pair either probe constructed**, including a non-rectangular (disc) shared region.
+  - **Freeform ↔ freeform: DOES NOT DECLINE — IT HANGS.** 6/6 pairs killed at 1200 s with zero
+    output (independently reproduced at 1144 s and 900 s), **including a genuinely DISJOINT pair**
+    (dz = 1e-3) whose correct answer is the empty set. A hang is not a decline. This is a
+    termination-and-plumbing defect, not a geometry one: the same pairs return the CORRECT verdict
+    in 0.24–12.6 s once the budget is capped.
+  - **A detector already exists and its logic is sound** (`coincidence.h`, `same_surface.h`,
+    `seeding.cpp` detectOverlap/insideOverlap). The deliverable is NOT a detector.
+  - **A1 — the wall clock is `clusterRegions` (seeding.cpp:683), an O(n²) all-pairs loop**, not the
+    subdivision. Evidence: per-candidate cost DOUBLES as n grows (46.9 → 91.5 µs for 4.16× the
+    candidates), which a subdivision-bound cost cannot do; and RSS rose to 116 MB in ~100 s then sat
+    **flat for 17 minutes** — allocation finished, the process spinning. Fix: union-find over a
+    spatial hash, mirroring `linkBySep` (seeding.cpp:739) which already does exactly this.
+    Semantics-preserving — identical components over identical adjacency.
+  - **A2 — nothing stops the descent once the AABB prune loses its power.** On a coincident pair no
+    leaf pair is ever disjoint, so recursion runs the whole 4D box product: 4.2× candidates per
+    halving (2D locus) vs ~2.0× for a transversal curve. `featureWarrantsFinerLeaf` then INVERTS —
+    its overlap predicate is unconditionally true, driving the entire domain to `adaptiveMinFrac`
+    (5476 → 98596 candidates, 61× wall). **Moves candidate counts → puts the S4-f seed-count
+    contracts at risk; needs the full corpus.**
+  - **A3 — `projectOntoB` has a one-sided dead band that quantizes every reported region.** The LM
+    is seeded from a fixed `kScan=8` grid, and SciPP's `num_jacobian` is FORWARD difference, so at an
+    UPPER bound that column is identically zero and LM cannot move (lower bound converges normally,
+    residual 1.25e-14). Predicted dead band `span/(2·kScan)`; measured ratio 1.000 across
+    kScan ∈ {4,8,16,32,64} on five geometries. **The "6.25%" is 1/(2·8) and nothing else** — the same
+    species of internal-parameter-reported-as-geometry defect retired in M1e and M1f. Consequence:
+    `regionB` is only **56.25%** of the true shared area, so 43.75% of a coincident face lies outside
+    the box a boolean would trim to.
+  - **A4 — the verdict never reaches S5.** `TraceSet` has no coincidence field and
+    `trace_intersection` DISCARDS `SeedSet.coincidentRegions`: a coincident pair's TraceSet is
+    field-for-field identical to a genuine no-intersection TraceSet. **A boolean consuming TraceSet
+    today cannot tell a shared face from a clear one.**
+  - **REJECTED — the cheap root-box screen.** "Run the interior sample grid at the root, it's 1024×
+    safer" is measured wrong IN THE UNSAFE DIRECTION: a tangency's gap grows as r²/2R so it is
+    maximal at the patch CORNER, while an interior grid samples where the surfaces are most alike
+    (sampled worst H²/4R vs true worst H²/R — a factor of 4). It returns **9/9 agree on a genuine
+    tangency whose corners are up to 3.9× onSurfTol away**, and an `OverlapSubRegion` sets
+    `suppressed[cid]=1` — the contact is silently swallowed and never reaches the S4-b tangent path.
+    Enlarging the box makes it worse. **The predicate must BOUND the gap over the patch (corner/edge
+    or control-net hull), never sample its interior.**
+  - **Ranked program (measured mechanisms, NOT gate-validated — no `src/` edit was permitted):**
+    (1) propagate the verdict into `TraceSet` [additive, no gate risk];
+    (2) bucket `clusterRegions` [semantics-preserving, no gate risk — fixes the hang];
+    (3) fix the `projectOntoB` dead column, paired with the 10% inset in `detectOverlap` step 4, or
+    `regionB` stays wrong [blast radius `sampleAgrees`→`detectOverlap`/`growEdge` only];
+    (4) per-node descent stop using a sound gap BOUND [moves candidate counts — full corpus required].
+
 ### M2 — General freeform booleans · ~2–4 py · needs M0 + M1
 Lift `recogniseCurvedSolid` to accept **freeform (B-spline/NURBS) operands** (it rejects them
 today — the S5 assembler is analytic-only), split freeform faces along the S3/M1-traced WLine,

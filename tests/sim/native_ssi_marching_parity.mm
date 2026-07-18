@@ -936,19 +936,13 @@ void pairDeepNearTangentHonestDeclineS4c() {
 // newly-crossed loops are self-consistent by construction (they satisfy the same corrector that
 // produced them), so they must be confronted with a foreign kernel before they are believed.
 //
-// SCOPE — why dx = 0.595 and not 0.597. The CROSSING succeeds at 0.597 too (Gate A covers it:
-// one closed loop, every corrected node on both surfaces to 2.39e-11). It is excluded HERE
-// because of the FITTED CURVE, not the march. `sampleWLine` samples the convenience B-spline as
-// well as the nodes, and that fit is targeted at `scale·2e-4` ≈ 2.2e-3 — four times LOOSER than
-// this gate's 5e-4 on-curve tolerance — so the one-shot densify-and-refit never fires. Measured
-// off-surface deviation, nodes vs fit: 1.31e-11 / 2.97e-05 at dx=0.593, 1.16e-11 / 3.36e-05 at
-// 0.595, 2.39e-11 / 6.99e-05 at 0.597 — the fit is six orders of magnitude worse than the march
-// it interpolates, and at 0.597 it drags the OCCT distance to 6.00e-04, over tolerance.
-// The honest reading: the marched curve is right, the cubic fit under-resolves the extreme
-// curvature at the graze. Widening onCurveTol here would hide a real defect, so the gate keeps
-// its tolerance and this pose stays out until the fit is fixed. That is the next slice.
+// dx = 0.597 was briefly EXCLUDED here: the crossing succeeded but the convenience B-spline fit
+// (which `sampleWLine` samples alongside the nodes) missed the OCCT locus by 6.00e-04 against this
+// gate's 5e-4 tolerance. It is RESTORED on merit — the tolerance was never touched. The cause was
+// a conditioning defect in the densify refit, not the march: the pole target reached the node
+// count, making the fit interpolate and oscillate between nodes. See marching.cpp.
 void pairWideBandIncrementalOrientationS4c() {
-  for (const double dx : {0.595}) {
+  for (const double dx : {0.595, 0.597}) {
     nm::Sphere sph{frameZ(), 1.0};
     nm::Cylinder cyl{frameZ({dx, 0, 0}), 0.4};
     ssi::ParamBox sdom{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};

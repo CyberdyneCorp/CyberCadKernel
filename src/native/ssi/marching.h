@@ -367,6 +367,14 @@ struct MarchOptions {
   int fitDegree = 3;           ///< B-spline fit degree (cubic default)
   int fitMaxPoles = 64;        ///< max poles the least-squares fit uses (0 → interpolate every node)
   double dedupFrac = -1.0;     ///< two WLines duplicate if a node is within dedupFrac·scale (≤ 0 → 1e-4)
+  // Densify-and-refit TRIGGER, as a fraction of model scale. The convenience B-spline is refit at
+  // a higher pole count when its deviation from the nodes exceeds `fitDensifyTargetScale · scale`.
+  // The default was 2e-4, which sat ~4× looser than the 5e-4 on-curve budget the native-vs-OCCT
+  // parity gate enforces, so a near-tangent loop could ship a fit that missed the locus by 6.2e-04
+  // without ever tripping the refit. Exposed so a caller can restore the old value; changing it is
+  // a COST/QUALITY knob only — it never moves a node, never widens a tolerance, and the polyline
+  // remains the ground truth regardless.
+  double fitDensifyTargetScale = 2e-5;  ///< refit when fit error exceeds this × model scale (≤ 0 → no densify)
 
   // ── S4-d BRANCH POINTS (branch-point localization + arm routing). OFF by default so
   // every S3 transversal trace and every S4-c crossable-graze trace is BYTE-IDENTICAL to

@@ -302,6 +302,45 @@ resolution. The curve *pipeline* exists; this is the *robustness* on adversarial
     Gate B and documented. **Fitted-curve resolution at extreme graze curvature is the next slice**,
     alongside coincident/overlapping FREEFORM surfaces and the true-tangency knife-edge.
 
+- **M1f FIT CONDITIONING — the densify refit was reaching interpolation (change
+  `moat-m1f-ssi-fit-conditioning`).** The M1e fit blocker is CLOSED and dx = 0.597 is restored to
+  Gate B on merit, with `onCurveTol` never touched. The cause was not resolution but CONDITIONING.
+  - **The refit target reached the node count.** `target = min(m, kDensifyMaxPoles=200)` resolves to
+    `m` for any loop with m ≤ 200 — exactly the moderate-node high-curvature regime the refit serves
+    (graze family m = 193…195). At `nPoles == m` the system is square and interpolating and the
+    clamped-uniform knots over a chord-length parametrization degenerate: the curve rides every node
+    exactly while oscillating between them. A 195-pole refit at dx=0.597 reports `maxFitError`
+    **3.639e-06** while its true off-surface deviation is **4.990e-01**.
+  - **The trigger was looser than the verification budget.** `scale·2e-4` = 2.203e-03, ≈4× looser
+    than the 5e-4 parity on-curve budget, so the failing pose sat 3.3× UNDER the trigger and never
+    refit. **Tightening it ALONE is harmful** — measured Gate B 21/2, with dx=0.597 → 1.85e-01 and
+    the green dx=0.595 REGRESSING to 1.90e-01. The two defects had to be fixed together.
+  - **Fix:** relative pole cap `min(m·2/3, 200)` (a FLAT 112/128 starves the dense high-curvature
+    loop that needs all 200 — verified twice), a node-MIDPOINT accept test ANDed with the at-node
+    one (the at-node metric is blind by construction; discriminating power ≈1700×), and
+    `MarchOptions::fitDensifyTargetScale` default 2e-5. Always-on with a caller escape hatch: the
+    conditioning guard is a latent-bug fix that is a no-op for every refit in the gates today, so
+    flagging it would ship the hazard armed.
+  - **A knot-vector remedy was tried and REJECTED.** `math::approxKnots` (Piegl–Tiller 9.68) looked
+    like a free 4.8× win at 64 poles but breaks `skew cyl unequal` — two clean orthogonal-cylinder
+    loops with NO near-tangency — driving onSurf 7.39e-07 → 1.25e-06 against its own 1e-6 tolerance,
+    perturbing 16–18 of 23 gate lines, and deepening the very cliff it was meant to cure. The SSI
+    fit keeps `clampedUniformKnots`. **Node spacing was also refuted** as a cause: the nodes sit
+    2.93e-10 from the analytic locus and support ~1e-6; the fit is pole-limited, not spacing-limited.
+  - Host **Gate A 25/25** (new `march_densify_refit_never_interpolates_s4c` pins the invariant
+    OCCT-free at node midpoints; the existing dense-loop refit case stays green). Host **Gate B
+    22/0** with dx=0.597 RESTORED at onCurve **2.30e-05** (was 6.00e-04 FAIL) — exactly 2 of 22
+    lines move, both improving 21× and 82×, the other 20 byte-identical.
+  - **Cost, honestly bounded.** 0 of 16 ordinary analytic poses fire the refit at 2e-5. On freeform
+    corpora the two independent measurements diverge — whole-Gate-A wall **+17.8%** vs fit-stage
+    aggregate **+0.29%** inside run-to-run spread. **Treat +17.8% as the pessimistic bound.**
+  - **Caveat:** `scale·2e-5` still misses dx=0.590 (1.45e-04) and dx=0.593 (1.98e-04), which stay at
+    64 poles; dx=0.593 passes at 1.44e-04, only 3.5× under budget. Tightening further crosses toward
+    the measured 2e-6 cliff where ordinary loops start buying 1.1–1.3 s refits.
+  - **Next blocker (unchanged by this slice):** coincident/overlapping FREEFORM surfaces and the
+    true-tangency knife-edge below `minCrossSine`. The near-tangent crossing and its fitted curve are
+    now both verified against OCCT down to minSine ≈ 0.077.
+
 ### M2 — General freeform booleans · ~2–4 py · needs M0 + M1
 Lift `recogniseCurvedSolid` to accept **freeform (B-spline/NURBS) operands** (it rejects them
 today — the S5 assembler is analytic-only), split freeform faces along the S3/M1-traced WLine,

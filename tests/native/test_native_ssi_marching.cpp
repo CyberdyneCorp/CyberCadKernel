@@ -932,6 +932,66 @@ CC_TEST(march_deep_near_tangent_reanchor_honest_decline_s4c) {
   CC_CHECK(tr.nearTangentGaps >= 1);       // the honest S4 gap is reported (deferred → OCCT)
 }
 
+// ── M1f REGRESSION: the densify refit must never reach interpolation ──────────────────
+//
+// The refit pole target was `min(m, kDensifyMaxPoles)`, which for any loop with m ≤ 200 resolved
+// to m itself. At nPoles == m the least-squares system is SQUARE and interpolating, and the
+// clamped-uniform knot vector over a chord-length parametrization degenerates: the curve rides
+// every node exactly while oscillating wildly BETWEEN them. The at-node error metric cannot see
+// this by construction — it is sampled at precisely the parameters the fit interpolates. On this
+// 195-node graze loop the blown-up fit reported maxFitError 3.6e-06 while its true deviation was
+// 4.99e-01, five orders of magnitude worse than the 64-pole fit it replaced.
+//
+// This pins the invariant DIRECTLY and OCCT-free: the sphere ∩ cylinder locus is analytically
+// parametrizable, so the fitted curve's distance to the TRUE locus is checked at node MIDPOINTS —
+// between the nodes, where the oscillation lives and where the shipped metric is blind.
+CC_TEST(march_densify_refit_never_interpolates_s4c) {
+  const double dx = 0.597;
+  nmath::Sphere sp{frameZ({0, 0, 0}), 1.0};
+  nmath::Cylinder cy{frameZ({dx, 0, 0}), 0.4};
+  ssi::ParamBox sd{0.0, 2.0 * kPi, -kPi / 2, kPi / 2};
+  ssi::ParamBox cd{0.0, 2.0 * kPi, -1.5, 1.5};
+  auto A = ssi::makeSphereAdapter(sp, sd);
+  auto B = ssi::makeCylinderAdapter(cy, cd);
+  ssi::SeedOptions so;
+  so.initialGridU = 6;
+  so.initialGridV = 6;
+  so.minPatchFrac = 1.0 / 64;
+
+  ssi::MarchOptions on;
+  on.tangentSinTol = 0.25;
+  on.adaptiveCrossReanchor = true;
+  on.reanchorBlend = 0.5;
+  on.reanchorIncrementalOrientation = true;
+  auto tr = ssi::trace_intersection(A, B, so, on);
+  CC_CHECK(tr.curveCount() == 1);
+  if (tr.curveCount() != 1) return;
+
+  const ssi::WLine& w = tr.lines[0];
+  CC_CHECK(w.curve.valid());
+  if (!w.curve.valid()) return;
+
+  // The refit MUST have fired (the whole point of the tightened trigger) yet MUST NOT have
+  // reached the node count — the pole target is a fraction of m, never m itself.
+  const int m = static_cast<int>(w.points.size());
+  const int nPoles = static_cast<int>(w.curve.poles.size());
+  CC_CHECK(nPoles > 64);   // the tightened trigger fired
+  CC_CHECK(nPoles < m);    // and stopped short of interpolation
+
+  // Sample the fitted curve BETWEEN nodes and require it to stay on BOTH surfaces there. A fit
+  // that interpolates the nodes while bowing between them fails here and passes the at-node
+  // metric — which is exactly the defect this guards.
+  const auto& c = w.curve;
+  const double t0 = c.knots.front(), t1 = c.knots.back();
+  double worstMid = 0.0;
+  for (int i = 0; i < 4000; ++i) {
+    const double t = t0 + (t1 - t0) * ((i + 0.5) / 4000.0);
+    const Point3 p = nmath::curvePoint(c.degree, c.poles, c.knots, t);
+    worstMid = std::max(worstMid, std::max(distToSphere(sp, p), distToCylinder(cy, p)));
+  }
+  CC_CHECK(worstMid < 5e-4);  // the parity gate's own on-curve budget, asserted OCCT-free
+}
+
 // ── M1e WIDE-BAND: incremental orientation crosses the 90°-turn reversal trap ─────────
 //
 // REGRESSION for a measured DEFECT, not a breadth extension. The M1d re-anchor block resolved

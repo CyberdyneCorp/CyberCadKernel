@@ -1285,6 +1285,24 @@ std::vector<double> chordLengthParams(const std::vector<WLinePoint>& pts) {
 // The polyline stays the ground truth; the fit is a convenience curve. Solves the
 // normal-equations column-by-column (x,y,z independently) via lstsq.
 
+// Worst deviation of the fitted curve from the polyline sampled at node MIDPOINT parameters —
+// BETWEEN the nodes, where an over-poled fit oscillates. The at-node metric cannot see this: an
+// interpolating fit rides every node exactly and reports a near-zero error while bowing far off
+// the curve between them. Compared against the chord midpoint, which is the polyline's own best
+// estimate there; the polyline remains the ground truth.
+double midpointDeviation(const FittedBSpline& c, const std::vector<WLinePoint>& pts,
+                         const std::vector<double>& tval) {
+  if (!c.valid()) return std::numeric_limits<double>::infinity();
+  const int m = static_cast<int>(pts.size());
+  double worst = 0.0;
+  for (int i = 1; i < m; ++i) {
+    const Point3 mid = math::curvePoint(c.degree, c.poles, c.knots, 0.5 * (tval[i - 1] + tval[i]));
+    const Point3 chord = pts[i - 1].point + (pts[i].point - pts[i - 1].point) * 0.5;
+    worst = std::max(worst, math::distance(mid, chord));
+  }
+  return worst;
+}
+
 // Single-shot least-squares B-spline fit through the polyline with a FIXED pole count.
 FittedBSpline fitBSplineFixed(const std::vector<WLinePoint>& pts,
                               const std::vector<double>& tval, int degree, int nPoles) {
@@ -1387,11 +1405,32 @@ FittedBSpline fitBSpline(const std::vector<WLinePoint>& pts, int degree, int max
   // ONE bounded refit: raise the pole count to a loop-sized target, hard-capped so the single
   // O(m·poles²) solve stays affordable. Accept the refit only if it is valid AND strictly
   // tighter than the initial fit (defensive — never a regression).
+  //
+  // CONDITIONING GUARD — the target must stay a FRACTION of the node count, never reach it.
+  // At nPoles == m the least-squares system is square and INTERPOLATING, and the clamped-uniform
+  // knot vector over a chord-length parametrization degenerates: the curve rides every node
+  // exactly while oscillating wildly BETWEEN them. Measured on a 195-node graze loop, a 195-pole
+  // refit reports `maxFitError` 3.6e-06 — apparently excellent — while its true off-surface
+  // deviation is 4.99e-01. The old `min(m, …)` reached exactly that state for any loop with
+  // m ≤ 200, which is precisely the moderate-node high-curvature regime the refit exists to serve.
+  // Two-thirds keeps the ratio clear of the measured degeneration onset (≈ 0.88–0.95).
+  //
+  // The cap must be RELATIVE, not a flat number: a flat 112 or 128 starves
+  // `march_densify_refit_high_curvature_loop`, whose loop genuinely needs the full 200 (verified).
+  // For m ≥ 300 this is a literal no-op (`min(2m/3, 200) == 200`), so every refit that fires in
+  // the gates today is unchanged apart from three that drop 6–11% in pole count — a saving.
   constexpr int kDensifyMaxPoles = 200;
-  const int target = std::min(m, kDensifyMaxPoles);
+  const int target = std::min(m * 2 / 3, kDensifyMaxPoles);
   if (target > nPoles) {
     FittedBSpline cand = fitBSplineFixed(pts, tval, degree, target);
-    if (cand.valid() && cand.maxFitError < out.maxFitError) out = std::move(cand);
+    // ACCEPT TEST — at-node error alone is BLIND to the failure mode above (it is measured at
+    // exactly the parameters a degenerate fit interpolates). Require the candidate to improve at
+    // the node MIDPOINTS too, where the oscillation actually lives. Discriminating power measured
+    // ~1700×: a healthy 130-pole candidate reads 2.29e-04 there, a blown-up one 3.97e-01.
+    // O(m) curve evaluations against a 60–470 ms solve, and only when a candidate exists.
+    if (cand.valid() && cand.maxFitError < out.maxFitError &&
+        midpointDeviation(cand, pts, tval) <= midpointDeviation(out, pts, tval))
+      out = std::move(cand);
   }
   return out;
 }
@@ -1581,7 +1620,14 @@ WLine march_branch_impl(const SurfaceAdapter& A, const SurfaceAdapter& B, const 
   // Raising poles only tightens the convenience curve toward the already-on-locus nodes, never
   // widens a tolerance or moves a node. The polyline stays the ground truth; deterministic; no
   // caller knob.
-  const double fitTarget = scale * 2e-4;
+  // TRIGGER. The previous multiplier (2e-4) put the target at ≈ 2.2e-03 for a unit-ish model —
+  // roughly 4× LOOSER than the 5e-4 on-curve budget the native-vs-OCCT parity gate enforces — so a
+  // near-tangent loop whose 64-pole fit missed the locus by 6.2e-04 sat 3.3× UNDER the trigger and
+  // never refit. 2e-5 threads between the two populations measured across the corpus: ordinary
+  // loops fit to ~5e-07 (worst ordinary 2.8e-05, still 8× under) and remain byte-identical, while
+  // near-tangent loops at 2e-04…7e-04 now trip it. Tightening further approaches 2e-6, the
+  // measured cliff where ordinary loops start buying 1.1–1.3 s refits — do not go there.
+  const double fitTarget = scale * opts.fitDensifyTargetScale;
   line.curve = fitBSpline(line.points, opts.fitDegree, opts.fitMaxPoles, fitTarget);
   return line;
 }

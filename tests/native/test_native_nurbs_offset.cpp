@@ -279,6 +279,33 @@ static BsplineSurfaceData diagonalRidgeBump() {
   return s;
 }
 
+// A CENTRAL-DOME bump: a tall tight round Gaussian dome at the domain centre. An offset
+// toward the crest's centre of curvature folds a CLOSED, GENUINELY CURVED (roughly circular)
+// disk around the crest — the fold locus is a closed curve in (u,v), not a straight/diagonal
+// band. The fold-free space is ONE connected component that WRAPS AROUND the fold disk, so
+// u-columns crossing the disk carry TWO fold-free v-runs. Used to exercise the CURVED-ENVELOPE
+// fold-locus trim: a per-u single-interval band cannot represent that component (the previous
+// single-band trace dropped it entirely); the multi-band decomposition must split it into
+// simple bands (left/right of the disk + above/below it) whose envelopes trace the curved
+// fold boundary.
+static BsplineSurfaceData centralDomeBump() {
+  BsplineSurfaceData s;
+  s.degreeU = 3;
+  s.degreeV = 3;
+  s.nPolesU = 7;
+  s.nPolesV = 7;
+  s.knotsU = {0, 0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1, 1};
+  s.knotsV = {0, 0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1, 1};
+  for (int i = 0; i < 7; ++i)
+    for (int j = 0; j < 7; ++j) {
+      const double x = i * 0.35, y = j * 0.35;
+      const double du = i - 3.0, dv = j - 3.0;          // round dome at the net centre
+      const double z = 0.9 * std::exp(-1.4 * (du * du + dv * dv));
+      s.poles.push_back({x, y, z});
+    }
+  return s;
+}
+
 // A degenerate patch: a control net that collapses to a line along U (all V-columns
 // identical points) — the ∂S/∂v tangent is null, so the normal is undefined.
 static BsplineSurfaceData degenerateNormalPatch() {
@@ -294,6 +321,30 @@ static BsplineSurfaceData degenerateNormalPatch() {
     for (int j = 0; j < 3; ++j)
       s.poles.push_back({i * 1.0, 0.0, 0.0});  // all rows share y=z=0, no V spread
   return s;
+}
+
+// The offset-map regularity factor min over principal curvatures of (1 + d·κ) at (u,v) on a
+// NON-RATIONAL surface: > 0 ⇔ the offset by d does not fold there. Numeric oracle for the
+// curved-envelope fold-locus section (independent re-derivation from the 2nd fundamental form).
+static double minFoldFactor(const BsplineSurfaceData& S, const SurfaceGrid& sg, double d,
+                            double u, double v) {
+  Vec3 dbuf[9];
+  surfaceDerivs(S.degreeU, S.degreeV, sg, S.knotsU, S.knotsV, u, v, 2, std::span<Vec3>(dbuf, 9));
+  const Vec3 Su = dbuf[3], Sv = dbuf[1], Suu = dbuf[6], Suv = dbuf[4], Svv = dbuf[2];
+  const Vec3 nRaw = cross(Su, Sv);
+  const double nLen = norm(nRaw);
+  if (nLen < 1e-12) return -1.0;
+  const Vec3 nn = nRaw / nLen;
+  const double E = dot(Su, Su), F = dot(Su, Sv), G = dot(Sv, Sv);
+  const double det1 = E * G - F * F;
+  if (det1 < 1e-14) return -1.0;
+  const double L = dot(Suu, nn), M = dot(Suv, nn), Nn = dot(Svv, nn);
+  const double K = (L * Nn - M * M) / det1;
+  const double H = (E * Nn - 2.0 * F * M + G * L) / (2.0 * det1);
+  double disc = H * H - K;
+  if (disc < 0.0) disc = 0.0;
+  const double root = std::sqrt(disc);
+  return std::min(1.0 + d * (H + root), 1.0 + d * (H - root));
 }
 
 int main() {
@@ -904,6 +955,150 @@ int main() {
     const std::vector<OffsetResult> allFold = offsetSurfaceFoldTrim(dome, 1.5 * 0.5, 1e-3);
     expectTrue(allFold.empty(),
                "diagonal-fold: fully-folding offset returns empty (never a folded region)");
+  }
+
+  // ═══ 10. CURVED-ENVELOPE fold locus — a CLOSED fold loop, multi-band decomposition ═══
+  {
+    // A central round dome whose offset by d = 0.6 folds a CLOSED, genuinely CURVED (circular)
+    // disk around the crest. The fold-free space is ONE component wrapping around the disk:
+    // u-columns crossing the disk carry TWO fold-free v-runs, so a per-u SINGLE-interval band
+    // cannot represent it. MEASURED BEFORE the multi-band decomposition landed: the fold-locus
+    // trim returned EMPTY (total decline) and the rectangle staircase returned 0 regions at
+    // this d (its thin kept strips collapse under the ½-cell inset at the 11-node analysis
+    // grid) — 0.00 recovered of a 0.79 fold-free fraction. The scanline multi-band split must
+    // recover the component as simple bands (left/right of the disk + below/above it), each
+    // hugging the CURVED fold boundary, fold-free, and at distance |d| from S.
+    const BsplineSurfaceData S = centralDomeBump();
+    const double d = 0.6;     // toward the crest's centre of curvature → fold the crest disk
+    const double tol = 1e-2;  // the warped-band fit floor near the high-curvature fold (honest)
+
+    const double su0 = domLo(S.knotsU, S.degreeU), su1 = domHi(S.knotsU, S.degreeU);
+    const double sv0 = domLo(S.knotsV, S.degreeV), sv1 = domHi(S.knotsV, S.degreeV);
+    SurfaceGrid sg{std::span<const Point3>(S.poles), S.nPolesU, S.nPolesV};
+
+    // Baseline: the plain offset declines (fold somewhere).
+    const OffsetResult plain = offsetSurface(S, d, tol);
+    expectTrue(plain.status == OffsetStatus::SelfIntersection,
+               "curved-fold: plain offset declines as self-intersection");
+
+    // NUMERIC ORACLE — the true fold-free parameter-area fraction from a dense independent
+    // (1 + d·κ) map (81×81 ≈ 0.788 for this fixture; recomputed here, never hard-coded).
+    double oracleFree = 0.0;
+    {
+      const int N = 81;
+      long freeNodes = 0;
+      for (int i = 0; i < N; ++i)
+        for (int j = 0; j < N; ++j) {
+          const double u = su0 + (su1 - su0) * (i / static_cast<double>(N - 1));
+          const double v = sv0 + (sv1 - sv0) * (j / static_cast<double>(N - 1));
+          if (minFoldFactor(S, sg, d, u, v) > 0.0) ++freeNodes;
+        }
+      oracleFree = (freeNodes / static_cast<double>(N) / N) * (su1 - su0) * (sv1 - sv0);
+      expectTrue(oracleFree > 0.5, "curved-fold: oracle says most of the domain is fold-free");
+    }
+
+    // The axis-aligned staircase recovers only inscribed rectangles (0 regions at this d:
+    // every kept strip is too thin at the 11-node analysis grid and collapses under the inset).
+    const std::vector<OffsetResult> stair = offsetSurfaceMultiTrimmed(S, d, tol);
+    double stairArea = 0.0;
+    for (const OffsetResult& r : stair)
+      stairArea += (r.keptU1 - r.keptU0) * (r.keptV1 - r.keptV0);
+
+    // The fold-locus trim: the wrap-around component splits into >= 4 simple bands.
+    const std::vector<OffsetResult> fold = offsetSurfaceFoldTrim(S, d, tol);
+    expectTrue(fold.size() >= 4, "curved-fold: fold-trim recovers >= 4 bands around the disk");
+
+    bool sawLeft = false, sawRight = false, sawBelow = false, sawAbove = false;
+    double foldArea = 0.0, maxEnvelopeCurve = 0.0;
+    for (const OffsetResult& r : fold) {
+      expectTrue(r.ok, "curved-fold: each recovered band fits within tolerance");
+      expectTrue(r.foldTrimmed && r.trimmed, "curved-fold: each band is a fold-locus trim");
+      expectTrue(r.foldU.size() >= 2 && r.foldU.size() == r.foldVLo.size() &&
+                     r.foldU.size() == r.foldVHi.size(),
+                 "curved-fold: the column-band polyline is well-formed");
+
+      // TRUE band area from the polyline envelope (trapezoid per column pair).
+      double band = 0.0;
+      for (std::size_t k = 0; k + 1 < r.foldU.size(); ++k) {
+        const double w0 = r.foldVHi[k] - r.foldVLo[k];
+        const double w1 = r.foldVHi[k + 1] - r.foldVLo[k + 1];
+        band += 0.5 * (w0 + w1) * (r.foldU[k + 1] - r.foldU[k]);
+      }
+      foldArea += band;
+
+      // Which side of the fold disk does this band cover?
+      const double midU = 0.5 * (r.keptU0 + r.keptU1);
+      const double midV = 0.5 * (r.keptV0 + r.keptV1);
+      if (midU < 0.35) sawLeft = true;
+      else if (midU > 0.65) sawRight = true;
+      else if (midV < 0.5) sawBelow = true;
+      else sawAbove = true;
+
+      // The disk-facing envelope edge genuinely TRACES A CURVE (not a straight staircase
+      // side): record the largest per-band variation of an interior envelope edge.
+      double loMin = 1e300, loMax = -1e300, hiMin = 1e300, hiMax = -1e300;
+      for (std::size_t k = 0; k < r.foldU.size(); ++k) {
+        loMin = std::min(loMin, r.foldVLo[k]); loMax = std::max(loMax, r.foldVLo[k]);
+        hiMin = std::min(hiMin, r.foldVHi[k]); hiMax = std::max(hiMax, r.foldVHi[k]);
+      }
+      if (loMin > sv0 + 1e-6) maxEnvelopeCurve = std::max(maxEnvelopeCurve, loMax - loMin);
+      if (hiMax < sv1 - 1e-6) maxEnvelopeCurve = std::max(maxEnvelopeCurve, hiMax - hiMin);
+
+      // VALIDITY 1 — the recovered band is FOLD-FREE: (1 + d·κ) > 0 over the traced envelope.
+      double worstFactor = std::numeric_limits<double>::infinity();
+      const int N = 15;
+      for (std::size_t kk = 0; kk < r.foldU.size(); ++kk)
+        for (int j = 0; j < N; ++j) {
+          const double v =
+              r.foldVLo[kk] + (r.foldVHi[kk] - r.foldVLo[kk]) * (j / (double)(N - 1));
+          worstFactor = std::min(worstFactor, minFoldFactor(S, sg, d, r.foldU[kk], v));
+        }
+      expectTrue(worstFactor > 0.0,
+                 "curved-fold: recovered band is fold-free (Jacobian factor positive)");
+
+      // VALIDITY 2 — the fitted band lies at distance ≈ |d| from S (interior projection feet).
+      const BsplineSurfaceData& f = r.surface;
+      SurfaceGrid fg{std::span<const Point3>(f.poles), f.nPolesU, f.nPolesV};
+      const double fu0 = domLo(f.knotsU, f.degreeU), fu1 = domHi(f.knotsU, f.degreeU);
+      const double fv0 = domLo(f.knotsV, f.degreeV), fv1 = domHi(f.knotsV, f.degreeV);
+      num::SurfaceEval Sev = [&](double u, double v) { return evalSurf(S, u, v); };
+      double maxDistErr = 0.0;
+      int interior = 0;
+      const int NC = 9;
+      for (int i = 0; i < NC; ++i)
+        for (int j = 0; j < NC; ++j) {
+          const double fu = fu0 + (fu1 - fu0) * ((i + 0.5) / NC);
+          const double fv = fv0 + (fv1 - fv0) * ((j + 0.5) / NC);
+          const Point3 p = surfacePoint(f.degreeU, f.degreeV, fg, f.knotsU, f.knotsV, fu, fv);
+          const num::SurfaceProjection pr =
+              num::closest_point_on_surface(Sev, su0, su1, sv0, sv1, p, 30, 30);
+          if (pr.success && pr.u > su0 + 1e-4 && pr.u < su1 - 1e-4 && pr.v > sv0 + 1e-4 &&
+              pr.v < sv1 - 1e-4) {
+            ++interior;
+            maxDistErr = std::max(maxDistErr, std::fabs(pr.distance - d));
+          }
+        }
+      expectTrue(interior > 0, "curved-fold: fitted band has interior projection feet");
+      expectLE(maxDistErr, 5.0 * tol, "curved-fold: fitted band lies at distance ~|d| from S");
+    }
+    expectTrue(sawLeft && sawRight && sawBelow && sawAbove,
+               "curved-fold: bands cover ALL FOUR sides around the fold disk");
+    // The interior envelope edges trace the CURVED fold boundary (the circular disk edge
+    // varies by ≈ its sagitta across the band; a straight edge would vary by ~0).
+    expectTrue(maxEnvelopeCurve > 0.1,
+               "curved-fold: a disk-facing envelope edge genuinely traces a curve");
+
+    // THE HEADLINE: vs the staircase (which recovers NOTHING meaningful here) and vs the
+    // numeric oracle — the multi-band fold trim recovers >= 75% of the true fold-free area.
+    expectTrue(foldArea > stairArea + 0.1,
+               "curved-fold: fold-locus trim beats the rectangle staircase on recovered area");
+    expectTrue(foldArea >= 0.75 * oracleFree,
+               "curved-fold: fold-locus trim recovers >= 75% of the oracle fold-free area");
+
+    // PASSTHROUGH — a small fold-free offset yields a SINGLE full-domain region.
+    const std::vector<OffsetResult> gentle = offsetSurfaceFoldTrim(S, 0.03, 1e-3);
+    expectTrue(gentle.size() == 1 && gentle[0].ok && !gentle[0].foldTrimmed && !gentle[0].trimmed,
+               "curved-fold: fold-free offset returns one full-domain region");
   }
 
   std::printf("nurbs_offset: %d checks, %d failures\n", g_checks, g_failures);

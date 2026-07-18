@@ -749,44 +749,80 @@ struct ColumnBand {
   long nodeArea = 0;          // Σ (jHi-jLo) per column × 1 (proxy for kept area)
 };
 
-// Extract the column-band of component `id`: on each u-column, the [min,max] j of nodes labelled
-// `id`. Requires each occupied column's labelled nodes to be CONTIGUOUS (a single run) — a
-// column with a gap (the component wraps around a hole) is not a simple band and the band is
-// rejected (empty). This keeps the warped fit valid: each column maps to one v-interval.
-ColumnBand extractColumnBand(const std::vector<int>& label, int gN, int id) {
-  ColumnBand band;
-  int iLo = gN, iHi = -1;
-  std::vector<int> lo(gN, -1), hi(gN, -1);
+// Decompose component `id` into SIMPLE column-bands (one contiguous fold-free v-run per
+// column) by a SCANLINE sweep with run tracking. A component whose fold boundary is a
+// straight/diagonal graph over u has one run per column and yields exactly ONE band (the
+// behaviour of the original single-band trace). A GENUINELY CURVED fold locus — a CLOSED
+// fold loop (e.g. a fold disk around a dome crest) or a C/arc-shaped fold band — leaves a
+// component whose columns cross the fold and carry TWO+ runs; the sweep then SPLITS the
+// component at the column where a run forks (and MERGES bands back when runs rejoin),
+// partitioning the component into multiple pairwise-disjoint simple bands whose per-column
+// intervals each trace their side of the curved fold boundary. Every run of every column
+// belongs to exactly one band, so the union of the bands is the whole component (minus the
+// one-column seams at split/merge stations, which the ½-cell u-inset drops anyway).
+std::vector<ColumnBand> extractColumnBands(const std::vector<int>& label, int gN, int id) {
+  std::vector<ColumnBand> closed;
+  struct Run { int lo = 0, hi = 0; };
+  struct Active {
+    ColumnBand band;
+    Run last;  // the band's run on the previous column (adjacency test for the next column)
+  };
+  std::vector<Active> act;
+
   for (int i = 0; i < gN; ++i) {
-    int first = -1, last = -1, runs = 0;
-    bool inRun = false;
+    // The runs of component `id` on column i (maximal contiguous j-intervals).
+    std::vector<Run> runs;
     for (int j = 0; j < gN; ++j) {
-      const bool here = label[static_cast<std::size_t>(i) * gN + j] == id;
-      if (here) {
-        if (!inRun) { ++runs; inRun = true; }
-        if (first < 0) first = j;
-        last = j;
+      if (label[static_cast<std::size_t>(i) * gN + j] != id) continue;
+      if (!runs.empty() && runs.back().hi == j - 1) runs.back().hi = j;
+      else runs.push_back({j, j});
+    }
+
+    // Overlap counts between active bands and this column's runs (4-connectivity: a band
+    // continues into a run iff their j-intervals share at least one node).
+    const int nA = static_cast<int>(act.size());
+    const int nR = static_cast<int>(runs.size());
+    std::vector<int> aHits(nA, 0), rHits(nR, 0), rBand(nR, -1);
+    for (int a = 0; a < nA; ++a)
+      for (int r = 0; r < nR; ++r)
+        if (act[a].last.lo <= runs[r].hi && runs[r].lo <= act[a].last.hi) {
+          ++aHits[a];
+          ++rHits[r];
+          rBand[r] = a;
+        }
+
+    // A band EXTENDS by a run iff the match is one-to-one. A band overlapping 0 runs ends;
+    // a band overlapping 2+ runs SPLITS (close it, each run starts fresh); 2+ bands
+    // overlapping one run MERGE (close them, the run starts fresh).
+    std::vector<Active> next;
+    std::vector<char> extended(nA, 0);
+    for (int r = 0; r < nR; ++r) {
+      if (rHits[r] == 1 && aHits[rBand[r]] == 1) {
+        Active a = std::move(act[rBand[r]]);
+        extended[rBand[r]] = 1;
+        a.band.iHi = i;
+        a.band.jLo.push_back(runs[r].lo);
+        a.band.jHi.push_back(runs[r].hi);
+        a.band.nodeArea += (runs[r].hi - runs[r].lo);
+        a.last = runs[r];
+        next.push_back(std::move(a));
       } else {
-        inRun = false;
+        Active a;
+        a.band.iLo = i;
+        a.band.iHi = i;
+        a.band.jLo.push_back(runs[r].lo);
+        a.band.jHi.push_back(runs[r].hi);
+        a.band.nodeArea = runs[r].hi - runs[r].lo;
+        a.last = runs[r];
+        next.push_back(std::move(a));
       }
     }
-    if (first >= 0) {
-      if (runs > 1) return ColumnBand{};  // non-contiguous column — not a simple band
-      lo[i] = first; hi[i] = last;
-      iLo = std::min(iLo, i); iHi = std::max(iHi, i);
-    }
+    for (int a = 0; a < nA; ++a)
+      if (!extended[a]) closed.push_back(std::move(act[a].band));
+    act = std::move(next);
   }
-  if (iHi < iLo) return band;
-  band.iLo = iLo; band.iHi = iHi;
-  band.jLo.reserve(iHi - iLo + 1);
-  band.jHi.reserve(iHi - iLo + 1);
-  for (int i = iLo; i <= iHi; ++i) {
-    if (lo[i] < 0) return ColumnBand{};  // a column with no node inside the u-span → not a band
-    band.jLo.push_back(lo[i]);
-    band.jHi.push_back(hi[i]);
-    band.nodeArea += (hi[i] - lo[i]);
-  }
-  return band;
+  for (Active& a : act) closed.push_back(std::move(a.band));
+  return closed;
 }
 
 }  // namespace
@@ -821,27 +857,32 @@ std::vector<OffsetResult> offsetSurfaceFoldTrim(const BsplineSurfaceData& surfac
   }
 
   // The offset folds somewhere. Label the fold-free node map into connected components (a
-  // diagonal band leaves ≥ 2). Each component becomes a COLUMN-BAND that FOLLOWS the fold: on
-  // every u-column its contiguous fold-free v-interval, inset ½ cell so the interior is provably
-  // fold-free. The warped fit over that band recovers the triangular corner a rectangle drops.
+  // diagonal band leaves ≥ 2) and decompose each into SIMPLE COLUMN-BANDS that FOLLOW the
+  // fold: per u-column one contiguous fold-free v-interval, inset ½ cell so the interior is
+  // provably fold-free. A straight/diagonal fold yields one band per component; a CURVED /
+  // CLOSED fold locus (columns with 2+ fold-free runs) is split by the scanline decomposition
+  // into several bands around it. The warped fit over each band recovers the curved-boundary
+  // material a rectangle (or a single per-u interval) drops.
   int nComp = 0;
   const std::vector<int> label = labelComponents(fm.regular, gN, nComp);
   const double du = (dom.u1 - dom.u0) / (gN - 1);
   const double dv = (dom.v1 - dom.v0) / (gN - 1);
   const long total = static_cast<long>(gN - 1) * (gN - 1);
 
-  // Collect (component, band, nodeArea), then emit in descending area order.
+  // Collect every component's simple column-bands (a curved / closed fold locus decomposes a
+  // component into SEVERAL per-u single-interval bands), then emit in descending area order.
   struct Cand { int id; ColumnBand band; };
   std::vector<Cand> cands;
   for (int id = 0; id < nComp; ++id) {
-    ColumnBand band = extractColumnBand(label, gN, id);
-    if (band.iHi < band.iLo) continue;
-    // Meaningful-area gate (same bar as the rectangle trim): the band must cover ≥ kMinKeptFraction.
-    if (static_cast<double>(band.nodeArea) < kMinKeptFraction * static_cast<double>(total)) continue;
-    // The band must be ≥ 2 columns wide AND have some column with a ≥ 2-node interval, else the
-    // ½-cell inset collapses it (a one-node sliver is not a fittable region).
-    if (band.iHi - band.iLo < 2) continue;
-    cands.push_back({id, std::move(band)});
+    for (ColumnBand& band : extractColumnBands(label, gN, id)) {
+      if (band.iHi < band.iLo) continue;
+      // Meaningful-area gate (same bar as the rectangle trim): the band must cover ≥ kMinKeptFraction.
+      if (static_cast<double>(band.nodeArea) < kMinKeptFraction * static_cast<double>(total)) continue;
+      // The band must be ≥ 2 columns wide AND have some column with a ≥ 2-node interval, else the
+      // ½-cell inset collapses it (a one-node sliver is not a fittable region).
+      if (band.iHi - band.iLo < 2) continue;
+      cands.push_back({id, std::move(band)});
+    }
   }
   std::sort(cands.begin(), cands.end(),
             [](const Cand& a, const Cand& b) { return a.band.nodeArea > b.band.nodeArea; });

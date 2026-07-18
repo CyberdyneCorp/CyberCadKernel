@@ -246,13 +246,18 @@ std::vector<ThickenResult> thickenMultiTrimmed(const BsplineSurfaceData& surface
 /// over the COLUMN-BAND that FOLLOWS the fold locus (via offsetSurfaceFoldTrim's per-u
 /// fold-free v-interval), sewing a closed six-panel (2 caps + 4 walls) shell whose two side
 /// walls along the fold trace the diagonal / curved fold boundary. The recovered solid volume
-/// exceeds the rectangle-staircase solid's on a diagonal-fold fixture.
+/// exceeds the rectangle-staircase solid's on a diagonal-fold fixture. A CLOSED fold loop (a
+/// fold disk around a dome crest) leaves ONE fold-free region wrapping around the fold;
+/// offsetSurfaceFoldTrim's scanline decomposition splits it into several simple bands
+/// (left/right of the loop + below/above it) and EACH becomes its own closed solid here —
+/// where the rectangle staircase recovers only inscribed slabs (or nothing).
 ///
 /// Behaviour contract mirrors offsetSurfaceFoldTrim:
 ///   * FOLD-FREE everywhere — returns a SINGLE solid byte-identical to thickenSurface.
-///   * DIAGONAL / CURVED fold — returns ONE closed watertight solid per fold-free region, each
-///     `trimmed == true`, in descending area order; each verified (watertight, χ = 2, zero
-///     boundary edges, consistently oriented) before inclusion.
+///   * DIAGONAL / CURVED / CLOSED fold — returns ONE closed watertight solid per simple band
+///     (a component wrapping a closed fold loop yields several), each `trimmed == true`, in
+///     descending area order; each verified (watertight, χ = 2, zero boundary edges,
+///     consistently oriented) before inclusion.
 ///   * FULLY FOLDING / degenerate — returns an EMPTY vector (honest-decline; a self-intersecting
 ///     solid is NEVER returned). A degenerate-normal / malformed input likewise returns empty.
 ///

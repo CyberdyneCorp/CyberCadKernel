@@ -243,6 +243,30 @@ static BsplineSurfaceData diagonalRidgePatch() {
   return s;
 }
 
+// A CENTRAL-DOME patch: a tall tight round Gaussian dome at the domain centre. An offset
+// toward the crest's centre of curvature folds a CLOSED, GENUINELY CURVED (circular) disk
+// around the crest — the fold-free space is ONE component that WRAPS AROUND the disk, whose
+// u-columns crossing the disk carry TWO fold-free v-runs. A per-u single-interval band cannot
+// represent it (the previous fold-locus trace dropped the whole component); the multi-band
+// decomposition must thicken the simple bands around the disk into disjoint closed solids.
+static BsplineSurfaceData centralDomePatch() {
+  BsplineSurfaceData s;
+  s.degreeU = 3;
+  s.degreeV = 3;
+  s.nPolesU = 7;
+  s.nPolesV = 7;
+  s.knotsU = {0, 0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1, 1};
+  s.knotsV = {0, 0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1, 1};
+  for (int i = 0; i < 7; ++i)
+    for (int j = 0; j < 7; ++j) {
+      const double x = i * 0.35, y = j * 0.35;
+      const double du = i - 3.0, dv = j - 3.0;          // round dome at the net centre
+      const double z = 0.9 * std::exp(-1.4 * (du * du + dv * dv));
+      s.poles.push_back({x, y, z});
+    }
+  return s;
+}
+
 // ── Robust triangle-pair PIERCING self-intersection oracle (edge-vs-triangle) ──────
 // True iff any two NON-adjacent triangles of the solid properly cross (an edge of one pierces
 // the interior of the other). Ignores coplanar skin contact (scale-relative det skip) so a
@@ -659,6 +683,73 @@ int main() {
                                                                1e-3, 16, 16);
     expectTrue(allFold.empty(),
                "diagonal-fold: fully-folding thicken returns empty (honest-decline)");
+  }
+
+  // ═══ 8. CURVED-ENVELOPE fold locus — a CLOSED fold loop, multi-band solids ═══════
+  {
+    // A central round dome whose thicken by d = 0.4 folds a CLOSED, genuinely CURVED
+    // (circular) disk around the crest. The fold-free space is one component wrapping
+    // around the disk (u-columns crossing it carry TWO fold-free v-runs). MEASURED BEFORE
+    // the multi-band decomposition landed: thickenFoldTrim returned EMPTY (0 solids, 0
+    // volume) while the rectangle staircase recovered only ~0.24 of the parameter area —
+    // the documented curved-envelope residual. The scanline multi-band split must thicken
+    // >= 4 simple bands around the disk (left/right + below/above), each a closed
+    // watertight self-intersection-free solid tracing the curved fold boundary.
+    // |d| = 0.4 keeps the discrete near-fold panels embedding-free (the same documented
+    // large-|d| buckling bound as the diagonal section).
+    const BsplineSurfaceData S = centralDomePatch();
+    const double d = 0.4;      // toward the crest's centre of curvature → fold the crest disk
+    const double tol = 1e-2;   // the warped-band fit floor near the high-curvature fold (honest)
+
+    // Baseline: thickenSurface declines (fold); the staircase recovers only rectangles.
+    const ThickenResult base = thickenSurface(S, d, tol, 16, 16);
+    expectTrue(!base.ok && base.status == ThickenStatus::SelfIntersection,
+               "curved-fold: thickenSurface declines (SelfIntersection)");
+    const std::vector<ThickenResult> stair = thickenMultiTrimmed(S, d, tol, 16, 16);
+    double stairVol = 0.0;
+    for (const ThickenResult& r : stair)
+      if (r.ok) stairVol += r.enclosedVolume;
+
+    // Fold-locus trim: >= 4 closed watertight solids around the fold disk.
+    const std::vector<ThickenResult> fold = thickenFoldTrim(S, d, tol, 16, 16);
+    expectTrue(fold.size() >= 4, "curved-fold: thickenFoldTrim recovers >= 4 solids");
+
+    bool sawLeft = false, sawRight = false, sawBelow = false, sawAbove = false;
+    double foldVol = 0.0;
+    for (std::size_t k = 0; k < fold.size(); ++k) {
+      const ThickenResult& r = fold[k];
+      char tag[64];
+      std::snprintf(tag, sizeof tag, "curved-fold fold[%zu]", k);
+      assertClosed(r, tag);  // ok, watertight, χ==2, zero boundary, oriented, positive volume
+      if (!r.ok) continue;
+      expectTrue(r.trimmed, "curved-fold: each recovered solid reports trimmed == true");
+      // Each recovered solid is self-intersection-FREE (the curved fold disk was cut out).
+      char sbuf[80];
+      std::snprintf(sbuf, sizeof sbuf, "curved-fold fold[%zu]: self-intersection-free", k);
+      expectTrue(!selfIntersects(r.solid, 1e-6), sbuf);
+      foldVol += r.enclosedVolume;
+      const double midU = 0.5 * (r.keptU0 + r.keptU1);
+      const double midV = 0.5 * (r.keptV0 + r.keptV1);
+      if (midU < 0.35) sawLeft = true;
+      else if (midU > 0.65) sawRight = true;
+      else if (midV < 0.5) sawBelow = true;
+      else sawAbove = true;
+    }
+    expectTrue(sawLeft && sawRight && sawBelow && sawAbove,
+               "curved-fold: solids cover ALL FOUR sides around the fold disk");
+
+    // THE HEADLINE: the multi-band fold trim recovers FAR more volume than the rectangle
+    // staircase (measured ~3.1x on this fixture) — and infinitely more than the previous
+    // single-band trace, which declined this shape entirely.
+    expectTrue(foldVol > stairVol + 1e-3,
+               "curved-fold: fold-locus thicken beats the rectangle staircase on volume");
+    expectTrue(foldVol > 2.0 * stairVol,
+               "curved-fold: fold-locus thicken recovers >= 2x the staircase volume");
+
+    // PASSTHROUGH: a small fold-free thicken yields a SINGLE full-domain solid.
+    const std::vector<ThickenResult> gentle = thickenFoldTrim(S, 0.03, tol, 16, 16);
+    expectTrue(gentle.size() == 1 && gentle[0].ok && !gentle[0].trimmed,
+               "curved-fold: fold-free thicken returns one full-domain solid");
   }
 
   std::printf("nurbs_thicken: %d checks, %d failures\n", g_checks, g_failures);

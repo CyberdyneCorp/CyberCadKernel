@@ -48,8 +48,9 @@
 //     offset there (plus the kept region), declining only when no meaningful fold-free
 //     region remains. A self-intersecting surface is NEVER returned as valid.
 // SOLID thicken / shell / hollow (offset both faces + stitch side walls into a closed
-// solid) lives in bspline_thicken / bspline_shell. Non-rectangular (curved) fold-trim
-// boundaries and weight ESTIMATION remain documented residuals — never faked here.
+// solid) lives in bspline_thicken / bspline_shell. Curved and CLOSED fold loci are handled
+// by offsetSurfaceFoldTrim's multi-band decomposition below; large-|d| discrete-panel
+// buckling and weight ESTIMATION remain documented residuals — never faked here.
 // See docs/NURBS-SCOPE.md Layer-5 row.
 //
 // GUARD — the fit-bearing routine is compiled only when CYBERCAD_HAS_NUMSCI is
@@ -245,10 +246,16 @@ std::vector<OffsetResult> offsetSurfaceMultiTrimmed(const BsplineSurfaceData& su
 ///
 ///   1. Build the fold-free node map (the same (1 + d·κᵢ) > 0 test as the rectangle trim).
 ///   2. Split the fold-free map into connected COMPONENTS (a diagonal band leaves two).
-///   3. For each component, at every sample u-column record the maximal contiguous fold-free
-///      v-interval [vLo(u), vHi(u)] (½-cell inset so the interval interior is provably
-///      fold-free). The interval endpoints trace the fold locus as u varies.
-///   4. Fit the offset over the WARPED band (s,t) ↦ (u(s), vLo(u)+t·(vHi(u)−vLo(u))): sample
+///   3. Decompose each component into SIMPLE column-bands — one contiguous fold-free
+///      v-interval per u-column — by a SCANLINE sweep with run tracking. A straight/diagonal
+///      fold leaves one run per column and the component IS a single band. A GENUINELY CURVED
+///      fold locus — a CLOSED fold loop (a fold disk around a dome crest) or a C/arc-shaped
+///      band — leaves columns that cross the fold with TWO+ fold-free runs; the sweep SPLITS
+///      the component where a run forks (and closes bands where runs merge), partitioning it
+///      into pairwise-disjoint simple bands (e.g. left/right of a fold disk + below/above it),
+///      each of whose per-column intervals [vLo(u), vHi(u)] (½-cell inset, fold-side edges
+///      inset further) traces its side of the curved fold boundary.
+///   4. Fit the offset over each WARPED band (s,t) ↦ (u(s), vLo(u)+t·(vHi(u)−vLo(u))): sample
 ///      the true offset locus O = S + d·N on that curved-boundary region and interpolate a
 ///      NURBS surface through the samples (same sample→fit→refine core as offsetSurface, over
 ///      a warped rather than rectangular domain). The fitted patch is fold-free everywhere and
@@ -257,10 +264,12 @@ std::vector<OffsetResult> offsetSurfaceMultiTrimmed(const BsplineSurfaceData& su
 /// Behaviour contract:
 ///   * FOLD-FREE everywhere — returns a SINGLE result identical to offsetSurface
 ///     (`foldTrimmed == false`, `trimmed == false`, full-domain kept box).
-///   * DIAGONAL / CURVED fold — returns ONE result per fold-free component, each with
-///     `foldTrimmed == true`, the column-band polyline (foldU / foldVLo / foldVHi) reported,
-///     and keptU0..keptV1 the band's bounding box. Their union follows the fold locus and
-///     recovers strictly MORE area than the rectangle staircase (offsetSurfaceMultiTrimmed).
+///   * DIAGONAL / CURVED / CLOSED fold — returns ONE result per simple band (>= 1 per
+///     fold-free component; a component wrapping around a closed fold loop yields several),
+///     each with `foldTrimmed == true`, the column-band polyline (foldU / foldVLo / foldVHi)
+///     reported, and keptU0..keptV1 the band's bounding box. Their union follows the fold
+///     locus and recovers strictly MORE area than the rectangle staircase
+///     (offsetSurfaceMultiTrimmed).
 ///   * FULLY FOLDING / degenerate — returns an EMPTY vector (honest-decline; a folded surface
 ///     is NEVER returned as valid). A degenerate-normal input likewise returns empty.
 ///

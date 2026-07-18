@@ -57,6 +57,18 @@ case "$TARGET" in
     ARCHIVE="libnumsci_host.a"
     [ -n "$OUT" ] || OUT="$KERNEL/build-numsci/host"
     ;;
+  linuxhost)
+    # Linux host (GCC/libstdc++) — the OCCT-free numeric substrate for the Linux
+    # host gates. Same CPU-only recipe as `host`, minus the Homebrew/libc++
+    # assumptions: system g++ with libstdc++ (which DOES implement the ISO-29124
+    # special math libc++ lacks, but src/special + src/stats stay excluded anyway
+    # so the archive matches the macOS host set TU-for-TU).
+    CXX="${CXX:-g++}"
+    AR="ar"
+    TARGET_FLAGS=(-std=c++20 -O2 -fvisibility=hidden)
+    ARCHIVE="libnumsci_linuxhost.a"
+    [ -n "$OUT" ] || OUT="$KERNEL/build-numsci/linuxhost"
+    ;;
   iossim)
     SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
     CXX="$(xcrun --sdk iphonesimulator --find clang++)"
@@ -66,7 +78,7 @@ case "$TARGET" in
     ARCHIVE="libnumsci_iossim_arm64.a"
     [ -n "$OUT" ] || OUT="$KERNEL/build-numsci/iossim"
     ;;
-  *) echo "usage: $0 {host|iossim} [--out DIR] [--numpp DIR] [--scipp DIR]"; exit 2;;
+  *) echo "usage: $0 {host|linuxhost|iossim} [--out DIR] [--numpp DIR] [--scipp DIR]"; exit 2;;
 esac
 
 GEN="$OUT/gen"; OBJ="$OUT/obj"; LOG="$OUT/log"
@@ -171,7 +183,7 @@ if [ "$fail" -gt 0 ]; then printf '  FAILED: %s\n' "${FAILED[@]}"; exit 1; fi
 
 rm -f "$OUT/$ARCHIVE"
 case "$TARGET" in
-  host)   "$AR" -rcs "$OUT/$ARCHIVE" "${OBJS[@]}" >"$LOG/archive.log" 2>&1;;
+  host|linuxhost) "$AR" -rcs "$OUT/$ARCHIVE" "${OBJS[@]}" >"$LOG/archive.log" 2>&1;;
   iossim) "$AR" -static -o "$OUT/$ARCHIVE" "${OBJS[@]}" >"$LOG/archive.log" 2>&1;;
 esac
 if [ $? -eq 0 ]; then

@@ -485,4 +485,62 @@ CC_TEST(seed_freeform_adaptive_subdivision_recovers_third_locus) {
   }
 }
 
+// ── REGRESSION: a COINCIDENT freeform pair must TERMINATE and decline honestly ────────
+//
+// Handed two coincident (or overlapping, or sub-tolerance-offset) freeform surfaces, the seeder
+// used to HANG rather than decline — measured at the shipped adaptive floor, six of six
+// constructed pairs produced no output at all within 1200 s, INCLUDING a genuinely DISJOINT pair
+// whose correct answer is the empty set. A hang is not an honest decline.
+//
+// The cause was `clusterRegions`: on a coincident pair the intersection locus is 2-DIMENSIONAL, so
+// no leaf pair anywhere is AABB-disjoint and the candidate pile grows ~4× per halving (measured
+// 1 835 481 candidates at the shipped floor). Its all-pairs adjacency loop is O(n²), i.e. ~1.7e12
+// pair tests there. It is now a spatial-hash union-find over the SAME predicate, computing the
+// SAME components. Measured at the shipped floor on this pair: all-pairs produced no result in
+// 600 s; the hashed path returns in ~175 s.
+//
+// WHAT THIS TEST DOES AND DOES NOT GUARD. It pins the OBSERVABLE contract — a coincident pair
+// terminates and returns an honest empty result, never a fabricated seed. It runs at a COARSE
+// `adaptiveMinFrac` so the suite stays fast (~1 s); at that size the candidate pile is small
+// enough that BOTH the old and new clustering are equally quick (measured 827 ms vs 801 ms), so
+// this case does NOT by itself catch a reintroduced O(n²) loop. Reproducing that needs the shipped
+// 1/256 floor and ~175 s, which is too slow for this suite. The remaining cost at the shipped
+// floor is the DESCENT ITSELF producing 1.8 M candidates — a separate, still-open defect (no
+// per-node stop once the AABB prune loses its power on a 2D locus).
+CC_TEST(seed_coincident_freeform_terminates_and_declines) {
+  // A bicubic Bézier dish, against itself and against near/far copies of itself.
+  auto dishPoles = [](double dz) {
+    std::vector<Point3> poles;
+    for (int i = 0; i < 4; ++i)
+      for (int j = 0; j < 4; ++j) {
+        const double x = -1.0 + 2.0 * i / 3.0, y = -1.0 + 2.0 * j / 3.0;
+        poles.push_back({x, y, dz + 0.35 * (x * x + y * y)});
+      }
+    return poles;
+  };
+  const std::vector<double> kn = {0, 0, 0, 0, 1, 1, 1, 1};
+
+  // dz = 0     → exactly coincident (shares a 2D region)
+  // dz = 1e-9  → sub-tolerance offset (indistinguishable from coincident)
+  // dz = 1e-3  → genuinely DISJOINT above tolerance; correct answer is the empty set, and this
+  //              pose hung too, so it is the sharper half of the regression.
+  for (const double dz : {0.0, 1e-9, 1e-3}) {
+    auto A = ssi::makeBSplineAdapter(3, 3, dishPoles(0.0), 4, 4, kn, kn);
+    auto B = ssi::makeBSplineAdapter(3, 3, dishPoles(dz), 4, 4, kn, kn);
+
+    ssi::SeedOptions o;
+    o.initialGridU = 4;
+    o.initialGridV = 4;
+    o.minPatchFrac = 1.0 / 16;
+    o.adaptiveMinFrac = 1.0 / 16;  // bound the descent so the suite stays fast — see note above
+
+    const ssi::SeedSet ss = ssi::seed_intersection(A, B, o);
+
+    // TERMINATION is the property under test — reaching this line at all is the regression guard.
+    // The verdict must be honest: no seed may be fabricated on a shared region or across a gap.
+    CC_CHECK(ss.seeds.empty());
+    CC_CHECK(ss.branchCount() == 0);
+  }
+}
+
 int main() { return cctest::run_all(); }

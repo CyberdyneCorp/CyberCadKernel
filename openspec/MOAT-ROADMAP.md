@@ -413,6 +413,30 @@ resolution. The curve *pipeline* exists; this is the *robustness* on adversarial
     **flat for 17 minutes** — allocation finished, the process spinning. Fix: union-find over a
     spatial hash, mirroring `linkBySep` (seeding.cpp:739) which already does exactly this.
     Semantics-preserving — identical components over identical adjacency.
+    - ✅ **LANDED.** `clusterRegions` now buckets candidates into a 4D spatial hash
+      (uA,vA,uB,vB), cells sized `extent + 2·eps` so an eps-expanded interval spans ≤ 2 cells per
+      axis; periodic axes index modulo the cell count, and expanding BEFORE indexing makes a
+      low-end box wrap into the high-end cell, reproducing the ±period tests exactly. The grid is a
+      **candidate filter only** — every surviving pair is still decided by the unchanged
+      `paramBoxesAdjacent` conjunction, so over-generation is free and only a MISS would matter.
+      Labels are unchanged because `rootLabel` assigns ids by ascending first appearance, which
+      depends on the partition and input order, never on union order. Below 512 candidates the
+      original all-pairs loop is kept (cheaper than building the hash, and the path every
+      transversal pose takes) so the common case is byte-identical with no new allocation.
+      **Equivalence-fuzzed 360 cases / 39 332 regions — 0 mismatches** in partition AND labels,
+      across random scatter, dense coincident-style tiling, single- and double-periodic seams,
+      seam-straddling boxes, zero-extent degenerate boxes and zero-eps.
+      **Measured at the shipped adaptive floor on the coincident bicubic dish pair (1 835 481
+      candidates): the all-pairs path produced NO result in 600 s; the hashed path returns in
+      ~175 s** with an honest `seeds=0`. Gates: Gate A 25/25, seeding 11→12/12, ssi 11/11,
+      exact_fuzz 147 agreed / 0 disagreed, host Gate B 22/0.
+    - ⚠ **A1 alone converts the hang into termination — it does NOT make the case fast.** ~175 s is
+      still far too slow, and the residual is **A2**: the descent itself produces 1.8 M candidates
+      because nothing stops it once the AABB prune loses its power. At bounded `adaptiveMinFrac`
+      the two clustering paths are indistinguishable (827 ms vs 801 ms) — clustering only dominates
+      at scale — so **the regression test pins the observable contract (terminates, declines
+      honestly, fabricates nothing) rather than the complexity**, which would need the 1/256 floor
+      and ~175 s to reproduce. A2 remains the open defect.
   - **A2 — nothing stops the descent once the AABB prune loses its power.** On a coincident pair no
     leaf pair is ever disjoint, so recursion runs the whole 4D box product: 4.2× candidates per
     halving (2D locus) vs ~2.0× for a transversal curve. `featureWarrantsFinerLeaf` then INVERTS —

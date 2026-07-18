@@ -680,6 +680,55 @@ struct DedupParams {
   double uPerA, vPerA, uPerB, vPerB;    // per-surface param periods (0 = non-periodic)
 };
 
+// SPATIAL-HASHED 4D ADJACENCY (near-linear, not O(n²)) — the same connected components the
+// all-pairs loop below computes, over the SAME predicate, at a cost that does not explode on a
+// 2D shared locus.
+//
+// WHY. The adjacency relation is a conjunction of two 2D box-adjacency tests, i.e. an overlap of
+// eps-expanded boxes in the 4D product (uA,vA,uB,vB). On a TRANSVERSAL pair the candidate count
+// tracks a 1D curve and the all-pairs loop is affordable. On a COINCIDENT / overlapping pair the
+// locus is 2D: no leaf pair anywhere is AABB-disjoint, so the candidate pile grows ~4.2× per
+// halving and the quadratic loop becomes the entire wall clock — measured as a process spinning
+// with resident memory FLAT for 17 minutes, i.e. allocation long finished. Handed two coincident
+// freeform surfaces the seeder therefore did not decline, it HUNG (6/6 constructed pairs killed
+// at 1200 s with no output, including a genuinely DISJOINT pair whose answer is the empty set).
+//
+// HOW IT STAYS EXACT. The grid is a CANDIDATE FILTER ONLY — every surviving pair is still decided
+// by the unchanged `paramBoxesAdjacent` conjunction, so the grid can over-generate freely and only
+// has to avoid MISSING a true pair. Cells are sized `extent + 2·eps` per axis, so an eps-expanded
+// interval spans at most two cells per axis (≤ 16 cells in 4D): two boxes that satisfy the
+// predicate share a point that both expanded intervals contain, hence share a cell. Periodic axes
+// index modulo the cell count, and because the interval is expanded BEFORE indexing, a box at the
+// low end wraps into the high-end cell — so seam-adjacent pairs co-occur exactly as the ±period
+// tests in the predicate intend.
+//
+// LABELS ARE UNCHANGED. `rootLabel` assigns ids by ASCENDING first appearance, so a label depends
+// only on the partition and the input order — never on the order unions happened in. Same
+// partition ⇒ same labels ⇒ same cluster ids ⇒ same seeds. This mirrors `linkBySep` below, which
+// already replaced an O(m²) linkage with a grid hash for the 3D seed split.
+struct CellKey4 {
+  std::int32_t c[4];
+  bool operator==(const CellKey4& o) const noexcept {
+    return c[0] == o.c[0] && c[1] == o.c[1] && c[2] == o.c[2] && c[3] == o.c[3];
+  }
+};
+struct CellKey4Hash {
+  std::size_t operator()(const CellKey4& k) const noexcept {
+    // Deterministic 64-bit mix of the four cell indices (order-independent, stable across runs).
+    std::uint64_t h = 1469598103934665603ull;
+    for (int i = 0; i < 4; ++i) {
+      h ^= static_cast<std::uint64_t>(static_cast<std::uint32_t>(k.c[i]));
+      h *= 1099511628211ull;
+    }
+    return static_cast<std::size_t>(h);
+  }
+};
+
+// Below this candidate count the all-pairs loop is cheaper than building the hash, and it is the
+// path every transversal pose in the corpus takes — so the common case stays byte-identical with
+// zero new allocation.
+constexpr int kClusterHashMinN = 512;
+
 std::vector<int> clusterRegions(const std::vector<CandidateRegion>& regs,
                                 const DedupParams& p, int& numClusters) {
   const int n = static_cast<int>(regs.size());
@@ -687,11 +736,83 @@ std::vector<int> clusterRegions(const std::vector<CandidateRegion>& regs,
   numClusters = 0;
   if (n == 0) return label;
   DisjointSet ds(n);
-  for (int i = 0; i < n; ++i)
-    for (int j = i + 1; j < n; ++j)
-      if (paramBoxesAdjacent(regs[i].a, regs[j].a, p.epsUA, p.epsVA, p.uPerA, p.vPerA) &&
-          paramBoxesAdjacent(regs[i].b, regs[j].b, p.epsUB, p.epsVB, p.uPerB, p.vPerB))
-        ds.unite(i, j);
+
+  const double eps[4]    = {p.epsUA, p.epsVA, p.epsUB, p.epsVB};
+  const double period[4] = {p.uPerA, p.vPerA, p.uPerB, p.vPerB};
+  // Per-axis interval of a candidate in the 4D product space.
+  auto axisLo = [&](int r, int ax) noexcept {
+    return ax == 0 ? regs[r].a.u0 : ax == 1 ? regs[r].a.v0 : ax == 2 ? regs[r].b.u0 : regs[r].b.v0;
+  };
+  auto axisHi = [&](int r, int ax) noexcept {
+    return ax == 0 ? regs[r].a.u1 : ax == 1 ? regs[r].a.v1 : ax == 2 ? regs[r].b.u1 : regs[r].b.v1;
+  };
+  // The exact predicate — the ONLY thing that decides adjacency, on either path.
+  auto adjacent = [&](int i, int j) noexcept {
+    return paramBoxesAdjacent(regs[i].a, regs[j].a, p.epsUA, p.epsVA, p.uPerA, p.vPerA) &&
+           paramBoxesAdjacent(regs[i].b, regs[j].b, p.epsUB, p.epsVB, p.uPerB, p.vPerB);
+  };
+
+  if (n < kClusterHashMinN) {
+    for (int i = 0; i < n; ++i)
+      for (int j = i + 1; j < n; ++j)
+        if (adjacent(i, j)) ds.unite(i, j);
+  } else {
+    // Cell size per axis: widest candidate extent + 2·eps ⇒ an expanded interval spans ≤ 2 cells.
+    double cell[4];
+    for (int ax = 0; ax < 4; ++ax) {
+      double maxExtent = 0.0;
+      for (int r = 0; r < n; ++r) maxExtent = std::max(maxExtent, axisHi(r, ax) - axisLo(r, ax));
+      cell[ax] = maxExtent + 2.0 * std::max(eps[ax], 0.0);
+      if (!(cell[ax] > 0.0)) cell[ax] = 1.0;  // fully degenerate axis → one cell (still exact)
+    }
+    // Cell count on a periodic axis, for modular indexing. Below 2 cells the axis cannot
+    // discriminate, so it collapses to a single cell — over-generating, never missing.
+    std::int32_t cyc[4];
+    for (int ax = 0; ax < 4; ++ax) {
+      cyc[ax] = 0;
+      if (period[ax] > 0.0) {
+        const double k = std::floor(period[ax] / cell[ax]);
+        cyc[ax] = (k >= 2.0 && k < 1e9) ? static_cast<std::int32_t>(k) : 1;
+      }
+    }
+    auto wrap = [&](std::int32_t idx, int ax) noexcept -> std::int32_t {
+      if (cyc[ax] <= 0) return idx;                  // non-periodic: index as-is
+      std::int32_t m = idx % cyc[ax];
+      return m < 0 ? m + cyc[ax] : m;                // periodic: fold into [0, cyc)
+    };
+
+    std::unordered_map<CellKey4, std::vector<int>, CellKey4Hash> grid;
+    grid.reserve(static_cast<std::size_t>(n) * 2);
+    std::int32_t lo[4], hi[4];
+    for (int r = 0; r < n; ++r) {
+      for (int ax = 0; ax < 4; ++ax) {
+        const double e = std::max(eps[ax], 0.0);
+        lo[ax] = static_cast<std::int32_t>(std::floor((axisLo(r, ax) - e) / cell[ax]));
+        hi[ax] = static_cast<std::int32_t>(std::floor((axisHi(r, ax) + e) / cell[ax]));
+        if (hi[ax] < lo[ax]) hi[ax] = lo[ax];
+      }
+      CellKey4 key{};
+      for (std::int32_t i0 = lo[0]; i0 <= hi[0]; ++i0)
+        for (std::int32_t i1 = lo[1]; i1 <= hi[1]; ++i1)
+          for (std::int32_t i2 = lo[2]; i2 <= hi[2]; ++i2)
+            for (std::int32_t i3 = lo[3]; i3 <= hi[3]; ++i3) {
+              key.c[0] = wrap(i0, 0); key.c[1] = wrap(i1, 1);
+              key.c[2] = wrap(i2, 2); key.c[3] = wrap(i3, 3);
+              grid[key].push_back(r);
+            }
+    }
+    // Every truly-adjacent pair shares at least one cell, so testing within cells is complete.
+    // A pair may recur in several cells; `unite` is idempotent and the exact test is cheap.
+    for (const auto& kv : grid) {
+      const std::vector<int>& bucket = kv.second;
+      const std::size_t m = bucket.size();
+      for (std::size_t x = 0; x < m; ++x)
+        for (std::size_t y = x + 1; y < m; ++y) {
+          const int i = bucket[x], j = bucket[y];
+          if (ds.find(i) != ds.find(j) && adjacent(i, j)) ds.unite(i, j);
+        }
+    }
+  }
   std::vector<int> rootLabel(n, -1);
   for (int i = 0; i < n; ++i) {
     const int root = ds.find(i);

@@ -60,14 +60,24 @@
 //              CURVED-RAIL loft cc_loft_along_rail (a hard pipe-shell morph rail) → OCCT.
 //   [sweep]    SELF-INTERSECTING sweep — a square swept along a spine whose local turning
 //              radius is smaller than the profile circumradius (the tube folds through
-//              itself) → guarded NULL → OCCT. PLUS a REAL-TWIST sweep cc_twisted_sweep
-//              (π/2 twist): the native ruled tube cannot robustly match OCCT's smoothly-
-//              twisted ThruSections loft (a densified twisted saddle-band tube does not
-//              weld watertight at every deflection), so it DEFERS → OCCT ThruSections.
+//              itself) → guarded NULL → OCCT.
 //              PLUS a FINE-PITCH self-intersecting/deep-spike thread cc_helical_thread
 //              (turns fold / native radial-V diverges from OCCT) → guarded NULL → OCCT.
 //
-// Each native line is tagged [native]; each fall-through line [fallback]. Output:
+// ── SIGNATURE case (the OCCT oracle is DEGENERATE at the fixture pose, so agreement with
+//    it is the wrong contract; asserted against a closed form + the operation's geometric
+//    signature instead — see runTwistSignatureOp) ──────────────────────────────────────
+//   [sweep]    REAL-TWIST sweep cc_twisted_sweep (π/2 twist, 2 path stations). Native builds
+//              a genuinely twisted tube (bbox reaches the profile circumradius 2√2); OCCT's
+//              ThruSections silently loses the twist at EXACTLY π/2 because a square is
+//              invariant under that rotation and the two wires then coincide, so it returns
+//              the straight prism (bbox 2.0). Volume cannot tell them apart — by Cavalieri a
+//              twisted prism has the same 16·20 = 320 as an untwisted one — so the assertion
+//              keys on bbox reach and lateral area, with volume held to a faceting band
+//              BELOW the closed form.
+//
+// Each native line is tagged [native]; each fall-through line [fallback]; the signature line
+// [signature]. Output:
 // [NGEOM] PASS/FAIL lines with the AREA + the native/fallback tag + deltas, then a
 // summary. On run-sim-suite.sh's SKIP list (own main()).
 //
@@ -336,6 +346,108 @@ void runFallbackOp(const char* area, const char* name, Builder build, const char
     if (occtId) cc_shape_release(occtId);
 }
 
+// A case where the OCCT ORACLE IS DEGENERATE at the fixture pose, so agreement with it is
+// the wrong contract in BOTH directions. Asserts the geometric SIGNATURE of the operation
+// against a closed-form reference instead. Tagged [signature].
+//
+// WHY THIS EXISTS — measured, not asserted. `twisted_sweep` at twist = π/2 with pathCount = 2
+// is the one pose where OCCT's ThruSections silently loses the twist:
+//
+//     twist (n=2):   0      π/8      π/4      3π/8     π/2
+//     volume       320.000  311.880  288.758  311.880  320.000
+//     bbox |xy|      2.0000   2.6131   2.8284   2.6131   2.0000
+//
+// The parameter is NOT inert — it works everywhere except exactly π/2. A square is INVARIANT
+// under a π/2 rotation, so with only two stations the top wire is geometrically the same
+// square as the bottom, and ThruSections pairs wires by POSITION rather than by index: it
+// builds the straight prism. One intermediate station at 45° (not a symmetry of the square)
+// restores the twist — at π/2 the station sweep reads
+//
+//     stations   2        3        9        17       33       129      257
+//     volume   320.000  288.758  317.950  319.486  319.872  319.992  319.998
+//     bbox|xy|   2.0000   2.8284   2.8284   2.8284   2.8284   2.8284   2.8284
+//
+// ⚠ VOLUME CANNOT DISCRIMINATE HERE, and an earlier reading of this case got that backwards.
+// The converged volume is EXACTLY 320 — by Cavalieri every cross-section of a twisted prism
+// is the same square of area 16, so the volume is 16·20 = 320 for ANY twist. OCCT's 320.000000
+// at n = 2 is therefore the RIGHT NUMBER FOR THE WRONG SOLID, and native's 319.29 is a
+// faceting undershoot of a CORRECT solid. Asserting volume agreement (the old `rel < 1e-9`)
+// or "native is closer to 320" both mis-read the geometry.
+//
+// The discriminators are BBOX and AREA. A square of circumradius 2√2 sweeps a bbox of ±2√2
+// once it rotates off axis; an untwisted prism stays at ±2. So:
+//   * bbox |xy| ≥ 2√2 − ε      — REJECTS OCCT's prism (2.0000), accepts native (2.8284);
+//   * volume within a faceting band BELOW the closed-form 320 — never above it;
+//   * area ≥ the flat-prism 352 — a twisted lateral surface is strictly longer.
+void runTwistSignatureOp(const char* area, const char* name, Builder build,
+                         double circumradius, double closedFormVolume, double flatArea) {
+    char detail[512];
+    const double kSqrt2 = 1.41421356237309505;
+    (void)kSqrt2;
+
+    // The OCCT build is measured but NOT asserted on. It is recorded so the log shows what
+    // this assertion is discriminating against — at the time of writing OCCT reaches 2.0000
+    // against the required 2.8284, i.e. the signature test genuinely rejects it rather than
+    // passing vacuously. It is deliberately not a pass condition: were a future OCCT to fix
+    // the aliasing, this case should keep validating native, not fail because the oracle
+    // improved.
+    cc_set_engine(0);
+    const CCShapeId occtId = build();
+    double oBB[6] = {0};
+    const double occtReach = (occtId && cc_bounding_box(occtId, oBB) == 1)
+                                 ? std::max({std::fabs(oBB[0]), std::fabs(oBB[3]),
+                                             std::fabs(oBB[1]), std::fabs(oBB[4])})
+                                 : 0.0;
+    if (occtId) cc_shape_release(occtId);
+
+    cc_set_engine(1);
+    const int activeIsNative = cc_active_engine();
+    const CCShapeId natId = build();
+    if (natId == 0 || activeIsNative != 1) {
+        std::snprintf(detail, sizeof detail, "[signature] native build failed (active=%d): %s",
+                      activeIsNative, cc_last_error());
+        record(false, area, name, detail);
+        cc_set_engine(0);
+        return;
+    }
+    const CCMassProps nM = cc_mass_properties(natId);
+    double nBB[6] = {0};
+    const int nBBok = cc_bounding_box(natId, nBB);
+    const CCMesh nMesh = cc_tessellate(natId, 0.05);
+
+    // (1) TWIST SIGNATURE. The section must actually rotate: its extreme |x|,|y| must reach
+    //     the profile circumradius. This is the assertion that rejects an untwisted prism.
+    const double reach = std::max({std::fabs(nBB[0]), std::fabs(nBB[3]),
+                                   std::fabs(nBB[1]), std::fabs(nBB[4])});
+    const bool twistOk = (nBBok == 1) && (reach >= circumradius - 1e-3);
+
+    // (2) VOLUME within a faceting band BELOW the closed form (Cavalieri-exact, twist-free).
+    //     A discretised twist can only UNDER-fill; exceeding the closed form means the
+    //     section grew, which would be a defect.
+    const double volRel = (closedFormVolume > 0.0)
+                              ? (closedFormVolume - nM.volume) / closedFormVolume
+                              : 1.0;
+    const bool volOk = (nM.valid != 0) && (volRel >= -1e-9) && (volRel < 1e-2);
+
+    // (3) AREA strictly above the flat prism — a twisted lateral surface is longer.
+    const bool areaOk = nM.area > flatArea;
+
+    // (4) The native solid must still be watertight.
+    const bool wt = nMesh.triangleCount > 0 && meshWatertight(nMesh);
+
+    const bool ok = twistOk && volOk && areaOk && wt;
+    std::snprintf(detail, sizeof detail,
+                  "[signature] reach=%.4f (need ≥%.4f; OCCT oracle reaches %.4f) | vol=%.6g vs "
+                  "closed-form %.6g (under by %.2e) | area=%.6g > flat %.6g | watertight=%d",
+                  reach, circumradius, occtReach, nM.volume, closedFormVolume, volRel, nM.area,
+                  flatArea, wt ? 1 : 0);
+    record(ok, area, name, detail);
+
+    cc_mesh_free(nMesh);
+    cc_set_engine(0);
+    cc_shape_release(natId);
+}
+
 // ── per-op builders (identical inputs to both engines) ──────────────────────────
 
 // [extrude] NATIVE: kind-3 SPLINE outer edge. A CLOSED two-segment outer boundary — a
@@ -542,8 +654,14 @@ int main() {
                   "kinked pipe-shell morph rail → OCCT MakePipeShell");
     runFallbackOp("sweep", "self-intersecting sweep", &buildSelfIntersectingSweepFallback,
                   "turning radius < profile circumradius → tube self-folds → OCCT MakePipe");
-    runFallbackOp("sweep", "real-twist sweep", &buildTwistedSweepNative,
-                  "real twist → native ruled tube can't robustly match OCCT loft → OCCT ThruSections");
+    // [sweep] REAL TWIST — the OCCT oracle is DEGENERATE at this exact pose (π/2 aliases with
+    // the square's own rotational symmetry at pathCount = 2), so this is asserted against the
+    // closed form and the twist signature rather than against OCCT. See runTwistSignatureOp.
+    // Profile circumradius 2√2 = 2.8284; closed-form volume 16·20 = 320 (Cavalieri, twist-free);
+    // flat-prism area 2·16 + 4·(4·20) = 352.
+    runTwistSignatureOp("sweep", "real-twist sweep", &buildTwistedSweepNative,
+                        /*circumradius*/ 2.0 * 1.41421356237309505,
+                        /*closedFormVolume*/ 320.0, /*flatArea*/ 352.0);
     runFallbackOp("sweep", "self-intersecting thread", &buildSelfIntersectingThreadFallback,
                   "fine-pitch overlapping turns → fails robustlyWatertight → OCCT MakePipeShell");
 

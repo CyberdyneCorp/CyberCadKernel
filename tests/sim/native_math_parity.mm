@@ -34,6 +34,7 @@
 
 #include "native/math/native_math.h"
 
+#include <algorithm>   // std::max — libstdc++ does not provide it transitively
 #include <cmath>
 #include <cstdint>
 #include <cstdio>

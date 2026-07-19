@@ -30,6 +30,7 @@
 //
 #include "cybercadkernel/cc_kernel.h"
 
+#include <algorithm>   // std::max — libstdc++ does not provide it transitively
 #include <array>
 #include <cmath>
 #include <cstdint>

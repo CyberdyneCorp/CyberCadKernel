@@ -74,34 +74,51 @@ NUMSCI_LIB="$(ls "$NUMSCI_DIR"/libnumsci_*.a 2>/dev/null | head -1)"
 NUMPP="${NUMPP_DIR:-/home/leonardo/work/NumPP}/include"
 SCIPP="${SCIPP_DIR:-/home/leonardo/work/SciPP}/include"
 
-# ── native TUs: the superset the sim recipes use (math + ssi + numerics). Harnesses that need
-# fewer simply do not reference the extra symbols; the linker drops them.
+# ── kernel code: prefer the OCCT-linked archive, else compile the native TU subset.
+#
+# A harness that drives the cc_* facade needs the WHOLE kernel with a live engine adapter — the
+# native math/ssi TUs alone do not link it, and even when they do the facade falls back to the
+# stub and every operation returns engine_unsupported. Build that archive with:
+#     cmake -S . -B build-host-occt -DCYBERCAD_LINUX_OCCT=ON -DCYBERCAD_HAS_NUMSCI=ON ...
+#     cmake --build build-host-occt --target cybercadkernel
+# Harnesses that only touch the native layer work either way, so the archive is preferred
+# whenever it exists and the TU subset remains the no-setup fallback.
+KERNEL_ARCHIVE="$REPO/build-host-occt/libcybercadkernel.a"
 NATIVE_SRCS=()
-while IFS= read -r src; do NATIVE_SRCS+=("$src"); done \
-  < <(find "$REPO/src/native/math" -name '*.cpp'; \
-      echo "$REPO/src/native/ssi/seeding.cpp"; \
-      echo "$REPO/src/native/ssi/marching.cpp"; \
-      echo "$REPO/src/native/numerics/numerics.cpp")
+if [ -f "$KERNEL_ARCHIVE" ]; then
+  echo "   kernel : $KERNEL_ARCHIVE (OCCT adapter live)"
+else
+  KERNEL_ARCHIVE=""
+  while IFS= read -r src; do NATIVE_SRCS+=("$src"); done \
+    < <(find "$REPO/src/native/math" -name '*.cpp'; \
+        echo "$REPO/src/native/ssi/seeding.cpp"; \
+        echo "$REPO/src/native/ssi/marching.cpp"; \
+        echo "$REPO/src/native/numerics/numerics.cpp")
+  echo "   kernel : ${#NATIVE_SRCS[@]} native TU(s) — no build-host-occt archive, cc_* facade will STUB"
+fi
 
 # ── OCCT toolkits: union of the slices the sim scripts use, most-derived → base.
-# TKFillet/TKFeat/TKOffset carry BRepFilletAPI_MakeChamfer + ChFi3d_* — 10 harnesses fail to link
-# without them. The data-exchange slice is appended only when a harness actually names STEP/IGES,
+# TKFillet/TKFeat/TKOffset carry BRepFilletAPI_MakeChamfer + ChFi3d_*, TKHLR the HLRBRep_* hidden-
+# line removal a display-mesh harness needs. The data-exchange slice is appended only on demand,
 # so the common case does not pay for it.
-TKS="TKFillet TKFeat TKOffset TKMesh TKShHealing TKBool TKPrim TKBO TKTopAlgo TKGeomAlgo TKBRep TKGeomBase TKG3d TKG2d TKMath TKernel"
-grep -qE "STEPControl|IGESControl|XCAF|STEPCAF" "$HARNESS" && \
-  TKS="$TKS TKSTEP TKSTEP209 TKSTEPAttr TKSTEPBase TKXSBase TKIGES"
+TKS="TKFillet TKFeat TKOffset TKHLR TKMesh TKShHealing TKBool TKPrim TKBO TKTopAlgo TKGeomAlgo TKBRep TKGeomBase TKG3d TKG2d TKMath TKernel"
+# The data-exchange slice is needed when the HARNESS names STEP/IGES, and ALWAYS when the kernel
+# archive is linked — src/engine/occt/occt_exchange.cpp pulls STEPControl_/IGESControl_ regardless
+# of what the harness itself mentions.
+if [ -n "$KERNEL_ARCHIVE" ] || grep -qE "STEPControl|IGESControl|XCAF|STEPCAF" "$HARNESS"; then
+  TKS="$TKS TKXDESTEP TKXDEIGES TKSTEP TKSTEP209 TKSTEPAttr TKSTEPBase TKIGES TKXSBase TKXCAF TKLCAF TKCAF TKCDF"
+fi
 LFLAGS=""; for tk in $TKS; do LFLAGS="$LFLAGS -l$tk"; done
 [ -n "$OCCT_LIBDIR" ] && LFLAGS="-L$OCCT_LIBDIR $LFLAGS"
 
 echo "── compiling $HARNESS_NAME for LINUX HOST"
 echo "   oracle : $OCCT_INC"
-echo "   native : ${#NATIVE_SRCS[@]} TU(s) [NUMSCI]"
 "$CXX" -std=c++20 -O2 -w \
   -DCYBERCAD_HAS_OCCT -DCYBERCAD_HAS_NUMSCI=1 \
   -I"$REPO/src" -I"$REPO/tests" -I"$REPO/include" -I"$OCCT_INC" \
   -I"$NUMSCI_GEN" -I"$NUMPP" -I"$SCIPP" \
-  -x c++ "$HARNESS" "${NATIVE_SRCS[@]}" \
-  -x none "$NUMSCI_LIB" \
+  -x c++ "$HARNESS" ${NATIVE_SRCS[@]+"${NATIVE_SRCS[@]}"} \
+  -x none ${KERNEL_ARCHIVE:+"$KERNEL_ARCHIVE"} "$NUMSCI_LIB" \
   $LFLAGS \
   -o "$OUT/$HARNESS_NAME" || { echo "── COMPILE FAILED"; exit 1; }
 

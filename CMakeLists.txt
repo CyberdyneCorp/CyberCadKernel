@@ -101,6 +101,28 @@ if(CYBERCAD_MACOS_OCCT)
     set(BUILD_SHARED_LIBS ON)
 endif()
 
+# ── Linux host OCCT build (local OCCT) ────────────────────────────────────────
+# The Linux analogue of CYBERCAD_MACOS_OCCT. Without it the host build has NO engine
+# adapter, so the cc_* facade falls back to the STUB and every operation returns
+# engine_unsupported — measured across the sim-harness sweep as 12 harnesses failing with
+# "operation not supported by active engine" before any geometry ran. They were not failing;
+# they were never starting.
+#
+# Needs a local OCCT. The distro package will NOT do: Debian/Ubuntu libocct 7.6.3 ships
+# Poly_ArrayOfNodes.hxx without its dependency NCollection_AliasedArray.hxx, so anything
+# touching Poly_Triangulation fails to compile. Build upstream OCCT-7.6 instead (modeling +
+# data exchange are enough; Visualization/Draw/OCAF can be off, which drops the X11, GL,
+# freetype and tcl dependencies) and point CYBERCAD_LINUX_OCCT_PREFIX at the install prefix.
+option(CYBERCAD_LINUX_OCCT "Build the Linux host kernel with the OCCT engine adapter live" OFF)
+set(CYBERCAD_LINUX_OCCT_PREFIX "/home/leonardo/work/occt-build/install"
+    CACHE PATH "Local OCCT install prefix for the Linux host adapter build")
+
+if(CYBERCAD_LINUX_OCCT)
+    set(CYBERCAD_HAS_OCCT ON CACHE BOOL "" FORCE)
+    set(CYBERCAD_OCCT_INCLUDE_DIR
+        "${CYBERCAD_LINUX_OCCT_PREFIX}/include/opencascade" CACHE PATH "" FORCE)
+endif()
+
 # Include dir for the trimmed arm64-iOS OCCT the adapter compiles against. Only
 # used when CYBERCAD_HAS_OCCT=ON (iOS cross-compile); override for a different
 # OCCT install. See docs/occt-build.md in the app repo.
@@ -156,6 +178,24 @@ if(CYBERCAD_HAS_OCCT)
     target_include_directories(cybercadkernel PRIVATE "${CYBERCAD_OCCT_INCLUDE_DIR}")
     # OCCT link libs are supplied by the iOS toolchain (see docs/occt-build.md in
     # the app repo); not resolved for the host build.
+endif()
+
+# ── Linux host OCCT link libs ─────────────────────────────────────────────────
+# Same slice as the macOS recipe, spelled for OCCT 7.6: 7.9 merged the data-exchange
+# toolkits, so TKDESTEP → TKSTEP + TKXDESTEP, TKDEIGES → TKIGES + TKXDEIGES, TKDE → TKXSBase.
+# TKHLR is required by occt_drafting.cpp (HLRBRep_*) and the STEP/IGES slice by
+# occt_exchange.cpp. Order is most-derived → base, as the linker wants for static archives.
+# PUBLIC so the host test targets inherit the link line.
+if(CYBERCAD_LINUX_OCCT)
+    set(CYBERCAD_LINUX_OCCT_LIB "${CYBERCAD_LINUX_OCCT_PREFIX}/lib")
+    target_link_libraries(cybercadkernel PUBLIC
+        -L"${CYBERCAD_LINUX_OCCT_LIB}"
+        -lTKXDESTEP -lTKXDEIGES -lTKSTEP -lTKSTEP209 -lTKSTEPAttr -lTKSTEPBase -lTKIGES
+        -lTKXSBase -lTKXCAF -lTKLCAF -lTKCAF -lTKCDF
+        -lTKMesh -lTKShHealing -lTKOffset -lTKFillet -lTKFeat -lTKBool -lTKPrim
+        -lTKHLR -lTKBO -lTKTopAlgo -lTKGeomAlgo -lTKBRep -lTKGeomBase -lTKG3d -lTKG2d
+        -lTKMath -lTKernel
+        -Wl,-rpath,"${CYBERCAD_LINUX_OCCT_LIB}")
 endif()
 
 # ── macOS desktop OCCT dylib (Homebrew) ───────────────────────────────────────

@@ -543,4 +543,49 @@ CC_TEST(seed_coincident_freeform_terminates_and_declines) {
   }
 }
 
+// ── REGRESSION: the B-projection must not have a one-sided dead band at an upper bound ───
+//
+// `projectOntoB` clamps its residual argument into B's domain, and the substrate's numerical
+// Jacobian is a FORWARD difference. At an UPPER bound `x+h` clamps straight back to `x`, so that
+// Jacobian column is identically zero and the refine cannot move along it — it returns its seed.
+// At a LOWER bound the same step points inward and converges. The failure is therefore ONE-SIDED,
+// and because the seeding scan includes the bound exactly, any true match within half a grid step
+// of the upper edge starts pinned.
+//
+// Measured directly on a unit-domain plane patch: every target u >= 0.95 came back at u =
+// 1.000000 with residual up to 5.00e-02, while u = 0.010 converged to 1.2e-12 — a dead band of
+// span/(2*kScan) = 1/16, exactly as predicted.
+//
+// The OBSERVABLE consequence, asserted here: a delimited overlap loses a collar of that width on
+// each upper edge, so the reported region under-covers the true shared area. On this fixture the
+// pre-fix region was [0, 2.8125]^2 = 87.9% of the true [0, 3]^2; the lost 0.1875 in A-parameters
+// is 1/16 of B's span carried through the 3:1 parameter ratio between the two surfaces.
+CC_TEST(seed_overlap_region_covers_shared_area_to_the_upper_edge) {
+  // A: a large plane patch. B: a coplanar Bezier patch covering [0,3]^2 of it — so the shared
+  // region is INTERIOR to A and its bounds are genuinely delimitable (not a domain-edge run-out,
+  // which would honestly report Undecided instead).
+  nmath::Plane pl{frameZ({0, 0, 0})};
+  auto A = ssi::makePlaneAdapter(pl, ssi::ParamBox{-1.0, 4.0, -1.0, 4.0});
+  std::vector<Point3> poles;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j) poles.push_back({3.0 * i / 3.0, 3.0 * j / 3.0, 0.0});
+  auto B = ssi::makeBezierAdapter(poles, 4, 4);
+
+  const ssi::SeedSet ss = ssi::seed_intersection(A, B, ssi::SeedOptions{});
+
+  CC_CHECK(ss.coincidentRegions.size() == 1);
+  if (ss.coincidentRegions.size() != 1) return;
+  const ssi::CoincidentRegion& c = ss.coincidentRegions[0];
+  CC_CHECK(c.kind == ssi::CoincidenceKind::OverlapSubRegion);  // delimited, not Undecided
+  CC_CHECK(c.isCoincident());
+
+  // The true shared A-region is [0,3] x [0,3]. Require the reported region to reach the upper
+  // edges: a returned collar is what the dead band produced (87.9% of area), so 99% bites hard.
+  const double area = (c.regionA.u1 - c.regionA.u0) * (c.regionA.v1 - c.regionA.v0);
+  CC_CHECK(area >= 0.99 * 9.0);
+  CC_CHECK(area <= 1.01 * 9.0);          // and it must not OVER-claim either
+  CC_CHECK(c.regionA.u1 >= 3.0 - 1e-3);  // the upper edges specifically
+  CC_CHECK(c.regionA.v1 >= 3.0 - 1e-3);
+}
+
 int main() { return cctest::run_all(); }

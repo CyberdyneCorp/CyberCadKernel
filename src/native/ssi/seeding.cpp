@@ -391,6 +391,29 @@ ProjResult projectOntoB(const SurfaceAdapter& B, const Point3& p, const Dir3& nA
       const double d = math::distance(p, B.point(cu, cv));
       if (d < best) { best = d; bu = cu; bv = cv; }
     }
+  // KEEP THE SEED STRICTLY INTERIOR — otherwise the refine is DEAD at an upper bound.
+  //
+  // `resid` clamps its argument into the domain, and the substrate's numerical Jacobian is a
+  // FORWARD difference. At an UPPER bound `x[k] + h` clamps straight back to `x[k]`, so that
+  // Jacobian column is identically zero and least_squares cannot move along it — the refine
+  // returns the seed. At a LOWER bound the same step points inward and converges normally, so the
+  // failure is ONE-SIDED. Because the scan above includes `i == kScan` (the bound exactly), any
+  // true match within half a grid step of the upper edge STARTS on the clamp.
+  //
+  // Measured on a unit-domain plane patch, seeding from the domain centre: every target u >= 0.95
+  // came back pinned at u = 1.000000 with residual up to 5.00e-02, while u = 0.010 (lower bound)
+  // converged to 1.2e-12. The onset sits between 0.90 and 0.95 — the predicted dead band of
+  // span/(2*kScan) = 1/16. Nudging the seed inward recovers every one of them to <= 1.2e-12.
+  //
+  // The nudge is a fraction of the span, comfortably larger than the relative forward-difference
+  // step (~1.5e-8) yet geometrically negligible. It moves only the STARTING point: if the true
+  // nearest point really is on the boundary the refine walks back to it and the final `clampUV`
+  // puts it there, so the answer is unchanged for that case. A more accurate projection can only
+  // make a tangency's residual MORE correct, so this cannot promote a tangency to coincidence.
+  constexpr double kSeedInset = 1e-6;
+  const double insetU = db.du() * kSeedInset, insetV = db.dv() * kSeedInset;
+  bu = clampd(bu, db.u0 + insetU, db.u1 - insetU);
+  bv = clampd(bv, db.v0 + insetV, db.v1 - insetV);
   const nn::SolveResult r = nn::least_squares(resid, nn::Vector{bu, bv});
   const auto c = clampUV(r.x);
   ProjResult out;

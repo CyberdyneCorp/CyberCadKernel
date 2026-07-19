@@ -517,6 +517,26 @@ resolution. The curve *pipeline* exists; this is the *robustness* on adversarial
     species of internal-parameter-reported-as-geometry defect retired in M1e and M1f. Consequence:
     `regionB` is only **56.25%** of the true shared area, so 43.75% of a coincident face lies outside
     the box a boolean would trim to.
+    - ✅ **LANDED.** The projection seed is now held strictly interior by `kSeedInset = 1e-6` of the
+      span — comfortably above the relative forward-difference step (~1.5e-8), geometrically
+      negligible, and it moves only the STARTING point (if the true nearest point IS on the
+      boundary the refine walks back to it and the final clamp puts it there). Reproduced directly
+      on a unit-domain plane patch: every target `u ≥ 0.95` returned pinned at `u = 1.000000` with
+      residual up to **5.00e-02**, while `u = 0.010` at the LOWER bound converged to 1.2e-12 — the
+      one-sidedness and the `span/(2·kScan) = 1/16` onset both exactly as predicted. With the inset
+      every one recovers to ≤ 1.2e-12.
+    - **Observable effect + regression test:** on an interior-delimited overlap (large plane vs a
+      coplanar Bézier patch covering `[0,3]²`) the reported `regionA` went **`[0, 2.8125]²` = 87.9%
+      of the true area → `[0, 3]²` = 100%**. The recovered collar of 0.1875 in A-parameters is
+      `span_B/(2·kScan)` carried through the 3:1 parameter ratio between the surfaces, confirming
+      the mechanism quantitatively. Corpus: seeding 12→13/13, marching 26/26, ssi 11/11,
+      s4f_completeness 7/7, exact_fuzz 147 agreed / 0 disagreed, host Gate B 22/0 (SSI) and **68/0
+      (curved-wall-cut mesher — a gate that was Mac-only until this session)**. It cannot promote a
+      tangency to coincidence: a more accurate projection only makes a tangency's residual MORE
+      correct.
+    - *(The 10% inset in `detectOverlap` step 4 was NOT touched. With the dead band gone the
+      measured region is already exact on this fixture, so there is no evidence it needs changing —
+      re-measure before altering it.)*
   - **A4 — the verdict never reaches S5.** `TraceSet` has no coincidence field and
     `trace_intersection` DISCARDS `SeedSet.coincidentRegions`: a coincident pair's TraceSet is
     field-for-field identical to a genuine no-intersection TraceSet. **A boolean consuming TraceSet

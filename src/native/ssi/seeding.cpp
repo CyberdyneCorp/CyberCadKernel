@@ -15,6 +15,7 @@
 //
 #include "native/ssi/seeding.h"
 
+#include "native/ssi/patch_gap.h"        // patchGapBound — the coincidence certificate
 #include "native/ssi/tangent_seeded.h"
 
 #include <algorithm>
@@ -1333,6 +1334,35 @@ SeedSet seed_intersection(const SurfaceAdapter& A, const SurfaceAdapter& B,
       std::max(std::min(minFrac, opts.adaptiveMinFrac > 0 ? opts.adaptiveMinFrac : 1.0 / 256.0),
                1.0 / 512.0);
   const double adaptiveOverlapFrac = opts.adaptiveOverlapFrac > 0 ? opts.adaptiveOverlapFrac : 0.5;
+  // ── COINCIDENCE CERTIFICATE (descent stop, A2) ──────────────────────────────────────
+  //
+  // On a coincident pair the locus is 2-DIMENSIONAL, so no leaf pair is ever AABB-disjoint and
+  // the recursion below runs the whole 4D box product — measured 1 835 481 candidates on a
+  // coincident bicubic dish pair. When an initial cell can be PROVEN to agree with its opposite
+  // number to `onSurfTol`, subdividing it further buys nothing: it emits ONE ordinary candidate
+  // and skips that subtree.
+  //
+  // ⚠ THE ROOT PRECONDITION IS NOT OPTIONAL. Restricted to a small enough sub-box a GENUINE
+  // TANGENCY *is* coincident to tolerance — an exact quartic contact 864× outside tolerance
+  // still certifies at the first descent level, and because the gap and any curvature witness
+  // both scale as h^{2m} their ratio is CONSTANT in cell size, so the false-firing window is
+  // open at EVERY depth from 4th order up. No sub-box test can separate the two. Requiring the
+  // bound to fire at the ROOT as well is what does: coincident copies read exactly dz there,
+  // while the quadratic adversary reads 1.0–3.9× tol and the quartic 864× tol. Deleting this
+  // precondition would make a genuine tangential contact certifiable, and the caller suppresses
+  // seeds inside a certified region — the contact would vanish silently.
+  //
+  // Deliberately NARROW. It fires only on a freeform↔freeform pair where BOTH operands expose a
+  // single-span non-rational Bézier net (see SurfaceAdapter::bezierNet); everything else — a
+  // rational operand, a multi-span B-spline, an elementary operand — takes the unchanged path.
+  // It emits an ordinary candidate and does NOT write a CoincidentRegion or set `suppressed`:
+  // deciding that a region is coincident stays `detectOverlap`'s job, which probes the agreement
+  // BOUNDARY. This only declines to subdivide something it has proven uniform.
+  const bool certifyEligible = bothFreeformAdapt && A.hasBezierNet && B.hasBezierNet &&
+                               patchGapBound(A.bezierNet, A.domain, A.domain,
+                                             B.bezierNet, B.domain, B.domain) <= onSurfTol;
+  int certifiedCells = 0;
+
   std::vector<CandidateRegion> candidates;
   for (int i = 0; i < gu; ++i) {
     for (int j = 0; j < gv; ++j) {
@@ -1341,11 +1371,28 @@ SeedSet seed_intersection(const SurfaceAdapter& A, const SurfaceAdapter& B,
       ba.u1 = A.domain.u0 + A.domain.du() * (double(i + 1) / gu);
       ba.v0 = A.domain.v0 + A.domain.dv() * (double(j) / gv);
       ba.v1 = A.domain.v0 + A.domain.dv() * (double(j + 1) / gv);
+      if (certifyEligible) {
+        // The opposite cell under the affine domain map — the correspondence patchGapBound
+        // bounds. For a coincident copy this is the same fractional cell of B.
+        ParamBox bb;
+        bb.u0 = B.domain.u0 + B.domain.du() * (double(i) / gu);
+        bb.u1 = B.domain.u0 + B.domain.du() * (double(i + 1) / gu);
+        bb.v0 = B.domain.v0 + B.domain.dv() * (double(j) / gv);
+        bb.v1 = B.domain.v0 + B.domain.dv() * (double(j + 1) / gv);
+        if (patchGapBound(A.bezierNet, A.domain, ba, B.bezierNet, B.domain, bb) <= onSurfTol) {
+          candidates.push_back({ba, bb});  // proven uniform → one candidate, no subtree
+          ++certifiedCells;
+          continue;
+        }
+      }
       subdivide(A, B, ba, B.domain, 0, opts.maxDepth,
                 minFrac, minFrac, minFrac, minFrac, gap, candidates,
                 adaptive, adaptiveMinFrac, adaptiveOverlapFrac);
     }
   }
+  if (certifiedCells > 0 && std::getenv("CYBERCAD_SSI_SEED_DIAG") != nullptr)
+    std::printf("[SEED-DIAG] coincidence certificate: %d/%d cells certified (root bound <= onSurfTol)\n",
+                certifiedCells, gu * gv);
   result.candidateRegions = static_cast<int>(candidates.size());
 
   // Cluster candidate regions into connected branches BEFORE refining. The param

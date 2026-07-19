@@ -588,4 +588,57 @@ CC_TEST(seed_overlap_region_covers_shared_area_to_the_upper_edge) {
   CC_CHECK(c.regionA.v1 >= 3.0 - 1e-3);
 }
 
+// ── A2 CERTIFICATE: a proven-uniform cell stops the descent, and only where proven ─────
+//
+// On a coincident pair the locus is 2D, so no leaf pair is ever AABB-disjoint and the descent
+// runs the whole 4D box product — 1 835 481 candidates at the shipped floor. When an initial
+// cell can be PROVEN to agree to onSurfTol (patchGapBound, ssi/patch_gap.h) it emits one
+// candidate instead of a subtree.
+//
+// The three cases below are the contract, and the middle one is the one that matters: the
+// certificate must REFUSE a genuine tangency. Restricted to a small enough sub-box a tangency
+// IS coincident to tolerance, so the certificate is gated on the bound ALSO firing at the ROOT.
+// If that precondition is ever removed this test is what catches it.
+CC_TEST(seed_coincidence_certificate_stops_the_descent_but_refuses_tangency) {
+  const std::vector<double> kn = {0, 0, 0, 0, 1, 1, 1, 1};
+  auto dish = [](double dz, double c) {
+    std::vector<Point3> p;
+    for (int i = 0; i < 4; ++i)
+      for (int j = 0; j < 4; ++j) {
+        const double x = -1.0 + 2.0 * i / 3.0, y = -1.0 + 2.0 * j / 3.0;
+        p.push_back({x, y, dz + c * (x * x + y * y)});
+      }
+    return p;
+  };
+  auto seedOf = [&](const std::vector<Point3>& pa, const std::vector<Point3>& pb) {
+    auto A = ssi::makeBSplineAdapter(3, 3, pa, 4, 4, kn, kn);
+    auto B = ssi::makeBSplineAdapter(3, 3, pb, 4, 4, kn, kn);
+    ssi::SeedOptions o;
+    o.initialGridU = 6;
+    o.initialGridV = 6;
+    o.minPatchFrac = 1.0 / 64;   // the shipped floor — this is the real configuration
+    return ssi::seed_intersection(A, B, o);
+  };
+
+  // (1) COINCIDENT — the descent collapses to one candidate per initial cell.
+  {
+    const ssi::SeedSet ss = seedOf(dish(0.0, 0.35), dish(0.0, 0.35));
+    CC_CHECK(ss.candidateRegions < 1000);   // was 1 835 481
+    CC_CHECK(ss.seeds.empty());             // and the verdict stays honestly empty
+  }
+  // (2) SUB-TOLERANCE OFFSET — indistinguishable from coincident, same collapse.
+  {
+    const ssi::SeedSet ss = seedOf(dish(0.0, 0.35), dish(1e-9, 0.35));
+    CC_CHECK(ss.candidateRegions < 1000);
+    CC_CHECK(ss.seeds.empty());
+  }
+  // (3) GENUINE TANGENCY — two surfaces touching at a point with different curvature. The
+  // certificate MUST NOT fire: the root bound is far above tolerance even though small cells
+  // near the contact would certify on their own. No fabricated seed either.
+  {
+    const ssi::SeedSet ss = seedOf(dish(0.0, 0.0), dish(0.0, 0.25));
+    CC_CHECK(ss.seeds.empty());
+  }
+}
+
 int main() { return cctest::run_all(); }

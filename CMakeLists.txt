@@ -849,6 +849,12 @@ if(CYBERCAD_BUILD_TESTS)
         # tiling proof. Its fixture seam is the real S3 trace (trace_intersection),
         # whose definition is under CYBERCAD_HAS_NUMSCI, so this host suite builds only
         # in that config (like the S3 marching suite). Header-only splitter; no lib change.
+        # SOUNDNESS contract for the Bezier difference-net gap bound (ssi/patch_gap.h). The bound
+        # is header-only, OCCT-free and substrate-free — it is grouped with the numsci-gated host
+        # suites only because that is where the SSI tests live, not because it needs the substrate.
+        list(APPEND CYBERCAD_TESTS test_native_patch_gap)
+        set(test_native_patch_gap_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_patch_gap.cpp")
         list(APPEND CYBERCAD_TESTS test_native_face_split)
         set(test_native_face_split_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_face_split.cpp")

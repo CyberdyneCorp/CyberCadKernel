@@ -161,15 +161,31 @@ struct CandidateRegion {
   ParamBox b;  // sub-box on surface B
 };
 
-// FEATURE-ADAPTIVE leaf refinement decision (additive, DISAGREED-safe). At a would-be
-// uniform leaf, refine FURTHER (below `minPatchFrac`, toward the `adaptiveMinFrac` floor)
-// ONLY when the two patches' AABBs OVERLAP DEEPLY — the overlap-box diagonal is >=
-// `overlapFrac` of the SMALLER patch AABB diagonal. A deep overlap means the surfaces
-// genuinely approach / thread each other inside the cell (a near-crossing the uniform leaf
-// would lump with an adjacent locus or miss entirely); a shallow corner-graze does NOT
-// warrant the extra work and stays at the uniform leaf. Returns true iff there is room to
-// refine (not both patches at the adaptive floor) AND the overlap is deep. Never emits a
-// point — it only asks whether to split MORE; the emitted candidates still pass refineRegion.
+// FEATURE-ADAPTIVE leaf refinement decision (additive, DISAGREED-safe). At a would-be uniform
+// leaf, refine FURTHER (below `minPatchFrac`, toward the `adaptiveMinFrac` floor) on any cell
+// where the two patch AABBs overlap at all — the caller has already pruned disjoint pairs, so in
+// practice that is EVERY cell reaching here. Returns true iff there is room to refine (not both
+// patches at the adaptive floor). Never emits a point — it only asks whether to split MORE; the
+// emitted candidates still pass refineRegion.
+//
+// READ THE TEST BELOW LITERALLY. `ov.diagonal() <= overlapFrac * smaller` with the default
+// `overlapFrac = 1.0` (seeding.h) is a TAUTOLOGY: the overlap box is contained in both patch
+// boxes, so its diagonal never exceeds the smaller one. `overlapFrac` is therefore an optional
+// SHALLOW-graze guard that is inert at its default, NOT a deep-overlap requirement — this
+// docstring previously claimed the opposite (a `>=` "OVERLAP DEEPLY" test), contradicting both
+// the code and the header.
+//
+// THE TAUTOLOGY IS LOAD-BEARING — do NOT "fix" the sign. Flipping to the documented `>=` was
+// measured to be digit-for-digit identical to `adaptiveSubdivision = false` (30 421 candidates,
+// 2 branches) and DROPS a real co-resident transversal locus; tightening `overlapFrac` to 0.5 or
+// 0.25 likewise fails `test_native_ssi_seeding.cpp` `branchCount() == 3`. What this function
+// actually delivers is a UNIFORM one-more-level refinement on every freeform↔freeform pair, and
+// the third locus depends on it.
+//
+// The cost of that is real and is a known open defect: on a COINCIDENT pair every cell overlaps
+// by construction, so this drives the WHOLE domain to `adaptiveMinFrac` rather than a feature
+// cell (measured ladder 5 476 → 98 596 candidates as the floor goes 1/8 → 1/64). The fix is a
+// sound descent stop, not a change to this predicate — see MOAT-ROADMAP.md M1 item A2.
 inline bool featureWarrantsFinerLeaf(const Aabb& boxA, const Aabb& boxB,
                                      const ParamBox& ba, const ParamBox& bb,
                                      const SurfaceAdapter& A, const SurfaceAdapter& B,
@@ -195,14 +211,26 @@ inline bool featureWarrantsFinerLeaf(const Aabb& boxA, const Aabb& boxB,
   return ov.diagonal() <= overlapFrac * smaller;
 }
 
+// SIBLING-BOUND REUSE (`knownA` / `knownB`, exact). Each level splits exactly ONE operand, so the
+// OTHER operand's param box is bit-identical in both children — and `bound` is a pure function of
+// (surface, ParamBox) over by-value captures (see the adapter construction above), so recomputing
+// it there returns the same Aabb by construction. Passing it down is therefore an exactness-
+// preserving elimination of redundant work, not an approximation: the candidate list comes out
+// element-for-element identical. Measured 2.00× fewer `bound` calls on every fixture tried
+// (18 651 288 → 9 325 788 on the coincident repro), for a 1.9–2.1× faster descent.
+//
+// It is a CONSTANT-factor win only. It does not change how many nodes the recursion visits, so on
+// a 2D coincident locus — where the AABB prune can never fire and the node count is the actual
+// pathology — it returns ~14% of the wall clock, not the blow-up.
 void subdivide(const SurfaceAdapter& A, const SurfaceAdapter& B,
                const ParamBox& ba, const ParamBox& bb, int depth,
                int maxDepth, double minFracU_A, double minFracV_A,
                double minFracU_B, double minFracV_B, double gap,
                std::vector<CandidateRegion>& out,
-               bool adaptive, double adaptiveMinFrac, double adaptiveOverlapFrac) {
-  const Aabb boxA = A.bound(ba);
-  const Aabb boxB = B.bound(bb);
+               bool adaptive, double adaptiveMinFrac, double adaptiveOverlapFrac,
+               const Aabb* knownA = nullptr, const Aabb* knownB = nullptr) {
+  const Aabb boxA = knownA ? *knownA : A.bound(ba);
+  const Aabb boxB = knownB ? *knownB : B.bound(bb);
   if (!boxA.valid() || !boxB.valid()) return;
   if (aabbDisjoint(boxA, boxB, gap)) return;  // prune: no intersection in this region
 
@@ -232,17 +260,19 @@ void subdivide(const SurfaceAdapter& A, const SurfaceAdapter& B,
     return {lo, hi};
   };
   if (splitA) {
+    // B's box is unchanged in both children → hand `boxB` down instead of recomputing it twice.
     auto [a0, a1] = halves(ba);
     subdivide(A, B, a0, bb, depth + 1, maxDepth, minFracU_A, minFracV_A, minFracU_B, minFracV_B, gap, out,
-              adaptive, adaptiveMinFrac, adaptiveOverlapFrac);
+              adaptive, adaptiveMinFrac, adaptiveOverlapFrac, nullptr, &boxB);
     subdivide(A, B, a1, bb, depth + 1, maxDepth, minFracU_A, minFracV_A, minFracU_B, minFracV_B, gap, out,
-              adaptive, adaptiveMinFrac, adaptiveOverlapFrac);
+              adaptive, adaptiveMinFrac, adaptiveOverlapFrac, nullptr, &boxB);
   } else {
+    // Symmetrically: A's box is unchanged in both children.
     auto [b0, b1] = halves(bb);
     subdivide(A, B, ba, b0, depth + 1, maxDepth, minFracU_A, minFracV_A, minFracU_B, minFracV_B, gap, out,
-              adaptive, adaptiveMinFrac, adaptiveOverlapFrac);
+              adaptive, adaptiveMinFrac, adaptiveOverlapFrac, &boxA, nullptr);
     subdivide(A, B, ba, b1, depth + 1, maxDepth, minFracU_A, minFracV_A, minFracU_B, minFracV_B, gap, out,
-              adaptive, adaptiveMinFrac, adaptiveOverlapFrac);
+              adaptive, adaptiveMinFrac, adaptiveOverlapFrac, &boxA, nullptr);
   }
 }
 

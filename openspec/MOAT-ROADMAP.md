@@ -443,6 +443,72 @@ resolution. The curve *pipeline* exists; this is the *robustness* on adversarial
     its overlap predicate is unconditionally true, driving the entire domain to `adaptiveMinFrac`
     (5476 → 98596 candidates, 61× wall). **Moves candidate counts → puts the S4-f seed-count
     contracts at risk; needs the full corpus.**
+    - **THE CENTRAL RESULT — a sound BOUND exists; a sound sub-box COINCIDENCE VERDICT does not.**
+      The programme has been conflating the two. The bound is real: `G2 = min over ≤8 dihedral
+      orientations of max_ij ‖QA_ij − QB_ij‖` over the exact de Casteljau Bézier sub-nets,
+      degree-elevated to a common degree. It is conservative BY CONSTRUCTION — the difference
+      `D = S_A − S_B∘σ` is a single Bézier whose control net is exactly the pole differences, so the
+      convex-hull property bounds `sup|D|` over the WHOLE patch with no evaluation anywhere.
+      Measured 520 random sub-boxes across 8 families vs a nearest-point oracle: **zero violations**,
+      and tight (worst 2.1×). On the `r²/2R` adversary it reads 1.0 / 2.0 / 3.9 / 10.0 × tol where
+      the disqualified interior 3×3 grid reads 0.25 / 0.5 / 0.975 / 2.5 — reproducing the 4×
+      non-conservatism and the 9/9-AGREE false positive at m = 3.9 exactly.
+    - **⚠ THE DISQUALIFYING THEOREM — stop re-deriving it.** *Restricted to a small enough sub-box,
+      a GENUINE TANGENCY IS coincident to tolerance.* Measured three ways, the decisive one being an
+      exact quartic contact `z = c(x⁴+y⁴)` whose ROOT gap is **864 × tol** — nowhere near coincident
+      — yet whose FIRST-LEVEL cell (h = 1/6) reads **0.667 × tol and fires**. For an order-2m contact
+      the gap `~c·h^{2m}` and the curvature witness `~2m(2m−1)c·h^{2m}` scale identically, so the
+      ratio is CONSTANT in h: from 4th order up there is an open firing window at EVERY depth. A
+      depth gate derived soundly from the difference net goes inert on exact coincidence (D≡0 ⟹
+      κ=0 ⟹ blocks). **That dilemma is structural, not a tuning problem.**
+    - **Consequence:** any admissible stop needs a precondition no sub-box test can supply —
+      certify an A-cell only if `G2` ALSO fires at the ROOT. Measured separation: coincident copies
+      give `G2(root) = dz` exactly; the quadratic adversary 1.0–3.9 × tol; the quartic 864 × tol;
+      real corpus tangencies 1.4e5–6.1e5 × tol.
+    - ✅ **LANDED (the exact, zero-risk half).** (1) **Sibling-bound reuse in `subdivide`** — each
+      level splits ONE operand, so the other's box is bit-identical in both children and `bound` is
+      a pure function of (surface, ParamBox); passing it down is exactness-preserving. Measured
+      **2.00× fewer `bound` calls** (18 651 288 → 9 325 788 on the repro); candidate count
+      **IDENTICAL at 1 835 481**, wall 174.7 s → 154.3 s (~12%). (2) **Docstring correction** at
+      `featureWarrantsFinerLeaf`: it claimed a `>=` "OVERLAP DEEPLY" test; the code is `<=` with
+      `overlapFrac = 1.0`, i.e. a **TAUTOLOGY** (the overlap box is contained in both, so its
+      diagonal never exceeds the smaller). **The tautology is LOAD-BEARING — do not "fix" the
+      sign**: flipping to the documented `>=` is digit-for-digit identical to
+      `adaptiveSubdivision = false` and DROPS a real co-resident locus; `overlapFrac` 0.5 or 0.25
+      likewise fails `branchCount() == 3`. What it actually delivers is a uniform one-more-level
+      refinement, and the third locus depends on it. *(The `: 0.5` fallback was left in place rather
+      than deleted as proposed — it is defensive for a caller passing ≤ 0, and removing it would
+      change that path's semantics for no measured gain.)*
+    - **DEFERRED (validated in a scratchpad build, not landed):** the `patchGapBound` primitive +
+      per-A-cell certificate + root-G2 precondition. Measured effect: coincident dz ∈ {0, 1e-9,
+      1e-7} collapse **1 835 481 candidates / 243 s → 144 / ~30 ms**; corpus **byte-identical across
+      7 suites and both gates**, with the ONLY firings in the whole corpus being the two legs of
+      `seed_coincident_freeform_terminates_and_declines` (which still passes with `seeds.empty()`).
+      **Blockers before it lands:** `replay_freeform_seed` was never run either way; a fixture is
+      needed for `detectOverlap` fed a certified 1/12 cell instead of a 1/256 leaf (its input box
+      grows ~21× and its own step-1 gate IS the disqualified interior grid — the certificate
+      prevents itself from swallowing a tangency, it does not prevent `detectOverlap` from doing
+      so); and the reach is **Bézier-only** (rationals must return +∞ — the difference of two
+      rationals is not a Bézier of pole differences, so the theorem does not hold).
+    - **Next blocker (SHARPENED, and it relocates the problem):** the pathology is **NEAR-PARALLEL
+      PROXIMITY, not coincidence** — coincidence is merely its limit point. The expensive band is
+      `dz ∈ [0, ~2e-2]`; the coincidence-detectable band is `dz ≤ 2.9e-7`. **Five orders of
+      magnitude of the offending range are near-parallel and provably NOT coincident** — a pair at
+      dz = 1e-6 that does not intersect at all still costs 243 s, and the quartic contact blows the
+      descent up identically at 864 × tol. No sub-box gap-magnitude predicate can be sound there;
+      only a whole-footprint test can separate them, and that is already what `detectOverlap` is.
+      A predicate keyed on **parallelism-and-proximity** rather than agreement-to-tolerance is the
+      open problem.
+    - **Refuted levers — do not retry.** A global candidate budget: the transversal corpus max is
+      462 606 on a real traced loop vs a coincident-family min of 683 017 (1.48× headroom), and the
+      same coincident pair at a coarser floor sits at 112 510, BELOW the transversal max — the
+      regimes overlap. Tightening `adaptiveOverlapFrac` 1.0 → 0.5: ~100× wall, the single largest
+      win available, but it drops a real co-resident locus.
+    - **Two cost facts worth keeping.** The descent is NOT where the time is in general: at dz=0 the
+      split is descent 24.7% / `clusterRegions` 75.3%; at dz=1e-2 it is descent 23% / `refineRegion`
+      56%. And `refineRegion` runs **per candidate** (~190 µs each) despite its "once per branch"
+      framing — so any stop that trims descent WORK while emitting the same candidates recovers at
+      most 17–25%. Only collapsing the PILE collapses all four phases together.
   - **A3 — `projectOntoB` has a one-sided dead band that quantizes every reported region.** The LM
     is seeded from a fixed `kScan=8` grid, and SciPP's `num_jacobian` is FORWARD difference, so at an
     UPPER bound that column is identically zero and LM cannot move (lower bound converges normally,

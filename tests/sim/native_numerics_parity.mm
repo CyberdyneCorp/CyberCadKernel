@@ -162,12 +162,25 @@ static void reportCurve(const char* name, const nm::Point3& T,
   std::fflush(stdout);
 }
 
+// Where a surface's U parameter is genuinely UNDEFINED, so comparing it to an oracle's U is
+// meaningless rather than informative. This is a property of the SURFACE KIND, not of the
+// numeric value of v: on a sphere v = ±π/2 is a pole and every u maps to the same point, but
+// on a cylinder or a B-spline patch v = π/2 is an ordinary interior parameter carrying a real
+// check. Gating on `std::fabs(v) - π/2` alone would therefore silently disable the U clause
+// for any fixture whose v happens to land there — the check must know it is on a sphere.
+enum class UDegeneracy {
+  None,          ///< U is meaningful everywhere in the sampled domain.
+  SphericalPole  ///< U is undefined at v = ±π/2 (and only there).
+};
+
 // One surface case: native project_point_to_* vs GeomAPI_ProjectPointOnSurf.
 static void reportSurface(const char* name, const nn::SurfaceClosest& nat,
                           const GeomAPI_ProjectPointOnSurf& occ,
-                          double periodU, double periodV, bool checkParam) {
+                          double periodU, double periodV, bool checkParam,
+                          UDegeneracy uDegen = UDegeneracy::None) {
   const bool done = nat.success && occ.NbPoints() > 0;
   double dDist = 0.0, dPt = 0.0, dU = 0.0, dV = 0.0;
+  bool atPole = false;
   bool ok = done;
   if (done) {
     const double dO = occ.LowerDistance();
@@ -178,12 +191,21 @@ static void reportSurface(const char* name, const nn::SurfaceClosest& nat,
     dPt   = pointDist(nat.point, pO);
     dU    = paramDelta(nat.u, uO, periodU);
     dV    = paramDelta(nat.v, vO, periodV);
+    // At a spherical pole the whole u-circle collapses to one point, so BOTH engines are
+    // free to report any longitude and dU carries no information. dDist, dPoint and dV
+    // still do, and they remain asserted — the case is narrowed, not disabled.
+    constexpr double kHalfPi = 1.5707963267948966;
+    atPole = (uDegen == UDegeneracy::SphericalPole) &&
+             (std::fabs(std::fabs(nat.v) - kHalfPi) <= 1e-9);
+    const bool checkU = checkParam && !atPole;
     ok = (dDist <= kTolDist) && (dPt <= kTolPoint) &&
-         (!checkParam || (dU <= kTolParam && dV <= kTolParam));
+         (!checkU || dU <= kTolParam) &&
+         (!checkParam || dV <= kTolParam);
   }
-  std::printf("[NNUM] %-26s %s  dDist=%.3e dPoint=%.3e%s(dU=%.3e dV=%.3e)  (u=%.4f v=%.4f)\n",
+  std::printf("[NNUM] %-26s %s  dDist=%.3e dPoint=%.3e%s(dU=%.3e%s dV=%.3e)  (u=%.4f v=%.4f)\n",
               name, ok ? "PASS" : "FAIL", dDist, dPt,
-              checkParam ? " " : " skip", dU, dV, nat.u, nat.v);
+              checkParam ? " " : " skip", dU,
+              atPole ? " [pole: u undefined, not asserted]" : "", dV, nat.u, nat.v);
   if (ok) ++g_pass; else ++g_fail;
   std::fflush(stdout);
 }
@@ -303,7 +325,11 @@ static void groupSphere() {
         T, sp, 0.0, kTwoPi, -1.5707963267948966, 1.5707963267948966, 32, 24);
     GeomAPI_ProjectPointOnSurf occ(gp_Pnt(T.x, T.y, T.z), gsp);
     std::string nm = "sphere#" + std::to_string(i++);
-    reportSurface(nm.c_str(), nat, occ, /*periodU*/ kTwoPi, /*periodV*/ 0, /*param*/ true);
+    // sphere#1's target {2,1,15} sits on the +z axis through the centre, so its foot is the
+    // NORTH POLE — u is undefined there. Declared per-surface-kind, so the other three
+    // targets (all off-axis) keep their full u check.
+    reportSurface(nm.c_str(), nat, occ, /*periodU*/ kTwoPi, /*periodV*/ 0, /*param*/ true,
+                  UDegeneracy::SphericalPole);
   }
 }
 

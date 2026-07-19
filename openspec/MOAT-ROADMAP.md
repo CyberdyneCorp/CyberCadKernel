@@ -1,5 +1,13 @@
 # Dropping OCCT — the Moat Roadmap
 
+> **▶ Validated work queue: [NEXT-SESSION.md](NEXT-SESSION.md)** (2026-07-19). Five workstreams
+> measured and adversarially verified — the `refineRegion` separating-slab prune (1.8M candidates
+> → 0 on the target pose), five parity re-scopes already built and run, the M0 collar retune, and
+> the recall-denominator repair. It also records two corrections: the M0 fine-deflection weld
+> problem is **already resolved** (the `L3-BAND` table below is measured-false), and
+> `native_ssi_seeding_parity` had **never compiled** since it was written.
+
+
 The **complete remaining path** from "substantially native + OCCT fallback" to `#8
 drop-occt` (unlink OCCT entirely). Everything reachable by a *bounded* native slice has
 landed (see [NATIVE-REWRITE.md](NATIVE-REWRITE.md) and [SSI-ROADMAP.md](SSI-ROADMAP.md));

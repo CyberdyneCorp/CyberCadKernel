@@ -641,4 +641,58 @@ CC_TEST(seed_coincidence_certificate_stops_the_descent_but_refuses_tangency) {
   }
 }
 
+// ── detectOverlap FIXTURE: the verdict must not depend on the cell size handed to it ────
+//
+// The A2 certificate changes what the coincidence detector is fed. Previously it saw clusters
+// of ~1/256 leaves; a certified cell is ~21x larger. That matters because detectOverlap's own
+// step-1 gate samples the patch INTERIOR, which is the predicate disqualified for the descent
+// stop: a tangency's gap is maximal at the CORNER, so interior sampling under-reads it. The
+// error direction is favourable — a bigger box makes that gate HARDER to pass — but the area
+// swallowed if it ever did pass grows as H^2, so the interaction is pinned here.
+//
+// Measured across a 6x cell-size sweep: the verdict is invariant. A coincident pair reports one
+// verdict at every size; near-parallel pairs that are genuinely NOT coincident report none.
+CC_TEST(seed_coincidence_verdict_is_invariant_to_cell_size) {
+  const std::vector<double> kn = {0, 0, 0, 0, 1, 1, 1, 1};
+  auto dish = [](double c) {
+    std::vector<Point3> p;
+    for (int i = 0; i < 4; ++i)
+      for (int j = 0; j < 4; ++j) {
+        const double x = -1.0 + 2.0 * i / 3.0, y = -1.0 + 2.0 * j / 3.0;
+        p.push_back({x, y, c * (x * x + y * y)});
+      }
+    return p;
+  };
+  auto verdictsAt = [&](double cA, double cB, int grid) {
+    auto A = ssi::makeBSplineAdapter(3, 3, dish(cA), 4, 4, kn, kn);
+    auto B = ssi::makeBSplineAdapter(3, 3, dish(cB), 4, 4, kn, kn);
+    ssi::SeedOptions o;
+    o.initialGridU = grid;
+    o.initialGridV = grid;
+    o.minPatchFrac = 1.0 / 16;     // bounded so the near-parallel legs stay fast
+    o.adaptiveMinFrac = 1.0 / 16;
+    return ssi::seed_intersection(A, B, o);
+  };
+
+  for (const int grid : {2, 3, 6, 12}) {
+    // (1) COINCIDENT — exactly one verdict, and it is a real one, at every cell size.
+    {
+      const ssi::SeedSet ss = verdictsAt(0.35, 0.35, grid);
+      CC_CHECK(ss.coincidentRegions.size() == 1);
+      if (!ss.coincidentRegions.empty())
+        CC_CHECK(ss.coincidentRegions[0].kind != ssi::CoincidenceKind::None);
+      CC_CHECK(ss.seeds.empty());
+    }
+    // (2) NEAR-PARALLEL but NOT coincident — the false-positive guard. These pairs genuinely
+    // reach the detector (tens of thousands of candidates survive the AABB prune, unlike a
+    // separating tangency which is pruned before it gets there), so a cell-size-dependent
+    // interior-sampling gate would show up right here as a fabricated verdict.
+    for (const double cB : {0.351, 0.350001}) {
+      const ssi::SeedSet ss = verdictsAt(0.35, cB, grid);
+      CC_CHECK(ss.coincidentRegions.empty());  // never claims a shared region it does not have
+      CC_CHECK(ss.seeds.empty());
+    }
+  }
+}
+
 int main() { return cctest::run_all(); }

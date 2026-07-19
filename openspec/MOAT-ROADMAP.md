@@ -479,7 +479,18 @@ resolution. The curve *pipeline* exists; this is the *robustness* on adversarial
       refinement, and the third locus depends on it. *(The `: 0.5` fallback was left in place rather
       than deleted as proposed — it is defensive for a caller passing ≤ 0, and removing it would
       change that path's semantics for no measured gain.)*
-    - **DEFERRED (validated in a scratchpad build, not landed):** the `patchGapBound` primitive +
+    - ✅ **LANDED** (`ec21345` bound, `718d88c` adapter hook, `922e648` certificate + fixture).
+      Measured at the shipped floor on the coincident dish pair: **1 835 481 candidates / 154 s →
+      144 / 13 ms**, verdict unchanged at `seeds=0`. A genuine tangency is REFUSED, a transversal
+      pair is unchanged, and the **disjoint dz=1e-3 pair is also unchanged at 1 835 481 candidates**
+      — it is not coincident, so nothing certifies. The root precondition is load-bearing and is
+      guarded by a test: without it the quartic contact certifies at the first descent level.
+      `detectOverlap` fixture added — the certificate feeds it a ~21× larger box, and its own
+      step-1 gate is the disqualified interior grid, so the verdict is pinned invariant across a
+      6× cell-size sweep on both a coincident pair and two near-parallel non-coincident pairs
+      (which genuinely reach the detector, unlike a separating tangency that the AABB prune kills
+      first). Reach is **Bézier-only**: single-span non-rational nets, everything else refuses.
+    - **Superseded note — the original deferral:** the `patchGapBound` primitive +
       per-A-cell certificate + root-G2 precondition. Measured effect: coincident dz ∈ {0, 1e-9,
       1e-7} collapse **1 835 481 candidates / 243 s → 144 / ~30 ms**; corpus **byte-identical across
       7 suites and both gates**, with the ONLY firings in the whole corpus being the two legs of

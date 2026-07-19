@@ -84,7 +84,12 @@ while IFS= read -r src; do NATIVE_SRCS+=("$src"); done \
       echo "$REPO/src/native/numerics/numerics.cpp")
 
 # ── OCCT toolkits: union of the slices the sim scripts use, most-derived → base.
-TKS="TKMesh TKShHealing TKBool TKPrim TKBO TKTopAlgo TKGeomAlgo TKBRep TKGeomBase TKG3d TKG2d TKMath TKernel"
+# TKFillet/TKFeat/TKOffset carry BRepFilletAPI_MakeChamfer + ChFi3d_* — 10 harnesses fail to link
+# without them. The data-exchange slice is appended only when a harness actually names STEP/IGES,
+# so the common case does not pay for it.
+TKS="TKFillet TKFeat TKOffset TKMesh TKShHealing TKBool TKPrim TKBO TKTopAlgo TKGeomAlgo TKBRep TKGeomBase TKG3d TKG2d TKMath TKernel"
+grep -qE "STEPControl|IGESControl|XCAF|STEPCAF" "$HARNESS" && \
+  TKS="$TKS TKSTEP TKSTEP209 TKSTEPAttr TKSTEPBase TKXSBase TKIGES"
 LFLAGS=""; for tk in $TKS; do LFLAGS="$LFLAGS -l$tk"; done
 [ -n "$OCCT_LIBDIR" ] && LFLAGS="-L$OCCT_LIBDIR $LFLAGS"
 
@@ -93,7 +98,7 @@ echo "   oracle : $OCCT_INC"
 echo "   native : ${#NATIVE_SRCS[@]} TU(s) [NUMSCI]"
 "$CXX" -std=c++20 -O2 -w \
   -DCYBERCAD_HAS_OCCT -DCYBERCAD_HAS_NUMSCI=1 \
-  -I"$REPO/src" -I"$REPO/tests" -I"$OCCT_INC" \
+  -I"$REPO/src" -I"$REPO/tests" -I"$REPO/include" -I"$OCCT_INC" \
   -I"$NUMSCI_GEN" -I"$NUMPP" -I"$SCIPP" \
   -x c++ "$HARNESS" "${NATIVE_SRCS[@]}" \
   -x none "$NUMSCI_LIB" \

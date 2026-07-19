@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// patch_gap.h — a SOUND upper bound on the distance between two Bézier patches over a
-// pair of parameter sub-boxes, with NO evaluation anywhere.
+// patch_gap.h — SOUND distance predicates between two Bézier patches over a pair of
+// parameter sub-boxes, with NO evaluation anywhere. Two of them, pointing opposite ways:
+//
+//   * `patchGapBound`  — an UPPER bound on the gap. Certifies "these agree to tolerance".
+//   * `slabSeparated`  — a LOWER bound witness. Certifies "these cannot touch here".
+//
+// They are not interchangeable. The upper bound cannot prune a descent (a small bound does
+// not prove a crossing) and the separation witness cannot certify coincidence (failing to
+// separate proves nothing). Each is used only in the direction it proves.
 //
 // WHY THIS EXISTS. On a COINCIDENT / overlapping surface pair the SSI intersection locus is
 // 2-DIMENSIONAL, so no leaf pair is ever AABB-disjoint and `subdivide` runs the whole 4D box
@@ -55,6 +62,7 @@
 #include "native/ssi/patch_bounds.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <vector>
 
@@ -172,6 +180,80 @@ inline double patchGapBound(const ControlNet& netA, const ParamBox& domA, const 
     for (int j = 0; j < C; ++j)
       worst = std::max(worst, math::distance(QA.pole(i, j), QB.pole(i, j)));
   return worst;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// slabSeparated — an ORIENTED separating-slab witness: proof that two Bézier patches,
+// restricted to a pair of parameter sub-boxes, come no closer than `gap` anywhere on
+// those sub-boxes.
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// WHY. `subdivide` prunes with an AXIS-ALIGNED box test. On a near-parallel pair whose
+// separation is not aligned with any coordinate axis, the two AABBs overlap at every depth
+// even though the surfaces never meet, so the descent runs the whole 4D box product and hands
+// every leaf to `refineRegion` — measured 1 835 481 candidates / 634 s on a disjoint dish pair
+// at dz = 1e-3, of which 100% are waste (`converged = 0`, `seeds = 0`). One well-chosen
+// direction collapses that to zero candidates in 0.073 s.
+//
+// THE ARGUMENT IS CONTAINMENT, AND ONLY CONTAINMENT. By the convex-hull property, the surface
+// piece S_A(boxA) lies inside the convex hull of the EXACT de Casteljau sub-net QA over boxA;
+// likewise S_B(boxB) inside hull(QB). Projection onto a unit direction `n` is linear, so it
+// maps each hull into the closed interval spanned by that net's projected poles. If those two
+// intervals are separated by more than `gap`, then every point of S_A(boxA) is more than `gap`
+// from every point of S_B(boxB) — measured along `n`, hence a fortiori in 3D. No crossing can
+// exist in that box pair, so the subtree beneath it is crossing-free and skipping it is exact.
+//
+// Do NOT restate this as an argument from precedent ("box-locality is already trusted inside
+// subdivide"). That form of words would equally license applying this predicate at the
+// `refineRegion` site, where it is WRONG: that solver clamps into the FULL domain, so 97.8% of
+// its accepted refines converge outside their own candidate box and filtering there drops real
+// seeds (measured 25 324 / 85 678 / 49 284 on the transversal controls). The prune is sound
+// HERE because a descendant's param boxes are contained in its parent's, and nowhere else.
+//
+// SOUNDNESS DOES NOT DEPEND ON `n`. A poorly chosen direction simply fails to separate and the
+// descent proceeds unchanged — `n` is a heuristic for REACH, never for correctness. The caller
+// passes A's midpoint normal, which is the natural separating direction for the near-parallel
+// pairs this targets. `n` is normalized here rather than trusted: a caller handing us a
+// non-unit vector would otherwise scale the projections and could over-state the separation.
+// A degenerate (near-null) `n` returns false — refusing to prune is always safe.
+//
+// SCOPE. Single-span non-rational Bézier nets, i.e. exactly `SurfaceAdapter::hasBezierNet`.
+// Unlike `patchGapBound` this does NOT require the two nets to have equal degree: each hull
+// bounds its own surface independently, so no correspondence between the nets is involved.
+inline bool slabSeparated(const ControlNet& netA, const ParamBox& domA, const ParamBox& boxA,
+                          const ControlNet& netB, const ParamBox& domB, const ParamBox& boxB,
+                          const Vec3& n, double gap) {
+  if (netA.nRows <= 0 || netA.nCols <= 0 || netB.nRows <= 0 || netB.nCols <= 0) return false;
+  if (netA.poles.size() != static_cast<std::size_t>(netA.nRows) * netA.nCols) return false;
+  if (netB.poles.size() != static_cast<std::size_t>(netB.nRows) * netB.nCols) return false;
+
+  const double len = math::norm(n);
+  if (!(len > 0.0) || !std::isfinite(len)) return false;  // no usable direction → do not prune
+  const Vec3 u{n.x / len, n.y / len, n.z / len};
+
+  auto project = [&u](const ControlNet& q, double& lo, double& hi) {
+    lo = std::numeric_limits<double>::infinity();
+    hi = -std::numeric_limits<double>::infinity();
+    for (const Point3& p : q.poles) {
+      const double t = p.x * u.x + p.y * u.y + p.z * u.z;
+      lo = std::min(lo, t);
+      hi = std::max(hi, t);
+    }
+  };
+
+  double a0, a1, b0, b1;
+  detail::normalizedBox(domA, boxA, a0, a1, b0, b1);
+  const ControlNet QA = detail::bezierSubNet(netA, a0, a1, b0, b1);
+  detail::normalizedBox(domB, boxB, a0, a1, b0, b1);
+  const ControlNet QB = detail::bezierSubNet(netB, a0, a1, b0, b1);
+
+  double aLo, aHi, bLo, bHi;
+  project(QA, aLo, aHi);
+  project(QB, bLo, bHi);
+  if (!std::isfinite(aLo) || !std::isfinite(bLo)) return false;
+
+  // Strict `>`, mirroring aabbDisjoint: a pair separated by exactly `gap` stays a candidate.
+  return (bLo - aHi > gap) || (aLo - bHi > gap);
 }
 
 }  // namespace cybercad::native::ssi

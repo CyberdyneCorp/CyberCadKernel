@@ -509,8 +509,43 @@ resolution. The curve *pipeline* exists; this is the *robustness* on adversarial
       prevents itself from swallowing a tangency, it does not prevent `detectOverlap` from doing
       so); and the reach is **Bézier-only** (rationals must return +∞ — the difference of two
       rationals is not a Bézier of pole differences, so the theorem does not hold).
+    - ✅ **SEPARATING-SLAB PRUNE — LANDED.** The AABB prune in `subdivide` is AXIS-ALIGNED, so on a
+      pair separated along no coordinate axis it never fires and the descent enumerates the whole
+      4D box product. `slabSeparated` (`ssi/patch_gap.h`) projects both EXACT de Casteljau sub-nets
+      onto ONE oriented direction — A's midpoint normal — and prunes when the projected intervals
+      separate by more than `gap`. Convex-hull containment makes that a PROOF that no crossing
+      exists in the box pair, and a descendant's param boxes are contained in its parent's, so the
+      whole subtree is crossing-free. Soundness does not depend on the direction: a poor `n` merely
+      fails to separate. Gated exactly like the certificate (`bothFreeform && hasBezierNet` on both).
+      | pose | candidates | wall | seeds |
+      |---|---|---|---|
+      | disjoint dz=1e-3 (target) | 1 835 481 → **0** | 533 s → **0.056 s** | 0 → 0 |
+      | disjoint dz=1e-2 | 683 017 → **0** | 149 s → 0.009 s | 0 → 0 |
+      | dish × tilt s=0.5 | 58 591 → 7 453 | 7.31 → 0.59 s | 1 → 1 |
+      | dish × plane z=0.30 | 38 128 → 12 767 | 3.55 → 1.01 s | 1 → 1 |
+      | carton × carton ph=0.10 | 482 292 → 13 935 | — | 4 → 4 |
+      | carton × tilt s=0.30 | 326 439 → 19 558 | — | 1 → 1 |
+      | coincident dz=0 | 144 → 144 | unchanged | 0 → 0 |
+      Verified against a SAVED BASELINE ARCHIVE (the same binary with the gate forced false), not
+      against inference: **seeds, branches and coincidence verdicts are identical on all 34 poses**
+      of the co-resident multi-loop family and on all 11 bench poses. Only the candidate count —
+      pure cost — moves. Gate A green: marching 26/0, s4_classification 22/0, seeding 16/16,
+      ssi 11/11, s4f 7/7, patch_gap 10/10.
+    - **WHY THE MIDPOINT NORMAL, and the limit that follows from it.** For a vertically offset pair,
+      projecting on **z** requires the cell's z-extent to drop below `dz` — FIRST order in cell size,
+      so it never fires at reachable depths. Projecting on the **surface normal** makes the patch's
+      own extent SECOND order (`≈ κh²/2`) while the offset still contributes `dz·(n·ẑ)` in full. At
+      the shipped 1/64 leaf that is ~3e-4 against dz = 1e-3 — which is exactly why the target pose
+      collapses. The corollary is the honest limit: **the prune fires only while `κh²/2 < dz`.**
+      Below ~3e-4 on these operands no reachable cell size separates and the pair falls back to the
+      full 4D product. ⚠ The `wave × wave` sweep in the family run was TRIMMED to dz ∈ {1e-3, 3.2e-3}
+      for runtime — those are the two poses ABOVE the threshold. Their 1 891 467 → 0 is real but is
+      NOT evidence about the sub-3e-4 band; the six dropped poses are where the prune does nothing.
     - **Next blocker (SHARPENED, and it relocates the problem):** the pathology is **NEAR-PARALLEL
-      PROXIMITY, not coincidence** — coincidence is merely its limit point. The expensive band is
+      PROXIMITY, not coincidence** — coincidence is merely its limit point. The slab prune attacks
+      it from the COST side and wins on the measured poses, but it does not close the band: it
+      trades the old failure (no predicate at all) for a curvature-and-depth condition,
+      `κh²/2 < dz`. The general predicate remains open. The expensive band is
       `dz ∈ [0, ~2e-2]`; the coincidence-detectable band is `dz ≤ 2.9e-7`. **Five orders of
       magnitude of the offending range are near-parallel and provably NOT coincident** — a pair at
       dz = 1e-6 that does not intersect at all still costs 243 s, and the quartic contact blows the

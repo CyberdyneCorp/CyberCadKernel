@@ -1,4 +1,8 @@
-// test_native_patch_gap.cpp — the SOUNDNESS contract for patchGapBound.
+// test_native_patch_gap.cpp — the SOUNDNESS contracts for the two predicates in patch_gap.h:
+// `patchGapBound` (upper bound, certifies agreement) and `slabSeparated` (separation witness,
+// prunes a descent). Both are one-sided and both lose geometry silently when wrong, in
+// opposite directions: the bound must never UNDER-estimate, the witness must never claim a
+// separation that is not there.
 //
 // This bound exists so a descent stop can certify "these two patches agree to tolerance"
 // WITHOUT sampling. The property under test is one-sided and absolute: it must never
@@ -279,6 +283,210 @@ CC_TEST(adapter_exposes_a_bezier_net_only_where_the_proof_holds) {
     const auto E = ssi::makePlaneAdapter(pl, ssi::ParamBox{0, 1, 0, 1});
     CC_CHECK(!E.hasBezierNet);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// slabSeparated — the separating-slab prune
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+// Projected pole interval of the sub-net over `box`, along unit direction `n`. This is
+// literally what slabSeparated compares; the test below checks the SURFACE stays inside it.
+void projectedSubNet(const ssi::ControlNet& net, const ssi::ParamBox& dom,
+                     const ssi::ParamBox& box, const nmath::Vec3& n,
+                     double& lo, double& hi) {
+  double a0, a1, b0, b1;
+  ssi::detail::normalizedBox(dom, box, a0, a1, b0, b1);
+  const ssi::ControlNet q = ssi::detail::bezierSubNet(net, a0, a1, b0, b1);
+  lo = std::numeric_limits<double>::infinity();
+  hi = -std::numeric_limits<double>::infinity();
+  for (const Point3& p : q.poles) {
+    const double t = p.x * n.x + p.y * n.y + p.z * n.z;
+    lo = std::min(lo, t);
+    hi = std::max(hi, t);
+  }
+}
+
+// Minimum distance between the two surface pieces over their sub-boxes, by dense sampling.
+// Sampling can only OVER-estimate a minimum, so using it to refute a claimed separation is
+// the safe direction: if the sampled min is already below the claimed gap, the claim is wrong.
+double sampledMinDistance(const ssi::ControlNet& A, const ssi::ParamBox& ba,
+                          const ssi::ControlNet& B, const ssi::ParamBox& bb, int n = 16) {
+  std::vector<Point3> pa, pb;
+  for (int i = 0; i <= n; ++i)
+    for (int j = 0; j <= n; ++j) {
+      const double fs = double(i) / n, ft = double(j) / n;
+      pa.push_back(evalNet(A, ba.u0 + ba.du() * fs, ba.v0 + ba.dv() * ft));
+      pb.push_back(evalNet(B, bb.u0 + bb.du() * fs, bb.v0 + bb.dv() * ft));
+    }
+  double best = std::numeric_limits<double>::infinity();
+  for (const Point3& p : pa)
+    for (const Point3& q : pb) best = std::min(best, nmath::distance(p, q));
+  return best;
+}
+
+}  // namespace
+
+// ── THE LEMMA THE PRUNE RESTS ON: the surface piece stays inside its sub-net's projection ──
+// slabSeparated is sound iff projecting the de Casteljau sub-net onto a direction brackets
+// the projection of the surface over that sub-box. Everything else in the predicate is
+// interval arithmetic. `evalNet` is an independent de Casteljau evaluator, so this is a fair
+// containment check rather than the machinery agreeing with itself.
+CC_TEST(slab_projection_contains_the_surface_over_the_subbox) {
+  std::mt19937 rng(20260720);
+  std::uniform_real_distribution<double> u01(0.0, 1.0);
+  std::uniform_real_distribution<double> sym(-1.0, 1.0);
+
+  const std::vector<ssi::ControlNet> nets = {
+      netFrom([](double x, double y) { return 0.35 * (x * x + y * y); }),
+      netFrom([](double x, double y) { return 0.35 * (x * x - y * y); }),
+      netFrom([](double x, double y) { return 0.2 * x + 0.1 * y; }),
+      netFrom([](double x, double y) { return 0.5 * std::sin(1.2 * x) * std::cos(0.9 * y); }),
+  };
+
+  int checked = 0, violations = 0;
+  for (const ssi::ControlNet& net : nets)
+    for (int trial = 0; trial < 40; ++trial) {
+      double u0 = u01(rng), u1 = u01(rng), v0 = u01(rng), v1 = u01(rng);
+      if (u1 < u0) std::swap(u0, u1);
+      if (v1 < v0) std::swap(v0, v1);
+      if (u1 - u0 < 1e-3 || v1 - v0 < 1e-3) continue;
+      const ssi::ParamBox box{u0, u1, v0, v1};
+
+      // A random direction — soundness must not depend on the choice.
+      nmath::Vec3 d{sym(rng), sym(rng), sym(rng)};
+      const double len = nmath::norm(d);
+      if (len < 1e-6) continue;
+      const nmath::Vec3 n{d.x / len, d.y / len, d.z / len};
+
+      double lo, hi;
+      projectedSubNet(net, kUnit, box, n, lo, hi);
+
+      const int m = 12;
+      for (int i = 0; i <= m; ++i)
+        for (int j = 0; j <= m; ++j) {
+          const Point3 p = evalNet(net, box.u0 + box.du() * double(i) / m,
+                                        box.v0 + box.dv() * double(j) / m);
+          const double t = p.x * n.x + p.y * n.y + p.z * n.z;
+          ++checked;
+          if (t < lo - 1e-12 || t > hi + 1e-12) ++violations;
+        }
+    }
+
+  std::printf("[slab] %d surface samples projected, %d outside the sub-net hull\n",
+              checked, violations);
+  CC_CHECK(checked > 10000);
+  CC_CHECK(violations == 0);
+}
+
+// ── SOUNDNESS: a claimed separation must survive dense sampling of both pieces ─────────
+// The predicate returns true only when it can PROVE the pieces are further apart than `gap`.
+// Sampling over-estimates a minimum, so a sampled distance below the claimed gap refutes it.
+CC_TEST(slab_separation_is_never_claimed_without_a_real_gap) {
+  std::mt19937 rng(20260721);
+  std::uniform_real_distribution<double> u01(0.0, 1.0);
+  std::uniform_real_distribution<double> sym(-1.0, 1.0);
+
+  // Pairs deliberately chosen to sit CLOSE — dishes at small offsets, tilts, and a saddle —
+  // so the predicate is exercised near its firing boundary rather than on trivially far apart
+  // geometry where any test passes.
+  const std::vector<std::pair<ssi::ControlNet, ssi::ControlNet>> pairs = {
+      {netFrom([](double x, double y) { return 0.35 * (x * x + y * y); }),
+       netFrom([](double x, double y) { return 0.35 * (x * x + y * y) + 0.004; })},
+      {netFrom([](double x, double y) { return 0.35 * (x * x + y * y); }),
+       netFrom([](double x, double y) { return 0.30 * (x * x + y * y) + 0.02; })},
+      {netFrom([](double x, double y) { return 0.2 * x + 0.1 * y; }),
+       netFrom([](double x, double y) { return 0.2 * x + 0.1 * y + 0.01; })},
+      {netFrom([](double x, double y) { return 0.35 * (x * x - y * y); }),
+       netFrom([](double x, double y) { return 0.02 + 0.1 * x; })},
+  };
+
+  const double gap = 1e-6;
+  int fired = 0, violations = 0;
+  double worstMargin = std::numeric_limits<double>::infinity();
+
+  // DESCENT-SIZED cells, not random spans of the whole domain. A sub-net hull is loose in
+  // proportion to the patch's curvature over the box, so on a full-domain box these close
+  // pairs never separate and the test would vacuously pass — as it did before this bound was
+  // put on the box size. Widths of 2–12% of the domain are the depths the prune actually runs at.
+  std::uniform_real_distribution<double> width(0.02, 0.12);
+
+  for (const auto& pr : pairs)
+    for (int trial = 0; trial < 60; ++trial) {
+      const double du = width(rng), dv = width(rng);
+      const double u0 = u01(rng) * (1.0 - du), v0 = u01(rng) * (1.0 - dv);
+      const ssi::ParamBox box{u0, u0 + du, v0, v0 + dv};
+
+      // Biased toward the sheets' own normal — the direction the caller supplies. A wildly
+      // random direction would rarely separate and the fired-count guard below would catch it.
+      const nmath::Vec3 n{0.3 * sym(rng), 0.3 * sym(rng), 1.0};
+
+      if (!ssi::slabSeparated(pr.first, kUnit, box, pr.second, kUnit, box, n, gap)) continue;
+      ++fired;
+      const double truth = sampledMinDistance(pr.first, box, pr.second, box);
+      if (truth <= gap) ++violations;
+      worstMargin = std::min(worstMargin, truth);
+    }
+
+  std::printf("[slab] %d separations claimed, %d refuted, tightest true gap %.3e\n",
+              fired, violations, worstMargin);
+  CC_CHECK(fired > 20);        // the predicate must actually be firing, or this proves nothing
+  CC_CHECK(violations == 0);   // SOUND: never claims a separation that is not there
+}
+
+// ── REACH: the near-parallel pose the axis-aligned test provably cannot prune ──────────
+// This is the whole reason the predicate exists. Two tilted sheets offset along their common
+// normal have overlapping AABBs at every depth — the descent enumerates the entire 4D box
+// product — yet one oriented projection settles the pair immediately.
+CC_TEST(slab_prunes_the_tilted_pair_the_aabb_test_cannot) {
+  const double dz = 1e-3;
+  const auto A = netFrom([](double x, double y) { return 0.6 * x + 0.4 * y; });
+  const auto B = netFrom([dz](double x, double y) { return 0.6 * x + 0.4 * y + dz; });
+
+  const ssi::ParamBox cell{0.25, 0.375, 0.5, 0.625};
+
+  // The AABB test cannot fire: the boxes overlap on every axis.
+  const ssi::Aabb bA = ssi::controlNetBound(A, kUnit, cell);
+  const ssi::Aabb bB = ssi::controlNetBound(B, kUnit, cell);
+  CC_CHECK(!ssi::aabbDisjoint(bA, bB, 1e-7));
+
+  // The sheet normal is (-0.6, -0.4, 1) normalized; the separation along it is dz/|(−.6,−.4,1)|.
+  const nmath::Vec3 n{-0.6, -0.4, 1.0};
+  CC_CHECK(ssi::slabSeparated(A, kUnit, cell, B, kUnit, cell, n, 1e-7));
+
+  // And it must NOT fire once the tolerance exceeds the true separation.
+  CC_CHECK(!ssi::slabSeparated(A, kUnit, cell, B, kUnit, cell, n, 1e-2));
+
+  // A direction lying IN the sheets separates nothing — soundness does not depend on `n`,
+  // only reach does.
+  CC_CHECK(!ssi::slabSeparated(A, kUnit, cell, B, kUnit, cell, nmath::Vec3{1, 0, 0.6}, 1e-7));
+
+  // Non-unit input must not scale the projection into a false separation: the same direction
+  // at 1000x length would read a 1000x separation if the predicate trusted its caller.
+  CC_CHECK(!ssi::slabSeparated(A, kUnit, cell, B, kUnit, cell,
+                               nmath::Vec3{-600.0, -400.0, 1000.0}, 1e-2));
+}
+
+// ── REFUSAL: no net, no direction, no claim ───────────────────────────────────────────
+CC_TEST(slab_refuses_what_it_cannot_prove) {
+  const auto A = netFrom([](double, double) { return 0.0; });
+  const auto B = netFrom([](double, double) { return 5.0; });
+  const nmath::Vec3 up{0, 0, 1};
+
+  CC_CHECK(ssi::slabSeparated(A, kUnit, kUnit, B, kUnit, kUnit, up, 1e-7));  // baseline: fires
+
+  ssi::ControlNet empty;
+  CC_CHECK(!ssi::slabSeparated(empty, kUnit, kUnit, B, kUnit, kUnit, up, 1e-7));
+  CC_CHECK(!ssi::slabSeparated(A, kUnit, kUnit, empty, kUnit, kUnit, up, 1e-7));
+
+  // A degenerate direction carries no information — refuse rather than divide by ~0.
+  CC_CHECK(!ssi::slabSeparated(A, kUnit, kUnit, B, kUnit, kUnit, nmath::Vec3{0, 0, 0}, 1e-7));
+
+  // Unlike patchGapBound, UNEQUAL DEGREES are fine here: each hull bounds its own surface, so
+  // no correspondence between the two nets is involved.
+  const auto B5 = netFrom([](double, double) { return 5.0; }, 5);
+  CC_CHECK(ssi::slabSeparated(A, kUnit, kUnit, B5, kUnit, kUnit, up, 1e-7));
 }
 
 CC_RUN_ALL()

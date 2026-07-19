@@ -695,4 +695,92 @@ CC_TEST(seed_coincidence_verdict_is_invariant_to_cell_size) {
   }
 }
 
+// ── SEPARATING-SLAB PRUNE: the near-parallel disjoint pose, and what must NOT change ────
+//
+// The AABB prune in `subdivide` is AXIS-ALIGNED, so it cannot fire on a pair whose separation
+// runs along no coordinate axis: the two boxes overlap at every depth and the descent
+// enumerates the whole 4D box product, handing every leaf to `refineRegion`. Measured on the
+// pose below at dz = 1e-3: 1 835 481 candidates in 533 s, every one of them waste (0 seeds,
+// nothing converged). Projecting both Bezier sub-nets onto ONE oriented direction settles it
+// in 0.056 s with 0 candidates.
+//
+// THE HALF OF THIS TEST THAT MATTERS IS THE SECOND HALF. A prune that is too aggressive shows
+// up as a *faster* run with *fewer* seeds, which reads as an improvement until someone notices
+// the missing geometry. So the transversal controls below pin seed and branch COUNTS, not
+// timings — they were measured identical with the prune on and off (only the candidate count,
+// which is pure cost, moves). If a future change to the predicate starts dropping real
+// crossings, these are the assertions that fail.
+CC_TEST(seed_slab_prune_kills_the_near_parallel_descent_without_losing_a_crossing) {
+  const std::vector<double> kn = {0, 0, 0, 0, 1, 1, 1, 1};
+  auto dish = [&](double dz, double c) {
+    std::vector<Point3> p;
+    for (int i = 0; i < 4; ++i)
+      for (int j = 0; j < 4; ++j) {
+        const double x = -1.0 + 2.0 * i / 3.0, y = -1.0 + 2.0 * j / 3.0;
+        p.push_back({x, y, dz + c * (x * x + y * y)});
+      }
+    return p;
+  };
+  // A plane at height z. NOTE this net's poles are NOT interpolated by the cubic patch, which
+  // is why the dish above sits at z ~ 0.233 at its centre rather than 0 — the plane heights
+  // here are chosen against the ACTUAL patch, not against c*(x^2+y^2).
+  auto plane = [&](double z) {
+    std::vector<Point3> p;
+    for (int i = 0; i < 4; ++i)
+      for (int j = 0; j < 4; ++j)
+        p.push_back({-1.0 + 2.0 * i / 3.0, -1.0 + 2.0 * j / 3.0, z});
+    return p;
+  };
+  auto seedOf = [&](const std::vector<Point3>& pa, const std::vector<Point3>& pb) {
+    auto A = ssi::makeBSplineAdapter(3, 3, pa, 4, 4, kn, kn);
+    auto B = ssi::makeBSplineAdapter(3, 3, pb, 4, 4, kn, kn);
+    ssi::SeedOptions o;
+    o.initialGridU = 6;
+    o.initialGridV = 6;
+    o.minPatchFrac = 1.0 / 64;  // the shipped floor — the real configuration
+    return ssi::seed_intersection(A, B, o);
+  };
+
+  // (1) THE TARGET POSE. Two dishes 1e-3 apart: no crossing anywhere, no axis separates them.
+  //     Without the prune this single case takes ~9 minutes.
+  {
+    const ssi::SeedSet ss = seedOf(dish(0.0, 0.35), dish(1e-3, 0.35));
+    CC_CHECK(ss.candidateRegions < 1000);  // was 1 835 481
+    CC_CHECK(ss.seeds.empty());            // and it was always honestly empty
+  }
+  // (2) The same pair an order of magnitude further apart — 683 017 candidates before.
+  {
+    const ssi::SeedSet ss = seedOf(dish(0.0, 0.35), dish(1e-2, 0.35));
+    CC_CHECK(ss.candidateRegions < 1000);
+    CC_CHECK(ss.seeds.empty());
+  }
+  // (3) TRANSVERSAL CONTROLS — every one of these has a real crossing, and the seed/branch
+  //     counts here are the ones measured with the prune DISABLED. They must not move.
+  {
+    const ssi::SeedSet ss = seedOf(dish(0.0, 0.35), plane(0.30));
+    CC_CHECK(ss.seeds.size() == 1);
+    CC_CHECK(ss.branchCount() == 1);
+  }
+  {
+    const ssi::SeedSet ss = seedOf(dish(0.0, 0.35), plane(0.40));
+    CC_CHECK(ss.seeds.size() == 1);
+    CC_CHECK(ss.branchCount() == 1);
+  }
+  {
+    // The plane cuts high on the dish, where the locus breaks into four param-space pieces.
+    const ssi::SeedSet ss = seedOf(dish(0.0, 0.35), plane(0.50));
+    CC_CHECK(ss.seeds.size() == 4);
+    CC_CHECK(ss.branchCount() == 4);
+  }
+  // (4) The coincident pair still goes through the CERTIFICATE, not the prune — a coincident
+  //     pair can never separate along any direction, so this pins that the two mechanisms do
+  //     not interfere.
+  {
+    const ssi::SeedSet ss = seedOf(dish(0.0, 0.35), dish(0.0, 0.35));
+    CC_CHECK(ss.candidateRegions == 144);
+    CC_CHECK(ss.coincidentRegions.size() == 1);
+    CC_CHECK(ss.seeds.empty());
+  }
+}
+
 int main() { return cctest::run_all(); }

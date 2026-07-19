@@ -14,7 +14,7 @@ Read with [MOAT-ROADMAP.md](MOAT-ROADMAP.md) §M1, which carries the geometry hi
 | | |
 |---|---|
 | Host suites | `cmake --build build-host-verify --target <t> -j8 && ./build-host-verify/<t>` |
-| | marching 26/26 (~5 min) · seeding 15/15 (~55 s) · ssi 11/11 · s4f 7/7 · s4_classification 22/22 (~10 min) · exact_fuzz 147 agreed/0 disagreed · patch_gap 6/6 |
+| | marching 26/26 (~5 min) · seeding 16/16 (~55 s) · ssi 11/11 · s4f 7/7 · s4_classification 22/22 (~10 min) · exact_fuzz 147 agreed/0 disagreed · patch_gap 10/10 |
 | Host parity gates | `bash scripts/run-host-sim-parity.sh <harness>` · `--list` enumerates |
 | | ssi-marching 22/0 · curved-wall-cut 68/0 · abi 11/11 |
 | OCCT | source-built 7.6 at `/home/leonardo/work/occt-build/install` (the distro package **cannot** build mesh-touching harnesses — it omits `NCollection_AliasedArray.hxx`) |
@@ -25,7 +25,30 @@ Read with [MOAT-ROADMAP.md](MOAT-ROADMAP.md) §M1, which carries the geometry hi
 
 ---
 
-## 1. `refineRegion` separating-slab prune — **highest value; prune validated by a corpus run**
+## 1. Separating-slab prune — ✅ **LANDED**, see [MOAT-ROADMAP.md](MOAT-ROADMAP.md) §M1 A2
+
+Implemented as `slabSeparated` in `src/native/ssi/patch_gap.h`, called from `subdivide` right
+after `aabbDisjoint`. Verified against a saved baseline archive: **seeds, branches and
+coincidence verdicts identical on all 34 co-resident family poses and all 11 bench poses**;
+target pose 1 835 481 → 0 candidates, 533 s → 0.056 s. Gate A green across six suites.
+
+**What it did NOT close.** The prune fires only while `κh²/2 < dz` (see the roadmap for why the
+midpoint normal makes the patch extent second-order). Below ~3e-4 on these operands nothing
+separates at reachable cell sizes. The `wave × wave` family sweep was trimmed to the two poses
+ABOVE that threshold for runtime — do not read its 1 891 467 → 0 as covering the band.
+
+**Still owed:** the simulator gate (item 6). This changes candidate sets on transversal poses,
+not only the disjoint one, so expect MORE than the one benign parity line originally predicted.
+
+**Do NOT move this predicate to the refine site.** `refineRegion` clamps into the FULL domain, so
+it is effectively a global solve — **97.8% of accepted refines converge outside their own candidate
+box**, and filtering there drops 25 324 / 85 678 / 49 284 seeds on the transversal controls. The
+prune is sound in `subdivide` because a descendant's param boxes are contained in its parent's,
+and for no other reason.
+
+<details><summary>Original entry (superseded)</summary>
+
+### `refineRegion` separating-slab prune — highest value; prune validated by a corpus run
 
 **The measured problem.** `refineRegion` runs **once per candidate region**, not once per branch:
 1 835 481 calls for 1 835 481 candidates at **205–227 µs** each = **65% of wall**, `least_squares`
@@ -75,6 +98,8 @@ family to completion** — 40 poses were built and emitted no anomaly but did no
 target pose as a regression test; (d) simulator gate — `native_ssi_marching_parity`'s
 bspline×bspline line *does* move (`onCurve 1.65e-07 → 1.74e-07`, benign, 3–4 orders under
 tolerance, but not byte-identical).
+
+</details>
 
 ---
 

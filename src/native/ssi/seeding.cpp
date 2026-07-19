@@ -240,11 +240,27 @@ void subdivide(const SurfaceAdapter& A, const SurfaceAdapter& B,
                double minFracU_B, double minFracV_B, double gap,
                std::vector<CandidateRegion>& out,
                bool adaptive, double adaptiveMinFrac, double adaptiveOverlapFrac,
+               bool slabPrune,
                const Aabb* knownA = nullptr, const Aabb* knownB = nullptr) {
   const Aabb boxA = knownA ? *knownA : A.bound(ba);
   const Aabb boxB = knownB ? *knownB : B.bound(bb);
   if (!boxA.valid() || !boxB.valid()) return;
   if (aabbDisjoint(boxA, boxB, gap)) return;  // prune: no intersection in this region
+
+  // ORIENTED SEPARATING-SLAB PRUNE (see slabSeparated in patch_gap.h for the proof).
+  //
+  // The axis-aligned test above cannot fire on a near-parallel pair separated along a non-axis
+  // direction: the AABBs overlap at every depth and the descent enumerates the whole 4D box
+  // product. Projecting both restricted Bézier sub-nets onto ONE oriented direction — A's
+  // midpoint normal — settles those cases. The convex-hull property makes a separated pair of
+  // projected intervals a PROOF that no crossing exists in this box pair, and every descendant's
+  // param boxes are contained in this one's, so the whole subtree is crossing-free.
+  //
+  // Soundness is independent of the direction chosen: a poor `n` merely fails to separate.
+  if (slabPrune &&
+      slabSeparated(A.bezierNet, A.domain, ba, B.bezierNet, B.domain, bb,
+                    A.normal(ba.uMid(), ba.vMid()).vec(), gap))
+    return;
 
   // Are both patches below the size/depth threshold? Then it is a candidate region.
   const bool aSmall = ba.du() <= minFracU_A * A.domain.du() &&
@@ -275,16 +291,16 @@ void subdivide(const SurfaceAdapter& A, const SurfaceAdapter& B,
     // B's box is unchanged in both children → hand `boxB` down instead of recomputing it twice.
     auto [a0, a1] = halves(ba);
     subdivide(A, B, a0, bb, depth + 1, maxDepth, minFracU_A, minFracV_A, minFracU_B, minFracV_B, gap, out,
-              adaptive, adaptiveMinFrac, adaptiveOverlapFrac, nullptr, &boxB);
+              adaptive, adaptiveMinFrac, adaptiveOverlapFrac, slabPrune, nullptr, &boxB);
     subdivide(A, B, a1, bb, depth + 1, maxDepth, minFracU_A, minFracV_A, minFracU_B, minFracV_B, gap, out,
-              adaptive, adaptiveMinFrac, adaptiveOverlapFrac, nullptr, &boxB);
+              adaptive, adaptiveMinFrac, adaptiveOverlapFrac, slabPrune, nullptr, &boxB);
   } else {
     // Symmetrically: A's box is unchanged in both children.
     auto [b0, b1] = halves(bb);
     subdivide(A, B, ba, b0, depth + 1, maxDepth, minFracU_A, minFracV_A, minFracU_B, minFracV_B, gap, out,
-              adaptive, adaptiveMinFrac, adaptiveOverlapFrac, &boxA, nullptr);
+              adaptive, adaptiveMinFrac, adaptiveOverlapFrac, slabPrune, &boxA, nullptr);
     subdivide(A, B, ba, b1, depth + 1, maxDepth, minFracU_A, minFracV_A, minFracU_B, minFracV_B, gap, out,
-              adaptive, adaptiveMinFrac, adaptiveOverlapFrac, &boxA, nullptr);
+              adaptive, adaptiveMinFrac, adaptiveOverlapFrac, slabPrune, &boxA, nullptr);
   }
 }
 
@@ -1364,10 +1380,17 @@ SeedSet seed_intersection(const SurfaceAdapter& A, const SurfaceAdapter& B,
   // It emits an ordinary candidate and does NOT write a CoincidentRegion or set `suppressed`:
   // deciding that a region is coincident stays `detectOverlap`'s job, which probes the agreement
   // BOUNDARY. This only declines to subdivide something it has proven uniform.
-  const bool certifyEligible = bothFreeformAdapt && A.hasBezierNet && B.hasBezierNet &&
+  const bool bothNets = bothFreeformAdapt && A.hasBezierNet && B.hasBezierNet;
+  const bool certifyEligible = bothNets &&
                                patchGapBound(A.bezierNet, A.domain, A.domain,
                                              B.bezierNet, B.domain, B.domain) <= onSurfTol;
   int certifiedCells = 0;
+
+  // The separating-slab prune shares the certificate's eligibility gate — both need exact
+  // single-span non-rational nets on BOTH operands — but not its root precondition, which is
+  // specific to the coincidence direction. An elementary/rational/multi-span operand keeps
+  // `hasBezierNet == false`, so every such pair takes the byte-identical unchanged path.
+  const bool slabPrune = bothNets;
 
   std::vector<CandidateRegion> candidates;
   for (int i = 0; i < gu; ++i) {
@@ -1393,7 +1416,7 @@ SeedSet seed_intersection(const SurfaceAdapter& A, const SurfaceAdapter& B,
       }
       subdivide(A, B, ba, B.domain, 0, opts.maxDepth,
                 minFrac, minFrac, minFrac, minFrac, gap, candidates,
-                adaptive, adaptiveMinFrac, adaptiveOverlapFrac);
+                adaptive, adaptiveMinFrac, adaptiveOverlapFrac, slabPrune);
     }
   }
   if (certifiedCells > 0 && std::getenv("CYBERCAD_SSI_SEED_DIAG") != nullptr)

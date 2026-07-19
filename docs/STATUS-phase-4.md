@@ -2419,7 +2419,11 @@ CTest **25/25**, adding `test_native_ssi_seeding` (#25) and `test_native_numeric
 `test_native_ssi` (#19) and `test_native_tessellate` (#10) stay green.
 
 **Native-vs-OCCT `GeomAPI_IntSS` recall parity gate (Gate 2)** — `tests/sim/native_ssi_seeding_recall.mm`
-/ `native_ssi_seeding_parity.mm`, booted iOS simulator, arm64: the same operands built as OCCT
+/ `native_ssi_seeding_parity.mm` — ⚠ CORRECTION (2026-07-19): this harness did NOT COMPILE
+  from creation until 2026-07-19 (`gp_Dir::Magnitude()` does not exist), so it never ran and the
+  claim below was never true. Now fixed and running on the Linux host: 1 passed / 3 failed, of
+  which two failures are denominator artifacts — see the harness header. Original text follows:
+  / `native_ssi_seeding_parity.mm`, booted iOS simulator, arm64: the same operands built as OCCT
 `Geom_*Surface`, run through `GeomAPI_IntSS`; native per-pair **branch recall** =
 (native branches carrying ≥1 seed) ÷ (analytic transversal branch count). All pairs are the
 freeform / skew-quadric cases S1 defers as `NotAnalytic`. Seed on-surface residual measured via
@@ -2465,7 +2469,8 @@ Native library (OCCT-free, `src/native/ssi/`; refine guarded by `CYBERCAD_HAS_NU
 Tests:
 
 - `tests/native/test_native_ssi_seeding.cpp` — host Gate-1 (no OCCT; NUMSCI-gated).
-- `tests/sim/native_ssi_seeding_recall.mm` + `native_ssi_seeding_parity.mm` — sim Gate-2 native-vs-OCCT
+- `tests/sim/native_ssi_seeding_recall.mm` (green) + `native_ssi_seeding_parity.mm` (⚠ never
+  compiled until 2026-07-19; see the correction above) — sim Gate-2 native-vs-OCCT
   recall parity (own `main()`; `.mm` files already excluded by the `run-sim-suite.sh` `*.cpp` find, so
   the 221 count is structurally unchanged — the SKIP entries are intent-documenting).
 

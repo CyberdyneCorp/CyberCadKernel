@@ -736,7 +736,8 @@ inline bool paramBoxesAdjacent(const ParamBox& a, const ParamBox& b,
 // a distinct branch is a separate param-space component (its regions don't touch the
 // first's). This is scale-free — no 3D radius to tune — and immune to the along-branch
 // "sparse stretch" that breaks a metric 3D chain. Clustering BEFORE the refine also
-// makes the expensive least_squares run once per branch (per cluster representative),
+// makes the expensive least_squares refine run per cluster REPRESENTATIVE for retention purposes
+// (note: the refine itself still runs per candidate region — see the corrected note below),
 // not once per candidate region — the key performance decision. Deterministic
 // (input-order-stable union-find). Returns, for each region, its 0..K-1 cluster id;
 // `numClusters` is set to K.
@@ -897,7 +898,12 @@ std::vector<int> clusterRegions(const std::vector<CandidateRegion>& regs,
 // (TangentPoint / TangentCurve / NearTangentTransversal / Undecided) instead of the
 // blunt counter (which is kept as a compatibility summary). A cluster where no region
 // converges to a crossing is a refine miss (dropped, never faked). Running the expensive
-// least_squares ≈ once per branch (not once per candidate region) is the key perf choice.
+// ⚠ THIS COMMENT WAS FALSE AND IS CORRECTED. `refineRegion` runs ONCE PER CANDIDATE REGION, not
+// once per branch — and always has: the first commit of this file already looped it over every
+// region. Only RETENTION was ever per-cluster. Measured on a disjoint near-parallel pair:
+// 1,835,481 calls for 1,835,481 candidates, 205-227 us each, 65% of total wall clock, of which
+// least_squares is 99.9%. On that pose every one of those refines is waste (0 converged).
+// The perf lever is therefore reducing the CANDIDATE COUNT, not the per-branch framing below.
 //
 // Per-cluster accumulators for the refine pass. `xversal[cid]` holds every accepted
 // transversal seed of cluster `cid` (bounded); a post-pass single-linkage groups them into

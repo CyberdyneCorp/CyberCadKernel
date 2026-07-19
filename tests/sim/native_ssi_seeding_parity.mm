@@ -47,6 +47,32 @@
 // "== N passed, M failed ==". Flushes and std::_Exit (OCCT static teardown in the
 // trimmed static build is not exit-clean — same rationale as native_ssi_parity).
 //
+// ⚠ READ BEFORE ACTING ON A FAILURE HERE — THE RECALL DENOMINATOR IS WRONG.
+//
+// This harness did not compile from the day it was written until 2026-07-19 (gp_Dir has no
+// Magnitude(); see the fixed line below), so it had NEVER RUN. Its first execution reports
+// 1 passed / 3 failed — but TWO of those three failures are ARTIFACTS OF THIS HARNESS, not
+// seeder misses, because `occtCurves` counts OCCT's arc pieces rather than connected components:
+//
+//   * sphere x sphere  recall=0.50 (1/2). Two unit spheres meet in EXACTLY ONE circle. OCCT
+//     returns it as 2 trimmed curves on x=0.5, r=0.866, t=[0,pi] and [pi,2pi], sharing both
+//     endpoints — 1 component, 0 junctions. It bisected the circle at the parameter seam. The
+//     native seed lies on it to 1.57e-16. Native is RIGHT and the denominator is wrong.
+//   * skew cyl unequal recall=0.67 (2/3). 3 arcs, 3 nodes, 0 junctions = 2 true loops. Native
+//     emitted one seed on each. Native is RIGHT.
+//
+// The sibling gate `native_ssi_seeding_recall`, which DOES compile and run, passes these same
+// pairs at recall=1.00 — an in-repo gate already disagrees with this one's model.
+//
+//   * bspline x plane  recall=0.03 (1/40) is PLAUSIBLY REAL and is the one worth working: 40 arcs
+//     over 32 nodes with 16 junctions of degree > 2, i.e. one connected saddle network. Marching
+//     terminates at junctions, so a single seed cannot cover it. No currently-executing gate
+//     covers this case.
+//
+// DO NOT "fix" the seeder to raise the first two numbers. The repair belongs here: merge arcs
+// meeting at degree-2 nodes into one component and keep arcs at genuine junctions distinct. The
+// hardcoded expectations (1, 2, 1) are already correct against TRUE components.
+//
 #include "native/ssi/native_ssi.h"
 
 #include <algorithm>
@@ -128,7 +154,11 @@ double crossingSineOnOcct(const Handle(Geom_Surface)& sa, const Handle(Geom_Surf
   GeomLProp_SLProps la(sa, ua, va, 1, 1e-9), lb(sb, ub, vb, 1, 1e-9);
   if (!la.IsNormalDefined() || !lb.IsNormalDefined()) return -1.0;
   gp_Dir na = la.Normal(), nb = lb.Normal();
-  const double s = na.Crossed(nb).Magnitude();  // ‖n₁ × n₂‖ for unit normals
+  // gp_Dir::Crossed returns a NORMALIZED gp_Dir, so its magnitude is identically 1 — and gp_Dir
+  // has no Magnitude() member at all, so this line did NOT COMPILE and this harness has never
+  // run since it was written. Go through gp_Vec, as the sibling harnesses already do
+  // (native_ssi_marching_parity.mm:180, native_ssi_s4_classification_parity.mm:159).
+  const double s = gp_Vec(na).Crossed(gp_Vec(nb)).Magnitude();  // ‖n₁ × n₂‖ for unit normals
   return s;
 }
 

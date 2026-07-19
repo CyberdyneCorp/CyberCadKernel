@@ -75,13 +75,20 @@
 //   The NativeEngine returns a NULL native Shape for a sub-case profile.h defers and
 //   FORWARDS to OCCT (never fakes). We assert two such sub-cases still return a VALID
 //   result under cc_set_engine(1) and LABEL them [fallback]:
-//     A. kind-3 SPLINE outer edge (cc_solid_extrude_profile) — spline extrude deferred.
 //     B. OFF-AXIS closed-circle revolve (cc_solid_revolve_profile, a full-circle
 //        generatrix centred off the axis → a TORUS surface of revolution, no native
 //        Torus yet) — deferred.
 //   Each is built once under OCCT (the oracle) and once under native; the native
 //   result must equal the OCCT result (native transparently delegated), proving the
 //   fallthrough path is live and honest.
+//
+//   ⚠ SUB-CASE A WAS RECLASSIFIED. The kind-3 spline extrude is NO LONGER deferred —
+//   residuals.h now fits the NURBS and builds a true spline cap edge + spline-ruled
+//   wall, measured E=12 vs OCCT's 6 and vol 45.5547 vs 45.600000 (rel 9.92e-04). The
+//   old [fallback] contract asserted bit-identity (rel < 1e-9), which held only WHILE
+//   native delegated; once native started building its own solid no tolerance could
+//   rescue it. It is now case 6 in the native list, deflection-bounded like the other
+//   curved ops. Only sub-case B (the torus revolve) is still a genuine deferral.
 //
 // Output: [NCPROF] PASS/FAIL lines with per-op deltas + a native/fallback tag, then
 // "== N passed, M failed ==". Flushes stdout and std::_Exit (the trimmed static-OCCT
@@ -400,7 +407,7 @@ CCShapeId buildArcRevolveSphere() {
 //   so BRepBuilderAPI_MakeFace succeeds and OCCT builds a valid spline-face prism.
 //   The spline segment makes native's resolveTypedOuter return NULL (any kind-3 defers
 //   the whole profile), so native forwards to this OCCT build — the deferral is live.
-CCShapeId buildSplineProfileDeferred() {
+CCShapeId buildSplineProfileNative() {
     CCProfileSeg segs[2] = {};
     segs[0].kind = 3;                          // B-spline arc through the 4 points
     segs[0].ptOffset = 0; segs[0].ptCount = 4;
@@ -447,13 +454,21 @@ int main() {
         {"revolve_profile line-tube", &buildLineRevolveTube, /*planar*/ false, /*defl*/ 0.02},
         // 5) On-axis arc-profile revolve → sphere, volume 36π. Curved → deflection-bounded.
         {"revolve_profile arc-sphere", &buildArcRevolveSphere, /*planar*/ false, /*defl*/ 0.02},
+        // 6) kind-3 SPLINE outer edge. RECLASSIFIED from deferred: native no longer falls
+        //    through here — residuals.h fits the NURBS and builds a true spline cap edge +
+        //    spline-ruled wall. Measured E=12 vs OCCT's 6 (per-patch edges), vol 45.5547 vs
+        //    45.600000 (rel 9.92e-04), bboxes agreeing to ~1e-3. The old [fallback] contract
+        //    asserted rel < 1e-9, which was only ever valid WHILE native delegated; once it
+        //    started building its own solid that assertion could not pass. Curved spline wall
+        //    ⇒ deflection-bounded, like every other curved case here.
+        //    (The same fixture is already classified native in native_geomcompletion_parity's
+        //    "spline extrude" case — this harness's classification was the stale one.)
+        {"extrude_profile spline", &buildSplineProfileNative, /*planar*/ false, /*defl*/ 0.01},
     };
 
     for (const OpCase& s : cases) runNativeOp(s);
 
     // Intentionally-deferred sub-cases: native returns NULL → forwards to OCCT.
-    runFallbackOp("extrude_profile spline", &buildSplineProfileDeferred,
-                  "kind-3 spline outer edge");
     runFallbackOp("revolve_profile offaxis-arc", &buildOffAxisArcRevolveDeferred,
                   "off-axis closed circle → torus surface of revolution");
 

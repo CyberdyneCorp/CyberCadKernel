@@ -52,11 +52,19 @@ ParamBox knotDomain(int degU, int degV, int nRows, int nCols,
 // count (density) signal for scale-adaptive seeding.
 SurfaceAdapter freeformAdapter(ControlNet net, ParamBox domain, int degU, int degV,
                                std::function<Point3(double, double)> point,
-                               std::function<Dir3(double, double)> normal) {
+                               std::function<Dir3(double, double)> normal,
+                               bool rational = false) {
   SurfaceAdapter a;
   a.domain = domain;
   a.point = std::move(point);
   a.normal = std::move(normal);
+  // Expose the net ONLY for a single-span non-rational Bézier — the exact preconditions
+  // patchGapBound's convex-hull proof needs. See SurfaceAdapter::bezierNet.
+  if (!rational && net.nRows == degU + 1 && net.nCols == degV + 1 &&
+      net.poles.size() == static_cast<std::size_t>(net.nRows) * net.nCols) {
+    a.bezierNet = net;
+    a.hasBezierNet = true;
+  }
   // Bound = the INTERSECTION of two independently sound bounds: the control-net
   // convex hull (tight where the net localizes — many-span B-splines) AND the
   // sampled+Lipschitz-margin bound (which always TIGHTENS with the sub-box, covering
@@ -136,8 +144,11 @@ SurfaceAdapter makeNurbsAdapter(int degreeU, int degreeV,
     // Rational normal (surfaceNormal applies the quotient rule internally for wᵢ>0).
     return math::surfaceNormal(degreeU, degreeV, grid, weights, knotsU, knotsV, u, v);
   };
+  // RATIONAL: pass rational=true so no Bézier net is exposed. The projected poles are a sound
+  // AABB hull, but the difference of two rationals is not a Bézier of pole differences, so
+  // patchGapBound's proof does not apply here.
   return freeformAdapter(std::move(net), domain, degreeU, degreeV,
-                         std::move(point), std::move(normal));
+                         std::move(point), std::move(normal), /*rational=*/true);
 }
 
 #ifdef CYBERCAD_HAS_NUMSCI

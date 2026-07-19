@@ -87,6 +87,17 @@ KERNEL_ARCHIVE="$REPO/build-host-occt/libcybercadkernel.a"
 NATIVE_SRCS=()
 if [ -f "$KERNEL_ARCHIVE" ]; then
   echo "   kernel : $KERNEL_ARCHIVE (OCCT adapter live)"
+  # STALENESS GUARD. The harness compiles against the CURRENT headers but links this PREBUILT
+  # archive. If a header changed a struct layout since the archive was built, the two disagree
+  # and the result is a SEGFAULT at run time with no diagnostic — which is exactly what happened
+  # when SurfaceAdapter gained a field. Fail loudly instead.
+  NEWER="$(find "$REPO/src" -name '*.h' -newer "$KERNEL_ARCHIVE" -print -quit 2>/dev/null)"
+  if [ -n "$NEWER" ]; then
+    echo "── STALE ARCHIVE: $(basename "$NEWER") is newer than libcybercadkernel.a."
+    echo "   Layouts may disagree and the harness would segfault. Rebuild first:"
+    echo "     cmake --build build-host-occt --target cybercadkernel -j\$(nproc)"
+    exit 1
+  fi
 else
   KERNEL_ARCHIVE=""
   while IFS= read -r src; do NATIVE_SRCS+=("$src"); done \

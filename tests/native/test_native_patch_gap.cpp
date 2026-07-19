@@ -10,6 +10,7 @@
 //   * the quartic contact, which shows why this bound must NEVER be used per-cell without a
 //     root-level precondition (see patch_gap.h).
 #include "native/ssi/patch_gap.h"
+#include "native/ssi/seeding.h"
 
 #include "harness.h"
 
@@ -214,6 +215,69 @@ CC_TEST(patch_gap_is_tight_on_coincident_copies) {
     const double bound = ssi::patchGapBound(A, kUnit, full, B, kUnit, full);
     // A pure translation is reproduced exactly by the pole differences.
     CC_CHECK(std::fabs(bound - dz) < 1e-12 + 1e-9 * dz);
+  }
+}
+
+// ── THE ADAPTER HOOK: exposed only where the proof holds ──────────────────────────────
+// patchGapBound needs real poles, which the adapter's `bound` closure captures privately.
+// SurfaceAdapter::bezierNet exposes them, but ONLY under the conditions the convex-hull proof
+// requires. Getting this gate wrong is how a rational or multi-span surface would silently get
+// an unsound bound, so it is pinned here rather than left to the factories.
+CC_TEST(adapter_exposes_a_bezier_net_only_where_the_proof_holds) {
+  std::vector<Point3> poles;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j) poles.push_back({double(i), double(j), 0.1 * i * j});
+
+  // (1) A Bezier surface IS a single-span non-rational patch — the net must be exposed,
+  //     and it must be the actual poles, not a copy of something else.
+  {
+    const auto A = ssi::makeBezierAdapter(poles, 4, 4);
+    CC_CHECK(A.hasBezierNet);
+    CC_CHECK(A.bezierNet.nRows == 4 && A.bezierNet.nCols == 4);
+    CC_CHECK(A.bezierNet.poles.size() == poles.size());
+    double worst = 0.0;
+    for (std::size_t k = 0; k < poles.size(); ++k)
+      worst = std::max(worst, nmath::distance(A.bezierNet.poles[k], poles[k]));
+    CC_CHECK(worst == 0.0);
+    // ...and it is usable: a surface against itself bounds to zero.
+    CC_CHECK(ssi::patchGapBound(A.bezierNet, A.domain, A.domain,
+                                A.bezierNet, A.domain, A.domain) < 1e-12);
+  }
+
+  // (2) A single-span B-spline (nPoles == degree+1) is the same patch by another name.
+  {
+    const std::vector<double> kn = {0, 0, 0, 0, 1, 1, 1, 1};
+    const auto B = ssi::makeBSplineAdapter(3, 3, poles, 4, 4, kn, kn);
+    CC_CHECK(B.hasBezierNet);
+  }
+
+  // (3) A MULTI-SPAN B-spline must refuse — splitting it into Bezier patches needs Boehm
+  //     knot insertion, which is not implemented, so no net may be handed out.
+  {
+    std::vector<Point3> p5;
+    for (int i = 0; i < 5; ++i)
+      for (int j = 0; j < 4; ++j) p5.push_back({double(i), double(j), 0.0});
+    const std::vector<double> kuMulti = {0, 0, 0, 0, 0.5, 1, 1, 1, 1};  // 5 poles, deg 3 → 2 spans
+    const std::vector<double> kv = {0, 0, 0, 0, 1, 1, 1, 1};
+    const auto C = ssi::makeBSplineAdapter(3, 3, p5, 5, 4, kuMulti, kv);
+    CC_CHECK(!C.hasBezierNet);
+  }
+
+  // (4) RATIONAL must refuse. The projected poles are a sound AABB hull, but the difference
+  //     of two rationals is not a Bezier of pole differences — the proof does not apply.
+  {
+    const std::vector<double> kn = {0, 0, 0, 0, 1, 1, 1, 1};
+    std::vector<double> w(poles.size(), 1.0);
+    w[5] = 2.5;  // genuinely rational
+    const auto D = ssi::makeNurbsAdapter(3, 3, poles, w, 4, 4, kn, kn);
+    CC_CHECK(!D.hasBezierNet);
+  }
+
+  // (5) ELEMENTARY surfaces have no control net at all.
+  {
+    nmath::Plane pl{nmath::Ax3{{0, 0, 0}, nmath::Dir3{1, 0, 0}, nmath::Dir3{0, 1, 0}, nmath::Dir3{0, 0, 1}}};
+    const auto E = ssi::makePlaneAdapter(pl, ssi::ParamBox{0, 1, 0, 1});
+    CC_CHECK(!E.hasBezierNet);
   }
 }
 

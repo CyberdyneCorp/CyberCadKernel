@@ -117,6 +117,21 @@ inline bool aabbDisjoint(const Aabb& a, const Aabb& b, double gap = 0.0) noexcep
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ControlNet — a surface's control-point grid. Declared BEFORE SurfaceAdapter
+// because the adapter can carry one by value (see SurfaceAdapter::bezierNet).
+// ─────────────────────────────────────────────────────────────────────────────
+/// Grid of control points, row-major: pole(i,j) = poles[i*nCols + j], i over U.
+/// For a NURBS surface pass the PROJECTED poles Pᵢ (not homogeneous wᵢ·Pᵢ): with
+/// wᵢ > 0 the rational surface point is a convex combination of the Pᵢ, so their
+/// hull still bounds it.
+struct ControlNet {
+  std::vector<Point3> poles;
+  int nRows = 0;  // #poles in U
+  int nCols = 0;  // #poles in V
+  Point3 pole(int i, int j) const { return poles[static_cast<std::size_t>(i) * nCols + j]; }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SurfaceAdapter — the single subdivision interface every surface kind flows
 // through. Holds the surface's full parameter domain, a point/normal evaluator, and
 // a `bound(box)` that returns a CONSERVATIVE AABB of the surface over a param
@@ -169,20 +184,28 @@ struct SurfaceAdapter {
   /// operand (e.g. plane ∩ B-spline) never triggers the freeform-density adaptivity; only
   /// FREEFORM↔FREEFORM pairs do. A signal only; never affects a bound or the gate.
   int freeformSpanCount = 0;
+
+  /// EXACT single-span NON-RATIONAL Bézier control net, when this surface is one; otherwise
+  /// `hasBezierNet` is false and `bezierNet` is empty.
+  ///
+  /// Exposed for `patchGapBound` (ssi/patch_gap.h), which needs the actual poles to build the
+  /// difference net — the `bound` closure above captures its net privately and cannot supply it.
+  /// The conditions are exactly the ones that bound's proof requires and nothing looser:
+  ///
+  ///   * SINGLE SPAN (nPoles == degree+1 per direction). A multi-span B-spline would first need
+  ///     Boehm knot insertion to be split into Bézier patches; that path is not validated, so
+  ///     such surfaces expose no net and simply do not get certified.
+  ///   * NON-RATIONAL. The difference of two rationals is NOT a Bézier of pole differences, so
+  ///     the convex-hull argument does not hold. A NURBS adapter must never set this, even though
+  ///     its projected poles are perfectly good for the AABB hull bound above.
+  ///
+  /// A consumer that finds `hasBezierNet == false` must refuse, never approximate — refusing
+  /// costs reach only, whereas a wrong bound loses geometry silently.
+  ControlNet bezierNet{};
+  bool hasBezierNet = false;
 };
 
 // ── freeform (control-net convex hull) bound ───────────────────────────────────
-
-/// Grid of control points, row-major: pole(i,j) = poles[i*nCols + j], i over U.
-/// For a NURBS surface pass the PROJECTED poles Pᵢ (not homogeneous wᵢ·Pᵢ): with
-/// wᵢ > 0 the rational surface point is a convex combination of the Pᵢ, so their
-/// hull still bounds it.
-struct ControlNet {
-  std::vector<Point3> poles;
-  int nRows = 0;  // #poles in U
-  int nCols = 0;  // #poles in V
-  Point3 pole(int i, int j) const { return poles[static_cast<std::size_t>(i) * nCols + j]; }
-};
 
 namespace detail {
 

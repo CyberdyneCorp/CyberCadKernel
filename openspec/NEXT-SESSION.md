@@ -259,21 +259,30 @@ All three runs green; all five changes confirmed and **archived**
 | `run-sim-native-chain-seam-weld.sh` | **61 passed / 0 failed.** FUSE full OpCase green at d=0.010 and d=0.005 (vol rel 3.278e-03 / 1.824e-03, classify disagree=0). |
 | full suite (acceptance bar) | **221 passed / 0 failed** — but see the script-staleness note below. |
 
-**⚠ `run-sim-suite.sh` is stale in three ways and could not run as-is (Linux follow-up; the Mac
-session's lane excluded `scripts/`).** The 221/221 above was obtained by reproducing the script's
-compile/link/spawn exactly, with these corrections — each is a one-line script fix:
+**✅ `run-sim-suite.sh` staleness FIXED (2026-07-20).** The two corrections that actually live in
+`run-sim-suite.sh` are now applied in the script (verified by inspection + `bash -n` + matching the
+sibling sim runners); the third belongs to the native runners, not this suite — see below.
 
-1. **numsci glob** (also in the marching/seam-weld runners): `build-numsci.sh iossim` writes
-   `build-numsci/iossim/libnumsci_iossim_arm64.a`, but the fallback glob is
-   `build-numsci/*iossim*.a` (parent dir) and misses it. Workaround used:
-   `CYBERCAD_NUMSCI_DIR=$REPO/build-numsci/iossim` (the explicit-dir branch works).
-2. **Missing `-lTKHLR`**: the GS1c HLR work put `hlr_project` into `occt_drafting.o`, so any
-   freshly built `libcybercadkernel-SIMULATORARM64.a` needs TKHLR; the suite's `TKS` list predates
-   it. (The committed archive was also stale — rebuilt with `build-xcframework.sh`, which is what
-   exposed this.)
-3. **SKIP list misses `native_vs_occt_bench.cpp` and `native_vs_occt_mem.cpp`** — both carry their
-   own `main()` (duplicate-symbol link failure once TKHLR resolves). The suite proper is
-   `full_suite.cpp` + the 7 Phase-0/1 `checks_*.cpp` modules, per the script's own comment.
+1. **numsci glob** (in the marching/seam-weld runners — NOT `run-sim-suite.sh`): `build-numsci.sh
+   iossim` writes `build-numsci/iossim/libnumsci_iossim_arm64.a`, but a fallback glob of
+   `build-numsci/*iossim*.a` (parent dir) misses it. **`run-sim-suite.sh` does not link numsci at
+   all** — `build-xcframework.sh` compiles `src/*.cpp` with `-DCYBERCAD_HAS_OCCT` only (no
+   `-DCYBERCAD_HAS_NUMSCI`), so `libcybercadkernel-SIMULATORARM64.a` carries no numsci symbols and
+   the full suite links only `$LIB` + OCCT. The broken glob is in `run-sim-native-ssi-marching.sh`
+   (line ~60) and any runner whose `pick_first` lists `build-numsci/*iossim*.a` without first
+   trying `build-numsci/iossim/libnumsci_*.a`; the canonical one-line fix (already used by
+   `run-sim-native-chain-seam-weld.sh`, `run-sim-native-freeform-freeform-cut.sh`, etc.) is to
+   prepend `"$REPO"/build-numsci/iossim/libnumsci_*.a` to that `pick_first`. **Follow-up, out of
+   the GREEN-MAIN lane (which owns only `run-sim-suite.sh`).**
+2. **Missing `-lTKHLR`** — FIXED: `TKHLR` now leads the `TKS` list. The GS1c HLR work put
+   `hlr_project` into `occt_drafting.o`, so every freshly built `libcybercadkernel-SIMULATORARM64.a`
+   references `HLRBRep_Algo`/`HLRBRep_HLRToShape`; the suite's `TKS` list predated it (the other
+   drafting-touching sim runners already lead with `TKHLR`).
+3. **SKIP list `native_vs_occt_bench.cpp` / `native_vs_occt_mem.cpp`** — FIXED: both are now skipped.
+   Each carries its own `main()` (a duplicate-symbol link failure once TKHLR resolves); they are the
+   standalone bench/memory harnesses (`bench-native-vs-occt.sh` / `bench-memory-native-vs-occt.sh`).
+   The suite proper is `full_suite.cpp` + the Phase-0/1 `checks_*.cpp` modules, per the script's own
+   comment.
 
 Original queue entry follows for the record.
 

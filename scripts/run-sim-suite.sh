@@ -114,7 +114,11 @@ SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 # is the OCCT-only suite: full_suite.cpp + the Phase-0/1 checks_*.cpp modules (221
 # assertions). (native_*_parity.mm are .mm files and already excluded by the *.cpp
 # find below; they are listed here to make the intent explicit.)
-SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp native_math_parity.mm \
+# native_vs_occt_bench.cpp / native_vs_occt_mem.cpp each carry their OWN main() (the
+# standalone bench/memory harnesses, run by bench-native-vs-occt.sh / bench-memory-
+# native-vs-occt.sh) — linking them into full_suite is a duplicate-symbol failure.
+SKIP="parity_bench.cpp metal_selftest.cpp integ_gpu_tess.cpp \
+      native_vs_occt_bench.cpp native_vs_occt_mem.cpp native_math_parity.mm \
       native_topology_parity.mm native_tessellate_parity.mm native_tessellation_parity.mm \
       native_construct_parity.mm native_construct_profiles_parity.mm native_loft_parity.mm \
       native_sweep_parity.mm native_vsweep_parity.mm native_construct_tails_parity.mm native_thread_parity.mm native_boolean_parity.mm \
@@ -175,7 +179,10 @@ while IFS= read -r src; do
 done < <(find "$REPO/tests/sim" -name '*.cpp' | sort)
 [ "${#SRCS[@]}" -gt 0 ] || { echo "no suite sources found under tests/sim"; exit 1; }
 
-TKS="TKDESTEP TKDEIGES TKXSBase TKDE TKMesh TKShHealing TKOffset TKFillet TKBool \
+# TKHLR provides HLRBRep_Algo / HLRBRep_HLRToShape — the HLR oracle occt_drafting.cpp
+# (GS1c's hlr_project) links into every freshly built libcybercadkernel-SIMULATORARM64.a,
+# so it must lead the link list (like the other sim scripts that touch drafting).
+TKS="TKHLR TKDESTEP TKDEIGES TKXSBase TKDE TKMesh TKShHealing TKOffset TKFillet TKBool \
      TKPrim TKBO TKTopAlgo TKGeomAlgo TKBRep TKGeomBase TKG3d TKG2d TKMath TKernel"
 LFLAGS=""; for tk in $TKS; do LFLAGS="$LFLAGS -l$tk"; done
 

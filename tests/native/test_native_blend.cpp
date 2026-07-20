@@ -3013,4 +3013,220 @@ CC_TEST(unequal_canal_fillet_scope_defers) {
   CC_CHECK(!blend::unequal_canal_fillet_edge(lens, ids, 1, 0.2).isNull());  // control: lands
 }
 
+// ── UNEQUAL-radius NON-ORTHOGONAL CYL↔CYL CANAL fillet (thin cyl slanting through thick) ──
+namespace {
+
+// A CLEAN sharp unequal OBLIQUE bicylinder COMMON built DIRECTLY as a native facet soup:
+// thin cyl axis Z radius Ra, thick cyl axis b̂=(sinα,0,cosα) radius Rb (Ra < Rb, α≠90°).
+// The thin cylinder passes fully through the thick one at a slant, so the boundary is the
+// thin wall's waist TUBE (z between the two crease branches cz±) capped by two thick-wall
+// patches. Built directly (not via nb::ssi_boolean_solid) for the SAME reason the equal /
+// orthogonal-unequal slices are — the fillet BUILDER is the slice under test.
+topo::Shape sharpObliqueBicyl(double Ra, double Rb, double alpha, int Mu = 160) {
+  using P = nmath::Point3;
+  using V = nmath::Vec3;
+  const double TAU = 6.28318530717958647692;
+  const double ca = std::cos(alpha), sa = std::sin(alpha);
+  const V bhat{sa, 0, ca}, eB1{0, 1, 0}, eB2{-ca, 0, sa};  // thick frame (axis + two ⊥)
+  std::vector<cybercad::native::boolean::Polygon> soup;
+  auto cz = [&](double u, int sgn) {  // crease branch on the sharp walls (r=0)
+    const double disc = Rb * Rb - Ra * Ra * std::sin(u) * std::sin(u);
+    return (Ra * std::cos(u) * ca + sgn * std::sqrt(std::max(0.0, disc))) / sa;
+  };
+  auto tri = [&](P a, P b, P c, V out) { blend::detail::canalTri(soup, a, b, c, out); };
+  for (int i = 0; i < Mu; ++i) {  // thin waist tube (between the two crease branches)
+    const double u0 = TAU * i / Mu, u1 = TAU * (i + 1) / Mu;
+    const P b0{Ra * std::cos(u0), Ra * std::sin(u0), cz(u0, -1)};
+    const P t0{Ra * std::cos(u0), Ra * std::sin(u0), cz(u0, +1)};
+    const P b1{Ra * std::cos(u1), Ra * std::sin(u1), cz(u1, -1)};
+    const P t1{Ra * std::cos(u1), Ra * std::sin(u1), cz(u1, +1)};
+    const V out{std::cos(0.5 * (u0 + u1)), std::sin(0.5 * (u0 + u1)), 0};
+    tri(b0, b1, t1, out);
+    tri(b0, t1, t0, out);
+  }
+  auto dot = [](V a, V b) { return a.x * b.x + a.y * b.y + a.z * b.z; };
+  for (int sgn : {+1, -1}) {  // thick top/bottom caps (ring-fan on the thick wall)
+    std::vector<double> ps(Mu), pw(Mu);
+    double gs = 0, gw = 0;
+    for (int i = 0; i < Mu; ++i) {
+      const double u = TAU * i / Mu;
+      const P Pc{Ra * std::cos(u), Ra * std::sin(u), cz(u, sgn)};
+      const V d{Pc.x, Pc.y, Pc.z};
+      const double s = dot(d, bhat);
+      const V pr{d.x - bhat.x * s, d.y - bhat.y * s, d.z - bhat.z * s};
+      ps[i] = s;
+      pw[i] = std::atan2(dot(pr, eB2), dot(pr, eB1));
+      gs += s;
+      gw += pw[i];
+    }
+    gs /= Mu;
+    gw /= Mu;
+    double ws = 0;
+    for (int i = 0; i < Mu; ++i) ws = std::max(ws, std::fabs(pw[i] - gw));
+    const int Nr = std::max(2, static_cast<int>(std::ceil(ws / 0.08)));
+    auto wp = [&](double s, double w) {
+      return P{bhat.x * s + eB1.x * (Rb * std::cos(w)) + eB2.x * (Rb * std::sin(w)),
+               bhat.y * s + eB1.y * (Rb * std::cos(w)) + eB2.y * (Rb * std::sin(w)),
+               bhat.z * s + eB1.z * (Rb * std::cos(w)) + eB2.z * (Rb * std::sin(w))};
+    };
+    const P G = wp(gs, gw);
+    auto ring = [&](int k, int i) {
+      if (k == 0) return G;
+      const double a = static_cast<double>(k) / Nr;
+      return wp(gs + (ps[i] - gs) * a, gw + (pw[i] - gw) * a);
+    };
+    auto o3 = [&](P a, P b, P c) {
+      const P tc{(a.x + b.x + c.x) / 3, (a.y + b.y + c.y) / 3, (a.z + b.z + c.z) / 3};
+      const V d{tc.x, tc.y, tc.z};
+      const double s = dot(d, bhat);
+      return V{d.x - bhat.x * s, d.y - bhat.y * s, d.z - bhat.z * s};
+    };
+    for (int k = 0; k < Nr; ++k)
+      for (int i = 0; i < Mu; ++i) {
+        const int in = (i + 1) % Mu;
+        const P a = ring(k, i), b = ring(k, in), cN = ring(k + 1, in), d = ring(k + 1, i);
+        if (k == 0)
+          tri(G, d, cN, o3(G, d, cN));
+        else {
+          tri(a, b, cN, o3(a, b, cN));
+          tri(a, cN, d, o3(a, cN, d));
+        }
+      }
+  }
+  blend::detail::orientSoupCoherent(soup, nmath::Point3{0, 0, 0});
+  return cybercad::native::boolean::assembleSolid(soup);
+}
+
+}  // namespace
+
+// GATE A.1 — the two crossing creases of an unequal OBLIQUE bicylinder fillet NATIVE:
+// watertight, consistently oriented (χ=2), enclosed volume strictly below the sharp body.
+CC_TEST(oblique_canal_fillet_watertight_volume_reduced) {
+  const double Ra = 1.0, Rb = 1.6, r = 0.2, alpha = 1.0471975512;  // 60°
+  const topo::Shape lens = sharpObliqueBicyl(Ra, Rb, alpha);
+  CC_CHECK(!lens.isNull());
+  bool coS = false;
+  const double vSharp = volCO(lens, coS);
+  CC_CHECK(coS);
+  const int ids[1] = {1};  // any crease edge; the recognizer is wholesale
+  const topo::Shape fil = blend::oblique_canal_fillet_edge(lens, ids, 1, r);
+  CC_CHECK(!fil.isNull());
+  bool co = false;
+  const double v = volCO(fil, co);
+  CC_CHECK(co);                 // watertight + consistently oriented
+  CC_CHECK(v > 0.5 * vSharp);   // a fillet only rounds the creases — keeps most volume
+  CC_CHECK(v < vSharp - 1e-4);  // it REMOVES the sharp-ridge slivers
+}
+
+// GATE A.2 — the native oblique canal fillet CONVERGES: enclosed volume tightens toward the
+// true curved solid as the deflection refines, and stays watertight throughout.
+CC_TEST(oblique_canal_fillet_converges_with_deflection) {
+  const double Ra = 1.0, Rb = 1.6, r = 0.2, alpha = 1.0471975512;  // 60°
+  double vPrev = -1.0;
+  for (double defl : {0.02, 0.01, 0.005}) {
+    const topo::Shape lens = sharpObliqueBicyl(Ra, Rb, alpha);
+    CC_CHECK(!lens.isNull());
+    const int ids[1] = {1};
+    const topo::Shape fil = blend::oblique_canal_fillet_edge(lens, ids, 1, r, defl);
+    CC_CHECK(!fil.isNull());
+    tess::MeshParams p;
+    p.deflection = defl;
+    const tess::Mesh m = tess::SolidMesher{p}.mesh(fil);
+    CC_CHECK(tess::isConsistentlyOriented(m));
+    const double v = std::fabs(tess::enclosedVolume(m));
+    if (vPrev > 0.0) CC_CHECK(v >= vPrev - 1e-3);
+    vPrev = v;
+  }
+}
+
+// GATE A.3 — landing across the useful radius range AND across a spread of oblique angles
+// (45°, 60°, 75°), each watertight + consistently oriented + shrinking.
+CC_TEST(oblique_canal_fillet_radius_and_angle_range) {
+  const double Ra = 1.0, Rb = 1.6;
+  for (double alpha : {0.7853981634, 1.0471975512, 1.308996939}) {  // 45°, 60°, 75°
+    for (double r : {0.1, 0.2, 0.3, 0.4}) {
+      const topo::Shape lens = sharpObliqueBicyl(Ra, Rb, alpha);
+      CC_CHECK(!lens.isNull());
+      bool coS = false;
+      const double vSharp = volCO(lens, coS);
+      const int ids[1] = {1};
+      const topo::Shape fil = blend::oblique_canal_fillet_edge(lens, ids, 1, r);
+      CC_CHECK(!fil.isNull());
+      bool co = false;
+      const double v = volCO(fil, co);
+      CC_CHECK(co);
+      CC_CHECK(v > 0.5 * vSharp && v < vSharp - 1e-4);
+    }
+  }
+}
+
+// GATE A.4 — ANALYTIC G1 tangency (no OCCT, no mesh): at EVERY spine sample the canal strip
+// is C1-tangent to BOTH cylinder walls — its surface normal (P−C)/r equals the thin-wall
+// radial at the t=0 seam and the thick-wall radial at the t=1 seam, and each seam point lies
+// exactly ON its wall (|xy|=Ra / dist-from-b̂=Rb). This is the tangency the fillet CLAIMS.
+CC_TEST(oblique_canal_fillet_g1_tangent) {
+  const double Ra = 1.0, Rb = 1.6, r = 0.2, alpha = 1.0471975512;  // 60°
+  const double ca = std::cos(alpha), sa = std::sin(alpha);
+  blend::detail::ObliqueFrame f;
+  f.origin = nmath::Point3{0, 0, 0};
+  f.ex = nmath::Vec3{1, 0, 0};
+  f.ey = nmath::Vec3{0, 1, 0};
+  f.ez = nmath::Vec3{0, 0, 1};  // thin axis Z
+  f.Ra = Ra;
+  f.Rb = Rb;
+  f.cosA = ca;
+  f.sinA = sa;
+  const nmath::Vec3 bhat{sa, 0, ca};  // thick axis
+  for (int sgn : {+1, -1}) {
+    for (int k = 0; k < 24; ++k) {
+      const double u = 6.28318530717958647692 * k / 24.0;
+      const nmath::Point3 C = blend::detail::oblCanalCentre(f, sgn, u, r);
+      const nmath::Point3 P0 = blend::detail::oblCanalStripPoint(f, sgn, u, 0.0, r);  // thin seam
+      const nmath::Point3 P1 = blend::detail::oblCanalStripPoint(f, sgn, u, 1.0, r);  // thick seam
+      // Seam points lie ON their walls.
+      CC_CHECK(std::fabs(std::hypot(P0.x, P0.y) - Ra) < 1e-9);
+      const double sb = P1.x * bhat.x + P1.y * bhat.y + P1.z * bhat.z;
+      const double distB = std::hypot(std::hypot(P1.x - bhat.x * sb, P1.y - bhat.y * sb),
+                                      P1.z - bhat.z * sb);
+      CC_CHECK(std::fabs(distB - Rb) < 1e-9);
+      // Strip normal = ball-centre radial = the wall radial at each seam (G1).
+      const nmath::Vec3 n0{(P0.x - C.x) / r, (P0.y - C.y) / r, (P0.z - C.z) / r};
+      const nmath::Vec3 wall0{P0.x / Ra, P0.y / Ra, 0.0};  // thin-wall outward radial
+      CC_CHECK(std::fabs(n0.x - wall0.x) < 1e-9 && std::fabs(n0.y - wall0.y) < 1e-9 &&
+               std::fabs(n0.z - wall0.z) < 1e-9);
+      const nmath::Vec3 n1{(P1.x - C.x) / r, (P1.y - C.y) / r, (P1.z - C.z) / r};
+      const nmath::Vec3 wall1{(P1.x - bhat.x * sb) / Rb, (P1.y - bhat.y * sb) / Rb,
+                              (P1.z - bhat.z * sb) / Rb};  // thick-wall outward radial
+      CC_CHECK(std::fabs(n1.x - wall1.x) < 1e-9 && std::fabs(n1.y - wall1.y) < 1e-9 &&
+               std::fabs(n1.z - wall1.z) < 1e-9);
+    }
+  }
+}
+
+// GATE A.5 — honest DECLINE (→ OCCT) outside the oblique envelope, AND the before/after
+// contrast: the ORTHOGONAL sibling arms both DECLINE on an oblique body (so before this
+// slice it fell through to OCCT), while THIS arm lands. A box, an ORTHOGONAL unequal body
+// (routes to canal_fillet_unequal.h), EQUAL radii, thin Ra < 2r, r ≤ 0, and a multi-edge
+// pick all return NULL from THIS builder.
+CC_TEST(oblique_canal_fillet_scope_defers) {
+  const int ids[1] = {1};
+  const double alpha = 1.0471975512;  // 60°
+  CC_CHECK(blend::oblique_canal_fillet_edge(box(2, 2, 2), ids, 1, 0.2).isNull());  // no cyls
+  // Before/after: an oblique body DECLINES from the orthogonal canal arms → OCCT-fallthrough.
+  const topo::Shape lens = sharpObliqueBicyl(1.0, 1.6, alpha);
+  CC_CHECK(!lens.isNull());
+  CC_CHECK(blend::canal_fillet_edge(lens, ids, 1, 0.2).isNull());          // equal-orth arm
+  CC_CHECK(blend::unequal_canal_fillet_edge(lens, ids, 1, 0.2).isNull());  // orth-unequal arm
+  // Orthogonal unequal body routes AWAY from the oblique arm (→ #7).
+  const topo::Shape orth = sharpObliqueBicyl(1.0, 1.6, 1.5707963268);  // 90°
+  CC_CHECK(blend::oblique_canal_fillet_edge(orth, ids, 1, 0.2).isNull());
+  // Equal radii pinch at poles → the oblique disjoint-loop builder declines.
+  const topo::Shape eq = sharpObliqueBicyl(1.0, 1.0, alpha);
+  CC_CHECK(blend::oblique_canal_fillet_edge(eq, ids, 1, 0.2).isNull());
+  CC_CHECK(blend::oblique_canal_fillet_edge(lens, ids, 1, 0.0).isNull());   // r ≤ 0
+  CC_CHECK(blend::oblique_canal_fillet_edge(lens, ids, 1, 0.6).isNull());   // thin Ra < 2r
+  CC_CHECK(blend::oblique_canal_fillet_edge(lens, ids, 2, 0.2).isNull());   // multi-edge pick
+  CC_CHECK(!blend::oblique_canal_fillet_edge(lens, ids, 1, 0.2).isNull());  // control: lands
+}
+
 CC_RUN_ALL()

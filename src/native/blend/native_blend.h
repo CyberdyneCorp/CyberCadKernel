@@ -37,6 +37,7 @@
 
 #include "native/blend/blend_geom.h"
 #include "native/blend/canal_fillet.h"
+#include "native/blend/canal_fillet_oblique.h"
 #include "native/blend/canal_fillet_unequal.h"
 #include "native/blend/chamfer_edges.h"
 #include "native/blend/chamfer_face.h"

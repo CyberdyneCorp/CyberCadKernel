@@ -33,7 +33,9 @@
 #include "freeform_multiseam_asym_fixture.h"
 #include "harness.h"
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 namespace bo = cybercad::native::boolean;
@@ -214,12 +216,20 @@ inline RawVerdict commonSurvivorHisto(const topo::Shape& A, const topo::Shape& B
 //     both faces), so no two strip vertices can share a weld cell. This TIGHTENS what the
 //     weld may merge — never a widened tolerance. The raw survivor mesh is now watertight
 //     at d=0.00125 (and finer: measured clean through d=0.0008).
-//   • ONE deeper residual remains, out of this tessellate lane's reach, and the verb
+//   • ONE deeper residual remains, out of BOTH lanes' reach (a mesher strip-geometry
+//     limitation the boolean lane can only detect, not repair), and the verb
 //     HONEST-DECLINES it to NULL (never leaky): the strip welds the two annulus survivors
-//     into a watertight-but-SMALLER closed region (the annulus↔annulus collar-side winding
-//     collapse, `boolean/weldMultiCoherent`), caught by the two-sided VOLUME self-verify
-//     (VolumeInconsistent) at BOTH d=0.002 and d=0.00125 — the SACRED never-leaky
-//     honest-decline, now unified to a single layer-pinned mechanism.
+//     into a watertight-but-SMALLER closed region — the strip COLLAR PINCH
+//     (measure_multiseam_vote: both annuli splice the SAME shared collar strip, the
+//     coincident duplicate triangles annihilate at the weld, and the collar bands' volume
+//     — a fixed fraction of the seam radii, deflection-INDEPENDENT — is lost, identically
+//     in EVERY orientation configuration; the earlier "collar-side winding collapse"
+//     narrative is measured STALE). Caught ORACLE-FREE by BOOL-VOTE
+//     (`boolean/weldMultiCoherent` accepts only a weld whose volume agrees with the
+//     survivors' own divergence-theorem expectation; at d=0.002 the pinched weld encloses
+//     0.006172 vs the expectation 0.006619, a 6.8% ≫ 2% miss) — VolumeInconsistent at
+//     BOTH d=0.002 and d=0.00125, with or without the closed form: the SACRED never-leaky
+//     honest-decline, no longer oracle-dependent.
 CC_TEST(asym_fine_deflection_residual_is_mesher_not_assembly) {
   namespace ffm = cybercad::native::boolean::ffmdetail;
   namespace ffc = cybercad::native::boolean::ffcdetail;
@@ -269,19 +279,32 @@ CC_TEST(asym_fine_deflection_residual_is_mesher_not_assembly) {
   CC_CHECK(v125.open == 0);                          // watertight, no opened edges
 
   // (3) The verb still HONEST-DECLINES below the working band (never a leaky solid). At
-  // BOTH d=0.002 and d=0.00125 the decline is now the SAME deeper annulus-winding VOLUME
-  // residual (the raw mesh is watertight, but the coherent weld encloses a smaller
-  // region), caught by the two-sided volume self-verify — NOT a silent wrong solid, and
-  // no longer the weld-tolerance NotWatertight at d=0.00125.
+  // BOTH d=0.002 and d=0.00125 the decline is the strip COLLAR-PINCH volume residual (the
+  // weld closes watertight+coherent but encloses a smaller region — the shared collar
+  // strip's coincident duplicate triangles annihilate and the collar bands' volume is
+  // lost), caught ORACLE-FREE by BOOL-VOTE against the survivors' own divergence-theorem
+  // expectation — NOT a silent wrong solid, no longer the weld-tolerance NotWatertight at
+  // d=0.00125, and no longer dependent on the closed form: asserted with AND without it.
   for (double dSub : {0.002, 0.00125}) {
-    bo::MultiSeamCutReport rep;
-    const topo::Shape r = bo::freeformFreeformMultiSeamCutWithSeams(A, B, seams, bo::FfOp::Common,
-                                                                    dSub, &rep, ax::volCommon());
-    CC_CHECK(r.isNull());                            // honest decline, never leaky
-    CC_CHECK(rep.seamLoops == 2);                    // reached the weld
-    CC_CHECK(rep.subRegionsA == 3 && rep.subRegionsB == 3);
-    CC_CHECK(rep.watertight);                        // the mesher weld band now covers dSub
-    CC_CHECK(rep.decline == bo::MultiSeamCutDecline::VolumeInconsistent);  // deeper residual
+    for (const double cf : {ax::volCommon(), std::numeric_limits<double>::quiet_NaN()}) {
+      bo::MultiSeamCutReport rep;
+      const topo::Shape r = bo::freeformFreeformMultiSeamCutWithSeams(A, B, seams, bo::FfOp::Common,
+                                                                      dSub, &rep, cf);
+      CC_CHECK(r.isNull());                          // honest decline, never leaky
+      CC_CHECK(rep.seamLoops == 2);                  // reached the weld
+      CC_CHECK(rep.subRegionsA == 3 && rep.subRegionsB == 3);
+      CC_CHECK(rep.watertight);                      // the mesher weld band now covers dSub
+      CC_CHECK(rep.coherent);                        // (witnesses: the weld closed; the
+      CC_CHECK(rep.boundaryEdges == 0);              //  volume is what declined)
+      CC_CHECK(rep.decline == bo::MultiSeamCutDecline::VolumeInconsistent);
+      // BOOL-VOTE witnesses: the pinched weld misses the divergence expectation by more
+      // than any pairing repair could account for; the expectation itself is in-band.
+      CC_CHECK(rep.expectedVolume > rep.enclosedVolume);
+      CC_CHECK(std::fabs(rep.enclosedVolume - rep.expectedVolume) >
+               ffm::kWeldVolumeAgreeFrac * rep.expectedVolume);
+      CC_CHECK(std::fabs(rep.expectedVolume - ax::volCommon()) <
+               std::min(0.5, 30.0 * dSub) * ax::volCommon());
+    }
   }
 
   // (4) The in-band deflection STILL welds (the band boundary is real, not a regression).

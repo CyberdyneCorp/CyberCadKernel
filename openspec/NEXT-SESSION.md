@@ -1,9 +1,24 @@
 # Next session — validated work queue
 
-Written 2026-07-19 at `732788d`. Everything below was **measured and adversarially verified** by a
-five-workstream investigation; each item says whether a remedy was actually **built and run** or is
-a **proposal**. Nothing here is a guess. Where an earlier belief was overturned, the correction is
-stated rather than the old text edited away.
+Written 2026-07-19 at `732788d`; **substantially revised after execution.**
+
+> ⚠ **READ THIS BEFORE TRUSTING ANY ENTRY BELOW.** The original document claimed everything in it
+> was "measured and adversarially verified … nothing here is a guess". Executing it disproved that.
+> Checked against fresh measurement, the queue was **wrong on 8 of 11 checkable claims**, and **two
+> of its prescribed remedies were actively harmful** — one rested an assertion on a quantity that
+> provably cannot discriminate the two solids (volume is twist-invariant by Cavalieri), and one
+> would have shipped the exact vacuity it was warning against. It is reliable at naming **where**
+> to look and unreliable on **mechanism** and **remedy**.
+>
+> **Treat every stated remedy as a hypothesis to implement and measure, never as a spec.** Refuting
+> an entry is a successful outcome; several below are now marked REFUTED and are more useful for it.
+>
+> The same discipline failed in the other direction and cost more. A "possible soundness defect"
+> (order-dependence in the multi-seam boolean) was reported, escalated above all other work, and
+> bisected against a clean worktree — and **does not exist**. The probe had a header-only constant
+> compiled at one value and linked against an archive built at another, so it ran both at once.
+> Verifying the *archive* is not verifying the *configuration*. Use
+> `scripts/run-host-suite.sh` (`518dd17`), which makes that class of error unrepresentable.
 
 Read with [MOAT-ROADMAP.md](MOAT-ROADMAP.md) §M1, which carries the geometry history.
 
@@ -13,7 +28,7 @@ Read with [MOAT-ROADMAP.md](MOAT-ROADMAP.md) §M1, which carries the geometry hi
 
 | | |
 |---|---|
-| Host suites | `cmake --build build-host-verify --target <t> -j8 && ./build-host-verify/<t>` |
+| Host suites | **`bash scripts/run-host-suite.sh <t>`** — builds then runs, so a stale binary cannot report a verdict for code that is gone. `--list` (135 suites) · `--all`. Running `./build-host-verify/<t>` directly is the trap that produced three false conclusions. |
 | | marching 26/26 (~5 min) · seeding 16/16 (~55 s) · ssi 11/11 · s4f 7/7 · s4_classification 22/22 (~10 min) · exact_fuzz 147 agreed/0 disagreed · patch_gap 10/10 |
 | Host parity gates | `bash scripts/run-host-sim-parity.sh <harness>` · `--list` enumerates |
 | | ssi-marching 22/0 · curved-wall-cut 68/0 · abi 11/11 |
@@ -103,58 +118,112 @@ tolerance, but not byte-identical).
 
 ---
 
-## 2. Five parity assertion re-scopes — **all built and run**
+## 2. Five parity assertion re-scopes — ✅ **ALL LANDED**
 
-**All 7 failures are harness-side. Zero kernel defects.** No `src/` change, so native suites are
-invariant by construction. Sequence **geomcompletion first** — its assertion is actively harmful.
+`4338995` geomcompletion · `232fb57` numerics · `a721d0e` construct_profiles · `fd88077` ff_cut +
+nurbs_solid_boolean. **No `src/` change in any of them**, so the native suites are invariant by
+construction.
 
-| harness | verdict | fix | measured |
-|---|---|---|---|
-| `native_geomcompletion_parity` | **Invalid oracle.** OCCT `twisted_sweep` at twist=π/2 is **byte-identical to twist=0** (vol 320.000000, area 352.000000, 12 tris both) — the parameter is inert, root cause `occt_construct.cpp:1241` emits only 2 wires. Native's 319.29 is *closer to analytic 320*. | Assert the twist **signature**: `bbox max|xy| ≥ 2√2 − ε` (native 2.8284, OCCT 2.0000) + faceting band. The new assertion **rejects** OCCT's prism. | 26/1 → **27/0** |
-| `native_numerics_parity` | **Defective assertion.** sphere#1 target is exactly the polar axis; `u` is degenerate at `v=π/2`. `dPoint=4.965e-16` *is* agreement. | Skip the `dU` clause at the pole — **gate on surface type, not on `\|v\|−π/2 ≤ 1e-9`**, or a cylinder fixture with axial `v=π/2` silently loses its check. | 21/1 → **22/0** |
-| `native_construct_profiles_parity` | **Stale delegation contract.** Native no longer delegates: 12 edges vs OCCT's 6, vol 45.5547 vs 45.6, bboxes agree to 1e-3. The `1e-9` bit-identity was only valid under delegation. | Reclassify as native with a deflection-derived volume band (`rel=9.92e-04`). | 21/1 → **22/0** |
-| `native_freeform_freeform_cut_parity` + `native_nurbs_solid_boolean_parity` | **Unsatisfiable clause**, one shared cause (same `ffx::` fixture). Accuracy passes with 12× margin; only `eU < prevCut` fails, and it is arithmetically empty for *any* oracle (needs `X > 0.0366410` **and** `X < 0.0366145`). | finest-beats-coarsest + a fixed band. **Not** closed-form scoring — at the current 3 deflections `errVsCF` is *worse* than `errVsOCCT`. | 13/1 → **16/0**, 13/1 → **17/0** |
+| harness | before | after |
+|---|---|---|
+| `native_geomcompletion_parity` | 26/1 | **27/0** |
+| `native_numerics_parity` | 21/1 | **22/0** |
+| `native_construct_profiles_parity` | 21/1 | **25/0** |
+| `native_freeform_freeform_cut_parity` | 13/1 | **15/0** |
+| `native_nurbs_solid_boolean_parity` | 13/1 | **15/0** |
+
+**Verifying each independently was load-bearing — the entry below was wrong on two of five.**
+
+* **geomcompletion — all three claims below are FALSE.** The twist parameter is *not* inert: at
+  `pathCount=2` it works at 0, π/8, π/4, 3π/8 (vol 320.000 / 311.880 / 288.758 / 311.880) and
+  fails *only* at exactly π/2. Two wires is the trigger, not the cause — **a square is invariant
+  under a π/2 rotation**, so both wires coincide and ThruSections pairs them by position rather
+  than index, yielding the straight prism. And "native's 319.29 is closer to analytic 320" is
+  **backwards**: OCCT's 320.000000 *is* 320. ⚠ **The converged volume is exactly 320 — by
+  Cavalieri every cross-section of a twisted prism is the same square of area 16, so volume is
+  16·20 for ANY twist.** Volume is therefore the one quantity that CANNOT discriminate the two
+  solids; the proposed "faceting band" half of the fix was meaningless. What landed keys on bbox
+  reach (2.8284 vs 2.0000) and lateral area, with volume only as a band *below* the closed form.
+  OCCT's reach is logged but deliberately **not** a pass condition, so a future OCCT fix cannot
+  turn this case into a spurious failure.
+* **construct_profiles — the prescription worked but was bettered.** Reclassifying as a native
+  `OpCase` gives four assertions (mass/bbox/faces/tessellate) instead of one volume band, hence
+  25/0 rather than the predicted 22/0.
+* **ff_cut / nurbs_solid_boolean — the arithmetic was exactly right**, re-derived independently
+  before touching it. Landed as a per-deflection accuracy band plus ONE post-loop
+  finest-beats-coarsest check (0.0083 → 0.0069). ⚠ That is a genuinely **weaker** property than
+  the monotonicity it replaced; COMMON and FUSE keep the stronger step-wise form because they
+  earn it on the same fixture.
+* **numerics — as described.** Gated on surface KIND (`UDegeneracy::SphericalPole`), not on the
+  value of v. The other three sphere targets keep their full `dU` check (0.0, 1.7e-11, 1.8e-11).
+
+<details><summary>Original entry (superseded — retains the two false claims for the record)</summary>
 
 **Not built, real design content:**
 - `native_tessellate_parity` — the **test-only `OcctBridge`** loses edge sharing (`addPCurve` per face returns a new TShape; cylinder edge-face incidences 6→5), not the kernel mesher. Fix: accumulate per-edge pcurves, build each edge node once. Until then, comment that the assertion measures the bridge — *"the mesher leaks on cylinders"* is the wrong conclusion to carry forward.
 - `native_thread_parity` — fixture axis mismatch (`cc_solid_revolve` uses +Y, `cc_helical_thread` builds about +Z); the kernel guard is correct. **The obvious two-line fix is harmful**: rotating only the shaft makes the test pass via `honestSuccess` and the defect-2 guard is never exercised — a loudly-failing test becomes a silently-vacuous one. Both bodies must rotate. Outcome is also **state-dependent** (declines 3/3 standalone, succeeds after 13 preceding cases). Needs redesign.
 
----
+</details>
 
-## 3. Recall denominator in `native_ssi_seeding_parity` — **proposal**
-
-The harness now compiles and runs (`732788d`) — 1 passed / 3 failed. **Two failures are false**: it
-counts OCCT arc pieces, not connected components. Repair: merge arcs meeting at degree-2 nodes,
-keep genuine junctions distinct. The hardcoded expectations (1, 2, 1) are already correct against
-true components. Full detail in the harness header. Also widen `classifyBranch`'s try/catch to cover
-`crossingSineOnOcct` (latent here — min sine 0.40).
-
-**The one real gap it exposes:** `bspline × plane` at recall 0.03 — 40 arcs over 32 nodes with **16
-junctions**, one connected saddle network. Marching terminates at junctions, so one seed cannot
-cover it. **No currently-executing gate covers this case.**
+**Still open in §2 (both unbuilt, both real design content):** the `native_tessellate_parity`
+`OcctBridge` edge-sharing refactor and the `native_thread_parity` redesign, described just above.
 
 ---
 
-## 4. M0 collar retune — **validated by a corpus run**
+## 3. Recall denominator — ✅ **LANDED** (`94fc2c1`)
 
-**The fine-deflection weld problem is RESOLVED** — the shared-strip cache and two-phase fill both
-landed (`seam_strip.h` `SeamStripRegistry`, `face_mesher.h:752-790`; commits `c655fe7 5da6e5a
-1b08a4a 2394032`). The roadmap's `L3-BAND` table recording `nonmanif = 0/1/4` is **measured-false**:
-re-running the repo's own `measure_multiseam_fine` gives **0/0/0**.
+Arcs meeting at degree-2 nodes are merged; genuine junctions stay distinct. **1 passed / 3 failed
+→ 3 passed / 1 failed.** The guard is two-sided across the SUITE, not per-pair: under-merging is
+caught by sphere / skew-cyl / bspline×bspline, over-merging by `bspline × plane` **alone** (skew
+cyl still reports 2 and passes under a fully-connected merge). `classifyBranch`'s try/catch now
+covers `crossingSineOnOcct` — **latent, not a live crash**.
 
-**A different problem is live.** The deflection-robust collar makes the suppression band a fixed
-fraction of `rSeam`, so it injects an error that does **not** shrink with refinement
-(`seam_strip.h:224-225` builds `collarIn/collarOut` as pure radial offsets with no projection back
-onto the face). COMMON is dominated by exactly the region the collar flattens, and the acceptance
-band `min(0.5, 30·d)·V` tightens linearly while the error is flat ⇒ decline below ~0.002 is
-structural. In every `VolumeInconsistent` row the mesher reports `wt=1 coh=1 boundaryEdges=0` —
-**the weld is fine; the volume self-verify rejects.**
+⚠ **"min sine 0.40" was wrong.** That is the *bspline × bspline* figure (0.4201). `bspline × plane`
+bottoms out at **exactly 0.0000** — genuine tangencies.
 
-**Slice:** `kCollarFrac` 0.05 → 0.01 (`seam_strip.h:403`). 27 parity harnesses bit-identical,
-8 verb rows improved / 0 degraded. Move the decline pins in `test_native_seam_strip_weld.cpp:111,122`
-and `test_native_multiseam_asym.cpp:280,284` to `d=0.0006` (measured `NotWatertight` at both fracs) —
-**keep a decline pin** so the never-leaky property stays covered. Assert `matchTol_ ≥ max seam
-segment length`. **Claim two steps of improvement, not three.**
+**The remaining failure is the deliverable, and it stays red.** `bspline × plane` at recall 0.03 —
+40 arcs over 32 nodes with **16 junctions**, one connected saddle network. Marching terminates at
+junctions, so one seed cannot cover it, and **no currently-executing gate covers this case**. The
+harness is expected to exit 1 until the S4-d branch-point iteration lands; it is on
+`run-sim-suite.sh`'s SKIP list, so the suite does not redden.
+
+⚠ Junction counts are **tolerance-dependent** — below ~3.7e-7 the same locus reads 64 nodes /
+6 junctions / 24 components. Any statement about "16 junctions" must carry its tolerance.
+
+Driver: `scripts/run-sim-native-ssi-seeding-parity.sh` — **not** `run-sim-native-ssi-seeding.sh`,
+which builds a different harness (`native_ssi_seeding_recall.mm`) and will look deceptively green.
+
+---
+
+## 4. M0 collar retune — **NOT READY. Its supporting claim is falsified; re-measure from scratch.**
+
+**Do not land `kCollarFrac` 0.05 → 0.01 on the evidence below.** Two of the entry's three claims
+failed fresh measurement:
+
+| claim | measured |
+|---|---|
+| "8 verb rows improved / 0 degraded" | **FALSE** — all 12 asym verb rows **byte-identical** between fracs. Only `measure_multiseam_fine` triangle counts move (3930→3982, 6276→6372) |
+| roadmap `L3-BAND nonmanif = 0/1/4` is measured-false | **CONFIRMED** — 0/0/0 at both fracs |
+| the retune is a safe win | **UNRESOLVED** — see below |
+
+**What the retune actually does**, on consistently-built binaries: it moves the COMMON decline
+threshold below d=0.0018 (frac 0.05 declines `VolumeInconsistent`; frac 0.01 succeeds). That is a
+working-band change, not an accuracy change.
+
+⚠ **`seam_strip.h:399` records that the pile is suppressed only "for any frac ≳ 0.015".** The
+proposed 0.01 is *below* that measured threshold, and at d=0.0008 both fracs decline
+`NotWatertight` with **be = 17092**. Whether 0.01 trades a lower decline threshold for a worse
+failure mode is the open question, and it is not answered.
+
+⚠ **The order-dependence that appeared to invalidate this item DOES NOT EXIST** — see §1's note.
+That retraction removes a blocker but supplies no evidence for the retune.
+
+**Re-measure with `scripts/run-host-suite.sh`** (`518dd17`). Several measurements in the original
+entry were taken from binaries whose headers and archive disagreed; they are void, not merely
+stale. If the pins at `test_native_seam_strip_weld.cpp:111,122` and
+`test_native_multiseam_asym.cpp:280,284` move, decide which outcome is CORRECT rather than
+retuning to whatever the new code does — and **keep a decline pin** so the never-leaky property
+stays covered.
 
 ---
 
@@ -169,8 +238,10 @@ Budgets: boolean_fuzz ~14 min, freeform_boolean_fuzz ~9 min, ssi_freeform_fuzz ~
 
 ## 6. Simulator confirmation — **the cheapest open refutation route**
 
-Six changes await it: `moat-m1d/m1e/m1f`, `moat-gs2-section-curves`, `moat-m0-freeform-mesher`,
-`moat-m2c3f-strip-weld-fuse` — plus the A2 certificate work and anything above.
+**Seven** changes await it: `moat-m1d/m1e/m1f`, `moat-gs2-section-curves`, `moat-m0-freeform-mesher`,
+`moat-m2c3f-strip-weld-fuse`, plus the A2 certificate work and the **separating-slab prune**
+(`4338db5`). The prune changes candidate sets on TRANSVERSAL poses too, not only disjoint ones, so
+expect more than the one benign parity line originally predicted.
 
 Every mechanism in this document is host-independent **by construction**, but that is *inference*.
 Items 1 and 4 both produce non-byte-identical output on a different toolchain and OCCT build. Also

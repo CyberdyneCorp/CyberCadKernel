@@ -38,8 +38,18 @@
 //      single last-flip (W's exact repair, so a degenerate-to-single-seam case is
 //      byte-identical), the flip-the-B-group repair (the two curved sides wind oppositely
 //      across every seam), and the flip-the-A-group repair (the FUSE outer envelope's two
-//      region groups wind oppositely). The mandatory M0 watertight + consistent-orientation
-//      + positive/bounded-volume self-verify gates the result; ANY decline → NULL.
+//      region groups wind oppositely). A candidate is accepted ONLY if it is watertight,
+//      coherent, AND its enclosed volume AGREES with the survivors' own divergence-theorem
+//      expectation (BOOL-VOTE — the oracle-free volume self-verify: the welded mesh may
+//      only REPAIR the seam pairing, never MOVE material; a weld whose volume drifts from
+//      the survivor faces' summed signed contribution is a mesher weld that collapsed real
+//      volume — measured on the annulus↔annulus COMMON at asym d=0.002 and sym d=0.0018,
+//      where the shared seam-strip splice pinches the collar bands away and loses a
+//      deflection-INDEPENDENT 6-7% of the lens, identically in EVERY orientation
+//      configuration — so the verb honest-declines it, with or without the closed-form
+//      oracle, instead of returning the smaller solid). The mandatory M0 watertight +
+//      consistent-orientation + positive/bounded-volume self-verify gates the result;
+//      ANY decline → NULL.
 //
 // The op-set is COMPLETE: COMMON (the annular lens), CUT (A minus the lens), and FUSE
 // (the OUTER envelope of A∪B = the complement of the lens on BOTH walls + both operands'
@@ -65,6 +75,7 @@
 #include "native/math/native_math.h"
 #include "native/ssi/marching.h"
 #include "native/ssi/seeding.h"
+#include "native/tessellate/face_mesher.h"
 #include "native/tessellate/mesh.h"
 #include "native/tessellate/solid_mesher.h"
 #include "native/tessellate/surface_eval.h"
@@ -98,7 +109,7 @@ enum class MultiSeamCutDecline {
   ClassifyAmbiguous,     ///< a survivor sub-region is On/Unknown or the survivor set is empty
   WeldOpen,              ///< fewer than two survivor faces (cannot bound a solid)
   NotWatertight,         ///< self-verify: the welded result is not a closed/coherent 2-manifold
-  VolumeInconsistent     ///< self-verify: the enclosed volume is non-positive / off the bound
+  VolumeInconsistent     ///< self-verify: volume non-positive / off the bound / weld moved material
 };
 
 inline const char* multiSeamCutDeclineName(MultiSeamCutDecline d) noexcept {
@@ -131,6 +142,8 @@ struct MultiSeamCutReport {
   bool coherent = false;        ///< M0 self-verify: consistently oriented
   std::size_t boundaryEdges = 1;///< unpaired boundary edges of the welded result (0 ⇒ watertight)
   double enclosedVolume = 0.0;  ///< signed-tetra enclosed volume of the result
+  double expectedVolume = 0.0;  ///< oracle-free divergence expectation Σ|per-face signed volumes|
+                                ///< of the accepted (or volume-mismatched) weld configuration
   double tilingGapA = 0.0;      ///< |parent − Σ sub-region| UV area on A (≈ 0)
   double tilingGapB = 0.0;      ///< |parent − Σ sub-region| UV area on B (≈ 0)
 };
@@ -317,17 +330,66 @@ inline bool splitWallBySeams(const topo::Shape& face, const std::vector<ssi::WLi
   return regions.size() == static_cast<std::size_t>(n + 1);
 }
 
+// The honest witnesses of the weld enumeration, for the caller's sharpened decline map.
+struct WeldVerdict {
+  std::size_t minBoundaryEdges = std::numeric_limits<std::size_t>::max();
+  bool volumeMismatch = false;   ///< a watertight+coherent weld EXISTED but MOVED material
+  double weldedVolume = 0.0;     ///< |V| of the accepted (or last mismatched) weld
+  double expectedVolume = 0.0;   ///< the divergence-theorem expectation it was gated against
+};
+
+// BOOL-VOTE — the weld-volume agreement band, a fraction of the divergence expectation.
+// MEASURED calibration (measure_multiseam_vote; asym a=4 valley ∩ b=6 dome COMMON and the
+// sym mirror-cups COMMON):
+//   * a LEGIT weld only REPAIRS the seam pairing — merge coincident vertices, pin diverging
+//     rim samples — so its volume tracks the survivors' summed signed contribution to
+//     ≤ 2e-4 relative (asym d=0.0025 rim-pin weld: 0.006554 vs 0.006553; the sym d=0.002
+//     baseline weld agrees exactly, 0.007434 vs 0.007434);
+//   * the strip-pinch collapse (both annuli splice the SAME-side collar strip, the
+//     duplicate strip triangles annihilate at the weld, the mesh pinches at the collar
+//     rings and the collar bands' volume is LOST) drifts 6.8% relative at asym d=0.002
+//     (0.006172 vs 0.006619) and 5.8% at sym d=0.0018 (0.007019 vs 0.007448) —
+//     deflection-INDEPENDENT (the collar width is a fixed fraction of rSeam), and
+//     IDENTICAL across every watertight+coherent orientation configuration (the strip is
+//     orientation-independent geometry), so no configuration pick can restore the volume.
+// 0.02 sits ≥ 100× above the measured repair drift and ≥ 2.9× below the smallest measured
+// pinch; it is a NEW gate (nothing was widened).
+inline constexpr double kWeldVolumeAgreeFrac = 0.02;
+
+// Per-face signed divergence-theorem volume contributions of the survivor faces, meshed
+// through the SAME shared-EdgeCache baseline path the SolidMesher's pre-weld accumulation
+// uses (every face's edge-segment demands raised first, no rim pin, no seam strip) — so the
+// summed expectation matches the welded mesh up to the weld REPAIRS, not up to
+// re-discretization noise. Flipping face i in a weld configuration negates vols[i].
+inline std::vector<double> survivorSignedVolumes(const std::vector<topo::Shape>& faces,
+                                                 const tess::MeshParams& mp) {
+  tess::FaceMesher fm(mp);
+  tess::EdgeCache cache(mp.deflection, mp.edgeMinSegs, mp.edgeMaxSegs);
+  for (const topo::Shape& f : faces) fm.requireEdgeSegments(f, cache);
+  std::vector<double> vols;
+  vols.reserve(faces.size());
+  for (const topo::Shape& f : faces) vols.push_back(tess::enclosedVolume(fm.mesh(f, cache)));
+  return vols;
+}
+
 // Weld `faces` into a coherent, watertight Solid. Tries, in order: identity, W's exact
 // single-last-flip (so a degenerate-to-single-seam survivor set welds byte-identically to
-// track W), and flipping the whole B-group (the survivors from operand B wind oppositely
-// to A's across every shared seam). `nFromA` = the number of leading faces that came from
-// wall A (the rest came from wall B). Returns the coherent (result, mesh) or nullopt.
-// `minBoundaryEdges` (out) records the SMALLEST unpaired-boundary count seen across the
-// tried welds — the sharpened residual map for an honest decline (0 ⇒ a clean weld was
-// found; a small non-zero ⇒ the frozen-mesher seam-as-hole gap the caller declines at).
+// track W), flipping the whole B-group (the survivors from operand B wind oppositely
+// to A's across every shared seam), and flipping the whole A-group. `nFromA` = the number
+// of leading faces that came from wall A (the rest came from wall B).
+//
+// BOOL-VOTE selection: a candidate is accepted ONLY if it is watertight + coherent AND its
+// enclosed volume agrees (±kWeldVolumeAgreeFrac) with the ORACLE-FREE divergence-theorem
+// expectation of that configuration (the survivor faces' summed signed volumes) — never
+// first-found-watertight. A weld may only repair the seam pairing; one that MOVED material
+// (the measured d=0.002 strip-pinch, which silently lost the collar bands' volume) is
+// REJECTED and, if no consistent configuration exists, the enumeration declines with the
+// mismatch witnesses in `verdict` (an honest VolumeInconsistent, never a wrong solid).
+// `verdict.minBoundaryEdges` keeps the sharpened NotWatertight residual map (0 ⇒ a clean
+// weld existed; small non-zero ⇒ the frozen-mesher seam gap the caller declines at).
 inline std::optional<std::pair<topo::Shape, tess::Mesh>> weldMultiCoherent(
     std::vector<topo::Shape> faces, std::size_t nFromA, const tess::MeshParams& mp,
-    std::size_t& minBoundaryEdges) {
+    WeldVerdict& verdict) {
   auto build = [&](const std::vector<topo::Shape>& fs) {
     const topo::Shape shell = topo::ShapeBuilder::makeShell(fs);
     const topo::Shape solid = topo::ShapeBuilder::makeSolid({shell});
@@ -336,7 +398,8 @@ inline std::optional<std::pair<topo::Shape, tess::Mesh>> weldMultiCoherent(
   auto coherent = [](const tess::Mesh& m) {
     return tess::isWatertight(m) && tess::isConsistentlyOriented(m);
   };
-  minBoundaryEdges = std::numeric_limits<std::size_t>::max();
+  verdict = WeldVerdict{};
+  const std::vector<double> faceVols = survivorSignedVolumes(faces, mp);
   // Candidate orientation repairs (each a face-index set to reverse).
   std::vector<std::vector<std::size_t>> repairs;
   repairs.push_back({});  // identity
@@ -353,10 +416,25 @@ inline std::optional<std::pair<topo::Shape, tess::Mesh>> weldMultiCoherent(
   }
   for (const std::vector<std::size_t>& flip : repairs) {
     std::vector<topo::Shape> f = faces;
-    for (std::size_t i : flip) f[i] = f[i].reversedShape();
+    std::vector<double> signedVols = faceVols;
+    for (std::size_t i : flip) {
+      f[i] = f[i].reversedShape();
+      signedVols[i] = -signedVols[i];
+    }
     auto [res, mesh] = build(f);
-    minBoundaryEdges = std::min(minBoundaryEdges, tess::boundaryEdgeCount(mesh));
-    if (coherent(mesh)) return std::make_pair(res, mesh);
+    verdict.minBoundaryEdges = std::min(verdict.minBoundaryEdges, tess::boundaryEdgeCount(mesh));
+    if (!coherent(mesh)) continue;
+    double expect = 0.0;
+    for (double v : signedVols) expect += v;
+    const double vExpect = std::fabs(expect);
+    const double v = std::fabs(tess::enclosedVolume(mesh));
+    verdict.weldedVolume = v;
+    verdict.expectedVolume = vExpect;
+    if (vExpect > 0.0 && std::fabs(v - vExpect) <= kWeldVolumeAgreeFrac * vExpect) {
+      verdict.volumeMismatch = false;
+      return std::make_pair(res, mesh);
+    }
+    verdict.volumeMismatch = true;  // coherent weld found, but it moved material — keep looking
   }
   return std::nullopt;
 }
@@ -461,17 +539,35 @@ inline topo::Shape freeformFreeformMultiSeamCutWithSeams(
   if (faces.size() < 2) return fail(MultiSeamCutDecline::WeldOpen);
   rep.survivorFaces = static_cast<int>(faces.size());
 
-  // (5) WELD + orientation-coherence repair + mandatory self-verify. On failure the
-  // smallest unpaired-boundary count across the tried repairs is recorded as the sharpened
-  // residual map (`boundaryEdges`) — an honest NotWatertight decline, never a leaky solid.
-  std::size_t minBE = 1;
-  const auto welded = weldMultiCoherent(std::move(faces), nFromA, mp, minBE);
-  if (!welded) { rep.boundaryEdges = minBE; return fail(MultiSeamCutDecline::NotWatertight); }
+  // (5) WELD + orientation-coherence repair + BOOL-VOTE volume-consistent selection +
+  // mandatory self-verify. On a NotWatertight failure the smallest unpaired-boundary count
+  // across the tried repairs is recorded as the sharpened residual map (`boundaryEdges`);
+  // when a watertight+coherent weld EXISTED but its volume disagreed with the survivors'
+  // own divergence-theorem expectation (the mesher's weld moved material — the measured
+  // d=0.002 strip-pinch), the decline is VolumeInconsistent with both volumes as witnesses.
+  // Either way an honest decline, never a leaky/wrong solid.
+  WeldVerdict wv;
+  const auto welded = weldMultiCoherent(std::move(faces), nFromA, mp, wv);
+  if (!welded) {
+    rep.boundaryEdges = wv.minBoundaryEdges;
+    if (wv.volumeMismatch) {
+      // The mismatched candidate WAS watertight + coherent — carry that in the report so
+      // the decline map reads "the weld closed, but at a moved-material volume", not "the
+      // weld failed to close" (the two residuals live in different layers).
+      rep.watertight = true;
+      rep.coherent = true;
+      rep.enclosedVolume = wv.weldedVolume;
+      rep.expectedVolume = wv.expectedVolume;
+      return fail(MultiSeamCutDecline::VolumeInconsistent);
+    }
+    return fail(MultiSeamCutDecline::NotWatertight);
+  }
   const topo::Shape result = welded->first;
   const tess::Mesh& m = welded->second;
   rep.watertight = tess::isWatertight(m);
   rep.coherent = tess::isConsistentlyOriented(m);
   rep.boundaryEdges = tess::boundaryEdgeCount(m);
+  rep.expectedVolume = wv.expectedVolume;
   const double v = std::fabs(tess::enclosedVolume(m));
   rep.enclosedVolume = v;
   if (!(v > 0.0) || std::isnan(v)) return fail(MultiSeamCutDecline::VolumeInconsistent);

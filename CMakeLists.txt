@@ -1074,6 +1074,25 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS measure_multiseam_fine)
         set(measure_multiseam_fine_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/measure_multiseam_fine.cpp")
+        # BOOL-VOTE (measurement) — the d=0.002 annulus-winding VOLUME-collapse probe on the
+        # asymmetric multi-seam COMMON pose. Separates the per-face survivor meshes (signed
+        # divergence-theorem volume, the oracle-free assembly expectation), the raw appended
+        # union per orientation config, and the full strip-pass welded mesh per weld config —
+        # so the volume-collapsed weld configuration is mapped to its mechanism. Real S3
+        # seams ⇒ numsci-gated; measurement only, no lib / cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS measure_multiseam_vote)
+        set(measure_multiseam_vote_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/measure_multiseam_vote.cpp")
+        # BOOL-VOTE host GATE — the volume-consistent weld-configuration selection of the
+        # multi-seam sew (weldMultiCoherent): a weld config is accepted only if its enclosed
+        # volume agrees with the survivors' own oracle-free divergence-theorem expectation.
+        # Guards the measured d=0.002 silent-wrong (the strip-pinched watertight weld that
+        # lost the collar bands' volume RETURNED Ok when no closed-form oracle was supplied)
+        # as a VolumeInconsistent decline, and proves the gate does not over-fire in-band.
+        # Real S3 seams ⇒ numsci-gated. Additive; no lib / cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_multiseam_vote)
+        set(test_native_multiseam_vote_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_multiseam_vote.cpp")
         # BOOL-MULTISEAM host GATE — the ASYMMETRIC (curvature-mismatched) multi-seam sew:
         # a degree-4 valley (a=4) ∩ a degree-4 dome of a DIFFERENT amplitude (b=6), so the
         # two walls meet in TWO concentric seams with MISMATCHED curvature (z* = a·H/(a+b),

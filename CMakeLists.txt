@@ -1097,6 +1097,17 @@ if(CYBERCAD_BUILD_TESTS)
         list(APPEND CYBERCAD_TESTS test_native_seam_strip_weld)
         set(test_native_seam_strip_weld_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_seam_strip_weld.cpp")
+        # CALL-ORDER INDEPENDENCE — the multi-seam verb's verdict is a pure function of its
+        # arguments: the same deflection yields the same decline and the BITWISE same welded
+        # volume whether it runs first in the process or after calls at other deflections.
+        # Guards the strip weld's `SeamStripRegistry` (seam_strip.h) against ever being
+        # hoisted to static storage or keyed without the deflection — a cache that outlived
+        # a call could serve a COARSE strip to a FINE request, handing the caller a solid
+        # coarser than it asked for exactly where the honest-decline invariant must refuse.
+        # Same numsci-gated multi-seam fixture; test-only, no lib / cc_* ABI change.
+        list(APPEND CYBERCAD_TESTS test_native_multiseam_order_independence)
+        set(test_native_multiseam_order_independence_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/test_native_multiseam_order_independence.cpp")
         # BOOL-INT / NURBS roadmap LAYER 3 — host GATE (a), the OCCT-free closed-form proof
         # of the FLAGSHIP: the general two-freeform-solid NURBS boolean ORCHESTRATOR
         # nurbsSolidBoolean(A, B, op) for op ∈ {Fuse, Cut, Common} (nurbs_solid_boolean.h).

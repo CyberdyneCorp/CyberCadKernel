@@ -56,10 +56,10 @@
 
 ## 5. Gate B — native-vs-OCCT parity
 - [x] 5.1 Host parity `native_ssi_marching_parity` green.
-- [ ] 5.2 Run `run-sim-native-ssi-marching` on the booted simulator. **(macOS-only — left for the
-  Mac.)** Expect MORE movement than the one benign line originally predicted: this changes candidate
-  sets on TRANSVERSAL poses too, not only disjoint ones. A line that moves while staying orders
-  under tolerance is expected; a changed SEED or BRANCH count is not, and would be the real signal.
+- [x] 5.2 Run `run-sim-native-ssi-marching` on the booted simulator. Sim run 2026-07-19 @ beafc55:
+  22 passed / 0 failed. The predicted benign shift landed exactly (bspline×bspline
+  onCurve 1.65e-07 → 1.74e-07, 3–4 orders under tolerance); every seed and branch count matched
+  OCCT on all 22 lines — no SEED/BRANCH movement, the one signal that would have blocked archive.
 
 ## 6. Structural + finalize
 - [x] 6.1 Diff confined to `ssi/patch_gap.h` + `ssi/seeding.cpp`; OCCT-free; `cc_*` unchanged; no

@@ -1600,3 +1600,280 @@ on freeform, so no bias-cancellation is shipped).
   reclassify the arc as a `BranchArc`, SHALL NOT fabricate an arm or a point across the branch, and SHALL
   NOT weaken a tolerance to force the crossing
 
+### Requirement: S4-c near-tangent crossing breadth is extended into the grazing regime via adaptive re-anchoring, with a measured honest floor
+
+The native SSI marching tracer SHALL cross near-tangent GRAZING intersections deeper into the
+transversality-sine regime than the shipped fixed-plane crossing corrector, WITHOUT weakening any
+tolerance and WITHOUT fabricating any curve, gated behind a default-off `MarchOptions` flag.
+
+The shipped S4-c crossing corrector freezes one reference tangent as both the crossability anchor
+and the fixed-plane advance direction for the whole crossing; its robust-crossing floor is a
+minimum transversality sine (the norm of the cross product of the two unit surface normals along
+the intersection) of approximately 0.17 — below it the two-surface corrector fails to converge
+because the turning curve leaves the frozen advance plane.
+
+- **Adaptive crossing re-anchoring (S3/S4-c, additive, default-off).** A `MarchOptions` flag
+  (`adaptiveCrossReanchor`, with a `reanchorBlend` weight) SHALL, when set, let the crossing
+  corrector re-anchor its fixed-plane advance direction toward the LOCAL intersection tangent
+  (the continuity-oriented normalized cross product of the two surface normals) as it steps, so the
+  advance plane follows the curve's turn through a tighter graze. On this path per-step progress
+  SHALL be measured along the actual step direction (bounded by an anti-orbit total-arc cap so a
+  non-traversing orbit still terminates and defers), and hand-back to the normal transversal march
+  SHALL occur once transversality recovers above the band-enter threshold with a two-consecutive-
+  node stability requirement. This flag SHALL DEFAULT OFF, so the crossing corrector, its per-node
+  crossability guard, its step control, and its hand-back threshold are byte-identical to the
+  shipped S4-c crossing for every already-passing case.
+
+- **Honesty anchors preserved.** With the flag on, the crossability decision (the band-minimum
+  sine floor, the steep-sine-collapse witness, and the per-step ≥60° branch-flip guard) SHALL
+  remain, every crossing node SHALL be verified on BOTH surfaces within the SAME on-surface
+  tolerance (never fabricated), and a genuine tangency or branch point (transversality sine → 0)
+  SHALL still defer. No closed form SHALL be added; no tolerance SHALL be widened.
+
+- **Measured breadth extension and honest floor.** With re-anchoring on, the robust-crossing floor
+  SHALL drop from a minimum transversality sine of approximately 0.17 to approximately 0.14: a
+  grazing pose whose sine dips to ≈ 0.14 (which the shipped corrector declines) SHALL be traced to
+  a full closed loop with every node on both surfaces within tolerance. A grazing pose whose sine
+  dips below approximately 0.12 SHALL remain an HONEST DECLINE even with re-anchoring on (the
+  near-tangent band is then too wide to recover to a transversal stretch within budget) — reported
+  as a near-tangent gap, never forced to pass.
+
+The behaviour SHALL be verified by BOTH gates of the two-gate model:
+- **Gate A (host, OCCT-free)** — self-consistency + closure: for the newly-crossable grazing pose,
+  the default path (flag off) defers with a near-tangent gap and no curve, while the re-anchoring
+  path (flag on) traces ONE closed loop with `nearTangentGaps == 0`, `nearTangentCrossed ≥ 1`,
+  every node on both surfaces within tolerance, and an arc length within a step-bounded window of
+  the tolerance-below-dip ground truth; and for the pose below the extended floor, the re-anchoring
+  path still declines (no crossing, no closed loop, a reported near-tangent gap) while a
+  ground-truth loop still exists.
+- **Gate B (sim, native-vs-OCCT via `GeomAPI_IntSS`)** — the re-anchoring crossing SHALL trace a
+  single closed loop whose densely-sampled nodes all lie on the OCCT intersection locus AND on both
+  surfaces within tolerance (the crossed curve IS the true intersection, not a fabricated path),
+  the default path SHALL still decline the same pose, and below the extended floor the native
+  marcher SHALL decline while OCCT reports a locus (the honest, measured boundary).
+
+#### Scenario: a tighter graze the shipped corrector declines is crossed with adaptive re-anchoring
+- GIVEN an offset cylinder grazing a sphere posed so the intersection is a single closed loop whose
+  minimum transversality sine dips to ≈ 0.14 (below the ≈ 0.17 shipped fixed-plane floor)
+- WHEN the crossing is attempted with `adaptiveCrossReanchor` OFF (the default)
+- THEN the tracer SHALL HONESTLY DEFER — `nearTangentGaps ≥ 1`, `nearTangentCrossed == 0`, no closed
+  loop
+- AND WHEN the crossing is attempted with `adaptiveCrossReanchor` ON
+- THEN the tracer SHALL trace ONE `Closed` WLine with `nearTangentGaps == 0`, `nearTangentCrossed ≥ 1`,
+  every node on both surfaces within tolerance, and an arc length within a step-bounded window of the
+  tolerance-below-dip ground truth
+- AND against `GeomAPI_IntSS` every densely-sampled node SHALL lie on the OCCT locus and on both
+  surfaces within tolerance
+
+#### Scenario: below the extended floor the marcher honestly declines while OCCT reports
+- GIVEN an offset cylinder grazing a sphere posed so the minimum transversality sine dips below
+  ≈ 0.12 (below the extended re-anchoring floor), with a ground-truth loop that still exists when
+  traced with the tolerance below the dip
+- WHEN the crossing is attempted with `adaptiveCrossReanchor` ON
+- THEN the tracer SHALL still HONESTLY DECLINE — `nearTangentCrossed == 0`, no closed loop, a
+  reported near-tangent gap — never fabricating a curve across the knife-edge
+- AND `GeomAPI_IntSS` SHALL report a locus for the same pose (the honest, measured boundary between
+  native and OCCT)
+
+#### Scenario: the re-anchor flag defaults off leave every prior case unchanged
+- GIVEN any already-passing SSI case (transversal march, shipped S4-c graze, S4-d branch, S4-e
+  chart singularity, or a genuine tangency that must defer)
+- WHEN it is traced with `adaptiveCrossReanchor` at its default (off)
+- THEN the crossing corrector, its per-node crossability guard, its step control, and its hand-back
+  threshold SHALL be byte-identical to the shipped S4-c behaviour, so the result is unchanged
+
+### Requirement: The S4-c re-anchored crossing orients by continuity, so a graze whose tangent turns past 90° is traversed rather than trapped
+
+The native SSI marching tracer SHALL resolve the ORIENTATION of the re-anchored advance direction
+against the previously accepted step direction rather than against the frozen band-entry tangent,
+gated behind a default-off `MarchOptions` flag, so that a crossable graze whose intersection
+tangent accumulates a turn of 90° or more across the near-tangent band is traversed instead of
+being trapped in a non-advancing cycle.
+
+The shipped re-anchor path resolves BOTH the local tangent's sign AND its adoption gate against
+the frozen band-entry tangent. Both are half-spaces of a single stale direction and both degenerate
+at the same point: once the intersection curve's tangent has turned 90° from that direction, the
+sign test inverts the true forward tangent into the backward one. The march then retreats, re-enters
+the sub-90° half-space, and advances again — a self-sustaining cycle that consumes the whole node
+budget without net transport. The resulting decline is honestly reported, but it is a TRAP rather
+than a geometric limit: the poses are crossable.
+
+- **Incremental orientation (S4-c, additive, default-off).** A `MarchOptions` flag
+  (`reanchorIncrementalOrientation`) SHALL, when set, re-reference BOTH the sign test and the
+  adoption gate of the re-anchored tangent to the previously accepted step direction, seeded to the
+  frozen band-entry tangent for the first step. Orientation by continuity is monotone across an
+  arbitrarily large accumulated turn. The flag SHALL be consulted ONLY when the adaptive re-anchor
+  path is itself enabled, and SHALL DEFAULT OFF, so every already-passing case is byte-identical.
+
+- **Both tests SHALL move together.** Re-referencing only the sign test SHALL NOT be considered
+  conformant: the adoption gate then rejects the local tangent, the advance direction falls back to
+  the frozen tangent, the step lands perpendicular to the curve, and the step size collapses to the
+  floor — relocating the decline rather than removing it.
+
+- **Net-transport termination guard.** On this path the tracer SHALL bound the ratio of arc spent to
+  net displacement from the band entry, and discard-and-defer when it is exceeded. The existing
+  per-step advance test cannot detect a non-advancing cycle, because the corrector pins the measured
+  advance to the requested step along the very direction the step was taken in; and the existing
+  anti-orbit arc cap is derived from the step budget, so it scales with the budget and cannot bind.
+  This guard is TERMINATION SAFETY only: it converts a residual cycle into an immediate honest
+  defer, and SHALL NOT be able to cause a curve to be emitted.
+
+- **Honesty anchors preserved.** The frozen band-entry tangent SHALL remain the anchor for the
+  crossability decision — the band-minimum sine floor, the steep-sine-collapse witness, and the
+  per-step branch-flip guard are UNCHANGED. Every node SHALL still be verified on BOTH surfaces at
+  the SAME on-surface tolerance. No tolerance SHALL be widened and no point SHALL be fabricated.
+
+- **The floor SHALL rest on a declared tolerance.** With the trap removed, the limiting condition
+  SHALL be the configured minimum crossing sine, reached at the band-minimum gate with ZERO crossing
+  nodes emitted — a principled refusal, distinguishable from a budget-exhaustion decline that emits
+  and discards a full budget of non-advancing nodes.
+
+#### Scenario: A wide-band graze whose tangent turns past 90° is crossed
+
+- **GIVEN** a unit sphere and a cylinder of radius 0.4 offset along +x by 0.593, 0.595, or 0.597,
+  whose intersection loop has a minimum transversality sine of approximately 0.118, 0.100, or 0.077
+- **AND** the adaptive re-anchor path enabled
+- **WHEN** the intersection is traced with incremental orientation OFF
+- **THEN** the tracer declines, reporting a near-tangent gap and no closed curve
+- **WHEN** the same trace is run with incremental orientation ON
+- **THEN** the tracer SHALL produce exactly ONE closed loop with no near-tangent gap
+- **AND** every corrected node SHALL lie on BOTH surfaces within the on-surface tolerance
+- **AND** the traced length SHALL be within a step-bounded window of a ground-truth trace taken
+  with a tolerance below the dip
+
+#### Scenario: Below the minimum crossing sine the tracer still declines
+
+- **GIVEN** the same family offset by 0.5975 or 0.598, whose band-minimum sine falls below the
+  configured minimum crossing sine
+- **WHEN** the intersection is traced with incremental orientation ON
+- **THEN** the tracer SHALL decline, reporting a near-tangent gap and no closed curve
+- **AND** SHALL emit no crossing nodes at all
+
+#### Scenario: A genuine tangency still defers
+
+- **GIVEN** the same family offset so the surfaces are tangent
+- **WHEN** the intersection is traced with incremental orientation ON
+- **THEN** the tracer SHALL NOT report a crossing and SHALL NOT close a loop
+
+#### Scenario: The flag defaults off and is inert without the re-anchor path
+
+- **GIVEN** default march options
+- **THEN** incremental orientation SHALL be off
+- **AND** a pose that the shipped re-anchor path declines SHALL still decline
+- **WHEN** incremental orientation is set WITHOUT the adaptive re-anchor path
+- **THEN** the trace SHALL be identical to the plain frozen-tangent path
+
+### Requirement: The densify refit SHALL stay clear of interpolation and SHALL be judged between nodes
+
+The native SSI marching tracer's convenience-curve densify-and-refit SHALL choose a pole count that
+remains a fraction of the node count, and SHALL judge a candidate refit at parameters BETWEEN the
+nodes as well as at the nodes, so that a fit which interpolates its data while oscillating between
+data points is never accepted.
+
+At a pole count equal to the node count the least-squares system is square and interpolating, and a
+clamped-uniform knot vector over a chord-length parametrization degenerates: the curve passes
+through every node exactly while deviating from the true curve between them by orders of magnitude
+more than the fit it replaced. The at-node error metric is structurally blind to this, because it is
+sampled at precisely the parameters such a fit interpolates.
+
+- **Conditioning guard.** The refit pole target SHALL be bounded by a FRACTION of the node count,
+  not by the node count itself, keeping the ratio clear of the measured degeneration onset. The
+  bound SHALL be RELATIVE: a flat pole ceiling low enough to avoid degeneration on a moderate-node
+  loop starves a dense high-curvature loop that legitimately requires the full pole cap.
+
+- **Between-node accept test.** A candidate refit SHALL be accepted only if it does not worsen the
+  deviation measured at node-midpoint parameters, in addition to the existing at-node test. The
+  polyline remains the ground truth for that comparison.
+
+- **Trigger proportionate to the verification budget.** The densify trigger SHALL be set tighter
+  than the on-curve tolerance the native-vs-OCCT parity verification enforces, so a loop whose fit
+  misses the true locus by more than that budget actually trips the refit. It SHALL remain loose
+  enough that ordinary well-resolved loops do not refit. The multiplier SHALL be exposed as a
+  caller option so the previous behaviour can be restored; changing it SHALL affect cost and curve
+  quality only, and SHALL NOT move a node, widen a tolerance, or alter the polyline.
+
+#### Scenario: A moderate-node high-curvature loop refits without interpolating
+
+- **GIVEN** a near-tangent intersection loop of at most a few hundred nodes whose initial fit
+  exceeds the densify trigger
+- **WHEN** the curve is fitted
+- **THEN** the refit SHALL fire, raising the pole count above the initial value
+- **AND** the resulting pole count SHALL remain strictly below the node count
+- **AND** the fitted curve sampled BETWEEN nodes SHALL lie on both surfaces within the on-curve
+  budget the parity verification enforces
+
+#### Scenario: A dense high-curvature loop still receives the full pole budget
+
+- **GIVEN** an intersection loop with many hundreds of nodes that genuinely requires the pole cap
+- **WHEN** the curve is fitted
+- **THEN** the refit SHALL still reach the full pole cap, unchanged by the conditioning guard
+
+#### Scenario: Ordinary loops are unaffected
+
+- **GIVEN** a well-resolved intersection loop whose initial fit already rides its nodes
+- **WHEN** the curve is fitted
+- **THEN** no refit SHALL fire and the result SHALL be unchanged
+
+### Requirement: Subdivision SHALL prune a box pair proven separated along an oriented direction
+
+The native SSI seeder's recursive subdivision SHALL be able to discard a candidate box pair when the
+two surface pieces are PROVEN to come no closer than the subdivision gap, using a witness direction
+that need not be axis-aligned.
+
+The existing disjointness test is axis-aligned. On a near-parallel pair separated along no
+coordinate axis it can never fire, so the descent enumerates the entire 4D box product and hands
+every leaf to the region refiner even though the pair does not intersect anywhere.
+
+- **The witness SHALL be a containment argument.** By the convex-hull property each surface piece
+  lies inside the hull of its exact sub-net over that param sub-box. Projection onto a direction is
+  linear, so it maps each hull into a closed interval. Two intervals separated by more than the gap
+  therefore PROVE no crossing exists in that box pair. Because a descendant's param boxes are
+  contained in its parent's, a parent-level proof discards only crossing-free subtrees.
+
+- **Soundness SHALL NOT depend on the direction chosen.** A direction that fails to separate simply
+  leaves the descent unchanged, so the direction is a heuristic for REACH and never for
+  correctness. The predicate SHALL normalize the direction itself rather than relying on its caller,
+  since a non-unit direction would scale the projections and could overstate the separation. A
+  degenerate direction SHALL cause the predicate to refuse.
+
+- **Scope SHALL match what the proof requires and nothing looser.** The predicate SHALL apply only
+  where both operands expose an exact single-span non-rational control net. It SHALL NOT require the
+  two nets to share a degree, because each hull bounds its own surface independently and no
+  correspondence between the nets is involved. Operands outside that scope SHALL take the unchanged
+  path with byte-identical results.
+
+- **The predicate SHALL NOT be applied where box locality does not hold.** Region refinement clamps
+  into the full parameter domain and is effectively a global solve, so a converged solution is not
+  confined to the candidate box that produced it. Applying this test there would discard real seeds.
+  The justification recorded in the code SHALL be the containment argument, NOT an argument from
+  precedent, because a precedent-shaped justification would equally license that unsound use.
+
+#### Scenario: A near-parallel pair with no axis of separation is pruned
+
+- **GIVEN** two freeform surfaces offset along their common normal by more than the subdivision gap,
+  positioned so that their axis-aligned bounds overlap on every coordinate axis at every depth
+- **WHEN** the seeder subdivides the pair
+- **THEN** the descent SHALL be pruned rather than enumerating the full box product
+- **AND** the seeder SHALL report no seeds, because the pair does not intersect
+
+#### Scenario: A transversal crossing is never lost
+
+- **GIVEN** two freeform surfaces that genuinely intersect
+- **WHEN** the seeder subdivides the pair with the prune active
+- **THEN** the seed count, the branch count and any coincidence verdict SHALL be unchanged from the
+  same seeder with the prune inactive
+- **AND** only the candidate-region count, which is pure cost, may differ
+
+#### Scenario: An operand outside the proof's scope is unaffected
+
+- **GIVEN** a pair in which either operand is elementary, rational, or a multi-span B-spline
+- **WHEN** the seeder subdivides the pair
+- **THEN** the prune SHALL NOT fire and the emitted candidate regions SHALL be byte-identical to the
+  behaviour without it
+
+#### Scenario: A caller-supplied direction cannot overstate the separation
+
+- **GIVEN** a box pair whose surfaces are closer than the gap along every direction
+- **WHEN** the predicate is asked with a direction of large magnitude
+- **THEN** it SHALL NOT report a separation, having normalized the direction before comparing
+

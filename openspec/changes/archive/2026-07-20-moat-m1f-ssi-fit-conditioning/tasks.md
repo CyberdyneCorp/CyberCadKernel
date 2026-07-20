@@ -29,7 +29,9 @@
 - [x] 4.1 Restore dx = 0.597 to `pairWideBandIncrementalOrientationS4c` and delete the exclusion.
 - [x] 4.2 Host Gate B 22 passed / 0 failed; dx=0.597 onCurve 2.30e-05; 20 of 22 lines
   byte-identical; `skew cyl unequal` unchanged at 7.39e-07.
-- [ ] 4.3 Run `run-sim-native-ssi-marching` on the booted simulator. **(macOS-only — left for the Mac.)**
+- [x] 4.3 Run `run-sim-native-ssi-marching` on the booted simulator. Sim run 2026-07-19 @ beafc55:
+  22 passed / 0 failed; wide-band 0.597 PASS (onCurve 3.46e-05, well under tolerance); no seed or
+  branch count moved.
 
 ## 5. Structural + finalize
 - [x] 5.1 Diff confined to `ssi/marching.{h,cpp}`; OCCT-free; `cc_*` unchanged; no tolerance widened.

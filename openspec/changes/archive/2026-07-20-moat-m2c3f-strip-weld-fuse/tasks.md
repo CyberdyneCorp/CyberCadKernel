@@ -22,8 +22,10 @@
 - [x] Add `#include <BRepAlgoAPI_Fuse.hxx>` and build `BRepAlgoAPI_Fuse` in
       `tests/sim/native_chain_seam_weld_parity.mm`.
 - [x] Promote FUSE from honest-NULL fallback to a full `OpCase` alongside CUT/COMMON.
-- [ ] Run `scripts/run-sim-native-chain-seam-weld.sh` on a booted iOS simulator; FUSE parity
+- [x] Run `scripts/run-sim-native-chain-seam-weld.sh` on a booted iOS simulator; FUSE parity
       passes (volume/area/watertight/Euler/bbox/Hausdorff/classify) at defl 0.01 + 0.005.
+      Sim run 2026-07-19 @ beafc55: 61 passed / 0 failed; FUSE full OpCase green at both
+      deflections (d=0.010 vol rel 3.278e-03, d=0.005 vol rel 1.824e-03, disagree=0).
 
 ## 4. Discipline
 - [x] `src/native/**` OCCT-free (no OCCT includes/symbols; only descriptive comments).

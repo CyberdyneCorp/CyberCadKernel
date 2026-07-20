@@ -35,8 +35,10 @@
   OCCT reports a locus.
 - [x] 4.3 Host Gate B green on Linux OCCT: `scripts/run-host-native-ssi-marching.sh` → 21 passed,
   0 failed (19 prior frozen + 2 new).
-- [ ] 4.4 Run `run-sim-native-ssi-marching` on the booted simulator; confirm prior cases frozen and
-  the two new cases pass. **(macOS-only — cannot run on the Linux host; left for the Mac.)**
+- [x] 4.4 Run `run-sim-native-ssi-marching` on the booted simulator; confirm prior cases frozen and
+  the two new cases pass. Sim run 2026-07-19 @ beafc55: 22 passed / 0 failed. `wide-band 0.595`
+  (crossed=24) / `wide-band 0.597` (crossed=26) / `wide-band decline` (honest, NTgaps=1) all PASS;
+  no seed or branch count moved.
 
 ## 5. Structural + finalize
 - [x] 5.1 `git diff src/native` OCCT-free and additive; diff confined to `ssi/marching.{h,cpp}`;

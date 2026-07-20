@@ -37,8 +37,10 @@
   tol (crossResid ≤ onSurfTol).
 - [x] 4.2 `pairDeepNearTangentHonestDeclineS4c` — below the extended floor native declines
   (nearTangentCrossed==0, no Closed loop, nearTangentGaps≥1) while OCCT reports a locus.
-- [ ] 4.3 Run `run-sim-native-ssi-marching` on the booted simulator; confirm all prior cases frozen
-  and the two new cases pass.
+- [x] 4.3 Run `run-sim-native-ssi-marching` on the booted simulator; confirm all prior cases frozen
+  and the two new cases pass. Sim run 2026-07-19 @ beafc55: 22 passed / 0 failed. `deep-nt reanchor`
+  (declineOff=1, NTgaps=0, crossed=21) and `deep-nt decline` (crossed=0, NTgaps=1) both PASS; all
+  seed and branch counts match OCCT.
 
 ## 5. Structural + finalize
 - [x] 5.1 `git diff src/native` OCCT-free and additive; tessellator / boolean / blend UNTOUCHED;

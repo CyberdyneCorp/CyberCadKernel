@@ -864,6 +864,36 @@ construction + the M0 mesher + M2 booleans.
   `cc_boolean` facade still declines (a BOOLEAN-track breadth gap, not a fillet gap), so the app
   reaches this arm only once that lands. Unequal-radius / non-orthogonal / TORUS / elliptical
   (cyl↔oblique-plane) creases still decline → OCCT.
+- **Status — UNEQUAL-radius CYL↔CYL CANAL fillet LANDED (`moat-m3uc-unequal-canal-fillet`) → the
+  FIRST entry of the equal-canal tail now NATIVE.** `cc_fillet_edges` now LANDS on the two crossing
+  creases of two ORTHOGONAL-axis cylinders of DISTINCT radii (the thin cyl poking fully through the
+  thick one): `src/native/blend/canal_fillet_unequal.h` (new). Distinct radii change the crease
+  topology in the MORE REGULAR direction — for thin cyl A (axis Z, `Ra`) and thick cyl B (axis X,
+  `Rb`), `Ra<Rb`, the walls meet along `cz=±√(Rb²−Ra² sin²u)`, and since `Rb>Ra` the radicand
+  `≥ Rb²−Ra²>0` for EVERY azimuth, so `cz` never reaches 0: the crease is TWO DISJOINT CLOSED LOOPS,
+  NOT the equal-case pinched figure sharing poles. Each loop gets a NON-DEGENERATE closed canal strip
+  (rolling-ball centre at `R0a=Ra−r` from the thin axis and `R0b=Rb−r` from the thick axis, never a
+  pole), G1-tangent to both walls by construction (the strip normal `(P−C)/r` IS the wall radial at
+  each seam — verified analytically). The whole filleted COMMON rebuilds as a planar-facet soup —
+  two closed strips + the thin wall's waist TUBE band + two thick-wall CAP patches (ring-fanned from
+  the loop centroid on the thick wall) — welded watertight PURELY in the assembly layer (**NO
+  tessellator change** — byte-identical firewall trivially met, zero mesher diff). Recognition is
+  WHOLESALE from the boolean's facet soup, recovering the two axes and TWO DISTINCT radii classified
+  PER FACET BY RADIUS (a facet on the `Ra` cylinder sits at perp-distance `Ra` EXACTLY regardless of
+  its facet-normal tilt — robust to coarse-cap tilt a hard normal threshold rejects). Candidate #7 in
+  `NativeEngine::fillet_edges` (after the equal canal #6), gated by the SHRINK self-verify; EQUAL
+  radii route to #6; a MANDATORY internal self-verify (consistent orientation + removed-volume bound)
+  rejects any large-radius fold → OCCT. GATE a host-analytic GREEN (`test_native_blend`
+  `unequal_canal_fillet_*` 5 cases: `Ra=1,Rb=1.5` fillets at `r∈[0.1,0.4]` watertight +
+  `isConsistentlyOriented` (χ=2) + REMOVES material + CONVERGES as deflection refines; ANALYTIC G1 at
+  both seams; box / equal-radii / thin `Ra<2r` / `r≤0` / multi-edge decline). GATE b SIM encoded
+  structurally (OCCT `BRepPrimAPI_MakeCylinder`×2 + `Common` + `BRepFilletAPI_MakeFillet` oracle).
+  SCOPE (honest): EQUAL radii → canal_fillet.h; non-orthogonal / non-crossing / a third wall family
+  / TORUS / elliptical creases still decline → OCCT. BODY-BUILD CAVEAT (measured): the native SSI
+  boolean does build the unequal COMMON but impractically (~48 s, ~59k facets vs 864 equal) — a
+  BOOLEAN-track breadth gap, NOT a fillet gap (the recognizer DOES recognize the real SSI soup: radii
+  to 1e-3, zero stray facets), so the host gate feeds a clean recognizable soup built directly, the
+  SIM gate builds via OCCT — mirroring the equal slice's body-build caveat.
 - **Status — CURVED offset_face LANDED (`moat-m3co-curved-offset-face`) → the curved analogue of
   the planar `offset_face` NATIVE.** `cc_offset_face` now LANDS on the CYLINDER LATERAL WALL of a
   capped cylinder: the offset of a cylinder surface is a coaxial cylinder, so

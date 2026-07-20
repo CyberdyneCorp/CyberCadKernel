@@ -1554,6 +1554,21 @@ ShapeResult NativeEngine::fillet_edges(EngineShape body, const int* e, int ec, d
     if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
         return track(wrapNative(std::move(result)));
 
+    // 7. UNEQUAL-radius CYL↔CYL CANAL crease (two ORTHOGONAL-axis cylinders of DISTINCT
+    //    radii — the thin cylinder poking fully through the thick one). Unlike the equal-
+    //    radius Steinmetz (#6), distinct radii make the two crease loops DISJOINT and
+    //    NON-DEGENERATE (no pole pinch): each loop gets a full closed canal strip
+    //    (G1-tangent to both walls) welded to the thin wall's waist tube and the two thick-
+    //    wall cap patches PURELY in the assembly layer, REMOVES material — verified SHRINK.
+    //    An INTERNAL orientation + removed-volume self-verify rejects a large-radius fold.
+    //    Recognition is WHOLESALE from the boolean's planar-facet soup (two orthogonal
+    //    cylinder wall families at distinct radii); equal radii route to #6. As with #6, a
+    //    native unequal-bicylinder body exists only on native solids, so an OCCT body never
+    //    reaches here.
+    result = nblend::unequal_canal_fillet_edge(h->shape, e, ec, r);
+    if (!result.isNull() && blendResultVerified(result, h->shape, /*wantGrow=*/false))
+        return track(wrapNative(std::move(result)));
+
     // T2 (ELLIPTICAL-crease fillet, cylinder ↔ oblique plane) is an HONEST DECLINE → OCCT-
     // fallthrough, NO native builder (no dead code): T2 needs a native body carrying a true
     // Cylinder face + oblique Plane face meeting at an Ellipse edge. No OCCT-FREE constructor

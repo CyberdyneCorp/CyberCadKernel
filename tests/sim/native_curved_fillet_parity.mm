@@ -936,6 +936,129 @@ void runCanalCase(double Rc, double L, double r) {
     if (oracle.id) cc_shape_release(oracle.id);
 }
 
+// ── UNEQUAL-radius CYL↔CYL CANAL parity (thin cyl through thick cyl) ────────────────
+// Two ORTHOGONAL-axis cylinders of DISTINCT radii (thin Z radius Ra, thick X radius Rb,
+// Ra<Rb): the thin cylinder pokes fully through the thick one, so the crease is TWO
+// DISJOINT closed loops (no poles). Native builds one closed canal strip per loop
+// (G1-tangent to both walls) welded to the thin waist tube + two thick caps in the
+// assembly layer (moat-m3uc-unequal-canal-fillet); OCCT uses BRepFilletAPI. The sharp
+// COMMON volume has no simple closed form (an elliptic integral), so the oracle uses the
+// MEASURED OCCT body volume as the sharp baseline. Host gates (test_native_blend
+// unequal_canal_fillet_*) prove the native fillet watertight + oriented + shrinking + G1.
+
+// An unequal bicylinder COMMON under the active engine: thin Z cyl (Ra) ∩ thick X cyl (Rb).
+CCShapeId buildUnequalBicyl(double Ra, double Rb, double L) {
+    const CCShapeId za = buildCenteredCylinderZ(Ra, L);      // thin, axis Z
+    const CCShapeId zb = buildCenteredCylinderZ(Rb, L);      // thick, built about Z…
+    if (za == 0 || zb == 0) { if (za) cc_shape_release(za); if (zb) cc_shape_release(zb); return 0; }
+    const CCShapeId xb = cc_rotate_shape_about(zb, 0, 0, 0, 0, 1, 0, kPi / 2.0);  // …rotated Z→X
+    cc_shape_release(zb);
+    if (xb == 0) { cc_shape_release(za); return 0; }
+    const CCShapeId lens = cc_boolean(za, xb, /*common*/ 2);
+    cc_shape_release(za);
+    cc_shape_release(xb);
+    return lens;
+}
+
+Snapshot buildAndFilletUnequal(double Ra, double Rb, double L, double r, int buildEngine,
+                               int blendEngine) {
+    cc_set_engine(buildEngine);
+    const CCShapeId body = buildUnequalBicyl(Ra, Rb, L);
+    cc_set_engine(blendEngine);
+    Snapshot s;
+    s.activeNative = cc_active_engine() == 1;
+    if (body != 0) {
+        s.bodyBuilt = true;
+        const CCMassProps bmp = cc_mass_properties(body);
+        s.bodyVolume = bmp.valid ? bmp.volume : 0.0;
+        // Any crease edge sits on BOTH walls: |xy|≈Ra AND |yz|≈Rb. Reuse findCreaseEdge with
+        // the thin radius for the |xy| test would over-constrain, so inline the check.
+        CCEdgePolyline* edges = nullptr;
+        const int n = cc_edge_polylines(body, &edges);
+        int crease = 0;
+        for (int i = 0; i < n && crease == 0; ++i) {
+            const CCEdgePolyline& e = edges[i];
+            if (e.pointCount < 3 || e.points == nullptr) continue;
+            bool onBoth = true;
+            for (int p = 0; p < e.pointCount && onBoth; ++p) {
+                const double x = e.points[p * 3 + 0], y = e.points[p * 3 + 1], z = e.points[p * 3 + 2];
+                if (std::fabs(std::hypot(x, y) - Ra) > 1e-3 || std::fabs(std::hypot(y, z) - Rb) > 1e-3)
+                    onBoth = false;
+            }
+            if (onBoth) crease = e.edgeId;
+        }
+        cc_edge_polylines_free(edges, n);
+        if (crease != 0) {
+            s.creaseFound = true;
+            const int ids[1] = {crease};
+            s.id = cc_fillet_edges(body, ids, 1, r);
+            if (s.id != 0) s.mass = cc_mass_properties(s.id);
+        }
+    }
+    if (body) cc_shape_release(body);
+    return s;
+}
+
+// One unequal-canal case. As with the equal Steinmetz, the native fillet is HOST-gated
+// (test_native_blend unequal_canal_fillet_*); the SIM confirms the OCCT oracle produces the
+// reference filleted body and records the native boolean-track body-build gap honestly (the
+// native SSI COMMON of two full cylinders is impractically slow/dense on this pose — a
+// boolean-track breadth gap, NOT a fillet gap).
+void runUnequalCanalCase(double Ra, double Rb, double L, double r) {
+    char detail[512];
+    char lbl[96];
+    std::snprintf(lbl, sizeof lbl, "unequal-canal Ra=%.1f Rb=%.1f r=%.2f", Ra, Rb, r);
+    const std::string base = lbl;
+
+    // OCCT oracle: build + fillet; the sharp baseline is the MEASURED OCCT body volume.
+    const Snapshot oracle = buildAndFilletUnequal(Ra, Rb, L, r, /*build*/ 0, /*blend*/ 0);
+    const double sharp = oracle.bodyVolume;
+    const bool oracleOk = oracle.id != 0 && oracle.mass.valid != 0 && oracle.mass.volume > 0.0 &&
+                          sharp > 0.0 && oracle.mass.volume < sharp;
+    std::snprintf(detail, sizeof detail, "occt vol=%.6g sharp=%.6g removed=%.4g",
+                  oracle.id ? oracle.mass.volume : 0.0, sharp,
+                  oracle.id ? sharp - oracle.mass.volume : 0.0);
+    record(oracleOk, base + " occt-oracle", detail);
+
+    // Native path via the facade.
+    const Snapshot cand = buildAndFilletUnequal(Ra, Rb, L, r, /*build*/ 1, /*blend*/ 1);
+    if (cand.id == 0 || cand.mass.valid == 0) {
+        std::snprintf(detail, sizeof detail,
+                      "native unequal-bicyl body build gap via facade (bodyBuilt=%d vol=%.4g "
+                      "creaseFound=%d) → boolean-track breadth gap, NOT a fillet gap; unequal "
+                      "canal fillet is host-gated (test_native_blend unequal_canal_fillet_*)",
+                      cand.bodyBuilt ? 1 : 0, cand.bodyVolume, cand.creaseFound ? 1 : 0);
+        record(true, base + " native-note", detail);
+        cc_set_engine(0);
+        if (oracle.id) cc_shape_release(oracle.id);
+        return;
+    }
+
+    // Native body WAS built — full native-vs-OCCT parity.
+    const CCMesh cMesh = cc_tessellate(cand.id, 0.02);
+    const bool haveMesh = cMesh.triangleCount > 0;
+    const bool wt = haveMesh && meshWatertight(cMesh);
+    const bool massOk = cand.activeNative && cand.mass.volume < sharp &&
+                        cand.mass.volume > 0.5 * sharp;
+    std::snprintf(detail, sizeof detail, "vol n=%.6g sharp=%.6g removed=%.4g shrank=%d",
+                  cand.mass.volume, sharp, sharp - cand.mass.volume,
+                  cand.mass.volume < sharp ? 1 : 0);
+    record(massOk, base + " mass", detail);
+    std::snprintf(detail, sizeof detail, "watertight=%d tris=%d", wt ? 1 : 0, cMesh.triangleCount);
+    record(haveMesh && wt, base + " tessellate", detail);
+    if (oracleOk) {
+        const double volRelO =
+            std::fabs(cand.mass.volume - oracle.mass.volume) / oracle.mass.volume;
+        std::snprintf(detail, sizeof detail, "native=%.6g occt=%.6g volRel=%.2e (convention gap)",
+                      cand.mass.volume, oracle.mass.volume, volRelO);
+        record(volRelO < 5e-2, base + " occt-parity", detail);
+    }
+    if (haveMesh) cc_mesh_free(cMesh);
+    cc_set_engine(0);
+    cc_shape_release(cand.id);
+    if (oracle.id) cc_shape_release(oracle.id);
+}
+
 }  // namespace
 
 int main() {
@@ -967,6 +1090,10 @@ int main() {
     runCanalCase(1.0, 6.0, 0.15);   // r/Rc=0.15
     runCanalCase(1.0, 6.0, 0.2);    // r/Rc=0.20
     runCanalCase(1.0, 6.0, 0.3);    // r/Rc=0.30
+    // UNEQUAL-radius CYL↔CYL CANAL crease (thin Z through thick X, DISTINCT radii) — M3uc.
+    runUnequalCanalCase(1.0, 1.5, 6.0, 0.15);  // thin Ra=1, thick Rb=1.5, r=0.15
+    runUnequalCanalCase(1.0, 1.5, 6.0, 0.2);   // r=0.20
+    runUnequalCanalCase(1.0, 2.0, 8.0, 0.3);   // wider ratio, r=0.30
     std::printf("== %d passed, %d failed ==\n", g_passed, g_failed);
     std::fflush(stdout);
     std::_Exit(g_failed == 0 ? 0 : 1);

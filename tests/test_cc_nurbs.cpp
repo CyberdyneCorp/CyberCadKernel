@@ -14,6 +14,7 @@
 //     honest 0/-1 codes;
 //   * an undersized accessor buffer returns < 0 and writes NOTHING out of bounds.
 
+#include <algorithm>  // std::max/std::min over an initializer_list
 #include <cmath>
 #include <cstdint>
 #include <vector>

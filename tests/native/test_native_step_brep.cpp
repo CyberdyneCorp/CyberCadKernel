@@ -18,6 +18,7 @@
 //   5. HONEST DECLINE — a face whose surface the exact writer cannot represent
 //      (empty free-form, no knots) makes writeStepBrep return an EMPTY string.
 //
+#include <algorithm>  // std::max/std::min over an initializer_list
 #include <cstdio>
 
 #include "native/exchange/step_brep.h"

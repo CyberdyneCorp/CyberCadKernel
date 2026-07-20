@@ -13,6 +13,7 @@
 //
 #include "native/math/native_math.h"
 
+#include <algorithm>  // std::max over an initializer_list (magnitudeCurve/magnitudeSurface)
 #include <cmath>
 #include <cstdio>
 #include <span>

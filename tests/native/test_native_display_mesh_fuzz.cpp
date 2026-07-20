@@ -57,6 +57,7 @@
 
 #include "harness.h"
 
+#include <algorithm>  // std::max/std::min over an initializer_list
 #include <cmath>
 #include <cstdint>
 #include <cstdio>

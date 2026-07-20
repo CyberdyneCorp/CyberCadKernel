@@ -51,6 +51,7 @@
 
 #include "native/topology/native_topology.h"
 
+#include <algorithm>  // std::max/std::min over an initializer_list
 #include <cmath>
 #include <cstdint>
 #include <cstdio>

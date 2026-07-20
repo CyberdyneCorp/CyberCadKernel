@@ -42,6 +42,7 @@
 #include "native/numerics/numerics.h"
 #include "native/ssi/patch_bounds.h"  // SurfaceAdapter
 
+#include <algorithm>  // std::max/std::min over an initializer_list
 #include <array>
 #include <cmath>
 #include <optional>

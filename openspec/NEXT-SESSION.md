@@ -56,8 +56,8 @@ midpoint normal makes the patch extent second-order). Below ~3e-4 on these opera
 separates at reachable cell sizes. The `wave × wave` family sweep was trimmed to the two poses
 ABOVE that threshold for runtime — do not read its 1 891 467 → 0 as covering the band.
 
-**Still owed:** the simulator gate (item 6). This changes candidate sets on transversal poses,
-not only the disjoint one, so expect MORE than the one benign parity line originally predicted.
+**Still owed:** ~~the simulator gate (item 6)~~ — **paid 2026-07-19**: sim marching parity
+22/0, no seed/branch movement, only the predicted benign onCurve shift. Change archived.
 
 **Do NOT move this predicate to the refine site.** `refineRegion` clamps into the FULL domain, so
 it is effectively a global solve — **97.8% of accepted refines converge outside their own candidate
@@ -197,6 +197,14 @@ harness is expected to exit 1 until the S4-d branch-point iteration lands; it is
 Driver: `scripts/run-sim-native-ssi-seeding-parity.sh` — **not** `run-sim-native-ssi-seeding.sh`,
 which builds a different harness (`native_ssi_seeding_recall.mm`) and will look deceptively green.
 
+**gp_Dir gap — closed (Mac session 2026-07-19).** The iOS-simulator SDK's OCCT header
+(`install-SIMULATORARM64/include/opencascade/gp_Dir.hxx`) contains exactly one `Magnitude`
+occurrence, on the `gp_Vec` constructor: *"Raises ConstructionError if theV.Magnitude() <=
+Resolution."* So on the simulator toolchain too, building a `gp_Dir` from the near-null
+cross-of-normals at an exact tangency (`bspline × plane` bottoms out at sine 0.0000) throws
+`Standard_ConstructionError` — the `classifyBranch` try/catch around `crossingSineOnOcct` is
+required, not defensive decoration. Latent on both toolchains, live on neither.
+
 ---
 
 ## 4. M0 collar retune — **NOT READY. Its supporting claim is falsified; re-measure from scratch.**
@@ -240,7 +248,34 @@ Budgets: boolean_fuzz ~14 min, freeform_boolean_fuzz ~9 min, ssi_freeform_fuzz ~
 
 ---
 
-## 6. Simulator confirmation — **the Mac session, ready to run**
+## 6. Simulator confirmation — ✅ **DONE (Mac session 2026-07-19 @ beafc55)**
+
+All three runs green; all five changes confirmed and **archived**
+(`openspec/changes/archive/2026-07-20-*`).
+
+| run | result |
+|---|---|
+| `run-sim-native-ssi-marching.sh` | **22 passed / 0 failed.** The predicted benign shift landed exactly (bspline×bspline onCurve 1.65e-07 → 1.74e-07); every seed and branch count matched OCCT on all 22 lines — no SEED/BRANCH movement. |
+| `run-sim-native-chain-seam-weld.sh` | **61 passed / 0 failed.** FUSE full OpCase green at d=0.010 and d=0.005 (vol rel 3.278e-03 / 1.824e-03, classify disagree=0). |
+| full suite (acceptance bar) | **221 passed / 0 failed** — but see the script-staleness note below. |
+
+**⚠ `run-sim-suite.sh` is stale in three ways and could not run as-is (Linux follow-up; the Mac
+session's lane excluded `scripts/`).** The 221/221 above was obtained by reproducing the script's
+compile/link/spawn exactly, with these corrections — each is a one-line script fix:
+
+1. **numsci glob** (also in the marching/seam-weld runners): `build-numsci.sh iossim` writes
+   `build-numsci/iossim/libnumsci_iossim_arm64.a`, but the fallback glob is
+   `build-numsci/*iossim*.a` (parent dir) and misses it. Workaround used:
+   `CYBERCAD_NUMSCI_DIR=$REPO/build-numsci/iossim` (the explicit-dir branch works).
+2. **Missing `-lTKHLR`**: the GS1c HLR work put `hlr_project` into `occt_drafting.o`, so any
+   freshly built `libcybercadkernel-SIMULATORARM64.a` needs TKHLR; the suite's `TKS` list predates
+   it. (The committed archive was also stale — rebuilt with `build-xcframework.sh`, which is what
+   exposed this.)
+3. **SKIP list misses `native_vs_occt_bench.cpp` and `native_vs_occt_mem.cpp`** — both carry their
+   own `main()` (duplicate-symbol link failure once TKHLR resolves). The suite proper is
+   `full_suite.cpp` + the 7 Phase-0/1 `checks_*.cpp` modules, per the script's own comment.
+
+Original queue entry follows for the record.
 
 **Five changes are one task from done.** Each is complete except its simulator run; every other task
 in them is checked. `openspec list` shows the counts.

@@ -298,7 +298,8 @@ resolution. The curve *pipeline* exists; this is the *robustness* on adversarial
     decline test at dx=0.595 is kept UNMODIFIED and still green).
   - Host **Gate A 24/24**; host **Gate B 21/0** vs system OCCT (19 prior frozen + 2 new).
     `src/native` diff confined to `ssi/marching.{h,cpp}`, OCCT-free + additive; `cc_*` unchanged;
-    no tolerance weakened. Sim Gate B left for the Mac.
+    no tolerance weakened. Sim Gate B confirmed on the Mac 2026-07-19: marching parity 22/0, no
+    seed/branch movement (covers M1d/M1e/M1f and the A2 slab prune in one run).
   - **Erratum.** The inherited ground-truth map's `scale = 3.4641` is wrong; resolved `scale` at this
     family is **11.014390**, so every budget figure derived from it was understated 3.18×.
   - **Next blocker (newly exposed, by the parity gate):** the **fitted convenience B-spline**, not

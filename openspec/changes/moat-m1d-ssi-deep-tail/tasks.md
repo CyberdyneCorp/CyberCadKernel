@@ -45,4 +45,4 @@
   `cc_*` unchanged.
 - [x] 5.2 Update `openspec/MOAT-ROADMAP.md` M1 status: near-tangent breadth floor extended
   (0.17 → 0.14) with the sharpened next blocker.
-- [ ] 5.3 `openspec validate --strict moat-m1d-ssi-deep-tail`.
+- [x] 5.3 `openspec validate --strict moat-m1d-ssi-deep-tail`.

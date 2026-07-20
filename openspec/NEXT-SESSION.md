@@ -22,6 +22,10 @@ Written 2026-07-19 at `732788d`; **substantially revised after execution.**
 
 Read with [MOAT-ROADMAP.md](MOAT-ROADMAP.md) §M1, which carries the geometry history.
 
+**On a Mac, start at [§6](#6-simulator-confirmation--the-mac-session-ready-to-run).** Five changes
+are one task from done and four of them confirm through a single harness run. Nothing else in this
+document needs doing there — every remaining item is Linux work.
+
 ---
 
 ## Environment (all of this now works on Linux)
@@ -236,16 +240,40 @@ Budgets: boolean_fuzz ~14 min, freeform_boolean_fuzz ~9 min, ssi_freeform_fuzz ~
 
 ---
 
-## 6. Simulator confirmation — **the cheapest open refutation route**
+## 6. Simulator confirmation — **the Mac session, ready to run**
 
-**Seven** changes await it: `moat-m1d/m1e/m1f`, `moat-gs2-section-curves`, `moat-m0-freeform-mesher`,
-`moat-m2c3f-strip-weld-fuse`, plus the A2 certificate work and the **separating-slab prune**
-(`4338db5`). The prune changes candidate sets on TRANSVERSAL poses too, not only disjoint ones, so
-expect more than the one benign parity line originally predicted.
+**Five changes are one task from done.** Each is complete except its simulator run; every other task
+in them is checked. `openspec list` shows the counts.
 
-Every mechanism in this document is host-independent **by construction**, but that is *inference*.
-Items 1 and 4 both produce non-byte-identical output on a different toolchain and OCCT build. Also
-one-line: `grep Magnitude` in the simulator's `gp_Dir.hxx` to close the last gap on §3.
+| # | change | harness / script | covers |
+|---|---|---|---|
+| 1 | `moat-m1d-ssi-deep-tail` | `run-sim-native-ssi-marching` | 12/13 |
+| 1 | `moat-m1e-ssi-wide-band` | *(same run)* | 16/17 |
+| 1 | `moat-m1f-ssi-fit-conditioning` | *(same run)* | 16/17 |
+| 1 | `moat-a2-ssi-slab-prune` | *(same run)* | 23/24 |
+| 2 | `moat-m2c3f-strip-weld-fuse` | `run-sim-native-chain-seam-weld.sh` | 12/13 |
+| 3 | acceptance bar | `run-sim-suite.sh` | 221/221 |
+
+**Four of the five confirm through ONE harness run** (`run-sim-native-ssi-marching`). That is
+efficient, and it is also the risk: if that harness moves, attribution across four changes needs a
+bisect. Run it FIRST, before anything else lands.
+
+**What benign movement looks like, so it is not chased.** The bspline×bspline line was predicted to
+shift `onCurve 1.65e-07 → 1.74e-07` — 3–4 orders under tolerance, but not byte-identical. Expect
+**more** lines to move than that: the slab prune changes candidate sets on TRANSVERSAL poses too,
+not only disjoint ones. A line that moves while staying orders under tolerance is expected. **A
+changed SEED or BRANCH count is not, and is the real signal.**
+
+Also one-line while there: `grep Magnitude` in the simulator's `gp_Dir.hxx` to close the last gap
+on §3.
+
+**Two changes are NOT in this batch despite having a macOS task.** `moat-gs2-section-curves` (26
+open) and `moat-m0-freeform-mesher` (22 open) have substantial work beyond the sim run — they are
+not confirm-and-archive.
+
+Every mechanism in this document is host-independent **by construction**, but that is *inference*,
+which is exactly the kind of reasoning that failed repeatedly here. The simulator is a different
+toolchain, a different OCCT build and a different architecture; it is the authority.
 
 ---
 

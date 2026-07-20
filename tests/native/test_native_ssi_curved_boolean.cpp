@@ -999,9 +999,21 @@ CC_TEST(cone_sphere_coaxial_common_fuse_cut_watertight_matches_analytic) {
   CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
   CC_CHECK(vCut <= vConeFull + 1e-9);                             // CUT shrinks below the minuend
   CC_CHECK(!nb::boolean_solid(cone, sph, nb::Op::Cut).isNull());
-  // CUT is order-sensitive: sphere − cone is a DIFFERENT solid; the S5-f CUT builder only
-  // handles the cone minuend, so sphere − cone declines here → OCCT.
-  CC_CHECK(nb::ssi_boolean_solid(sph, cone, nb::Op::Cut).isNull());
+
+  // ── REVERSE CUT = sphere − cone (order-sensitive) now LANDS (buildSphereConeCut): the ball with
+  // a CONICAL NOTCH scooped out where the cone pokes in — the sphere outer cap welded to the
+  // reversed cone wall + reversed cone disc. A CONNECTED notched ball, a DIFFERENT topology from
+  // the cone-minuend dimpled frustum. Watertight, matching V_sph − V_common; a SHRINK. ──
+  const double vCutSphTrue = sphere - vCommonTrue;                // sphere − cone = sph − ∩
+  const ntopo::Shape cutSph = nb::ssi_boolean_solid(sph, cone, nb::Op::Cut);
+  CC_CHECK(!cutSph.isNull());
+  const double vCutSph = watertightMeshVolume(cutSph);
+  CC_CHECK(vCutSph > 0.0);                                        // watertight → engine accepts
+  CC_CHECK(std::fabs(vCutSph - vCutSphTrue) <= 1e-2 * vCutSphTrue);
+  CC_CHECK(vCutSph <= sphere + 1e-9);                            // sphere − cone ≤ sphere
+  CC_CHECK(!nb::boolean_solid(sph, cone, nb::Op::Cut).isNull());  // engine self-verify accepts it
+  // Partition identity: (sphere − cone) + COMMON = sphere (the closed-form self-consistency).
+  CC_CHECK(std::fabs((vCutSph + vCommon) - sphere) <= 2e-2 * sphere);
 }
 
 // ── (6) COAXIAL cone(frustum)∩cone(frustum) COMMON / FUSE / CUT: REAL native watertight
@@ -1378,9 +1390,22 @@ CC_TEST(cone_sphere_two_circle_common_fuse_cut_watertight_matches_analytic) {
   CC_CHECK(std::fabs(vCut - vCutTrue) <= 1e-2 * vCutTrue);
   CC_CHECK(vCut <= vConeFull + 1e-9);                            // CUT shrinks below the minuend
   CC_CHECK(!nb::boolean_solid(cone, sph, nb::Op::Cut).isNull());
-  // CUT is order-sensitive: sphere − cone is a DIFFERENT topology; the S5-h CUT builder only
-  // handles the cone minuend, so sphere − cone declines here → OCCT.
-  CC_CHECK(nb::ssi_boolean_solid(sph, cone, nb::Op::Cut).isNull());
+
+  // ── REVERSE CUT = sphere − cone (order-sensitive) now LANDS (buildSphereCone2Cut): the sphere
+  // with a coaxial CONICAL (tapered) TUNNEL drilled through — an annular solid of revolution
+  // (sphere equatorial belt + reversed cone wall as the tapered bore), a DIFFERENT topology from
+  // the two-piece cone-minuend dimpled stack. It is the tanα≠0 sibling of the S5-i sphere − cyl
+  // reverse. Watertight, matching V_sph − V_common; a SHRINK below the sphere. ──
+  const double vCutSphTrue = vSph - vCommonTrue;                  // sphere − cone = sph − ∩
+  const ntopo::Shape cutSph = nb::ssi_boolean_solid(sph, cone, nb::Op::Cut);
+  CC_CHECK(!cutSph.isNull());
+  const double vCutSph = watertightMeshVolume(cutSph);
+  CC_CHECK(vCutSph > 0.0);                                        // watertight → engine accepts
+  CC_CHECK(std::fabs(vCutSph - vCutSphTrue) <= 1e-2 * vCutSphTrue);
+  CC_CHECK(vCutSph <= vSph + 1e-9);                             // sphere − cone ≤ sphere
+  CC_CHECK(!nb::boolean_solid(sph, cone, nb::Op::Cut).isNull());  // engine self-verify accepts it
+  // Partition identity: (sphere − cone) + COMMON = sphere (the closed-form self-consistency).
+  CC_CHECK(std::fabs((vCutSph + vCommon) - vSph) <= 2e-2 * vSph);
 }
 
 // ── (9) TWO-CIRCLE cone∩sphere HONEST DECLINES: single-crossing + tangent → S5-f / OCCT. ──
@@ -1402,6 +1427,13 @@ CC_TEST(cone_sphere_two_circle_declines_single_and_tangent) {
   CC_CHECK(!single.isNull());
   const double vSingle = watertightMeshVolume(single);
   CC_CHECK(std::fabs(vSingle - 5.255829) <= 1e-2 * 5.255829);  // the S5-f single-crossing volume
+  // The two-circle sphere − cone reverse CUT (buildSphereCone2Cut) needs BOTH roots interior; on
+  // this single-crossing pose the S5-h two-root prologue rejects it — but the single-circle S5-f
+  // reverse (buildSphereConeCut) now OWNS it, so the engine still lands a watertight sphere − cone
+  // (a notched ball), not a decline. Assert the landed single-crossing reverse here.
+  const ntopo::Shape sphSingleCut = nb::ssi_boolean_solid(sphSingle, cone, nb::Op::Cut);
+  CC_CHECK(!sphSingleCut.isNull());
+  CC_CHECK(watertightMeshVolume(sphSingleCut) > 0.0);
 }
 
 // ── (10) TWO-CIRCLE coaxial CYLINDER∩SPHERE COMMON / FUSE / CUT: REAL native watertight

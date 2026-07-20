@@ -2159,6 +2159,46 @@ topo::Shape buildConeSphereCut(const CurvedSolid& A, const CurvedSolid& B,
   return topo::ShapeBuilder::makeSolid({shell});
 }
 
+// buildSphereConeCut(A,B) = A − B with the SPHERE the minuend (the ORDER-SENSITIVE reverse of
+// the single-circle buildConeSphereCut): the ball with a CONICAL NOTCH scooped out where the cone
+// pokes in — the ball MINUS the cone∩sphere COMMON. A CONNECTED solid (one closed component). Its
+// boundary is the sphere OUTER cap (seam → out-of-cone pole, the ball surface OUTSIDE the cone, the
+// SAME cap the S5-f FUSE emits, outward) welded to the notch walls: the cone WALL band
+// (coneNear → seam) REVERSED (inward) + the cone terminal disc @ coneNear REVERSED (normal into the
+// removed region). The sphere INNER cap (seam → in-cone pole) sat inside the cone and is removed.
+// It is the single-circle sibling of the two-circle buildSphereCone2Cut (which drills a through
+// tunnel); here the cone crosses the sphere only ONCE, so the result is a notched ball, not a tube.
+// Gated on the SAME clean single-crossing config the S5-f COMMON needs (one pole in / one out, the
+// cone near-end disc inside the sphere). V = V_sph − V_common. The engine's watertight + two-sided
+// volume self-verify is the safety net; a pose that cannot weld robustly HONEST-DECLINES → OCCT.
+topo::Shape buildSphereConeCut(const CurvedSolid& A, const CurvedSolid& B,
+                               const std::vector<Seam>& seams) {
+  const ConeSphereSetup s = coneSphereSetup(A, B, seams);
+  if (!s.ok) return {};
+  if (&A != s.sph) return {};  // A must be the sphere minuend; cone−sphere is buildConeSphereCut
+  // Survival: the cone wall below the seam is INSIDE the sphere and the in-cone pole is INSIDE the
+  // cone — the notch closes cleanly (the same inside-the-other gates the COMMON asserts).
+  const double midNear = 0.5 * (s.coneNear + s.sStar);
+  if (classifyPoint(*s.sph, s.wallPoint(s.rCone(midNear), midNear), kSsiTol) != 1) return {};
+  if (classifyPoint(*s.cone, s.poleIn(), kSsiTol) != 1) return {};
+
+  const Seam capSeam = s.seamRing();
+  const std::vector<math::Point3> ringNear = s.ring(s.rCone(s.coneNear), s.coneNear);
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  // Sphere OUTER cap (seam → out-of-cone pole): the ball surface outside the cone, outward.
+  appendSphereCap(*s.sph, s.otherRef(), capSeam, lensRingsFor(*s.sph, s.poleOut(), capSeam), pool,
+                  faces, /*outer=*/true, /*reversed=*/false);
+  // Cone WALL band (coneNear → seam) REVERSED (inward) — the conical notch wall.
+  appendRevolvedBand(ringNear, capSeam.pts, s.O, s.zc, pool, faces, /*outwardSign=*/-1.0);
+  // Cone terminal disc @ coneNear REVERSED (normal +inDir·zc, into the removed common region).
+  const math::Vec3 capN{s.inDir * s.zc.x, s.inDir * s.zc.y, s.inDir * s.zc.z};
+  appendDiskCap(*s.cone, s.coneNear, ringNear, capN, pool, faces);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
 // ── S5-h — TWO-CIRCLE coaxial CONE(frustum)∩SPHERE COMMON / FUSE / CUT ──────────────────
 // The natural extension of the single-circle S5-f pair: a cone frustum coaxial with a sphere
 // (centre ON the cone axis) whose wall crosses the sphere at TWO latitudes → TWO analytic
@@ -2527,6 +2567,38 @@ topo::Shape buildConeSphere2Cut(const CurvedSolid& A, const CurvedSolid& B,
   appendRevolvedBand(ringHi, ring1, s.O, s.zc, pool, faces);
   appendDiskCap(*s.cone, s.coneS1, ring1, s.zc, pool, faces);
   if (faces.size() < 8) return {};  // two components → ≥8 faces
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildSphereCone2Cut(A,B) = A − B with the SPHERE the minuend (the ORDER-SENSITIVE reverse of
+// buildConeSphere2Cut): the sphere with a coaxial CONICAL (tapered) TUNNEL drilled through it — a
+// single annular solid of revolution (topologically a tube), NOT the cone-minuend's two-piece
+// dimpled stack. It is the tanα≠0 sibling of the S5-i buildSphereCyl2Cut (a cylinder is the tanα==0
+// special case; the ONLY change is the tunnel wall tapers). Boundary: the sphere OUTER ZONE between
+// the two analytic seam latitudes (seamLo→seamHi, the equatorial belt where the sphere bulges
+// OUTSIDE the cone at ρ ≥ r_cone, outward +1) + the cone WALL band between the same two seams,
+// REVERSED (inward normal, bounding the drilled tapered tunnel; a straight ruling is EXACT on the
+// cone wall). The two seam rings (radii rhoLo/rhoHi at stations sLo/sHi) are shared so the belt
+// welds to the tunnel wall. The two sphere polar caps (ρ < r_cone, near the poles) are entirely
+// inside the drill → removed. Gated on the SAME clean two-circle poke-through the S5-h COMMON needs
+// (both poles inside the cone → the two seams bound the belt + tunnel). V = V_sph − V_common. The
+// engine's watertight + two-sided volume self-verify is the safety net; a pose that cannot weld
+// robustly HONEST-DECLINES → OCCT.
+topo::Shape buildSphereCone2Cut(const CurvedSolid& A, const CurvedSolid& B,
+                                const std::vector<Seam>& seams) {
+  const ConeSphere2Setup s = coneSphere2Setup(A, B, seams);
+  if (!s.ok) return {};
+  if (&A != s.sph) return {};  // A must be the sphere minuend; cone−sphere is buildConeSphere2Cut
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const std::vector<math::Point3> ringLo = s.ring(s.rhoLo, s.sLo);
+  const std::vector<math::Point3> ringHi = s.ring(s.rhoHi, s.sHi);
+  // Sphere OUTER equatorial zone between the two seams (the belt the FUSE uses), outward +1.
+  appendSphereZone(s.C, s.Rs, ringLo, ringHi, pool, faces, /*outwardSign=*/1.0);
+  // Cone WALL band between the two seams, REVERSED (inward) — the drilled tapered tunnel wall.
+  appendRevolvedBand(ringLo, ringHi, s.O, s.zc, pool, faces, /*outwardSign=*/-1.0);
+  if (faces.size() < 4) return {};
   const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
   return topo::ShapeBuilder::makeSolid({shell});
 }
@@ -6815,9 +6887,17 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-f: coaxial cone(frustum)∩sphere CUT (cone outer wall + disc + reversed sphere dimple).
       const topo::Shape coneSph = buildConeSphereCut(*csA, *csB, seams);
       if (!coneSph.isNull()) return coneSph;
+      // S5-f reverse: coaxial sphere∩cone single-circle CUT (sphere − cone: notched ball — sphere
+      // outer cap + reversed cone wall + reversed cone disc).
+      const topo::Shape sphCone = buildSphereConeCut(*csA, *csB, seams);
+      if (!sphCone.isNull()) return sphCone;
       // S5-h: TWO-CIRCLE coaxial cone∩sphere CUT (two disconnected cone-tip/end dimpled pieces).
       const topo::Shape coneSph2 = buildConeSphere2Cut(*csA, *csB, seams);
       if (!coneSph2.isNull()) return coneSph2;
+      // S5-h reverse: TWO-CIRCLE coaxial sphere∩cone CUT (sphere − cone: sphere equatorial belt +
+      // reversed conical tunnel — the tanα≠0 sibling of buildSphereCyl2Cut).
+      const topo::Shape sphCone2 = buildSphereCone2Cut(*csA, *csB, seams);
+      if (!sphCone2.isNull()) return sphCone2;
       // S5-q: TRANSVERSAL cone∩sphere CUT (honest-decline — sphere-outer-zone residual → OCCT).
       const topo::Shape transConeSph = buildTransConeSphereCut(*csA, *csB, seams);
       if (!transConeSph.isNull()) return transConeSph;

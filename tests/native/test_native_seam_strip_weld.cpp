@@ -27,22 +27,25 @@
 //      into ONE watertight, coherent, positive-volume closed 2-manifold (every edge used
 //      exactly twice, be = 0), at the closed-form V(A)+V(B)−V(A∩B). This is the fine-
 //      deflection multi-seam gate.
-//   2. THE STRIP WELD IS NEVER-LEAKY. Below the working band the weld self-verify
-//      HONEST-DECLINES to a NULL Shape with a measured residual — NEVER a silently wrong
-//      solid. Asserted at COMMON d = 0.0018. The DECLINE MECHANISM there has moved as the
-//      mesher weld band extended: the over-dense-seam weld-tolerance sliver this case
-//      originally pinned (NotWatertight — adjacent seam vertices merging under the
-//      deflection-derived weld tolerance) is CLEARED by the weld-resolution seam-ring
-//      decimation (MESH-WELD-TOL, seam_strip.h: each registered seam ring keeps only
-//      samples ≥ 2·weldTol apart, so no two strip vertices can merge at the weld). The
-//      strip now welds WATERTIGHT at d = 0.0018 (be = 0), and the decline is the strip's
-//      COLLAR PINCH (measure_multiseam_vote: both annuli splice the SAME shared collar
-//      strip, the coincident duplicate triangles annihilate at the weld, and the collar
-//      bands' volume — a fixed fraction of the seam radii — is LOST, identically in EVERY
-//      orientation configuration: all coherent configs enclose 0.007019 vs the survivors'
-//      own divergence expectation 0.007448). Caught ORACLE-FREE by BOOL-VOTE
-//      (`boolean/weldMultiCoherent` accepts only a weld whose volume agrees with that
-//      expectation) — VolumeInconsistent, still never-leaky, no closed form needed.
+//   2. THE FINE-DEFLECTION COMMON WELDS AT THE CORRECT VOLUME. This case has tracked the
+//      mesher weld band down as each layer sharpened. The over-dense-seam weld-tolerance
+//      sliver it originally pinned (NotWatertight — adjacent seam vertices merging under the
+//      deflection-derived weld tolerance) was CLEARED by the weld-resolution seam-ring
+//      decimation (MESH-WELD-TOL, seam_strip.h: each registered seam ring keeps only samples
+//      ≥ 2·weldTol apart, so no two strip vertices can merge at the weld) — the strip then
+//      welded WATERTIGHT at d = 0.0018 but PINCHED: both annuli spliced the SAME shared
+//      planar collar strip, the coincident duplicate triangles annihilated at the weld, and
+//      the collar bands' volume was LOST (measured all coherent configs enclosed 0.007019 vs
+//      the survivors' own divergence expectation 0.007448, −5.8%), so BOOL-VOTE HONEST-
+//      DECLINED it VolumeInconsistent. MESH-COLLAR-WEDGE (seam_strip.h / face_mesher.h) now
+//      removes the pinch: the per-face wedge-carrying collar places each face's near-seam
+//      ring on its OWN surface at the band edge (r_seam ± δ) — the two faces share ONLY the
+//      seam ring, so the collar wedge volume is CARRIED through the weld. Asserted at COMMON
+//      d = 0.0018: the weld now closes watertight+coherent at enclosedVolume ≈ 0.007496,
+//      MATCHING the expectation ≈ 0.007448 (inside the ±2% oracle-free gate) and the closed-
+//      form lens within the tessellation band — with AND without the closed form. The never-
+//      leaky property (a volume-moving weld → VolumeInconsistent) still guards below the new
+//      floor; it is pinned in test_native_multiseam_vote.
 //
 // Requires CYBERCAD_HAS_NUMSCI (the seams are the real S3 trace between two Béziers).
 //
@@ -91,59 +94,53 @@ CC_TEST(seamstrip_fine_deflection_fuse_welds_watertight) {
   CC_CHECK(std::fabs(rep.enclosedVolume - cf) / cf < 30.0 * d);
 }
 
-// ── (2) Below the working band the weld HONEST-DECLINES — never a silent leak ──
-// At COMMON d = 0.0018 the verb must return a NULL Shape with a measured residual (→ OCCT
-// fallback in the facade), NEVER a silently wrong solid. The MECHANISM this case pins was
-// UPDATED twice as the layers beneath it sharpened:
+// ── (2) The fine-deflection COMMON WELDS at the correct volume (collar-wedge fix) ──
+// At COMMON d = 0.0018 the verb now returns a watertight, coherent solid at the CORRECT
+// enclosed volume. The MECHANISM this case pins was UPDATED as the layers beneath it
+// sharpened, and the residual is now CLEARED:
 //   * MESH-WELD-TOL (seam_strip.h): the shared inner seam r₁ used to be sampled so densely
 //     that adjacent seam/collar ring vertices merged under the deflection-derived weld
 //     tolerance and the strip could not weld (NotWatertight). The weld-resolution seam-ring
-//     decimation cleared that — the strip now welds WATERTIGHT (be = 0, coherent) here.
-//   * BOOL-VOTE (boolean/weldMultiCoherent): the earlier claim that the residual was a
-//     collar-side WINDING pick (first watertight config enclosing a smaller region) is
-//     MEASURED STALE — every watertight+coherent orientation configuration encloses the
-//     SAME 0.007019 (measure_multiseam_vote), because the loss is the strip's COLLAR
-//     PINCH: both annuli splice the SAME shared collar strip, the coincident duplicate
-//     triangles annihilate at the weld, and the collar bands' volume (a fixed fraction of
-//     the seam radii, deflection-INDEPENDENT) is lost. No orientation pick can restore it,
-//     so the CORRECT outcome is this honest decline, and the vote catches it ORACLE-FREE:
-//     the welded volume 0.007019 misses the survivors' own divergence-theorem expectation
-//     0.007448 (which itself sits within the tessellation band of the closed-form 0.00770)
-//     by 5.8% ≫ the 2% repair band. Same never-leaky invariant, now closed-form-free.
-CC_TEST(seamstrip_subthreshold_common_declines_never_leaks) {
+//     decimation cleared that — the strip welded WATERTIGHT (be = 0, coherent) but PINCHED.
+//   * BOOL-VOTE (boolean/weldMultiCoherent): the pinched weld enclosed 0.007019 vs the
+//     survivors' own divergence expectation 0.007448 (−5.8%), so the oracle-free gate
+//     HONEST-DECLINED it VolumeInconsistent — never a silent leak.
+//   * MESH-COLLAR-WEDGE (seam_strip.h / face_mesher.h): the per-face wedge-carrying collar
+//     places each face's near-seam ring on its OWN surface at the band edge (r_seam ± δ) —
+//     the two faces share ONLY the seam ring, so the collar wedge volume is CARRIED through
+//     the weld instead of annihilating. The pinch is GONE: measured the weld now encloses
+//     ≈ 0.007496, MATCHING the expectation ≈ 0.007448 (inside the ±2% band) and the closed-
+//     form lens within the tessellation band. The oracle-free gate ACCEPTS it — with AND
+//     without the closed form. The never-leaky property (a volume-moving weld →
+//     VolumeInconsistent) still guards below the new floor, pinned in multiseam_vote.
+CC_TEST(seamstrip_subthreshold_common_welds_at_correct_volume) {
   const topo::Shape A = ffx::buildA();
   const topo::Shape B = ffx::buildB();
   const std::vector<bo::ssi::WLine> seams = ffx::closedSeams();
   if (seams.size() != 2) { CC_CHECK(false); return; }
-  const double d = 0.0018;  // below the COMMON working band → the collar-pinch residual
-  // BOOL-VOTE: the decline must NOT depend on the closed-form oracle — the verb catches
-  // the pinched weld against its own divergence expectation. Assert both call forms.
+  const double d = 0.0018;  // was below the COMMON band; the collar-wedge fix now welds it
+  // The weld (and the oracle-free gate's acceptance) must NOT depend on the closed-form
+  // oracle — assert both call forms.
   for (const double cf : {ffx::volCommon(), std::numeric_limits<double>::quiet_NaN()}) {
     bo::MultiSeamCutReport rep;
     const topo::Shape r =
         bo::freeformFreeformMultiSeamCutWithSeams(A, B, seams, bo::FfOp::Common, d, &rep, cf);
-    // The verb declines to NULL with a measured residual — the honest, never-leaky outcome.
-    CC_CHECK(r.isNull());
-    // MESH-WELD-TOL regression: the mesher weld itself succeeds at this deflection — the
-    // report carries the witnesses that a watertight, coherent weld EXISTED (the decline
-    // is the volume, not the sew)...
+    // The verb welds a coherent watertight solid — no longer declines, never leaky.
+    CC_CHECK(!r.isNull());
+    CC_CHECK(rep.decline == bo::MultiSeamCutDecline::Ok);
     CC_CHECK(rep.watertight);
     CC_CHECK(rep.coherent);
     CC_CHECK(rep.boundaryEdges == 0);
-    // The machinery still reached the weld (both seams traced, both walls split), so the
-    // decline is a measured self-verify failure, not an upstream give-up.
+    // The machinery reached the weld (both seams traced, both walls split).
     CC_CHECK(rep.seamLoops == 2);
-    // ...and the decline is the strip collar-pinch VOLUME residual, caught oracle-free.
-    CC_CHECK(rep.decline == bo::MultiSeamCutDecline::VolumeInconsistent);
-    // The BOOL-VOTE witnesses: the welded volume fell short of the survivors' own
-    // divergence expectation by more than any pairing REPAIR could account for.
+    // The oracle-free gate accepted it BECAUSE the enclosed volume AGREES with the
+    // survivors' own divergence expectation (the pinch is gone — no material moved).
     CC_CHECK(rep.enclosedVolume > 0.0);
-    CC_CHECK(rep.expectedVolume > rep.enclosedVolume);
-    CC_CHECK(std::fabs(rep.enclosedVolume - rep.expectedVolume) >
+    CC_CHECK(rep.expectedVolume > 0.0);
+    CC_CHECK(std::fabs(rep.enclosedVolume - rep.expectedVolume) <=
              bo::ffmdetail::kWeldVolumeAgreeFrac * rep.expectedVolume);
-    // And the expectation is measuring the RIGHT quantity: it sits within the verb's own
-    // convergence band of the closed form (which the no-oracle call never saw).
-    CC_CHECK(std::fabs(rep.expectedVolume - ffx::volCommon()) < 30.0 * d * ffx::volCommon());
+    // And the accepted volume is the true closed-form lens within the tessellation band.
+    CC_CHECK(std::fabs(rep.enclosedVolume - ffx::volCommon()) < 30.0 * d * ffx::volCommon());
   }
 }
 

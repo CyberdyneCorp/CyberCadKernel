@@ -57,7 +57,7 @@ if [ -n "$NUMSCI_DIR" ] && [ -d "$NUMSCI_DIR/gen" ]; then
   NUMSCI_LIB="$(pick_first "$NUMSCI_DIR"/libnumsci_*.a)"
 else
   NUMSCI_GEN="$REPO/build-numsci/iossim/gen"
-  NUMSCI_LIB="$(pick_first "$REPO"/build-numsci/*iossim*.a "$REPO"/eval/libnumsci_full_iossim_arm64.a)"
+  NUMSCI_LIB="$(pick_first "$REPO"/build-numsci/iossim/libnumsci_*.a "$REPO"/build-numsci/*iossim*.a "$REPO"/eval/libnumsci_full_iossim_arm64.a)"
 fi
 [ -d "$NUMSCI_GEN" ]  || { echo "numsci gen tree not found ($NUMSCI_GEN). Run scripts/build-numsci.sh iossim"; exit 1; }
 [ -n "$NUMSCI_LIB" ]  || { echo "numsci iossim archive not found. Run scripts/build-numsci.sh iossim"; exit 1; }

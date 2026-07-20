@@ -22,24 +22,30 @@
 // post-hoc weld repair fixes it: dropping the slivers to kill the non-manifold leaves
 // OPEN edges (proven by track MESH-SHARED-STRIP).
 //
-// ── THE FIX (bounded two-phase per-face fill) ────────────────────────────────────
+// ── THE FIX (bounded two-phase per-face fill; WEDGE-CARRYING collar) ──────────────
 // PHASE 1 (this header, once per shared seam loop, keyed by the seam's shared 3-D
-// geometry): compute a COLLAR ring — a one-ring-inward offset of the seam ring toward
-// the seam-loop axis, in the seam plane, at radius r_seam − δ — and the fixed STRIP
-// triangulation of the annular band between the seam ring and the collar ring. Both the
-// collar ring and the strip triangles are computed ONLY from the SHARED seam geometry
-// (the bit-identical seam d.points), so they are IDENTICAL for both faces. The collar
-// sits a hair OFF each surface (δ small) — the SAME bargain the SeamPins seam boundary
-// already strikes (it pins the boundary onto the flat shared chord, off the bulging
-// surface). Because both faces emit the SAME strip triangles referencing the SAME 3-D
-// seam+collar vertices, the shared seam edge is used exactly twice → 2-manifold.
+// geometry): compute the seam-loop COLLAR FRAME — centroid, best-fit axis, mean seam
+// radius r_seam, and the band half-width δ (a fixed fraction of r_seam, deflection-
+// INDEPENDENT). The registry records ONLY the shared seam ring (bit-identical d.points)
+// and this frame; it decimates the ring to the weld resolution (MESH-WELD-TOL) so no two
+// SEAM samples merge at the spatial weld. The collar POINTS are NOT computed here — each
+// face computes its own (PHASE 2), because a single shared collar would collapse the
+// near-seam wedge (see below).
 //
-// PHASE 2 (face_mesher.h): each face pins its seam+collar boundary vertices to the
-// shared 3-D values, adds the collar ring as a CONSTRAINED loop, SUPPRESSES interior
-// Steiner insertion inside the collar band (in the shared 3-D seam frame, so both faces
-// suppress the identical band), and fills only the collar-OUTWARD remainder with its
-// own CDT. The seam-adjacent triangles are the shared strip; the outer fill is per-face
-// (they don't share a seam there, so no correspondence is needed).
+// PHASE 2 (face_mesher.h): each face pins its SEAM boundary vertices to the shared 3-D
+// seam ring (so both faces' seam rings are bit-identical → the seam edge is used exactly
+// twice → 2-manifold), then marches inward on ITS OWN SURFACE to a per-face COLLAR ring
+// at the band edge (the surface point whose radius off the seam axis is δ off r_seam),
+// adds that collar ring as a CONSTRAINED loop, SUPPRESSES interior Steiner insertion
+// inside the collar band (in the shared 3-D seam frame, so both faces suppress the
+// identical band), splices the fixed seam↔collar strip, and fills only the collar-OUTWARD
+// remainder with its own CDT. The two faces share ONLY the seam ring; their collars sit on
+// their DISTINCT surfaces, so the two near-seam bands DIVERGE and their strip triangles are
+// NOT coincident — the weld carries the collar wedge volume through instead of annihilating
+// it. (The earlier design used a SHARED PLANAR collar ring: both faces emitted the IDENTICAL
+// strip, the weld's coincident-duplicate-triangle drop annihilated both copies, and the
+// collar band's wedge volume was lost — a watertight solid enclosing ~6% too little at the
+// multi-seam annulus↔annulus pose, MESH-COLLAR-WEDGE.)
 //
 // The path fires ONLY for a genuinely-shared seam loop (an isSeamChord loop carried by
 // EXACTLY TWO distinct faces); every existing single-face mesh is byte-identical.
@@ -66,13 +72,14 @@ namespace cybercad::native::tessellate {
 
 namespace detail {
 
-// A shared seam-strip collar frame + per-seam-vertex collar points, keyed by the seam's
-// shared 3-D geometry. Both faces read the SAME collar for a given seam vertex.
+// A shared seam-strip collar FRAME, keyed by the seam's shared 3-D geometry. Both faces
+// read the SAME frame (centroid/axis/radius/δ); each face places its own collar ring on
+// its own surface at the band edge (r_seam ± δ).
 struct SeamStrip {
   math::Point3 centroid;             ///< seam-loop centroid Cc (seam-plane origin)
   math::Vec3 axis{0, 0, 1};          ///< seam-loop best-fit normal Ac (unit)
   double rSeam = 0.0;                ///< mean seam radius off the axis
-  double collarInset = 0.0;          ///< δ, the inward collar offset (r_collar = rSeam − δ)
+  double collarInset = 0.0;          ///< δ, the band-edge offset (per-face collar at r_seam ± δ)
   double bandInset = 0.0;            ///< the near-seam SUPPRESSION band half-width (deflection-INDEPENDENT)
   bool valid = false;
 };
@@ -84,9 +91,9 @@ struct SeamStrip {
 // faces). It records every isSeamChord loop carried by EXACTLY TWO distinct faces
 // (the genuinely-shared curved↔curved seam), and for each such seam records the
 // collar frame + a lookup, keyed by the seam vertex's quantized 3-D point, from a
-// seam vertex to its shared 3-D COLLAR point. A face consults `collarFor(P)` while
-// flattening its seam boundary: it gets the SAME collar point the other face gets,
-// so the two faces' near-seam strip is bit-identical.
+// seam vertex to its strip (frame index, seam radius, δ, weld-decimation flag). A face
+// consults the frame while flattening its seam boundary to place its OWN collar ring on
+// its OWN surface at the band edge (r_seam ± δ) — both faces share only the seam ring.
 // ─────────────────────────────────────────────────────────────────────────────
 class SeamStripRegistry {
  public:
@@ -121,22 +128,6 @@ class SeamStripRegistry {
     return e && e->kept;
   }
 
-  // The shared COLLAR 3-D point for the seam vertex at `p` (a seam boundary sample), on
-  // the MATERIAL side indicated by `materialProbe` (a 3-D point a hair into the face's
-  // material from the seam — the face's inward-UV-marched sample). Returns nullptr if `p`
-  // is not on a registered shared seam. The collar is offset from the seam toward the
-  // material side (increasing OR decreasing radius) — chosen by which candidate the probe
-  // is radially closer to — so BOTH faces sharing the seam (whose material is on the SAME
-  // 3-D side) pick the IDENTICAL collar point and their near-seam strip is bit-identical.
-  const math::Point3* collarFor(const math::Point3& p, const math::Point3& materialProbe) const {
-    const Entry* e = findEntry(p);
-    if (!e) return nullptr;
-    const detail::SeamStrip& s = strips_[static_cast<std::size_t>(e->strip)];
-    const double rp = radiusOf(materialProbe, s);
-    // Pick the collar candidate on the same radial side as the material probe.
-    return rp >= s.rSeam ? &e->collarOut : &e->collarIn;
-  }
-
   // The strip index of the registered seam vertex nearest `p` (for a per-loop side decision),
   // or -1. Both faces resolve a given seam boundary to the SAME strip.
   int stripIndexFor(const math::Point3& p) const {
@@ -144,20 +135,18 @@ class SeamStripRegistry {
     return e ? e->strip : -1;
   }
 
-  // The collar candidate on the requested radial side (outward=true ⇒ collarOut). Used after a
-  // per-LOOP side decision so the WHOLE loop's collar sits on ONE consistent radial side —
-  // essential near a near-vertical wall where a per-vertex material probe's radius is noisy and
-  // would otherwise zigzag the collar across the seam.
-  const math::Point3* collarOnSide(const math::Point3& p, bool outward) const {
-    const Entry* e = findEntry(p);
-    if (!e) return nullptr;
-    return outward ? &e->collarOut : &e->collarIn;
-  }
-
   // The seam radius of the strip containing `p` (for the per-loop side vote), or 0.
   double seamRadiusFor(const math::Point3& p) const {
     const Entry* e = findEntry(p);
     return e ? strips_[static_cast<std::size_t>(e->strip)].rSeam : 0.0;
+  }
+
+  // The collar inset δ of the strip containing `p` (the near-seam band half-width, a fixed
+  // fraction of the seam radius — deflection-INDEPENDENT), or 0. The per-face collar is
+  // placed ON THE FACE'S OWN SURFACE at radius rSeam ± δ so the near-seam wedge is carried.
+  double collarInsetFor(const math::Point3& p) const {
+    const Entry* e = findEntry(p);
+    return e ? strips_[static_cast<std::size_t>(e->strip)].collarInset : 0.0;
   }
   double radiusInStrip(const math::Point3& probe, const math::Point3& seamPt) const {
     const Entry* e = findEntry(seamPt);
@@ -218,11 +207,8 @@ class SeamStripRegistry {
       const math::Vec3 radial = d - s.axis * axial;
       const double r = math::norm(radial);
       if (r <= s.collarInset) continue;                    // degenerate — skip this vertex
-      const math::Vec3 outward = radial / r;               // unit outward radial (in seam plane)
       Entry e;
       e.seam = ordered[i];
-      e.collarIn = ordered[i] - outward * s.collarInset;   // toward the axis (decreasing radius)
-      e.collarOut = ordered[i] + outward * s.collarInset;  // away from the axis (increasing radius)
       e.strip = stripIdx;
       e.kept = kept[i];
       cells_[keyOf(ordered[i])].push_back(e);
@@ -248,11 +234,9 @@ class SeamStripRegistry {
     }
   };
   struct Entry {
-    math::Point3 seam;       ///< the seam vertex (for the eps re-check)
-    math::Point3 collarIn;   ///< collar candidate toward the axis (r_seam − δ)
-    math::Point3 collarOut;  ///< collar candidate away from the axis (r_seam + δ)
-    int strip = -1;          ///< index into strips_ (the collar frame)
-    bool kept = true;        ///< weld-resolution decimation flag (MESH-WELD-TOL)
+    math::Point3 seam;  ///< the seam vertex (for the eps re-check)
+    int strip = -1;     ///< index into strips_ (the collar frame)
+    bool kept = true;   ///< weld-resolution decimation flag (MESH-WELD-TOL)
   };
 
   // Order the (deduped, unordered) ring samples by angle around the strip axis — the

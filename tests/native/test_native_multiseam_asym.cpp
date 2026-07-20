@@ -216,20 +216,21 @@ inline RawVerdict commonSurvivorHisto(const topo::Shape& A, const topo::Shape& B
 //     both faces), so no two strip vertices can share a weld cell. This TIGHTENS what the
 //     weld may merge — never a widened tolerance. The raw survivor mesh is now watertight
 //     at d=0.00125 (and finer: measured clean through d=0.0008).
-//   • ONE deeper residual remains, out of BOTH lanes' reach (a mesher strip-geometry
-//     limitation the boolean lane can only detect, not repair), and the verb
-//     HONEST-DECLINES it to NULL (never leaky): the strip welds the two annulus survivors
-//     into a watertight-but-SMALLER closed region — the strip COLLAR PINCH
-//     (measure_multiseam_vote: both annuli splice the SAME shared collar strip, the
-//     coincident duplicate triangles annihilate at the weld, and the collar bands' volume
-//     — a fixed fraction of the seam radii, deflection-INDEPENDENT — is lost, identically
-//     in EVERY orientation configuration; the earlier "collar-side winding collapse"
-//     narrative is measured STALE). Caught ORACLE-FREE by BOOL-VOTE
-//     (`boolean/weldMultiCoherent` accepts only a weld whose volume agrees with the
-//     survivors' own divergence-theorem expectation; at d=0.002 the pinched weld encloses
-//     0.006172 vs the expectation 0.006619, a 6.8% ≫ 2% miss) — VolumeInconsistent at
-//     BOTH d=0.002 and d=0.00125, with or without the closed form: the SACRED never-leaky
-//     honest-decline, no longer oracle-dependent.
+//   • The strip COLLAR PINCH that used to cap the band is now FIXED (MESH-COLLAR-WEDGE,
+//     seam_strip.h / face_mesher.h): the per-face wedge-carrying collar places each face's
+//     near-seam ring on its OWN surface at the band edge (r_seam ± δ) instead of a shared
+//     planar radial offset, so the two faces share ONLY the seam ring and the collar wedge
+//     volume is CARRIED through the weld instead of annihilating. Where the pre-collar strip
+//     pinched the annulus↔annulus COMMON shut (welded 0.006172 vs the survivors' divergence
+//     expectation 0.006619, −6.8%), the weld now closes watertight+coherent at the CORRECT
+//     volume: measured (measure_multiseam_vote) d=0.002 encloses ≈ 0.006679 (matching the
+//     expectation 0.006619, inside the ±2% gate) and d=0.00125 ≈ 0.006741 (vs 0.006718) —
+//     with AND without the closed form. So the multi-seam COMMON WELDS through d=0.00125,
+//     and the oracle-free BOOL-VOTE gate (`boolean/weldMultiCoherent`) now ACCEPTS it
+//     because the volume AGREES — it no longer declines here. The never-leaky honest-decline
+//     property (a volume-moving weld → VolumeInconsistent, never a wrong solid) still holds
+//     below the new floor and is pinned by a kept never-leaky decline case in
+//     test_native_multiseam_vote.
 CC_TEST(asym_fine_deflection_residual_is_mesher_not_assembly) {
   namespace ffm = cybercad::native::boolean::ffmdetail;
   namespace ffc = cybercad::native::boolean::ffcdetail;
@@ -278,31 +279,32 @@ CC_TEST(asym_fine_deflection_residual_is_mesher_not_assembly) {
   CC_CHECK(v125.nmOuter == 0 && v125.nmOther == 0);  // fully manifold at d=0.00125
   CC_CHECK(v125.open == 0);                          // watertight, no opened edges
 
-  // (3) The verb still HONEST-DECLINES below the working band (never a leaky solid). At
-  // BOTH d=0.002 and d=0.00125 the decline is the strip COLLAR-PINCH volume residual (the
-  // weld closes watertight+coherent but encloses a smaller region — the shared collar
-  // strip's coincident duplicate triangles annihilate and the collar bands' volume is
-  // lost), caught ORACLE-FREE by BOOL-VOTE against the survivors' own divergence-theorem
-  // expectation — NOT a silent wrong solid, no longer the weld-tolerance NotWatertight at
-  // d=0.00125, and no longer dependent on the closed form: asserted with AND without it.
+  // (3) MESH-COLLAR-WEDGE: the verb now WELDS the multi-seam COMMON watertight at the
+  // CORRECT volume through d=0.00125 — the collar pinch that used to force an honest decline
+  // here is gone (the per-face wedge-carrying collar carries the collar volume through the
+  // weld). At BOTH d=0.002 and d=0.00125, with AND without the closed form, the oracle-free
+  // BOOL-VOTE gate ACCEPTS the weld because its enclosed volume AGREES with the survivors'
+  // own divergence-theorem expectation (±2%), and that volume is the true lens within the
+  // tessellation band. A resurrected pinch (volume moved) or a leaky solid fails this loudly.
   for (double dSub : {0.002, 0.00125}) {
     for (const double cf : {ax::volCommon(), std::numeric_limits<double>::quiet_NaN()}) {
       bo::MultiSeamCutReport rep;
       const topo::Shape r = bo::freeformFreeformMultiSeamCutWithSeams(A, B, seams, bo::FfOp::Common,
                                                                       dSub, &rep, cf);
-      CC_CHECK(r.isNull());                          // honest decline, never leaky
+      CC_CHECK(!r.isNull());                         // welds — no longer declines
+      CC_CHECK(rep.decline == bo::MultiSeamCutDecline::Ok);
       CC_CHECK(rep.seamLoops == 2);                  // reached the weld
       CC_CHECK(rep.subRegionsA == 3 && rep.subRegionsB == 3);
-      CC_CHECK(rep.watertight);                      // the mesher weld band now covers dSub
-      CC_CHECK(rep.coherent);                        // (witnesses: the weld closed; the
-      CC_CHECK(rep.boundaryEdges == 0);              //  volume is what declined)
-      CC_CHECK(rep.decline == bo::MultiSeamCutDecline::VolumeInconsistent);
-      // BOOL-VOTE witnesses: the pinched weld misses the divergence expectation by more
-      // than any pairing repair could account for; the expectation itself is in-band.
-      CC_CHECK(rep.expectedVolume > rep.enclosedVolume);
-      CC_CHECK(std::fabs(rep.enclosedVolume - rep.expectedVolume) >
+      CC_CHECK(rep.watertight);                      // closed 2-manifold, coherent, be=0
+      CC_CHECK(rep.coherent);
+      CC_CHECK(rep.boundaryEdges == 0);
+      // The gate accepted it BECAUSE the volume is consistent (no material moved)...
+      CC_CHECK(rep.enclosedVolume > 0.0);
+      CC_CHECK(rep.expectedVolume > 0.0);
+      CC_CHECK(std::fabs(rep.enclosedVolume - rep.expectedVolume) <=
                ffm::kWeldVolumeAgreeFrac * rep.expectedVolume);
-      CC_CHECK(std::fabs(rep.expectedVolume - ax::volCommon()) <
+      // ...and the accepted volume is the true closed-form lens within the tessellation band.
+      CC_CHECK(std::fabs(rep.enclosedVolume - ax::volCommon()) <
                std::min(0.5, 30.0 * dSub) * ax::volCommon());
     }
   }

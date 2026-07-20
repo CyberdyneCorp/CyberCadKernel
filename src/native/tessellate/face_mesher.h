@@ -823,52 +823,53 @@ class FaceMesher {
       sc.seam3d.reserve(count);
       sc.collar3d.reserve(count);
       sc.collarUV.reserve(count);
-      // PASS 1 — resolve every seam vertex to its shared 3-D seam point + inward-marched
-      // material UV, and VOTE the collar's radial side for the WHOLE loop (a per-vertex side
-      // choice zigzags across a near-vertical seam; a per-loop majority keeps the collar a
-      // single concentric ring that both faces place identically).
+      // PASS 1 — resolve every seam vertex to its shared 3-D seam point and march inward
+      // (toward the material) to this FACE'S OWN collar UV at the band edge: the surface
+      // point whose radius off the seam axis is δ (collarInset) away from the seam radius.
+      // The seam ring is shared (bit-identical across the two faces); the collar is per-face
+      // on the face's OWN surface. This is the WEDGE-CARRYING collar (MESH-COLLAR-WEDGE):
+      // the two faces share ONLY the seam ring, so their near-seam bands DIVERGE onto their
+      // respective surfaces and the collar wedge volume is carried through the weld instead
+      // of annihilating (the old shared PLANAR collar made both bands bit-identical, so the
+      // weld's coincident-duplicate-triangle drop annihilated both and lost the wedge).
       std::vector<math::Point3> seamPts(count);
-      std::vector<UV> inUVs(count);
+      std::vector<UV> collarUVs(count);
       bool isSeam = true;
-      int voteOut = 0, voteIn = 0;
       for (std::size_t i = 0; i < count && isSeam; ++i) {
         const UV& uv = loop[i];
         const math::Point3* pin = seamPins.find(uv);
         const math::Point3 seamP = pin ? *pin : eval.value(uv.u, uv.v);
         if (seamStrips_->stripIndexFor(seamP) < 0) { isSeam = false; break; }
-        const UV inUV = marchInward(loop, i, count, region);
-        const math::Point3 probe = eval.value(inUV.u, inUV.v);
-        (seamStrips_->radiusInStrip(probe, seamP) >= seamStrips_->seamRadiusFor(seamP) ? voteOut
-                                                                                       : voteIn)++;
         seamPts[i] = seamP;
-        inUVs[i] = inUV;
+        collarUVs[i] = marchToBandEdge(loop, i, count, region, eval, seamP,
+                                       seamStrips_->seamRadiusFor(seamP),
+                                       seamStrips_->collarInsetFor(seamP));
       }
       if (!isSeam) continue;
-      const bool outward = voteOut >= voteIn;  // the loop's material side (per-loop, both faces agree)
-      // PASS 2 — take the collar on the voted side for every KEPT vertex. The registry's
+      // PASS 2 — take this face's own-surface collar for every KEPT vertex. The registry's
       // weld-resolution decimation (MESH-WELD-TOL, seam_strip.h) flags the subset of seam
-      // vertices spaced ≥ 2·weldTol, so no two strip/collar ring vertices can merge at the
-      // spatial weld (an over-dense seam ring otherwise collapses runs of ring vertices —
-      // and their 1:1 collar ring — into 4×-used edges at fine deflection). Both faces
-      // resolve a seam sample to the SAME registry entry, so they keep the identical subset
-      // and their strips stay bit-identical. An undecimated ring keeps every vertex.
+      // vertices spaced ≥ 2·weldTol, so no two SEAM-ring vertices merge at the spatial weld
+      // (an over-dense seam ring otherwise collapses runs of ring vertices into 4×-used
+      // edges at fine deflection). Both faces resolve a seam sample to the SAME registry
+      // entry, so they keep the identical SEAM subset → the shared seam ring pairs 1:1. An
+      // undecimated ring keeps every vertex. The collar sits δ off the seam (≫ weldTol), so
+      // no collar vertex merges into its seam vertex.
       for (std::size_t i = 0; i < count; ++i) {
         if (!seamStrips_->keptSeamVertex(seamPts[i])) continue;
-        const math::Point3* collar = seamStrips_->collarOnSide(seamPts[i], outward);
-        if (!collar) { isSeam = false; break; }
         sc.seam3d.push_back(seamPts[i]);
-        sc.collar3d.push_back(*collar);
-        sc.collarUV.push_back(inUVs[i]);
+        sc.collarUV.push_back(collarUVs[i]);
+        sc.collar3d.push_back(eval.value(collarUVs[i].u, collarUVs[i].v));
       }
 #ifdef CYBERCAD_SEAMSTRIP_DEBUG
-      std::fprintf(stderr, "[collar] loop %zu count=%zu isSeam=%d collar3d=%zu outward=%d\n", li,
-                   count, (int)isSeam, sc.collar3d.size(), (int)outward);
+      std::fprintf(stderr, "[collar] loop %zu count=%zu isSeam=%d collar3d=%zu\n", li,
+                   count, (int)isSeam, sc.collar3d.size());
 #endif
       if (!isSeam || sc.collar3d.size() < 3) continue;
-      // Replace the seam loop with its collar loop in the CDT input (the CDT then fills only
-      // collar-outward; the seam↔collar band is the spliced strip). Pin each collar UV to its
-      // shared 3-D collar point so the CDT collar-boundary vertex coincides EXACTLY with the
-      // spliced strip's collar vertex (both faces → bit-identical → weld 2-manifold).
+      // Replace the seam loop with this face's collar loop in the CDT input (the CDT then
+      // fills only collar-outward; the seam↔collar band is the spliced strip). Pin each
+      // collar UV to its own-surface 3-D collar point so the CDT collar-boundary vertex
+      // coincides EXACTLY with the spliced strip's collar vertex (this face → its own strip
+      // welds internally; the two faces weld to each other only at the shared seam ring).
       for (std::size_t i = 0; i < sc.collarUV.size(); ++i)
         collarPins.add(sc.collarUV[i], sc.collar3d[i]);
       loop.assign(sc.collarUV.begin(), sc.collarUV.end());
@@ -877,22 +878,56 @@ class FaceMesher {
     return out;
   }
 
-  // March UV vertex `i` of `loop` a small step toward the region interior: step along the
-  // inward normal of the loop edge (rotate the tangent 90°), sign fixed by region.inside.
-  static UV marchInward(const UVPolygon& loop, std::size_t i, std::size_t count,
-                        const UVRegion& region) {
+  // March UV vertex `i` inward (toward the region interior) far enough that the surface
+  // point sits at the seam-strip BAND EDGE — its radius off the seam axis is `inset` (δ)
+  // away from the seam radius `seamR`, ON THIS FACE'S OWN SURFACE. Grows the inward step
+  // geometrically until the surface radius crosses the band edge, then bisects; falls back
+  // to the largest in-region step if the region is thinner than δ (a graceful narrow-band
+  // collar, still per-face on the surface, never off it). Direction is the loop-edge inward
+  // normal (rotate the tangent 90°), sign fixed by which side lands inside the region.
+  UV marchToBandEdge(const UVPolygon& loop, std::size_t i, std::size_t count,
+                     const UVRegion& region, const SurfaceEvaluator& eval,
+                     const math::Point3& seamP, double seamR, double inset) const {
     const UV& prev = loop[(i + count - 1) % count];
     const UV& next = loop[(i + 1) % count];
     const double tx = next.u - prev.u, ty = next.v - prev.v;  // tangent
-    double nx = -ty, ny = tx;                                 // rotate 90°
+    double nx = -ty, ny = tx;                                 // rotate 90° → inward normal
     const double nl = std::sqrt(nx * nx + ny * ny);
-    if (nl < 1e-30) return loop[i];
+    if (nl < 1e-30 || inset <= 0.0) return loop[i];
     nx /= nl; ny /= nl;
-    // Step size: a small fraction of the local edge length so the probe stays a hair inside.
-    const double step = 0.25 * std::sqrt(tx * tx + ty * ty);
-    UV cand{loop[i].u + nx * step, loop[i].v + ny * step};
-    if (!region.inside(cand)) cand = UV{loop[i].u - nx * step, loop[i].v - ny * step};
-    return cand;
+    const double edge = std::sqrt(tx * tx + ty * ty);
+    // Fix the inward sign: the direction whose small step lands inside the region. `h0` is
+    // that known-inside step, the walk's guaranteed non-degenerate anchor (so a region
+    // narrower than the first grown step never collapses the collar back onto the seam).
+    const double h0 = 0.25 * edge;
+    {
+      const UV probe{loop[i].u + nx * h0, loop[i].v + ny * h0};
+      if (!region.inside(probe)) { nx = -nx; ny = -ny; }
+    }
+    const UV base = loop[i];
+    auto radiusAt = [&](double h) {
+      const UV c{base.u + nx * h, base.v + ny * h};
+      return seamStrips_->radiusInStrip(eval.value(c.u, c.v), seamP);
+    };
+    // Grow the step until the surface radius is ≥ inset off the seam radius (the band edge),
+    // seeding from the known-inside h0 so bestIn is always a genuine inward step.
+    double lo = 0.0, hi = -1.0;
+    double h = h0, bestIn = h0;
+    for (int it = 0; it < 32 && h > 0.0; ++it) {
+      const UV c{base.u + nx * h, base.v + ny * h};
+      if (!region.inside(c)) break;  // ran out of region — stop growing
+      bestIn = h;
+      if (std::fabs(radiusAt(h) - seamR) >= inset) { hi = h; break; }
+      lo = h;
+      h *= 1.7;
+    }
+    if (hi < lo) return UV{base.u + nx * bestIn, base.v + ny * bestIn};  // never reached δ
+    // Bisect [lo, hi] for the step whose surface radius is exactly the band edge.
+    for (int it = 0; it < 32; ++it) {
+      const double mid = 0.5 * (lo + hi);
+      if (std::fabs(radiusAt(mid) - seamR) >= inset) hi = mid; else lo = mid;
+    }
+    return UV{base.u + nx * hi, base.v + ny * hi};
   }
 
   // Is UV grid point `g` inside ANY collar band (in the shared 3-D seam frame)? Suppressed

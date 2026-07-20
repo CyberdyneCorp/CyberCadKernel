@@ -255,15 +255,21 @@ std::vector<ThickenResult> thickenMultiTrimmed(const BsplineSurfaceData& surface
 /// Behaviour contract mirrors offsetSurfaceFoldTrim:
 ///   * FOLD-FREE everywhere — returns a SINGLE solid byte-identical to thickenSurface.
 ///   * DIAGONAL / CURVED / CLOSED fold — returns ONE closed watertight solid per simple band
-///     (a component wrapping a closed fold loop yields several), each `trimmed == true`, in
+///     (a component wrapping a closed fold loop yields several; one whose bands split/merge
+///     around several loops also yields the bifurcation ARMS), each `trimmed == true`, in
 ///     descending area order; each verified (watertight, χ = 2, zero boundary edges,
 ///     consistently oriented) before inclusion.
 ///   * FULLY FOLDING / degenerate — returns an EMPTY vector (honest-decline; a self-intersecting
 ///     solid is NEVER returned). A degenerate-normal / malformed input likewise returns empty.
 ///
 /// Every returned solid is a valid closed shell over a provably fold-free region; a region that
-/// fails closure is dropped, never returned open. Never widens tolerance; never emits a
-/// self-intersecting solid. `tol`, `gridU`, `gridV` have the same meaning as thickenSurface.
+/// fails closure is dropped, never returned open. Additionally, every band shell passes a
+/// DISCRETE EMBEDDING guard (triangle-pair piercing scan): at a large enough |d| a near-fold
+/// band can tessellate into a shell that is watertight and χ = 2 yet BUCKLED (self-piercing
+/// between samples — the node-wise (1 + d·κ) fold guard is necessary but not sufficient for
+/// the discrete panels); such a band is SKIPPED, never emitted. Never widens tolerance; never
+/// emits a self-intersecting solid. `tol`, `gridU`, `gridV` have the same meaning as
+/// thickenSurface.
 std::vector<ThickenResult> thickenFoldTrim(const BsplineSurfaceData& surface, double d,
                                            double tol = 1e-4, int gridU = 24, int gridV = 24);
 

@@ -48,9 +48,12 @@
 //     offset there (plus the kept region), declining only when no meaningful fold-free
 //     region remains. A self-intersecting surface is NEVER returned as valid.
 // SOLID thicken / shell / hollow (offset both faces + stitch side walls into a closed
-// solid) lives in bspline_thicken / bspline_shell. Curved and CLOSED fold loci are handled
-// by offsetSurfaceFoldTrim's multi-band decomposition below; large-|d| discrete-panel
-// buckling and weight ESTIMATION remain documented residuals — never faked here.
+// solid) lives in bspline_thicken / bspline_shell. Curved and CLOSED fold loci — including
+// loci whose bands SPLIT/MERGE across scanlines (chains of fold loops; the bifurcation arms
+// are kept via the component-level meaningful-area gate) — are handled by
+// offsetSurfaceFoldTrim's multi-band decomposition below; large-|d| discrete-panel buckling
+// (detected and SKIPPED by thickenFoldTrim's embedding guard, never emitted) and weight
+// ESTIMATION remain documented residuals — never faked here.
 // See docs/NURBS-SCOPE.md Layer-5 row.
 //
 // GUARD — the fit-bearing routine is compiled only when CYBERCAD_HAS_NUMSCI is
@@ -254,7 +257,12 @@ std::vector<OffsetResult> offsetSurfaceMultiTrimmed(const BsplineSurfaceData& su
 ///      the component where a run forks (and closes bands where runs merge), partitioning it
 ///      into pairwise-disjoint simple bands (e.g. left/right of a fold disk + below/above it),
 ///      each of whose per-column intervals [vLo(u), vHi(u)] (½-cell inset, fold-side edges
-///      inset further) traces its side of the curved fold boundary.
+///      inset further) traces its side of the curved fold boundary. The meaningful-area gate
+///      is applied to each COMPONENT's total (structurally sound) band area, not per band:
+///      where the bands SPLIT/MERGE around a chain of fold loops, the individual ARMS of a
+///      bifurcating band can each sit below the domain-fraction bar even though the component
+///      is large — they are KEPT (both arms recovered); a component whose total is below the
+///      bar still declines whole (a sliver is never the answer).
 ///   4. Fit the offset over each WARPED band (s,t) ↦ (u(s), vLo(u)+t·(vHi(u)−vLo(u))): sample
 ///      the true offset locus O = S + d·N on that curved-boundary region and interpolate a
 ///      NURBS surface through the samples (same sample→fit→refine core as offsetSurface, over
@@ -265,7 +273,8 @@ std::vector<OffsetResult> offsetSurfaceMultiTrimmed(const BsplineSurfaceData& su
 ///   * FOLD-FREE everywhere — returns a SINGLE result identical to offsetSurface
 ///     (`foldTrimmed == false`, `trimmed == false`, full-domain kept box).
 ///   * DIAGONAL / CURVED / CLOSED fold — returns ONE result per simple band (>= 1 per
-///     fold-free component; a component wrapping around a closed fold loop yields several),
+///     fold-free component; a component wrapping around a closed fold loop yields several,
+///     one whose bands split/merge around SEVERAL loops also yields the bifurcation ARMS),
 ///     each with `foldTrimmed == true`, the column-band polyline (foldU / foldVLo / foldVHi)
 ///     reported, and keptU0..keptV1 the band's bounding box. Their union follows the fold
 ///     locus and recovers strictly MORE area than the rectangle staircase

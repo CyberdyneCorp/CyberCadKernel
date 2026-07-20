@@ -871,18 +871,35 @@ std::vector<OffsetResult> offsetSurfaceFoldTrim(const BsplineSurfaceData& surfac
 
   // Collect every component's simple column-bands (a curved / closed fold locus decomposes a
   // component into SEVERAL per-u single-interval bands), then emit in descending area order.
+  //
+  // The meaningful-area gate is applied to the COMPONENT's total sound-band area, NOT per band:
+  // a fold locus whose bands SPLIT or MERGE across scanlines (a bifurcating fold-free band, two
+  // fold loops in a chain) fragments the component into simple bands at every split/merge seam
+  // station, and each ARM of a bifurcation can fall below the domain-fraction bar even though
+  // the component as a whole is large — a per-band bar silently declines that recoverable area
+  // (measured on a twin-tall-loop fixture at d=0.6: all four 2.9%-area arms dropped, 0.585 of a
+  // 0.792 oracle fold-free area recovered). Gating the component keeps every structurally sound
+  // band of a meaningful component; a component whose TOTAL sound-band area is below the bar
+  // still declines whole (never emit slivers as the answer). A component with no split/merge
+  // events has exactly one band, where both gatings coincide — straight/diagonal folds and the
+  // landed closed-loop fixture (every band ≥ the bar on its own) are byte-identical.
   struct Cand { int id; ColumnBand band; };
   std::vector<Cand> cands;
   for (int id = 0; id < nComp; ++id) {
+    // Structurally sound bands only: a band must be ≥ 2 columns wide AND have some column with
+    // a ≥ 2-node interval, else the ½-cell inset collapses it (a one-node sliver is not a
+    // fittable region).
+    std::vector<ColumnBand> sound;
+    long compArea = 0;
     for (ColumnBand& band : extractColumnBands(label, gN, id)) {
       if (band.iHi < band.iLo) continue;
-      // Meaningful-area gate (same bar as the rectangle trim): the band must cover ≥ kMinKeptFraction.
-      if (static_cast<double>(band.nodeArea) < kMinKeptFraction * static_cast<double>(total)) continue;
-      // The band must be ≥ 2 columns wide AND have some column with a ≥ 2-node interval, else the
-      // ½-cell inset collapses it (a one-node sliver is not a fittable region).
       if (band.iHi - band.iLo < 2) continue;
-      cands.push_back({id, std::move(band)});
+      compArea += band.nodeArea;
+      sound.push_back(std::move(band));
     }
+    // Meaningful-area gate (same bar as the rectangle trim), on the component's total.
+    if (static_cast<double>(compArea) < kMinKeptFraction * static_cast<double>(total)) continue;
+    for (ColumnBand& band : sound) cands.push_back({id, std::move(band)});
   }
   std::sort(cands.begin(), cands.end(),
             [](const Cand& a, const Cand& b) { return a.band.nodeArea > b.band.nodeArea; });

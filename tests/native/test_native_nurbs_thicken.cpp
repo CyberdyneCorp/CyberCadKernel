@@ -267,6 +267,33 @@ static BsplineSurfaceData centralDomePatch() {
   return s;
 }
 
+// A TWIN TALL-DOME patch: two Gaussian domes along u, each ELONGATED in v (wu > wv), on a wide
+// 11×7 net. A thicken toward the crests' centres of curvature folds TWO tall closed loops; the
+// wrap-around fold-free component's column bands SPLIT into an above/below ARM pair at each
+// loop's left edge and MERGE back at its right edge. Each arm is a sound multi-column band of
+// only ~2.9% domain area — below the per-band 5% bar that used to drop all four (split/merge
+// seam-column residual). The component-level gate must thicken them into closed solids.
+static BsplineSurfaceData twinTallDomePatch() {
+  BsplineSurfaceData s;
+  s.degreeU = 3;
+  s.degreeV = 3;
+  s.nPolesU = 11;
+  s.nPolesV = 7;
+  s.knotsU = {0, 0, 0, 0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1, 1, 1, 1};  // 11+3+1=15
+  s.knotsV = {0, 0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1, 1};
+  for (int i = 0; i < 11; ++i)
+    for (int j = 0; j < 7; ++j) {
+      const double x = i * 0.35, y = j * 0.35;
+      double z = 0.0;
+      for (double c : {3.0, 7.0}) {  // two tall (v-elongated) domes centred on the mid-v row
+        const double du = i - c, dv = j - 3.0;
+        z += 0.9 * std::exp(-(2.0 * du * du + 0.5 * dv * dv));
+      }
+      s.poles.push_back({x, y, z});
+    }
+  return s;
+}
+
 // ── Robust triangle-pair PIERCING self-intersection oracle (edge-vs-triangle) ──────
 // True iff any two NON-adjacent triangles of the solid properly cross (an edge of one pierces
 // the interior of the other). Ignores coplanar skin contact (scale-relative det skip) so a
@@ -750,6 +777,91 @@ int main() {
     const std::vector<ThickenResult> gentle = thickenFoldTrim(S, 0.03, tol, 16, 16);
     expectTrue(gentle.size() == 1 && gentle[0].ok && !gentle[0].trimmed,
                "curved-fold: fold-free thicken returns one full-domain solid");
+  }
+
+  // ═══ 9. SPLIT/MERGE SEAM COLUMNS — bifurcating fold-free band, arm solids recovered ═══
+  {
+    // Two tall closed fold loops along u (see twinTallDomePatch): the wrap-around component's
+    // bands split/merge at every loop edge, and the four ARMS (above/below of each loop) are
+    // sound multi-column bands each below the old per-band 5% area bar. MEASURED BEFORE the
+    // component-level gate: all four arms were dropped, so thickenFoldTrim built only 3 solids
+    // (left/middle/right). The component-level gate must thicken all four arms too — each a
+    // CLOSED, watertight, self-intersection-free solid. |d| = 0.4 keeps the discrete near-fold
+    // panels embedding-free; the |d| = 0.6 BUCKLING control below must decline instead.
+    const BsplineSurfaceData S = twinTallDomePatch();
+    const double d = 0.4;      // toward the crests' centres of curvature → fold both loops
+    const double tol = 1e-2;   // the warped-band fit floor near the high-curvature fold (honest)
+
+    // Baseline: thickenSurface declines (fold); the staircase keeps a single small slab.
+    const ThickenResult base = thickenSurface(S, d, tol, 16, 16);
+    expectTrue(!base.ok && base.status == ThickenStatus::SelfIntersection,
+               "seam-col: thickenSurface declines (SelfIntersection)");
+    const std::vector<ThickenResult> stair = thickenMultiTrimmed(S, d, tol, 16, 16);
+    double stairVol = 0.0;
+    for (const ThickenResult& r : stair)
+      if (r.ok) stairVol += r.enclosedVolume;
+
+    // Fold-locus trim: left + middle + right solids PLUS all four bifurcation arm solids.
+    const std::vector<ThickenResult> fold = thickenFoldTrim(S, d, tol, 16, 16);
+    expectTrue(fold.size() >= 7,
+               "seam-col: thickenFoldTrim recovers >= 7 solids (L/M/R + both arms, both loops)");
+
+    // Loop 1 is centred at u ≈ 0.3, loop 2 at u ≈ 0.7. An ARM solid's kept box lies within one
+    // loop's u-extent, on one v-side of it.
+    bool arm1Below = false, arm1Above = false, arm2Below = false, arm2Above = false;
+    double foldVol = 0.0;
+    for (std::size_t k = 0; k < fold.size(); ++k) {
+      const ThickenResult& r = fold[k];
+      char tag[64];
+      std::snprintf(tag, sizeof tag, "seam-col fold[%zu]", k);
+      assertClosed(r, tag);  // ok, watertight, χ==2, zero boundary, oriented, positive volume
+      if (!r.ok) continue;
+      expectTrue(r.trimmed, "seam-col: each recovered solid reports trimmed == true");
+      char sbuf[80];
+      std::snprintf(sbuf, sizeof sbuf, "seam-col fold[%zu]: self-intersection-free", k);
+      expectTrue(!selfIntersects(r.solid, 1e-6), sbuf);
+      foldVol += r.enclosedVolume;
+      const double midU = 0.5 * (r.keptU0 + r.keptU1);
+      const double midV = 0.5 * (r.keptV0 + r.keptV1);
+      const bool vSided = (r.keptV1 < 0.45) || (r.keptV0 > 0.55);
+      if (midU > 0.15 && midU < 0.45 && vSided) ((midV < 0.5) ? arm1Below : arm1Above) = true;
+      if (midU > 0.55 && midU < 0.85 && vSided) ((midV < 0.5) ? arm2Below : arm2Above) = true;
+    }
+    expectTrue(arm1Below && arm1Above,
+               "seam-col: BOTH arm solids of the first bifurcation are recovered");
+    expectTrue(arm2Below && arm2Above,
+               "seam-col: BOTH arm solids of the second bifurcation are recovered");
+
+    // THE HEADLINE: the fold-locus thicken beats the rectangle staircase on recovered volume.
+    expectTrue(foldVol > stairVol + 1e-3,
+               "seam-col: fold-locus thicken beats the rectangle staircase on volume");
+
+    // CONTROL 1 — large-|d| near-fold panel BUCKLING must DECLINE, never leak: at d = 0.6 the
+    // same fixture's band shells are watertight and χ = 2 yet SELF-PIERCING between samples
+    // (the node-wise (1 + d·κ) guard cannot see it; measured: every band buckles, including
+    // the left/middle/right bands the per-band gate used to emit as self-intersecting
+    // solids). The discrete embedding guard must skip every buckled band → EMPTY.
+    const std::vector<ThickenResult> buckled = thickenFoldTrim(S, 0.6, tol, 16, 16);
+    for (std::size_t k = 0; k < buckled.size(); ++k) {
+      char sbuf[96];
+      std::snprintf(sbuf, sizeof sbuf, "seam-col buckling control[%zu]: never self-intersecting", k);
+      expectTrue(!selfIntersects(buckled[k].solid, 1e-6), sbuf);
+    }
+    expectTrue(buckled.empty(),
+               "seam-col: large-|d| buckling declines to empty (embedding guard, no SI leak)");
+
+    // CONTROL 2 — what must decline still declines: the fully-folding tight dome's fold-free
+    // slivers are whole components below the meaningful-area bar, so thickenFoldTrim returns
+    // EMPTY (never a sliver solid, never a self-intersecting one).
+    const BsplineSurfaceData ctrl = tightDome(0.5);
+    const std::vector<ThickenResult> allFold = thickenFoldTrim(ctrl, 1.5 * 0.5, 1e-3, 16, 16);
+    expectTrue(allFold.empty(),
+               "seam-col: fully-folding thicken still returns empty (component gate declines)");
+
+    // PASSTHROUGH: a small fold-free thicken yields a SINGLE full-domain solid.
+    const std::vector<ThickenResult> gentle = thickenFoldTrim(S, 0.03, tol, 16, 16);
+    expectTrue(gentle.size() == 1 && gentle[0].ok && !gentle[0].trimmed,
+               "seam-col: fold-free thicken returns one full-domain solid");
   }
 
   std::printf("nurbs_thicken: %d checks, %d failures\n", g_checks, g_failures);

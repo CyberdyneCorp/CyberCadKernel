@@ -306,6 +306,36 @@ static BsplineSurfaceData centralDomeBump() {
   return s;
 }
 
+// A TWIN TALL-DOME bump: two Gaussian domes along u, each ELONGATED in v (wu > wv), on a wide
+// 11×7 net. An offset toward the crests' centres of curvature folds TWO tall closed loops. The
+// fold-free space is ONE component that wraps around BOTH loops, and its column bands SPLIT and
+// MERGE at every loop edge: left band → {above₁, below₁} → middle band → {above₂, below₂} →
+// right band. The four ARMS (above/below of each loop) are structurally sound (≥ 7 columns)
+// but each covers only ~2.9% of the domain — BELOW the 5% meaningful-area bar. Used to
+// exercise SPLIT/MERGE SEAM-COLUMN recovery: a per-band area gate silently drops all four
+// arms (measured: 0.585 of a 0.792 oracle fold-free area, arms entirely missing); the
+// component-level gate must keep them (the component totals ~0.79).
+static BsplineSurfaceData twinTallDomeBump() {
+  BsplineSurfaceData s;
+  s.degreeU = 3;
+  s.degreeV = 3;
+  s.nPolesU = 11;
+  s.nPolesV = 7;
+  s.knotsU = {0, 0, 0, 0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1, 1, 1, 1};  // 11+3+1=15
+  s.knotsV = {0, 0, 0, 0, 0.25, 0.5, 0.75, 1, 1, 1, 1};
+  for (int i = 0; i < 11; ++i)
+    for (int j = 0; j < 7; ++j) {
+      const double x = i * 0.35, y = j * 0.35;
+      double z = 0.0;
+      for (double c : {3.0, 7.0}) {  // two tall (v-elongated) domes centred on the mid-v row
+        const double du = i - c, dv = j - 3.0;
+        z += 0.9 * std::exp(-(2.0 * du * du + 0.5 * dv * dv));
+      }
+      s.poles.push_back({x, y, z});
+    }
+  return s;
+}
+
 // A degenerate patch: a control net that collapses to a line along U (all V-columns
 // identical points) — the ∂S/∂v tangent is null, so the normal is undefined.
 static BsplineSurfaceData degenerateNormalPatch() {
@@ -1099,6 +1129,168 @@ int main() {
     const std::vector<OffsetResult> gentle = offsetSurfaceFoldTrim(S, 0.03, 1e-3);
     expectTrue(gentle.size() == 1 && gentle[0].ok && !gentle[0].foldTrimmed && !gentle[0].trimmed,
                "curved-fold: fold-free offset returns one full-domain region");
+  }
+
+  // ═══ 11. SPLIT/MERGE SEAM COLUMNS — a bifurcating fold-free band, BOTH arms recovered ═══
+  {
+    // Two tall closed fold loops along u: the wrap-around fold-free component's column bands
+    // SPLIT into an above/below arm pair at each loop's left edge and MERGE back at its right
+    // edge. MEASURED BEFORE the component-level meaningful-area gate: the scanline sweep found
+    // all four arms as sound 7-column fragments, but each covers only ~2.9% of the domain, so
+    // the per-band 5% bar dropped every arm — 0.585 recovered of a 0.792 oracle fold-free
+    // area, both arms of both bifurcations silently declined (and the rectangle staircase kept
+    // a single 0.09 rectangle). The component-level gate must recover all four arms while the
+    // fully-folding control below still declines.
+    const BsplineSurfaceData S = twinTallDomeBump();
+    const double d = 0.6;     // toward the crests' centres of curvature → fold both loops
+    const double tol = 1e-2;  // the warped-band fit floor near the high-curvature fold (honest)
+
+    const double su0 = domLo(S.knotsU, S.degreeU), su1 = domHi(S.knotsU, S.degreeU);
+    const double sv0 = domLo(S.knotsV, S.degreeV), sv1 = domHi(S.knotsV, S.degreeV);
+    SurfaceGrid sg{std::span<const Point3>(S.poles), S.nPolesU, S.nPolesV};
+
+    // Baseline: the plain offset declines (fold somewhere).
+    const OffsetResult plain = offsetSurface(S, d, tol);
+    expectTrue(plain.status == OffsetStatus::SelfIntersection,
+               "seam-col: plain offset declines as self-intersection");
+
+    // NUMERIC ORACLE — the true fold-free parameter-area from a dense independent (1 + d·κ)
+    // map (81×81 ≈ 0.792 for this fixture; recomputed here, never hard-coded).
+    double oracleFree = 0.0;
+    {
+      const int N = 81;
+      long freeNodes = 0;
+      for (int i = 0; i < N; ++i)
+        for (int j = 0; j < N; ++j) {
+          const double u = su0 + (su1 - su0) * (i / static_cast<double>(N - 1));
+          const double v = sv0 + (sv1 - sv0) * (j / static_cast<double>(N - 1));
+          if (minFoldFactor(S, sg, d, u, v) > 0.0) ++freeNodes;
+        }
+      oracleFree = (freeNodes / static_cast<double>(N) / N) * (su1 - su0) * (sv1 - sv0);
+      expectTrue(oracleFree > 0.7, "seam-col: oracle says most of the domain is fold-free");
+    }
+
+    // The axis-aligned staircase keeps almost nothing here.
+    const std::vector<OffsetResult> stair = offsetSurfaceMultiTrimmed(S, d, tol);
+    double stairArea = 0.0;
+    for (const OffsetResult& r : stair)
+      stairArea += (r.keptU1 - r.keptU0) * (r.keptV1 - r.keptV0);
+
+    // The fold-locus trim: left + middle + right bands PLUS all four bifurcation arms.
+    const std::vector<OffsetResult> fold = offsetSurfaceFoldTrim(S, d, tol);
+    expectTrue(fold.size() >= 7,
+               "seam-col: fold-trim recovers >= 7 bands (L/M/R + both arms of both loops)");
+
+    // Loop 1 is centred at u ≈ 0.3, loop 2 at u ≈ 0.7 (pole columns 3 and 7 of 0..10). An ARM
+    // band lies within one loop's u-extent, on one v-side of it.
+    bool arm1Below = false, arm1Above = false, arm2Below = false, arm2Above = false;
+    double foldArea = 0.0;
+    for (const OffsetResult& r : fold) {
+      expectTrue(r.foldTrimmed && r.trimmed, "seam-col: each region is a fold-locus trim");
+      expectTrue(r.foldU.size() >= 2 && r.foldU.size() == r.foldVLo.size() &&
+                     r.foldU.size() == r.foldVHi.size(),
+                 "seam-col: the column-band polyline is well-formed");
+
+      // TRUE band area from the polyline envelope (trapezoid per column pair).
+      double band = 0.0;
+      for (std::size_t k = 0; k + 1 < r.foldU.size(); ++k) {
+        const double w0 = r.foldVHi[k] - r.foldVLo[k];
+        const double w1 = r.foldVHi[k + 1] - r.foldVLo[k + 1];
+        band += 0.5 * (w0 + w1) * (r.foldU[k + 1] - r.foldU[k]);
+      }
+      foldArea += band;
+
+      // Which region is this? Arms sit inside a loop's u-extent on one v-side of it.
+      const double midU = 0.5 * (r.keptU0 + r.keptU1);
+      const double midV = 0.5 * (r.keptV0 + r.keptV1);
+      const bool vSided = (r.keptV1 < sv0 + 0.45 * (sv1 - sv0)) ||
+                          (r.keptV0 > sv0 + 0.55 * (sv1 - sv0));
+      if (midU > 0.15 && midU < 0.45 && vSided) ((midV < 0.5) ? arm1Below : arm1Above) = true;
+      if (midU > 0.55 && midU < 0.85 && vSided) ((midV < 0.5) ? arm2Below : arm2Above) = true;
+
+      // VALIDITY 1 — the recovered band is FOLD-FREE: (1 + d·κ) > 0 over the traced envelope.
+      double worstFactor = std::numeric_limits<double>::infinity();
+      const int N = 15;
+      for (std::size_t kk = 0; kk < r.foldU.size(); ++kk)
+        for (int j = 0; j < N; ++j) {
+          const double v =
+              r.foldVLo[kk] + (r.foldVHi[kk] - r.foldVLo[kk]) * (j / (double)(N - 1));
+          worstFactor = std::min(worstFactor, minFoldFactor(S, sg, d, r.foldU[kk], v));
+        }
+      expectTrue(worstFactor > 0.0,
+                 "seam-col: recovered band is fold-free (Jacobian factor positive)");
+
+      // VALIDITY 2 — the fitted band never strays OFF the offset locus: no point farther than
+      // |d| + 5·tol from S, and every foot that lands INSIDE the band's own envelope (the
+      // radial foot) is at distance ≈ |d|. Near a fold the NEAREST point of S can honestly be
+      // a different region at distance < |d| (the offset sheet approaches the evolute), so a
+      // foot OUTSIDE the band is bounded one-sidedly, not required to equal |d|.
+      const BsplineSurfaceData& f = r.surface;
+      SurfaceGrid fg{std::span<const Point3>(f.poles), f.nPolesU, f.nPolesV};
+      const double fu0 = domLo(f.knotsU, f.degreeU), fu1 = domHi(f.knotsU, f.degreeU);
+      const double fv0 = domLo(f.knotsV, f.degreeV), fv1 = domHi(f.knotsV, f.degreeV);
+      num::SurfaceEval Sev = [&](double u, double v) { return evalSurf(S, u, v); };
+      const double vMargin = 2.0 * (sv1 - sv0) / 40.0;  // two analysis cells of envelope slack
+      double maxOver = 0.0, maxRadialErr = 0.0;
+      int interior = 0, radial = 0;
+      const int NC = 9;
+      for (int i = 0; i < NC; ++i)
+        for (int j = 0; j < NC; ++j) {
+          const double fu = fu0 + (fu1 - fu0) * ((i + 0.5) / NC);
+          const double fv = fv0 + (fv1 - fv0) * ((j + 0.5) / NC);
+          const Point3 p = surfacePoint(f.degreeU, f.degreeV, fg, f.knotsU, f.knotsV, fu, fv);
+          const num::SurfaceProjection pr =
+              num::closest_point_on_surface(Sev, su0, su1, sv0, sv1, p, 30, 30);
+          if (!(pr.success && pr.u > su0 + 1e-4 && pr.u < su1 - 1e-4 && pr.v > sv0 + 1e-4 &&
+                pr.v < sv1 - 1e-4))
+            continue;
+          ++interior;
+          maxOver = std::max(maxOver, pr.distance - d);
+          // Is the foot inside this band's envelope (linear interp of the station polyline)?
+          if (pr.u >= r.keptU0 && pr.u <= r.keptU1) {
+            std::size_t seg = 0;
+            while (seg + 1 < r.foldU.size() && r.foldU[seg + 1] < pr.u) ++seg;
+            const std::size_t s1 = std::min(seg + 1, r.foldU.size() - 1);
+            const double den = r.foldU[s1] - r.foldU[seg];
+            const double a = (den > 0.0) ? (pr.u - r.foldU[seg]) / den : 0.0;
+            const double lo = r.foldVLo[seg] + a * (r.foldVLo[s1] - r.foldVLo[seg]);
+            const double hi = r.foldVHi[seg] + a * (r.foldVHi[s1] - r.foldVHi[seg]);
+            if (pr.v >= lo - vMargin && pr.v <= hi + vMargin) {
+              ++radial;
+              maxRadialErr = std::max(maxRadialErr, std::fabs(pr.distance - d));
+            }
+          }
+        }
+      expectTrue(interior > 0, "seam-col: fitted band has interior projection feet");
+      expectTrue(radial > 0, "seam-col: fitted band has radial (in-envelope) feet");
+      expectLE(maxOver, 5.0 * tol, "seam-col: no fitted point farther than |d| from S");
+      expectLE(maxRadialErr, 5.0 * tol, "seam-col: radial feet lie at distance ~|d| from S");
+    }
+
+    // THE HEADLINE: both arms of BOTH bifurcations are recovered (the per-band gate dropped
+    // all four), and the union beats the staircase and reaches the oracle bar.
+    expectTrue(arm1Below && arm1Above,
+               "seam-col: BOTH arms of the first bifurcation are recovered");
+    expectTrue(arm2Below && arm2Above,
+               "seam-col: BOTH arms of the second bifurcation are recovered");
+    expectTrue(foldArea > stairArea + 0.1,
+               "seam-col: fold-locus trim beats the rectangle staircase on recovered area");
+    expectTrue(foldArea >= 0.75 * oracleFree,
+               "seam-col: fold-locus trim recovers >= 75% of the oracle fold-free area");
+
+    // CONTROL — the component-level gate still declines what must decline: the fully-folding
+    // tight dome's fold-free slivers are whole COMPONENTS below the meaningful-area bar
+    // (~3.4% each), so the fold trim still returns EMPTY (never a sliver, never a folded
+    // region).
+    const BsplineSurfaceData dome = tightDome(0.5);
+    const std::vector<OffsetResult> allFold = offsetSurfaceFoldTrim(dome, 1.5 * 0.5, 1e-3);
+    expectTrue(allFold.empty(),
+               "seam-col: fully-folding offset still returns empty (component gate declines)");
+
+    // PASSTHROUGH — a small fold-free offset yields a SINGLE full-domain region.
+    const std::vector<OffsetResult> gentle = offsetSurfaceFoldTrim(S, 0.03, 1e-3);
+    expectTrue(gentle.size() == 1 && gentle[0].ok && !gentle[0].foldTrimmed && !gentle[0].trimmed,
+               "seam-col: fold-free offset returns one full-domain region");
   }
 
   std::printf("nurbs_offset: %d checks, %d failures\n", g_checks, g_failures);

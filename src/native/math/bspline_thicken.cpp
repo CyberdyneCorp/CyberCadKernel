@@ -30,6 +30,7 @@
 #include "native/math/bspline_offset.h"   // offsetSurface (Layer-5 offset + fold guard)
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <span>
@@ -110,6 +111,69 @@ void emitQuad(tess::Mesh& m, std::uint32_t base, int i, int j, int nv, bool flip
     m.addTriangle(a, c, b);
     m.addTriangle(a, dd, c);
   }
+}
+
+// ── Discrete embedding guard (near-fold panel BUCKLING) ─────────────────────────────
+// The node-wise fold guard (1 + d·κ) > 0 is NECESSARY but NOT SUFFICIENT for the DISCRETE
+// shell to be embedding-free: at a large enough |d| the offset cap over a near-fold band
+// edge can buckle BETWEEN samples, producing a shell that is watertight and χ = 2 yet
+// SELF-INTERSECTING. Detected by a triangle-pair PIERCING test — an edge of one triangle
+// passing through the interior of a NON-adjacent other (scale-relative epsilon skips
+// coplanar skin contact, so a clean welded shell reads intersection-free). Cheap AABB
+// reject keeps the pairwise scan tractable at the fold-band tessellation sizes.
+bool segPiercesTriangle(const Point3& p, const Point3& q, const Point3& t0, const Point3& t1,
+                        const Point3& t2) {
+  constexpr double ep = 1e-6;
+  const Vec3 e1 = t1 - t0, e2 = t2 - t0, dir = q - p, pv = cross(dir, e2);
+  const double det = dot(e1, pv);
+  const double sv = norm(dir) * norm(cross(e1, e2));
+  if (std::fabs(det) < 1e-9 * sv || sv < 1e-30) return false;
+  const double inv = 1.0 / det;
+  const Vec3 tv = p - t0;
+  const double bu = dot(tv, pv) * inv;
+  if (bu <= ep || bu >= 1.0 - ep) return false;
+  const Vec3 qv = cross(tv, e1);
+  const double bv = dot(dir, qv) * inv;
+  if (bv <= ep || bu + bv >= 1.0 - ep) return false;
+  const double t = dot(e2, qv) * inv;
+  return t > ep && t < 1.0 - ep;
+}
+
+bool shellSelfIntersects(const tess::Mesh& m) {
+  const std::size_t nT = m.triangles.size();
+  // Per-triangle AABBs for the cheap pair reject.
+  std::vector<std::array<double, 6>> box(nT);
+  for (std::size_t i = 0; i < nT; ++i) {
+    const tess::Triangle& t = m.triangles[i];
+    const Point3* v[3] = {&m.vertices[t.a], &m.vertices[t.b], &m.vertices[t.c]};
+    box[i] = {v[0]->x, v[0]->y, v[0]->z, v[0]->x, v[0]->y, v[0]->z};
+    for (int k = 1; k < 3; ++k) {
+      box[i][0] = std::min(box[i][0], v[k]->x); box[i][3] = std::max(box[i][3], v[k]->x);
+      box[i][1] = std::min(box[i][1], v[k]->y); box[i][4] = std::max(box[i][4], v[k]->y);
+      box[i][2] = std::min(box[i][2], v[k]->z); box[i][5] = std::max(box[i][5], v[k]->z);
+    }
+  }
+  for (std::size_t i = 0; i < nT; ++i)
+    for (std::size_t j = i + 1; j < nT; ++j) {
+      if (box[i][3] < box[j][0] || box[j][3] < box[i][0] || box[i][4] < box[j][1] ||
+          box[j][4] < box[i][1] || box[i][5] < box[j][2] || box[j][5] < box[i][2])
+        continue;  // disjoint bounds — cannot pierce
+      const tess::Triangle& ti = m.triangles[i];
+      const tess::Triangle& tj = m.triangles[j];
+      const std::uint32_t vs[3] = {ti.a, ti.b, ti.c}, ws[3] = {tj.a, tj.b, tj.c};
+      bool shared = false;
+      for (int x = 0; x < 3 && !shared; ++x)
+        for (int y = 0; y < 3; ++y)
+          if (vs[x] == ws[y]) { shared = true; break; }
+      if (shared) continue;  // adjacent triangles share skin legitimately
+      const Point3 A[3] = {m.vertices[ti.a], m.vertices[ti.b], m.vertices[ti.c]};
+      const Point3 B[3] = {m.vertices[tj.a], m.vertices[tj.b], m.vertices[tj.c]};
+      for (int k = 0; k < 3; ++k) {
+        if (segPiercesTriangle(A[k], A[(k + 1) % 3], B[0], B[1], B[2])) return true;
+        if (segPiercesTriangle(B[k], B[(k + 1) % 3], A[0], A[1], A[2])) return true;
+      }
+    }
+  return false;
 }
 
 // Euler characteristic V − E + F of a triangle mesh (E = #distinct undirected edges).
@@ -645,6 +709,10 @@ std::vector<ThickenResult> thickenFoldTrim(const BsplineSurfaceData& surface, do
     if (reg.foldU.size() < 2) continue;  // degenerate band — skip
     assembleShellBand(surface, grid, d, reg.foldU, reg.foldVLo, reg.foldVHi, nu, nv, r);
     if (!r.ok) continue;  // a region that fails closure is dropped, never returned open
+    // Discrete EMBEDDING guard: a near-fold band shell can be watertight yet BUCKLED
+    // (self-piercing between samples) at a large enough |d| — the documented residual the
+    // node-wise (1 + d·κ) guard cannot see. Skip such a band, never emit it as a solid.
+    if (shellSelfIntersects(r.solid)) continue;
     r.trimmed = true;
     r.keptU0 = reg.keptU0; r.keptU1 = reg.keptU1; r.keptV0 = reg.keptV0; r.keptV1 = reg.keptV1;
     out.push_back(std::move(r));

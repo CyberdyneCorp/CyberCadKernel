@@ -724,6 +724,58 @@ watertight sew is MISSING.
 > the mesher; the entire remaining sub-band decline is the single `boolean/weldMultiCoherent` winding
 > residual — the next (boolean-lane) wave's target.**
 
+> **✅ LANDED — BOOL-VOTE (the oracle-free divergence-volume weld gate; the "winding pick"
+> narrative is OVERTURNED by measurement and the no-oracle silent-wrong is CLOSED, track
+> `worktree-agent-a9de1742951a4acf5`).** MESH-WELD-TOL handed this wave "the single
+> `boolean/weldMultiCoherent` winding residual" — select the volume-matching weld configuration
+> instead of the first watertight one, and the sub-band `VolumeInconsistent` pins were expected to
+> flip `Ok`. The measurement (`measure_multiseam_vote`, swept on the asym AND sym fixtures)
+> OVERTURNS that mechanism: EVERY watertight+coherent orientation configuration encloses the SAME
+> pinched volume (asym d=0.002: all 0.006172 vs the survivors' own divergence expectation 0.006619,
+> −6.8%; sym d=0.0018: all 0.007019 vs 0.007448, −5.8%), because the loss is not an orientation
+> pick at all — it is the shared seam-strip **COLLAR PINCH**: both annuli's per-loop collar-side
+> votes are CORRECT and therefore IDENTICAL, the two faces splice the SAME strip triangles, the
+> weld's coincident-duplicate-triangle drop annihilates BOTH copies, and the collar bands' volume
+> (δ = 0.05·rSeam — deflection-INDEPENDENT) is lost. No enumerable configuration can restore it
+> (the strip is orientation-independent geometry), so flipping those pins to `Ok` would ship a
+> solid whose only watertight verification mesh understates the region by ~6% at ANY deflection —
+> exactly the silent-wrong DISAGREED=0 forbids. The pins therefore STAY honest declines, sharpened.
+>
+> What DID need fixing is worse than the stale narrative: called WITHOUT the closed-form oracle,
+> the verb RETURNED the pinched solid as `Ok` (the one-sided op bound cannot see a too-small
+> COMMON) — a shipped silent-wrong. **The fix (`boolean/weldMultiCoherent`): a weld configuration
+> is accepted ONLY if it is watertight + coherent AND its enclosed volume agrees (±2%) with the
+> ORACLE-FREE divergence-theorem expectation of that configuration — the survivor faces' summed
+> signed per-face volumes through the same shared-EdgeCache baseline meshing (flipping a face
+> negates its term).** Measured calibration: a legit weld only REPAIRS the seam pairing and drifts
+> ≤ 2e-4 relative (asym d=0.0025 rim-pin 0.006554 vs 0.006553; sym d=0.002 baseline weld agrees
+> exactly), vs the 5.8–6.8% pinch — the 2% band sits ≥ 100× above the repair drift and ≥ 2.9×
+> below the smallest pinch; a NEW gate, nothing widened. No consistent configuration ⇒
+> `VolumeInconsistent` with BOTH volumes as witnesses (`enclosedVolume` + the new
+> `expectedVolume`), and watertight/coherent carried in the report — the decline map reads "the
+> weld CLOSED; the VOLUME declined", not "the weld failed".
+>
+> Regression `test_native_multiseam_vote` (3/3): the no-oracle asym d=0.002 COMMON now DECLINES
+> `VolumeInconsistent` with the witnesses (was: a wrong solid returned `Ok`); the in-band d=0.0025
+> still welds with welded ≈ expectation (the gate does not over-fire); the expectation itself
+> converges on the closed form (the gate measures the right quantity). The two sub-band pins are
+> re-pinned to the measured mechanism and STRENGTHENED to assert BOTH call forms (with and without
+> the oracle) plus the witnesses: `test_native_seam_strip_weld::seamstrip_subthreshold_common_
+> declines_never_leaks` (sym d=0.0018) and `test_native_multiseam_asym::asym_fine_deflection_
+> residual_is_mesher_not_assembly` (asym d=0.002 AND the KEPT d=0.00125 pin — the never-leaky
+> property stays covered below the band). Suites green: multiseam_vote 3/3,
+> freeform_freeform_multiseam 9/9, multiseam_asym 5/5, seam_strip_weld 2/2, nurbs_solid_boolean
+> 8/8, boolean_readmit 5/5, multiseam_order_independence 1/1, tessellate 17/17
+> (`test_native_feature_ops` fails 2 cases IDENTICALLY on main beafc55 — pre-existing, out of this
+> lane). `git diff` touches ONLY `src/native/boolean/freeform_freeform_multiseam.h` + the owned
+> tests/probe + this section; `src/native` stays OCCT-free; no `cc_*` ABI change
+> (`MultiSeamCutReport` is header-internal; it gains `expectedVolume`); `ssi/`, `tessellate/`,
+> `math/` UNTOUCHED. **Net: the boolean lane now DETECTS any material-moving weld oracle-free, so
+> the fine-deflection multi-seam op can never ship silently wrong; the sub-band residual is named
+> EXACTLY — the strip's zero-thickness collar band cannot represent the collar wedge volume. Its
+> genuine fix (mesh each face's OWN collar band on its own surface, paired 1:1 at the seam only)
+> is the next tessellate-lane wave's target.**
+
 ### The COMPOSED two-freeform-solid NURBS boolean ORCHESTRATOR · **LANDED (BOOL-INT)**
 
 > **UPDATE (BOOL-INT — the general two-freeform-solid boolean ORCHESTRATOR that COMPOSES all
@@ -1018,7 +1070,7 @@ watertight sew is MISSING.
 | 2 Pcurve construction | **PARTIAL** | `constructPcurve` declines the iso-curve round-trip (parametrisation + non-rational fit); data model + fidelity guard land |
 | 3 Face split | **PARTIAL** | `classify` inside-test WORKS; split = convex-1-chord + closed-interior-seam; **tolerant-topology healing pre-pass LANDED** (`split_healing.h`, L3-HEAL); **general HOLED-face second-seam split LANDED** (`holed_face_split.h` `splitFaceSmoothTrimHoled`, MULTI-HOLE-SPLIT: split a face with N≥1 existing holes by a closed interior seam, holes preserved, exact net-area tiling, honest SeamCrossesHole decline; host 8/8 incl. ≥2/≥3-hole general cases); the harder seam-CROSSES-hole multi-crossing / re-entrant split MISSING |
 | 4 Region classification | **PARTIAL** | single-face In/Out + elementary set-algebra land; general NURBS solid membership MISSING |
-| 5 Reassembly / sew | **PARTIAL** | `pcurveFidelity` welds good / rejects drifted seam; single-transversal-seam freeform↔freeform sew WELDS (tracks S3/W, both legs); **multi-seam split+classify RESOLVED (exact tiling + per-region vote), and the annulus↔annulus inner seam-as-hole sew now WELDS watertight** (M0-WELD, `uv_triangulate.h`: the CDT hole-cull is a TOPOLOGICAL flood fill so both annuli triangulate the shared strip identically — inner-seam boundaryEdges **59→0**, volume converges to the closed-form lens, DISAGREED=0 by OCCT-agreement); the **ASYMMETRIC / curvature-MISMATCHED** multi-seam pose (degree-4 valley a=4 ∩ degree-4 dome b=6, mismatched curvature at both seams, V(A)≠V(B)) also WELDS COMMON/CUT/FUSE watertight (BOOL-MULTISEAM, `test_native_multiseam_asym`: be=0, converging — the shared-seam-strip weld is curvature-parity-independent, overturning the symmetric fixture's stale "curvature-mismatch declines" claim); residual = a small non-manifold count only at deflections finer than each op's working band — **PINNED (L3-BAND) to the MESHER shared-seam-strip weld, NOT the assembly**: per-level probe (`measure_multiseam_fine`) shows the `splitWallBySeams` UV tiling gap is **EXACTLY 0** on both walls and the survivor set is stable at EVERY sub-band deflection (the split+classify is deflection-independent, in-lane, correct), while the mesher's raw non-manifold count **GROWS** (COMMON 0→1→4, localized to the seams) — the per-face-CDT parity signature; the deflection-robust collar (MESH-COLLAR, `tessellate/seam_strip.h`: `δ = 0.05·rSeam` deflection-independent, replacing the `segLen`-shrinking inset) EXTENDS the mesher weld band one refinement step (COMMON raw nonmanif **1→0 at d=0.002**), and the over-dense-seam WELD-TOLERANCE merge at d≤0.00125 is CLEARED (MESH-WELD-TOL, `tessellate/seam_strip.h`: the registry decimates each registered seam ring to ≥2·weldTol spacing — a tightening, never a widened tolerance — so the raw survivor mesh is watertight through d=0.0008); the entire remaining sub-band residual is ONE never-leaky honest decline — the annulus-winding VOLUME collapse (`boolean/weldMultiCoherent`, VolumeInconsistent at d=0.002 and d=0.00125) |
+| 5 Reassembly / sew | **PARTIAL** | `pcurveFidelity` welds good / rejects drifted seam; single-transversal-seam freeform↔freeform sew WELDS (tracks S3/W, both legs); **multi-seam split+classify RESOLVED (exact tiling + per-region vote), and the annulus↔annulus inner seam-as-hole sew now WELDS watertight** (M0-WELD, `uv_triangulate.h`: the CDT hole-cull is a TOPOLOGICAL flood fill so both annuli triangulate the shared strip identically — inner-seam boundaryEdges **59→0**, volume converges to the closed-form lens, DISAGREED=0 by OCCT-agreement); the **ASYMMETRIC / curvature-MISMATCHED** multi-seam pose (degree-4 valley a=4 ∩ degree-4 dome b=6, mismatched curvature at both seams, V(A)≠V(B)) also WELDS COMMON/CUT/FUSE watertight (BOOL-MULTISEAM, `test_native_multiseam_asym`: be=0, converging — the shared-seam-strip weld is curvature-parity-independent, overturning the symmetric fixture's stale "curvature-mismatch declines" claim); residual = a small non-manifold count only at deflections finer than each op's working band — **PINNED (L3-BAND) to the MESHER shared-seam-strip weld, NOT the assembly**: per-level probe (`measure_multiseam_fine`) shows the `splitWallBySeams` UV tiling gap is **EXACTLY 0** on both walls and the survivor set is stable at EVERY sub-band deflection (the split+classify is deflection-independent, in-lane, correct), while the mesher's raw non-manifold count **GROWS** (COMMON 0→1→4, localized to the seams) — the per-face-CDT parity signature; the deflection-robust collar (MESH-COLLAR, `tessellate/seam_strip.h`: `δ = 0.05·rSeam` deflection-independent, replacing the `segLen`-shrinking inset) EXTENDS the mesher weld band one refinement step (COMMON raw nonmanif **1→0 at d=0.002**), and the over-dense-seam WELD-TOLERANCE merge at d≤0.00125 is CLEARED (MESH-WELD-TOL, `tessellate/seam_strip.h`: the registry decimates each registered seam ring to ≥2·weldTol spacing — a tightening, never a widened tolerance — so the raw survivor mesh is watertight through d=0.0008); the entire remaining sub-band residual is ONE never-leaky honest decline — the shared-strip COLLAR-PINCH volume loss (BOOL-VOTE re-pinned the stale "winding collapse" narrative by measurement: every coherent weld configuration encloses the same pinched volume, so the loss is the strip's zero-thickness collar band, a MESHER geometry limitation; `boolean/weldMultiCoherent` now catches it ORACLE-FREE against the survivors' own divergence-theorem expectation — VolumeInconsistent at d=0.002 and d=0.00125 with or without the closed form, and the previous no-oracle silent-wrong return is CLOSED) |
 | **COMPOSED boolean (Fuse/Cut/Common)** | **LANDED (BOOL-INT)** | the general two-freeform-solid orchestrator `nurbsSolidBoolean(A,B,op)` (`nurbs_solid_boolean.h`) COMPOSES all five stages (byte-unchanged); single-transversal-seam **COMMON/CUT/FUSE all weld watertight** at the closed-form volumes, converging, **DISAGREED=0 vs OCCT `BRepAlgoAPI_{Common,Cut,Fuse}`** (SIM 14/14); FUSE is the group-flip outer-envelope compose; op-algebra V(fuse)+V(common)=V(A)+V(B) holds; the multi-seam annulus↔annulus sew honest-declines with the residual map (never leaky). Host 7/7 + SIM 14/14 |
 | **Analytic curved-boolean (S5 families)** | **LANDED (BOOL-TAIL — FULLY COMPLETE)** | the elementary curved boolean (cyl/sphere/cone/**torus** ∩ cyl/sphere/cone/torus/plane, coaxial + transversal, COMMON/CUT/FUSE **incl. every order-sensitive reverse CUT**, S5-a…s) is now FULLY complete on the pure-native path: the native TORUS primitive (`construct::build_torus` + additive `cc_torus`, bare periodic `Kind::Torus`) fires the torus families from a shipping primitive; the reverse CUTs `cyl−torus` (grooved cyl), `sphere−cyl` (tunnelled sphere) — and now (BOOL-TAIL) `sphere−torus` (grooved ball, `buildSphereTorusCut`), `cone−torus` (grooved cone, `buildConeTorusCut`), transversal `cyl−torus` (lens-bitten cylinder, `buildTransCylTorusCut`) — all land watertight, partition-correct, ΔV <1%, DISAGREED=0. `test_abi` unchanged |
 

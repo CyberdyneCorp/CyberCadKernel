@@ -394,6 +394,206 @@ CCShapeId buildFinePitchHelicalThread() {
                              /*samplesPerTurn=*/16);
 }
 
+// ── DEFECT 2: a boolean on a THREADED BODY declines with an ACCURATE ordering-constraint
+//    error, never the vague "no valid result" ─────────────────────────────────────────
+//
+// THE FIXTURE AXIS MISMATCH THIS REPLACES (measured, not inferred). The old block revolved
+// the shaft with `cc_solid_revolve`, which builds about **+Y** (measured shaft bbox
+// [-4,0,-4]..[4,8,4]), while `cc_helical_thread` builds about **+Z** (measured thread bbox
+// [-5.5,-5.5,-0.576]..[5.5,5.5,6.576]). `thread_apply`'s crest-clearance guard measures the
+// shaft radius about **Z** as max(|x|,|y|) (occt_thread_boolean.cpp `maxRadius`), so the +Y
+// shaft's 8 mm axial extent READ AS A RADIUS: shaftR = 8.0000 against crestR = 5.5002. The
+// guard was RIGHT to refuse — a 5.5 mm crest genuinely cannot clear an 8 mm radius — and it
+// returned `thread_apply: thread crest does not clear the shaft surface` on 6/6 fresh runs,
+// so `threaded == 0` and the block failed in SETUP. cc_thread_apply is not the bug; the
+// fixture was feeding it a body on the wrong axis.
+//
+// WHY BOTH BODIES ROTATE. Rotating only the shaft is enough to satisfy the crest guard
+// (shaftR drops 8.0000 → 4.0000) and the fuse then succeeds — but it leaves the boss on +Y,
+// so the "downstream feature" is a disc jammed sideways through the shank rather than the
+// coaxial collar the case is about. `revolveAboutZ` puts every revolved body on the same
+// axis as the thread, which is the only configuration in which the collar sweep below means
+// what its name says.
+//
+// WHY EVERY TRIAL REBUILDS THE THREADED BODY. **A boolean MUTATES its operands in place.**
+// Measured, deterministic over 5 fresh processes: fusing the SAME collar onto the SAME
+// threaded shape id gives volume 545.214 on the first call and 450.929 on the second and
+// third — a 17.3% silent material loss that still clears runBoolean's
+// `volume >= max(operand)*0.999` fuse gate (429.42). Rebuilding the threaded body per pass
+// gives 545.214 three times out of three. The threaded body's own volume and area are
+// unchanged across the divergence (429.852235 / 354.76517 before and after), so the carrier
+// is OCCT's in-place edge tolerance/pcurve update on the shared TShape, which mass
+// properties cannot see. This is an engine defect owned by src/engine/occt, NOT by this
+// harness; the harness only refuses to let it contaminate a reading.
+
+constexpr const char* kAccurateDecline = "apply threads as the";
+constexpr const char* kVagueDecline = "fuse produced no valid result";
+
+// Revolve a silhouette about **+Z**: cc_solid_revolve builds about +Y, so rotate +90° about
+// +X, which carries +Y onto +Z. Returns 0 if either step fails.
+CCShapeId revolveAboutZ(const double* profileXY, int pointCount) {
+    const CCShapeId aboutY = cc_solid_revolve(profileXY, pointCount, 2.0 * M_PI);
+    if (aboutY == 0) return 0;
+    const CCShapeId aboutZ = cc_rotate_shape_about(aboutY, 0, 0, 0, 1, 0, 0, kPi / 2.0);
+    cc_shape_release(aboutY);
+    return aboutZ;
+}
+
+// Shaft r=4, z∈[0,8] about +Z, threaded with a ridge whose crest (5) clears it.
+CCShapeId buildThreadedBody() {
+    const double shaftProf[] = {0, 0, 4, 0, 4, 8, 0, 8};
+    const CCShapeId shaft = revolveAboutZ(shaftProf, 4);
+    const CCShapeId thread =
+        cc_helical_thread(/*major=*/5.0, /*pitch=*/2.0, /*turns=*/3.0, /*depth=*/1.0,
+                          /*flank=*/60.0, /*ppm=*/1.0, /*samplesPerTurn=*/16);
+    const CCShapeId threaded = (shaft && thread) ? cc_thread_apply(shaft, thread, /*op=*/0) : 0;
+    if (thread) cc_shape_release(thread);
+    if (shaft) cc_shape_release(shaft);
+    return threaded;
+}
+
+// A coaxial collar r × z∈[z0,z0+2] about +Z — the downstream feature fused onto the shank.
+CCShapeId buildCollar(double r, double z0) {
+    const double prof[] = {0, z0, r, z0, r, z0 + 2.0, 0, z0 + 2.0};
+    return revolveAboutZ(prof, 4);
+}
+
+struct FuseOutcome {
+    CCShapeId id = 0;
+    std::string err;
+    bool accurate = false;  // carries the ordering-constraint message
+    bool vague = false;     // carries the pre-fix "no valid result" message
+};
+
+FuseOutcome fuseCollar(CCShapeId threaded, CCShapeId collar) {
+    FuseOutcome o;
+    o.id = (threaded && collar) ? cc_boolean(threaded, collar, /*op=*/0) : 0;
+    o.err = cc_last_error() ? cc_last_error() : "";
+    o.accurate = o.err.find(kAccurateDecline) != std::string::npos;
+    o.vague = o.err.find(kVagueDecline) != std::string::npos;
+    return o;
+}
+
+// ── THE NON-VACUITY MECHANISM ────────────────────────────────────────────────────────
+// The guard is `threadedOperand = occt::anyThreadedBodyOperand(a, b)` in
+// occt_booltransform.cpp: provenance, not geometry, selects the accurate message over the
+// vague one. `cc_translate_shape(body, 0,0,0)` runs BRepBuilderAPI_Transform with copy=true
+// and re-wraps the result via `occt::wrap`, which default-constructs ThreadTag — so it
+// hands back a GEOMETRICALLY IDENTICAL body carrying NO thread provenance. That body is
+// exactly the state the engine would be in if the defect-2 guard were deleted, obtained
+// without touching src/. Running the identical fuse against both is therefore a paired A/B
+// whose stripped arm IS the guard-removed control, and the sweep below asserts the two arms
+// produce DIFFERENT messages. Delete the guard and the tagged arm collapses onto the
+// stripped arm's vague message and this case fails — which is what makes it not vacuous.
+CCShapeId stripThreadProvenance(CCShapeId threaded) {
+    return threaded ? cc_translate_shape(threaded, 0.0, 0.0, 0.0) : 0;
+}
+
+void runDefect2Guard() {
+    cc_set_engine(0);  // the OCCT engine owns thread_apply and the boolean
+    char detail[512];
+
+    // 1. The axis fix itself is an assertion. On the old +Y shaft this returned 0 with
+    //    "thread crest does not clear the shaft surface"; a regression to a mis-axed
+    //    fixture (or to the crest guard) fails HERE rather than silently skipping the rest.
+    const CCShapeId probe = buildThreadedBody();
+    {
+        double bb[6] = {0};
+        const int bbok = probe ? cc_bounding_box(probe, bb) : 0;
+        const CCMassProps m = probe ? cc_mass_properties(probe) : CCMassProps{0, 0, 0, 0, 0, 0};
+        // The threaded body must reach PAST the plain shaft's 4 mm wall — that reach is the
+        // applied ridge, and it is what a bare shaft (which would also build and mass out
+        // fine) cannot fake.
+        const double reach = (bbok == 1) ? std::max(std::fabs(bb[0]), std::fabs(bb[3])) : 0.0;
+        const bool ok = (probe != 0) && (m.valid != 0) && (m.volume > 402.124) && (reach > 4.0);
+        std::snprintf(detail, sizeof detail, "threaded=%llu vol=%.6g radialReach=%.4f (shaft r=4)",
+                      static_cast<unsigned long long>(probe), m.volume, reach);
+        record(ok, "thread_apply on a +Z shaft (axis fix)", detail);
+    }
+    if (probe) cc_shape_release(probe);
+
+    // 2. Collar sweep. Each trial rebuilds the threaded body (see the operand-mutation note
+    //    above) and runs the SAME fuse twice: once on the provenance-carrying body, once on
+    //    the stripped deep copy that stands in for a guard-removed engine.
+    const double radii[] = {4.0, 4.5, 5.0, 5.2, 5.4, 6.0};
+    const double starts[] = {0.0, 2.0, 3.0};
+    int trials = 0, declines = 0, mismatched = 0, misworded = 0;
+    for (const double r : radii) {
+        for (const double z0 : starts) {
+            const CCShapeId tagged = buildThreadedBody();
+            const CCShapeId stripped = stripThreadProvenance(tagged);
+            const CCShapeId collarA = buildCollar(r, z0);
+            const CCShapeId collarB = buildCollar(r, z0);
+            if (tagged && stripped && collarA && collarB) {
+                ++trials;
+                const FuseOutcome a = fuseCollar(tagged, collarA);
+                const FuseOutcome b = fuseCollar(stripped, collarB);
+                // Provenance must not change WHETHER the boolean succeeds — only how a
+                // failure is worded. A divergence here means the copy is not the same body
+                // and the A/B below would be comparing two different geometries.
+                if ((a.id == 0) != (b.id == 0)) {
+                    ++mismatched;
+                    std::printf("[NTHREAD]   ! r=%.2f z0=%.1f arms disagree: tagged=%llu "
+                                "stripped=%llu\n",
+                                r, z0, static_cast<unsigned long long>(a.id),
+                                static_cast<unsigned long long>(b.id));
+                } else if (a.id == 0) {
+                    ++declines;
+                    // THE defect-2 property: the tagged arm is worded accurately, the
+                    // guard-removed arm falls back to the pre-fix vague text.
+                    if (!(a.accurate && !a.vague && b.vague && !b.accurate)) {
+                        ++misworded;
+                        std::printf("[NTHREAD]   ! r=%.2f z0=%.1f tagged='%s' stripped='%s'\n", r,
+                                    z0, a.err.c_str(), b.err.c_str());
+                    }
+                }
+                if (a.id) cc_shape_release(a.id);
+                if (b.id) cc_shape_release(b.id);
+            }
+            if (collarB) cc_shape_release(collarB);
+            if (collarA) cc_shape_release(collarA);
+            if (stripped) cc_shape_release(stripped);
+            if (tagged) cc_shape_release(tagged);
+        }
+    }
+    // FIRED COUNT, not just "no counterexample". A sweep in which nothing declines proves
+    // nothing about the wording, so too few declines is a FAILURE telling the next reader to
+    // re-tune the collar geometry — never a quiet pass. Measured on OCCT 7.6: 11/18 decline,
+    // stable across repeated runs and independent of case order.
+    constexpr int kMinDeclines = 4;
+    const bool sweepOk = (trials == 18) && (mismatched == 0) && (misworded == 0) &&
+                         (declines >= kMinDeclines);
+    std::snprintf(detail, sizeof detail,
+                  "trials=%d declines=%d (min %d) armsDisagree=%d misworded=%d", trials, declines,
+                  kMinDeclines, mismatched, misworded);
+    record(sweepOk, "threaded-body decline is accurately worded", detail);
+
+    // 3. NO FALSE DECLINE. A collar clear of the crest (r=6 > crest 5.4885) must still fuse,
+    //    and the union must lie strictly between the larger operand and the operand sum —
+    //    the bound that distinguishes a real union from "one operand returned unchanged",
+    //    which is what the material-loss mode above looks like.
+    {
+        const CCShapeId threaded = buildThreadedBody();
+        const CCShapeId collar = buildCollar(6.0, 0.0);
+        const CCMassProps tm = threaded ? cc_mass_properties(threaded) : CCMassProps{0,0,0,0,0,0};
+        const CCMassProps cm = collar ? cc_mass_properties(collar) : CCMassProps{0,0,0,0,0,0};
+        const FuseOutcome f = fuseCollar(threaded, collar);
+        const CCMassProps fm = f.id ? cc_mass_properties(f.id) : CCMassProps{0, 0, 0, 0, 0, 0};
+        const double lower = std::max(tm.volume, cm.volume);
+        const double upper = tm.volume + cm.volume;
+        const bool ok = (f.id != 0) && (fm.valid != 0) && (fm.volume > lower) &&
+                        (fm.volume < upper);
+        std::snprintf(detail, sizeof detail,
+                      "fused=%llu vol=%.6g in (%.6g, %.6g) err='%s'",
+                      static_cast<unsigned long long>(f.id), fm.volume, lower, upper,
+                      f.err.c_str());
+        record(ok, "clear-of-crest collar still fuses (no false decline)", detail);
+        if (f.id) cc_shape_release(f.id);
+        if (collar) cc_shape_release(collar);
+        if (threaded) cc_shape_release(threaded);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -426,54 +626,7 @@ int main() {
                 "fine-pitch helical sweep, turns self-intersect → self-verify defers — Tier D",
                 /*deflection=*/0.02);
 
-    // ── DEFECT 2 regression: a boolean on a THREADED BODY declines with an ACCURATE
-    //    ordering-constraint error, not a vague "no valid result" ────────────────────────
-    // Repro: build a shaft cylinder, apply a helical thread (cc_thread_apply → a display-valid
-    // threaded body), then attempt a downstream cc_boolean fuse of a small boss onto it. The
-    // threaded region's near-tangent helical faces are not robustly booleanable in the engine
-    // today, so the fuse fails. BEFORE the fix cc_last_error was the vague "fuse produced no
-    // valid result"; AFTER the fix it is the accurate, actionable ordering-constraint message
-    // (apply threads as the final feature). This is the honest-decline outcome (§DEFECT 2).
-    {
-        cc_set_engine(0);  // OCCT engine owns thread_apply + the boolean
-        // Shaft cylinder: revolve a rectangle silhouette (r=4, z∈[0,8]) about Z.
-        const double shaftProf[] = {0, 0, 4, 0, 4, 8, 0, 8};
-        const CCShapeId shaft = cc_solid_revolve(shaftProf, 4, 2.0 * M_PI);
-        // Thread ridge whose crest (5) clears the shaft surface (4).
-        const CCShapeId thread =
-            cc_helical_thread(/*major=*/5.0, /*pitch=*/2.0, /*turns=*/3.0, /*depth=*/1.0,
-                              /*flank=*/60.0, /*ppm=*/1.0, /*samplesPerTurn=*/16);
-        const CCShapeId threaded = (shaft && thread) ? cc_thread_apply(shaft, thread, /*op=*/0) : 0;
-        // A small boss to fuse onto the threaded body (a downstream feature).
-        const double bossProf[] = {0, 0, 6, 0, 6, 2, 0, 2};
-        const CCShapeId boss = cc_solid_revolve(bossProf, 4, 2.0 * M_PI);
-
-        bool ok = false;
-        char detail[512];
-        if (threaded && boss) {
-            const CCShapeId fused = cc_boolean(threaded, boss, /*op=*/0);  // fuse
-            const std::string err = cc_last_error() ? cc_last_error() : "";
-            // The downstream fuse must NOT silently produce a wrong/empty result: either it
-            // genuinely succeeds (a real booleanable body — accepted) OR it declines with the
-            // ACCURATE ordering-constraint message (never the vague "no valid result").
-            const bool clearDecline =
-                (fused == 0) && err.find("apply threads as the") != std::string::npos;
-            const bool honestSuccess = (fused != 0);
-            ok = honestSuccess || clearDecline;
-            std::snprintf(detail, sizeof detail, "fused=%llu err='%s'",
-                          static_cast<unsigned long long>(fused), err.c_str());
-            if (fused) cc_shape_release(fused);
-        } else {
-            std::snprintf(detail, sizeof detail, "setup failed: threaded=%llu boss=%llu",
-                          static_cast<unsigned long long>(threaded),
-                          static_cast<unsigned long long>(boss));
-        }
-        record(ok, "threaded-body boolean honest-decline (defect-2)", detail);
-        if (threaded) cc_shape_release(threaded);
-        if (thread) cc_shape_release(thread);
-        if (shaft) cc_shape_release(shaft);
-        if (boss) cc_shape_release(boss);
-    }
+    runDefect2Guard();
 
     cc_set_engine(0);
 

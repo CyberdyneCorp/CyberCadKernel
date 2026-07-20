@@ -10,6 +10,10 @@
 // checked against the OCCT ORACLE via TOLERANCE-BASED PROPERTIES — never
 // triangle-identical output (tessellation is an approximation):
 //
+//   0. BRIDGE PCURVE FIDELITY — before any mesh property is judged, the pcurves the
+//      test bridge feeds the mesher are audited against the oracle:
+//      S_face(pcurve(t)) == C_edge(t) to 1e-9. A bridge defect otherwise surfaces as
+//      a mesh-property failure and reads as a mesher bug (it did — see buildPCurve).
 //   1. VERTICES ON THE TRUE SURFACE — every native mesh vertex projects onto the
 //      OCCT face surface within the deflection bound (GeomAPI_ProjectPointOnSurf
 //      over each face's Geom_Surface; a vertex must be within `deflection` of
@@ -77,6 +81,11 @@
 #include <GProp_GProps.hxx>
 #include <Geom_Surface.hxx>
 #include <Geom2d_Curve.hxx>
+#include <Geom2dAdaptor_Curve.hxx>
+#include <gp_Ax22d.hxx>
+#include <gp_Circ2d.hxx>
+#include <gp_Elips2d.hxx>
+#include <gp_Lin2d.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GeomAbs_CurveType.hxx>
 #include <GeomAbs_SurfaceType.hxx>
@@ -134,20 +143,37 @@ static nt::Location toLocation(const TopLoc_Location& loc) {
 // after a face's wires are bridged, each edge of the face gets its 2D pcurve on
 // that face laid on via ShapeBuilder::addPCurve (BRep_Tool::CurveOnSurface). The
 // tessellator's trimming (trim.h) samples those pcurves to build the UV boundary
-// polygon; without them the mesher falls back to the surface's natural bounds,
-// which for the analytic primitives here (box faces, cylinder/sphere) still spans
-// the face — but we lay them so trimming is exercised faithfully.
+// polygon. The pcurves are REQUIRED, not a fidelity nicety: with no usable pcurve
+// the mesher falls back to the surface's natural UV bounds, which do NOT span these
+// faces — measured, a box bridged without resolvable pcurves meshes to area 6.0
+// against the true 2200.0.
 //
-// Because native TShape nodes are immutable, the pcurve is attached by REBUILDING
-// the edge node (addPCurve returns a new edge) and rebuilding the wire/face with
-// the pcurve-carrying edges. To keep node sharing across faces, we build faces in
-// two passes: first bridge the plain graph (shared nodes), then re-derive faces
-// with pcurves. For this harness a simpler, faithful route is used: since each
-// bridged edge is laid onto the ≤2 faces that reference it and the tessellator's
-// pcurveForFace fallback accepts an edge's single pcurve, we attach the pcurve of
-// the CURRENT face while bridging that face's edges. Analytic parametrizations of
-// OCCT and the native math library agree (verified in native_topology parity), so
-// the 2D pcurve params line up.
+// ── WHAT THIS BRIDGE DOES NOT PRESERVE: EDGE-NODE SHARING ────────────────────
+// Native TShape nodes are immutable, so a pcurve is attached by REBUILDING the edge
+// node (addPCurve returns a new edge) and rebuilding the wire/face on top of it.
+// Since each face lays its OWN pcurve, each face ends up with its OWN clone of every
+// edge it uses, and edge-node sharing across faces is LOST. Measured on the fixtures
+// below (AncestryMap over the bridged graph vs TopExp::MapShapesAndAncestors):
+//
+//   box       OCCT 12 edges x 2 faces  ->  bridged 24 edge nodes x 1 face
+//   cylinder  OCCT  3 edges x 2 faces  ->  bridged  5 edge nodes x 1 face
+//
+// This is INHERENT, not an oversight to be tidied up later. A pcurve is keyed by the
+// FACE NODE POINTER it lies on (topo::pcurveOf compares tshape().get()), and a face
+// node cannot exist before the edges it contains — so one shared edge node cannot
+// carry pcurves keyed to its own incident final face nodes. Building each edge once
+// with both pcurves keyed to the pre-pcurve face nodes was implemented and measured:
+// pcurveForFace then resolves NEITHER key (the exact match misses and the
+// single-pcurve fallback does not apply to two), the mesher falls back to natural UV
+// bounds, and the box's area collapses from 2200 to 6.0. Restoring sharing requires a
+// kernel-side change to how pcurves are keyed, not a harness change.
+//
+// Nor does the mesher need the sharing: it welds curved seams carried on SEPARATE
+// nodes via edge_mesher's canonical endpoint+midpoint fallback. Measured — the
+// kernel's own construct::build_revolution cylinder (r=5, h=12) has 9 faces and 30
+// edge nodes, EVERY one incident to a single face, and meshes with 0 boundary edges.
+// So do not read a watertight failure here as "the bridge lost sharing"; check
+// bridge-pcurve-fidelity (check 0) first, which is what actually broke.
 // ═════════════════════════════════════════════════════════════════════════════
 class OcctBridge {
  public:
@@ -245,8 +271,16 @@ class OcctBridge {
   // Rebuild `wire` so each edge carries its 2D pcurve on `f`, keyed to
   // `faceSurfaceNode`. Reads BRep_Tool::CurveOnSurface per edge; maps the OCCT
   // Geom2d curve to a native PCurve (analytic line/circle/ellipse; else sampled
-  // poly). Edge/vertex node SHARING is preserved because addPCurve clones only
-  // the edge node's data (children stay shared).
+  // poly).
+  //
+  // ⚠ EDGE-NODE SHARING IS **NOT** PRESERVED HERE. `addPCurve` returns a NEW edge
+  // node, and a pcurve is keyed by the face-surface node it lies on, so an edge
+  // shared by two faces necessarily yields two distinct nodes — one per face.
+  // Measured on the box fixture: 24 edge nodes, each referenced by exactly 1 face,
+  // i.e. ZERO sharing. See the header block above for why that is a property of
+  // this BRIDGE and not of the kernel mesher, and why the obvious "build each edge
+  // node once" fix is structurally unavailable (a face node cannot pre-exist its
+  // own edges).
   nt::Shape withPCurves(const TopoDS_Face& f, const nt::Shape& wire,
                         const std::shared_ptr<const nt::TShape>& faceSurfaceNode) {
     std::vector<nt::Shape> edges;
@@ -345,18 +379,48 @@ class OcctBridge {
     return s;
   }
 
-  // Map an OCCT edge's 2D pcurve on face `f` to a native PCurve. Analytic pcurves
-  // (line/circle/ellipse in the (u,v) plane) are modelled exactly; anything else
-  // is sampled to a poly (poles2d) so trimming still gets a boundary. The pcurve
-  // is evaluated in the surface's parameter domain, matching how the native
-  // surface is parametrized (validated by native_topology parity).
+  std::unordered_map<Key, nt::Shape, KeyHash> nodeCache_;
+
+ public:
+  // Map an OCCT edge's 2D pcurve on face `f` to a native PCurve. Public because
+  // checkPCurveFidelity() below audits exactly what this produces.
+  //
+  // ── ANALYTIC FIRST, AND WHY IT IS LOAD-BEARING ──────────────────────────────
+  // topo::PCurve's free-form kind stores bare 2D poles with NO knot vector, and
+  // tessellate::pcurveValue() then LERPS them (trim.h, the poles2d fallback). What
+  // the mesher traces is therefore the CHORD POLYGON of the pcurve, not the pcurve.
+  // On a pcurve that is STRAIGHT in (u,v) the chords are exact; on a CURVED one the
+  // polygon is inset by the sagitta.
+  //
+  // That asymmetry is what used to open this harness's cylinder. Measured on
+  // BRepPrimAPI_MakeCylinder(5,12) with the previous unconditional 32-pole poly: the
+  // cap's seam ring landed at r = 4.9797 (its pcurve is a CIRCLE in the plane's
+  // (u,v)) while the side face's ring landed at r = 5.0 exactly (its pcurve is a LINE
+  // in (theta,h), so chords are exact). Both rings had 23 points at matching angles
+  // but sat 2.0e-2 apart — orders of magnitude beyond any weld tolerance — so the
+  // solid meshed with 84 open boundary edges, 42 at each cap seam. Read off the
+  // watertight assertion alone that looks exactly like a mesher leak on cylinders.
+  // It was this function.
+  //
+  // So: transcribe the analytic forms exactly and keep the poly only for genuinely
+  // free-form pcurves, where no exact target exists.
   static bool buildPCurve(const TopoDS_Edge& e, const TopoDS_Face& f, nt::PCurve& out) {
     double f2 = 0, l2 = 0;
     Handle(Geom2d_Curve) c2d = BRep_Tool::CurveOnSurface(e, f, f2, l2);
     if (c2d.IsNull()) return false;
-    // Sample the 2D pcurve into a poly; robust for any pcurve kind. The
-    // tessellator flattens polys by arclength fraction, so we store enough
-    // samples for the boundary. Params run [f2,l2] over the poly's [0,1].
+
+    // pcurveValue() drives an ANALYTIC pcurve with the EDGE's 3-D parameter, so the
+    // analytic transcription is only valid when the 2D and 3D ranges coincide. When
+    // they do not, the poly path is still correct: it is indexed by the [0,1]
+    // fraction across the range, which is parametrisation-independent.
+    BRepAdaptor_Curve ad3(e);
+    const double a3 = ad3.FirstParameter(), b3 = ad3.LastParameter();
+    const double rangeTol = 1e-9 * (1.0 + std::fabs(a3) + std::fabs(b3));
+    if (std::fabs(f2 - a3) <= rangeTol && std::fabs(l2 - b3) <= rangeTol &&
+        buildAnalyticPCurve(Geom2dAdaptor_Curve(c2d, f2, l2), out))
+      return true;
+
+    out = nt::PCurve{};
     out.kind = nt::EdgeCurve::Kind::BSpline;  // treat as free-form poly
     const int n = 32;
     out.poles2d.reserve(n + 1);
@@ -368,12 +432,121 @@ class OcctBridge {
     return true;
   }
 
-  std::unordered_map<Key, nt::Shape, KeyHash> nodeCache_;
+ private:
+  // Term-for-term transcription into the analytic forms pcurveValue() evaluates:
+  //   Line    -> origin2d + t * dir2d
+  //   Circle  -> origin2d + R * (cos t, sin t)         [R read from dir2d.x]
+  //   Ellipse -> origin2d + (a cos t, b sin t)         [a,b from dir2d.x/.y]
+  // topo::PCurve carries no 2D frame for the conics, so their axes are IMPLICITLY
+  // +u/+v. A rotated or reflected OCCT conic would be traced at the wrong phase and
+  // silently produce a plausible-looking but wrong boundary, so it is rejected here
+  // and falls through to the sampled poly, which has no frame assumption.
+  static bool buildAnalyticPCurve(const Geom2dAdaptor_Curve& ad, nt::PCurve& out) {
+    const auto axesAreUV = [](const gp_Ax22d& pos) {
+      return std::fabs(pos.XDirection().X() - 1.0) <= 1e-12 &&
+             std::fabs(pos.XDirection().Y()) <= 1e-12 &&
+             std::fabs(pos.YDirection().Y() - 1.0) <= 1e-12 &&
+             std::fabs(pos.YDirection().X()) <= 1e-12;
+    };
+    out = nt::PCurve{};
+    switch (ad.GetType()) {
+      case GeomAbs_Line: {
+        const gp_Lin2d l = ad.Line();
+        out.kind = nt::EdgeCurve::Kind::Line;
+        out.origin2d = nm::Point3{l.Location().X(), l.Location().Y(), 0.0};
+        out.dir2d = nm::Vec3{l.Direction().X(), l.Direction().Y(), 0.0};
+        return true;
+      }
+      case GeomAbs_Circle: {
+        const gp_Circ2d c = ad.Circle();
+        if (!axesAreUV(c.Position())) return false;
+        out.kind = nt::EdgeCurve::Kind::Circle;
+        out.origin2d = nm::Point3{c.Location().X(), c.Location().Y(), 0.0};
+        out.dir2d = nm::Vec3{c.Radius(), 0.0, 0.0};
+        return true;
+      }
+      case GeomAbs_Ellipse: {
+        const gp_Elips2d el = ad.Ellipse();
+        if (!axesAreUV(el.Axis())) return false;
+        out.kind = nt::EdgeCurve::Kind::Ellipse;
+        out.origin2d = nm::Point3{el.Location().X(), el.Location().Y(), 0.0};
+        out.dir2d = nm::Vec3{el.MajorRadius(), el.MinorRadius(), 0.0};
+        return true;
+      }
+      default:
+        return false;
+    }
+  }
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Property comparisons against the OCCT oracle.
 // ═════════════════════════════════════════════════════════════════════════════
+
+// (0) BRIDGE-CONSTRUCTION FIDELITY — the pcurve `OcctBridge::buildPCurve` PRODUCES
+// must reproduce the edge's 3-D curve through the face surface:
+//
+//     S_face( pcurve(t) ) == C_edge(t)   for all t in [first,last]
+//
+// That identity IS the seam-weld contract: two faces meeting at an edge only weld
+// if each independently lands on the same 3-D points, and each gets there through
+// its own pcurve. A pcurve that is merely CLOSE traces a boundary that is close to
+// the edge and welds nowhere.
+//
+// ⚠ SCOPE — read this before trusting a PASS. This audits the CONSTRUCTION PATH, not
+// the delivery. It re-invokes the static `OcctBridge::buildPCurve` on each (edge,
+// face) pair and never inspects the bridged `nt::Shape` the mesher is actually handed.
+// So it proves the recipe is right; it does NOT prove the recipe reached the mesher.
+// Verified deliberately: breaking pcurve ATTACHMENT badly enough to collapse the box's
+// measured area from 2200 to 6.0 still leaves this check PASSING on all three fixtures.
+// Attachment is covered downstream, by watertight + area + volume; this check exists to
+// localise a CONSTRUCTION regression, which is what previously surfaced three checks
+// later as `cylinder watertight FAIL` and read as a mesher leak.
+//
+// Tolerance is 1e-9 (an exact transcription, not an approximation) — the old 32-pole
+// poly measured 2.0e-2 on the cylinder cap, so the deviation bound has real
+// discriminating power rather than being satisfied by construction.
+static void checkPCurveFidelity(const char* name, const TopoDS_Shape& occt,
+                                int expectedPCurves) {
+  double worst = 0.0;
+  int pcurves = 0, samples = 0;
+  for (TopExp_Explorer fx(occt, TopAbs_FACE); fx.More(); fx.Next()) {
+    const TopoDS_Face f = TopoDS::Face(fx.Current());
+    TopLoc_Location sloc;
+    Handle(Geom_Surface) srf = BRep_Tool::Surface(f, sloc);
+    if (srf.IsNull()) continue;
+    for (TopExp_Explorer ex(f, TopAbs_EDGE); ex.More(); ex.Next()) {
+      const TopoDS_Edge e = TopoDS::Edge(ex.Current());
+      nt::PCurve pc;
+      if (!OcctBridge::buildPCurve(e, f, pc)) continue;
+      ++pcurves;
+      BRepAdaptor_Curve ad3(e);
+      const double a = ad3.FirstParameter(), b = ad3.LastParameter();
+      const int n = 64;
+      for (int i = 0; i <= n; ++i) {
+        const double frac = static_cast<double>(i) / n;
+        const double t = a + (b - a) * frac;
+        const ntess::UV uv = ntess::pcurveValue(pc, t, frac);
+        gp_Pnt onSurface = srf->Value(uv.u, uv.v);
+        onSurface.Transform(sloc.Transformation());
+        worst = std::max(worst, onSurface.Distance(ad3.Value(t)));
+        ++samples;
+      }
+    }
+  }
+  // COVERAGE IS ASSERTED AGAINST AN EXACT PER-FIXTURE COUNT, not a floor. A bridge
+  // change that stopped emitting pcurves would otherwise leave `worst` at 0.0 and pass
+  // vacuously — and a floor does not close that: `samples == 65 * pcurves` by
+  // construction above, so `pcurves > 0 && samples >= 64` reduces to `pcurves > 0`, and
+  // auditing 1 of the box's 24 pcurves would still have passed. The exact count (box 24,
+  // cylinder 6, sphere 4 — each face's edges, counted per face, so a shared edge counts
+  // once per face it bounds) fails if even one pcurve stops being produced.
+  const bool exercised = (pcurves == expectedPCurves) && (samples == 65 * expectedPCurves);
+  char buf[160];
+  std::snprintf(buf, sizeof(buf), "maxDev=%.3e pcurves=%d (want %d) samples=%d", worst, pcurves,
+                expectedPCurves, samples);
+  report(name, "bridge-pcurve-fidelity", exercised && worst <= 1e-9, buf);
+}
 
 // (1) Every native mesh vertex is within `defl` of SOME OCCT face surface.
 static void checkVerticesOnSurface(const char* name, const TopoDS_Shape& occt,
@@ -433,11 +606,16 @@ static void checkVolume(const char* name, const TopoDS_Shape& occt, const ntess:
 }
 
 // (4) Watertight (closed 2-manifold): every undirected edge shared by EXACTLY two
-// triangles (boundaryEdges == 0). This is now REQUIRED for every CLOSED solid —
-// including CURVED shared edges (a cylinder's circular cap↔side seam). The mesher
-// discretizes each unique edge ONCE (STAGE 1) and pins both adjacent faces to that
-// shared discretization (STAGE 2), so the seam samples coincide and weld closed;
-// there is no longer a weaker "bounded-open" pass for curved-edge solids.
+// triangles (boundaryEdges == 0). REQUIRED for every CLOSED solid — including the
+// CURVED cap↔side seam of a cylinder; there is no weaker "bounded-open" pass.
+//
+// Note what actually makes the seam weld HERE. The mesher's per-TShape shared
+// discretization never fires in this harness, because the bridge hands each face its
+// own edge node (see the bridge header). What welds these seams is edge_mesher's
+// canonical curved-edge fallback, which matches separate nodes by quantized endpoints
+// plus a 3-D midpoint and gives both faces bit-identical samples. That fallback can
+// only work if both faces reach the same 3-D curve in the first place, which is what
+// check 0 (bridge-pcurve-fidelity) guarantees.
 static void checkWatertight(const char* name, const ntess::Mesh& mesh) {
   const std::size_t be = ntess::boundaryEdgeCount(mesh);
   char buf[112];
@@ -448,7 +626,8 @@ static void checkWatertight(const char* name, const ntess::Mesh& mesh) {
 // ═════════════════════════════════════════════════════════════════════════════
 // Per-shape driver: bridge, mesh natively, run the four property checks.
 // ═════════════════════════════════════════════════════════════════════════════
-static void runSolid(const char* name, const TopoDS_Shape& occt, double defl, double volTol) {
+static void runSolid(const char* name, const TopoDS_Shape& occt, double defl, double volTol,
+                     int expectedPCurves) {
   OcctBridge bridge;
   nt::Shape native = bridge.bridge(occt);
 
@@ -456,6 +635,8 @@ static void runSolid(const char* name, const TopoDS_Shape& occt, double defl, do
   p.deflection = defl;
   ntess::Mesh mesh = ntess::SolidMesher{p}.mesh(native);
 
+  // Audit the bridge's CONSTRUCTION path before judging the mesher (see the scope note).
+  checkPCurveFidelity(name, occt, expectedPCurves);
   checkVerticesOnSurface(name, occt, mesh, defl);
   checkArea(name, occt, mesh, /*relTol=*/0.02);
   checkVolume(name, occt, mesh, volTol);
@@ -467,14 +648,17 @@ int main() {
   std::fflush(stdout);
 
   // Box: 6 planar faces ⇒ area/volume EXACT, watertight after welding.
-  runSolid("box", BRepPrimAPI_MakeBox(10.0, 20.0, 30.0).Shape(), 0.1, /*volTol=*/0.02);
+  runSolid("box", BRepPrimAPI_MakeBox(10.0, 20.0, 30.0).Shape(), 0.1, /*volTol=*/0.02,
+           /*expectedPCurves=*/24);
   // Cylinder: planar caps + cylindrical side sharing CURVED circular edges. The
   // shared per-edge discretization makes the cap↔side seam samples coincide, so the
   // solid now meshes WATERTIGHT (the gap this change closes); area/volume converge.
-  runSolid("cylinder", BRepPrimAPI_MakeCylinder(5.0, 12.0).Shape(), 0.05, /*volTol=*/0.02);
+  runSolid("cylinder", BRepPrimAPI_MakeCylinder(5.0, 12.0).Shape(), 0.05, /*volTol=*/0.02,
+           /*expectedPCurves=*/6);
   // Sphere: doubly-curved single face; u-seam + poles welded ⇒ watertight. A finer
   // deflection is used so the pole-region volume converges under 2%.
-  runSolid("sphere", BRepPrimAPI_MakeSphere(7.0).Shape(), 0.02, /*volTol=*/0.02);
+  runSolid("sphere", BRepPrimAPI_MakeSphere(7.0).Shape(), 0.02, /*volTol=*/0.02,
+           /*expectedPCurves=*/4);
 
   std::printf("== %d passed, %d failed ==\n", g_pass, g_fail);
   std::fflush(stdout);

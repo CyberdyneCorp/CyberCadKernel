@@ -147,6 +147,71 @@ inline bool degenerateVEdge(const SurfaceAdapter& S, double v, double scale, dou
   return spread < collapseFrac * scale;
 }
 
+// ── INTERIOR degenerate-v-row (collapsed INTERIOR row / freeform PINCH) detector ────
+//
+// The interior analog of `degenerateVEdge`: a chart singularity need not sit on a domain
+// EDGE — a freeform surface can carry a collapsed control row at an INTERIOR v (a full-
+// multiplicity interior knot whose row of control points is one 3D point): the surface
+// PINCHES to a point there, the spline analog of the CONE APEX (an "hourglass" / double-cone
+// authoring, ‖dU‖ → 0 at v = vPinch with a finite 3D point). The analytic apex is owned by
+// the pointwise witness + the signed-radius v-sign-flip map; a FREEFORM pinch has NO signed
+// radius (R ≥ 0), so crossing it the azimuth JUMPS by half a turn and the latitude REFLECTS
+// about vPinch — which needs the pinch row LOCATED. MEASURED before this detector existed the
+// marcher SILENTLY WRONG-TURNED at such a pinch: it glid across v = vPinch on the SAME
+// meridian, hopping from one intersection branch onto another (every node still on both
+// surfaces pointwise, but the emitted curve mixes two branches with a C0 corner at the
+// pinch — a silent-wrong, worse than a truncation).
+//
+// Point-only search: minimise the u-row 3D spread over v in the window
+// [v − searchBand, v + searchBand], clipped to stay ≥ edgeMargin away from BOTH v-edges (an
+// edge pole is owned by degenerateVEdge / the pointwise witness — the margin keeps the two
+// detectors disjoint, so the landed edge-pole slices stay bit-identical). Coarse scan +
+// shrinking refine (the freeformChartInvert scheme). TRUE iff the minimal row spread
+// collapses to essentially one point (< collapseFrac·scale, the degenerateVEdge bar) — a
+// genuine interior pinch, FALSE on any regular surface (every interior row has spread
+// O(scale)). A wrong verdict cannot fabricate geometry: the crossing that consumes it still
+// emits only nodes verified on both surfaces ≤ onSurfTol, else the march defers.
+inline double uRowSpreadAt(const SurfaceAdapter& S, double v) {
+  const ParamBox& dom = S.domain;
+  const int nu = 12;
+  const Point3 p0 = S.point(dom.u0, v);
+  double spread = 0.0;
+  for (int i = 1; i <= nu; ++i) {
+    const double u = dom.u0 + (dom.u1 - dom.u0) * (static_cast<double>(i) / nu);
+    spread = std::max(spread, math::norm(S.point(u, v) - p0));
+  }
+  return spread;
+}
+
+inline bool interiorDegenerateVRow(const SurfaceAdapter& S, double v, double scale,
+                                   double collapseFrac, double searchBand, double edgeMargin,
+                                   double& vPinch) {
+  const ParamBox& dom = S.domain;
+  const double lo = std::max(dom.v0 + edgeMargin, v - searchBand);
+  const double hi = std::min(dom.v1 - edgeMargin, v + searchBand);
+  if (!(lo < hi)) return false;  // window empty → too near an edge (edge poles owned elsewhere)
+  const int nv = 32;
+  double bv = lo, best = uRowSpreadAt(S, bv);
+  for (int i = 1; i <= nv; ++i) {
+    const double vc = lo + (hi - lo) * (static_cast<double>(i) / nv);
+    const double f = uRowSpreadAt(S, vc);
+    if (f < best) { best = f; bv = vc; }
+  }
+  double hv = (hi - lo) / nv;
+  for (int it = 0; it < 40; ++it) {
+    bool improved = false;
+    for (const double sv : {+hv, -hv}) {
+      const double vc = bv + sv;
+      if (vc < lo || vc > hi) continue;
+      const double f = uRowSpreadAt(S, vc);
+      if (f < best) { best = f; bv = vc; improved = true; }
+    }
+    if (!improved) hv *= 0.5;
+  }
+  vPinch = bv;
+  return best < collapseFrac * scale;
+}
+
 // ── transposed degenerate-u-edge (collapsed-COLUMN) pole detector ──────────────────
 //
 // The exact mirror of `degenerateVEdge` with the roles of U and V swapped: recognises a chart

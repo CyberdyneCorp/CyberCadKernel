@@ -402,9 +402,14 @@ struct MarchOptions {
   // within chartEdgeApproachV of the edge is ALSO treated as a collapse, so the crossing engages.
   // Both are looser than chartCollapseFrac and only widen WHERE the crossing fires — the crossing
   // still emits only nodes verified on both surfaces ≤ onSurfTol, else it defers. Circular poles /
-  // cone apexes / finite boundaries are unaffected (they never trip the degenerate-edge test). ──
-  double chartEdgeApproachV = -1.0;    ///< edge-pole band = this·|v-domain| around a degenerate v-edge (≤ 0 → 0.02)
-  double chartEdgeCollapseFrac = -1.0; ///< ‖dU‖ < this·‖dV‖ inside the edge band ⇒ non-circular pole (≤ 0 → 0.05)
+  // cone apexes / finite boundaries are unaffected (they never trip the degenerate-edge test).
+  // The SAME two knobs also gate the S4-e INTERIOR-PINCH witness (a freeform collapsed INTERIOR
+  // control row — the spline analog of the cone apex, which pre-slice the marcher glid across and
+  // SILENTLY WRONG-TURNED onto another intersection branch): a node within chartEdgeApproachV of a
+  // genuinely degenerate interior row with ‖dU‖ already < chartEdgeCollapseFrac·‖dV‖ engages the
+  // crossing, which reflects through the located pinch row (marching.cpp chartFarUV). ──
+  double chartEdgeApproachV = -1.0;    ///< degenerate-row band = this·|v-domain| (edge pole OR interior pinch) (≤ 0 → 0.02)
+  double chartEdgeCollapseFrac = -1.0; ///< ‖dU‖ < this·‖dV‖ inside that band ⇒ pole/pinch approach (≤ 0 → 0.05)
 };
 
 /// The full S3 result (design.md TraceSet): one WLine per distinct traced branch plus

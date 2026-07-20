@@ -734,12 +734,27 @@ chartsing::ChartCond chartCondAugmented(const SurfaceAdapter& S, double u, doubl
   // test misses (and whose crossing uses the wide reflected pin below).
   if (S.uPeriod > 0.0) return c;
   double edgeV;
+  const double band = t.chartEdgeApproachV * std::fabs(S.domain.dv());
   if (chartsing::degenerateVEdge(S, v, scale, t.chartCollapseFrac, edgeV)) {
     // Near the degenerate edge (within the fine approach band) AND ‖dU‖ already ≪ ‖dV‖ (the row is
     // measurably collapsing here) ⇒ a NON-CIRCULAR pole approach the pointwise test would miss.
     const double distToEdge = std::fabs(v - edgeV);
-    const double band = t.chartEdgeApproachV * std::fabs(S.domain.dv());
     if (distToEdge <= band && c.dU < t.chartEdgeCollapseFrac * c.dV) c.collapsed = true;
+  } else if (c.dU < t.chartEdgeCollapseFrac * c.dV) {
+    // INTERIOR pinch (S4-e interior-pinch slice): no degenerate v-EDGE nearby, but ‖dU‖ is already
+    // measurably collapsing — check for a collapsed INTERIOR row (a freeform pinch, the spline
+    // analog of the cone apex: chartsing::interiorDegenerateVRow, a SURFACE property, FALSE on any
+    // regular surface). Without this the marcher GLIDES across the pinch on the same meridian and
+    // SILENTLY WRONG-TURNS onto another intersection branch (measured: a C0-cornered curve mixing
+    // two branches, every node still on both surfaces pointwise — never even a deferral). The
+    // ‖dU‖ ratio pre-filter keeps the row search off the hot path; the edge margin (2·band) keeps
+    // this detector disjoint from the edge-pole witnesses, so the landed pole slices are
+    // bit-identical. Same approach band as the edge case; fires only within it.
+    double vPinch;
+    if (chartsing::interiorDegenerateVRow(S, v, scale, t.chartCollapseFrac, band, 2.0 * band,
+                                          vPinch) &&
+        std::fabs(v - vPinch) <= band)
+      c.collapsed = true;
   }
   return c;
 }
@@ -818,8 +833,19 @@ bool isPoleEdgeU(const SurfaceAdapter& S, double u) {
   return u <= d.u0 + eu || u >= d.u1 - eu;
 }
 
+// `ffPinch`/`pinchV` (S4-e interior-pinch slice): when the apex-analog collapse is a FREEFORM
+// INTERIOR pinch (a collapsed interior control row located by interiorDegenerateVRow at
+// v = pinchV), the analytic apex map does NOT apply — the analytic cone's v is a SIGNED radius
+// (apex at v = 0, azimuth preserved through the apex), whereas a freeform pinch has R ≥ 0: the
+// latitude REFLECTS about the pinch row (vOut = 2·pinchV − v) and the azimuth JUMPS by half a
+// turn, recovered POINT-ONLY by the same fixed-latitude far-longitude inversion the freeform
+// pole uses (freeformChartInvert at the reflected far latitude — held OFF the pinch row, so the
+// tiny parallel ring distinguishes the near vs far meridian). The corrector verifies the pick on
+// both surfaces; a wrong seed fails and the march defers. The analytic apex (uPeriod > 0) and
+// any freeform collapse WITHOUT a located pinch row keep the exact −v flip BIT-IDENTICAL.
 void chartFarUV(const SurfaceAdapter& S, bool poleCase, bool axisV, double u, double v,
-                const Point3& target, double& uOut, double& vOut) {
+                const Point3& target, bool ffPinch, double pinchV,
+                double& uOut, double& vOut) {
   if (poleCase && !axisV) {
     // U-COLLAPSE pole (the original sphere-of-revolution case). Sphere pole: the great arc
     // CONTINUES on the OPPOSITE meridian — jump the longitude by half a turn (poleContinuationU,
@@ -847,6 +873,11 @@ void chartFarUV(const SurfaceAdapter& S, bool poleCase, bool axisV, double u, do
     // freeform NURBS, uPeriod == 0); the corrector verifies the pick, else the march defers.
     vOut = chartsing::freeformChartInvertV(S, target, u);
     uOut = u;
+  } else if (ffPinch) {
+    // FREEFORM INTERIOR PINCH: latitude reflects about the pinch row; far azimuth recovered
+    // point-only at the reflected latitude (held off the degenerate row — well-posed).
+    vOut = 2.0 * pinchV - v;
+    uOut = chartsing::freeformChartInvert(S, target, vOut);
   } else {
     uOut = u;       // apex: azimuth unchanged (the straight line keeps its longitude)
     vOut = -v;      // far nappe: signed radius (hence v) flips sign through the apex
@@ -924,6 +955,31 @@ ChartCrossOut crossChartSingularity(const SurfaceAdapter& A, const SurfaceAdapte
     double pinDist = h;
     Point3 target = anchor + dirStar * h;
     const bool crossingStep = !crossed && hitCur.surf != ChartSurf::None;
+    bool ffPinch = false;      // freeform INTERIOR pinch (apex analog) located this crossing step?
+    double pinchV = 0.0;       // its collapsed-row latitude (interiorDegenerateVRow)
+    if (crossingStep && !poleCase && singular.uPeriod <= 0.0) {
+      // FREEFORM INTERIOR PINCH (S4-e interior-pinch slice). The apex-analog collapse on a
+      // freeform surface is a collapsed INTERIOR control row (no signed radius — the analytic
+      // −v flip cannot re-seed the far side). Locate the pinch row point-only and, exactly as
+      // the non-circular pole does, pin the crossing reproject at the REFLECTED far point
+      // (2·P_pinch − anchor): the witness fires a finite band BEFORE the pinch, so the far
+      // branch is ~2·(pinch − anchor) away — a tiny-h pin cannot reach it. Only ever WIDENS
+      // pinDist (never below the fine h), never weakens onSurfTol. The analytic apex
+      // (uPeriod > 0) never enters and stays bit-identical.
+      const SurfaceAdapter& sing = (hitCur.surf == ChartSurf::A) ? A : B;
+      const double vS = (hitCur.surf == ChartSurf::A) ? cur.v1 : cur.v2;
+      const double uS = (hitCur.surf == ChartSurf::A) ? cur.u1 : cur.u2;
+      const double band = t.chartEdgeApproachV * std::fabs(sing.domain.dv());
+      if (!axisV &&
+          chartsing::interiorDegenerateVRow(sing, vS, scale, 1e-2, band, 2.0 * band, pinchV)) {
+        ffPinch = true;
+        const Point3 pinch = sing.point(uS, pinchV);
+        const Point3 far{2.0 * pinch.x - anchor.x, 2.0 * pinch.y - anchor.y,
+                         2.0 * pinch.z - anchor.z};
+        const double d = math::dot(far - anchor, dirStar);
+        if (d > h) { pinDist = d; target = far; }  // only widen (never shrink below the fine h)
+      }
+    }
     if (crossingStep && poleCase) {
       const SurfaceAdapter& sing = (hitCur.surf == ChartSurf::A) ? A : B;
       if (sing.uPeriod <= 0.0) {  // freeform pole → reflect through the pole point for the far target
@@ -960,8 +1016,8 @@ ChartCrossOut crossChartSingularity(const SurfaceAdapter& A, const SurfaceAdapte
     else             advanceParams(reg, cur.u1, cur.v1, reg.uPeriod, dirStar * pinDist, reg.domain, seed.u1, seed.v1);
     if (crossingStep) {
       double uO, vO;
-      if (singularIsA) { chartFarUV(A, poleCase, axisV, cur.u1, cur.v1, target, uO, vO); seed.u1 = uO; seed.v1 = vO; }
-      else             { chartFarUV(B, poleCase, axisV, cur.u2, cur.v2, target, uO, vO); seed.u2 = uO; seed.v2 = vO; }
+      if (singularIsA) { chartFarUV(A, poleCase, axisV, cur.u1, cur.v1, target, ffPinch, pinchV, uO, vO); seed.u1 = uO; seed.v1 = vO; }
+      else             { chartFarUV(B, poleCase, axisV, cur.u2, cur.v2, target, ffPinch, pinchV, uO, vO); seed.u2 = uO; seed.v2 = vO; }
       crossed = true;
     }
 

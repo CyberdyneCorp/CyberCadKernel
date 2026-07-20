@@ -217,6 +217,40 @@ ssi::SurfaceAdapter nurbsTransposedSphere() {
   return ssi::makeNurbsAdapter(degU, degV, poles, w, nU, nV, kU, kV);
 }
 
+// A NURBS PINCHED DOUBLE CONE — the freeform analog of the analytic CONE APEX: an INTERIOR
+// collapsed control row. The 45° double cone x²+y² = z², z ∈ [−1,1], authored as a NURBS
+// surface of revolution (u∈[0,4] → 2π, the same rational full-circle sections as
+// nurbsUnitSphere) whose straight-line profile R = |z| passes through R = 0 at the INTERIOR
+// knot v=1 (multiplicity = degree, so the surface interpolates the collapsed row: every u at
+// v=1 maps to the single 3D pinch point, the origin). ‖dU‖ → 0 there with a finite point —
+// a genuine chart pinch in the v INTERIOR (NOT on a v-edge: both v-edges are full circles of
+// radius 1). uPeriod == 0 (no analytic azimuth map): crossing the pinch the azimuth JUMPS by
+// half a turn (R = |z| is unsigned, unlike the analytic cone's signed radius), so the analytic
+// apex map (keep u, flip v's SIGN) cannot re-seed the far nappe. Profile weights are uniform
+// along v, so each fixed-u profile is exactly the straight line R = |z| (collinear equal-spaced
+// quadratic Bézier controls), i.e. z = v − 1 exactly.
+ssi::SurfaceAdapter nurbsPinchedDoubleCone() {
+  const int degU = 2, degV = 2, nU = 9, nV = 5;
+  const double px[5] = {1.0, 0.5, 0.0, 0.5, 1.0};    // profile radius R = |z|
+  const double pz[5] = {-1.0, -0.5, 0.0, 0.5, 1.0};  // profile height z
+  std::vector<Point3> poles(static_cast<std::size_t>(nU) * nV);
+  std::vector<double> w(static_cast<std::size_t>(nU) * nV);
+  for (int k = 0; k < nU; ++k) {
+    const double ang = k * 45.0 * kPi / 180.0;
+    const bool corner = (k % 2) == 1;               // odd u-poles are the rational circle corners
+    const double wc = corner ? kC : 1.0, rs = corner ? (1.0 / kC) : 1.0;
+    const double ck = std::cos(ang), sk = std::sin(ang);
+    for (int j = 0; j < nV; ++j) {
+      const double R = px[j] * rs;
+      poles[static_cast<std::size_t>(k) * nV + j] = Point3{R * ck, R * sk, pz[j]};
+      w[static_cast<std::size_t>(k) * nV + j] = wc;  // uniform along v (exact straight profile)
+    }
+  }
+  std::vector<double> kU{0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4};
+  std::vector<double> kV{0, 0, 0, 1, 1, 2, 2, 2};   // interior knot v=1, mult 2 = deg → pinch row
+  return ssi::makeNurbsAdapter(degU, degV, poles, w, nU, nV, kU, kV);
+}
+
 }  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -601,6 +635,86 @@ CC_TEST(s4e_transposed_v_collapse_pole_full_loop) {
   }
   CC_CHECK(u1lo < 0.05);                         // reaches the u=0 (south) transposed pole
   CC_CHECK(u1hi > 1.95);                         // and the u=2 (north) transposed pole
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (i) S4-e INTERIOR PINCH — a FREEFORM collapsed INTERIOR control row (the spline analog of
+// the CONE APEX: a NURBS "pinched double cone", R = |z| with the pinch row interpolated at the
+// interior knot v=1). The plane x=0 meets it in the two straight lines y = ±z crossing at the
+// pinch. MEASURED BEFORE this slice the marcher SILENTLY WRONG-TURNED there: it glid across
+// v=1 on the SAME meridian (u stays 1), hopping from the branch y=+z onto the OTHER branch
+// y=−z — every node still on both surfaces pointwise (nothing deferred, nothing flagged), but
+// the emitted curve mixes two intersection branches with a C0 corner at the pinch (max
+// |y−z| ≈ 2 on the far half). Neither the pointwise witness (its 1e-3 band is overstepped)
+// nor the degenerate-v-EDGE augmentation (the pinch is INTERIOR; both v-edges are full
+// circles) could see it — a silent-wrong, worse than a truncation. AFTER: the interior-
+// degenerate-row witness (chartsing::interiorDegenerateVRow) fires on approach, the crossing
+// reflects through the located pinch row (latitude 2·vPinch − v, azimuth recovered point-only
+// on the far meridian) and the TANGENT-CONTINUOUS branch y=+z is traced straight through the
+// pinch onto the far nappe (u jumps 1 → 3, the antipodal meridian), every node on both
+// surfaces AND on the straight line |y−z| ≈ 0. The analytic cone apex (uPeriod > 0, signed
+// radius) keeps its exact −v flip bit-identical — see (b).
+// ─────────────────────────────────────────────────────────────────────────────
+CC_TEST(s4e_freeform_interior_pinch_straight_through) {
+  const double kTwoSqrt2 = 2.0 * std::sqrt(2.0);  // length of the full line y=z, z ∈ [−1,1]
+  auto A = nurbsPinchedDoubleCone();
+  auto B = planeX0(ssi::ParamBox{-3.0, 3.0, -3.0, 3.0});
+  // Seed on the upper-nappe line y=+z (azimuth 90°, u=1 — interior, off the clamped u seam)
+  // at v=1.8 → z=0.8: world (0, 0.8, 0.8); plane x=0 params (u=y, v=z).
+  const Point3 sp = A.point(1.0, 1.8);
+  auto seeds = handSeed(1.0, 1.8, sp.y, sp.z, sp);
+  const double tol = 1e-6;
+
+  // BEFORE — chart switch OFF: the measured SILENT WRONG-TURN. The march runs the whole v
+  // range on the SAME meridian (u1 ≡ 1), every node pointwise on both surfaces — but past the
+  // pinch that meridian is the OTHER branch y=−z: the curve turned 90° at the pinch.
+  ssi::MarchOptions off;
+  auto before = ssi::trace_from_seeds(A, B, seeds, off);
+  CC_CHECK(before.singularitiesCrossed == 0);
+  CC_CHECK(before.curveCount() == 1);
+  if (before.curveCount() == 1) {
+    const ssi::WLine& w = before.lines[0];
+    CC_CHECK(w.status == ssi::TraceStatus::BoundaryExit);
+    double u1hi = -1e9, bend = 0.0;
+    for (const auto& n : w.points) {
+      CC_CHECK(distToDoubleCone45(n.point) < tol);   // pointwise ON the locus — that is what
+      CC_CHECK(distToPlaneX0(n.point) < tol);        // makes the wrong turn SILENT
+      u1hi = std::max(u1hi, n.u1);
+      bend = std::max(bend, std::fabs(n.point.y - n.point.z));
+    }
+    CC_CHECK(u1hi < 1.5);        // never leaves the seed meridian (the far branch is u ≈ 3)
+    CC_CHECK(bend > 1.5);        // the far half is y = −z: NOT the seeded branch y = +z
+  }
+
+  // AFTER — chart switch ON: the pinch is crossed TANGENT-CONTINUOUSLY onto the far nappe.
+  ssi::MarchOptions on;
+  on.enableChartSingularities = true;
+  auto tr = ssi::trace_from_seeds(A, B, seeds, on);
+
+  CC_CHECK(tr.curveCount() == 1);
+  if (tr.curveCount() != 1) return;
+  const ssi::WLine& w = tr.lines[0];
+  CC_CHECK(w.status == ssi::TraceStatus::BoundaryExit);  // the open line, boundary-to-boundary
+  CC_CHECK(tr.nearTangentGaps == 0);            // the pinch was crossed, not deferred
+  CC_CHECK(tr.singularitiesCrossed >= 1);       // the interior pinch stepped across
+  CC_CHECK(w.chartSingularCrossed >= 1);
+  CC_CHECK(static_cast<int>(w.points.size()) < 2000);  // bounded (no crawl)
+
+  double v1lo = 1e9, v1hi = -1e9, u1hi = -1e9;
+  for (const auto& n : w.points) {
+    CC_CHECK(distToDoubleCone45(n.point) < tol);        // every node on BOTH surfaces
+    CC_CHECK(distToPlaneX0(n.point) < tol);             // (no fabricated pinch point)
+    CC_CHECK(std::fabs(n.point.y - n.point.z) < tol);   // and on the STRAIGHT branch y = +z
+    v1lo = std::min(v1lo, n.v1);
+    v1hi = std::max(v1hi, n.v1);
+    u1hi = std::max(u1hi, n.u1);
+  }
+  CC_CHECK(v1lo < 0.05);                        // both nappes: z runs ≈ −1 …
+  CC_CHECK(v1hi > 1.95);                        // … ≈ +1
+  CC_CHECK(u1hi > 2.5);                         // the far nappe sits on the ANTIPODAL meridian u ≈ 3
+  const double len = polylineLength(w);
+  CC_CHECK(len <= kTwoSqrt2 + 1e-3);            // never longer than the true line
+  CC_CHECK(len >= 0.98 * kTwoSqrt2);            // the FULL line (not a truncated or bent half)
 }
 
 int main() { return cctest::run_all(); }

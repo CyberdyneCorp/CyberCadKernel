@@ -169,7 +169,7 @@ gap, within the deflection/step tol).
 - **Unlocks:** S5 curved booleans — the `TraceSet` (WLines with (u1,v1,u2,v2) per node) is
   its input contract.
 
-### S4 — Tangent / degeneracy robustness · ◐ CLASSIFICATION LAYER (S4-a/b) + MARCHING-CORE SLICES (S4-c graze, S4-d branch points, S4-e sphere-pole/cone-apex + freeform (circular + asymmetric) chart singularities, S4-f robust closure + self-intersection guard + completeness critic) DONE AT THE BAR; S4-d general branches + S4-e higher-order/edge-seam + S4-f general topology repair pending
+### S4 — Tangent / degeneracy robustness · ◐ CLASSIFICATION LAYER (S4-a/b) + MARCHING-CORE SLICES (S4-c graze, S4-d branch points, S4-e sphere-pole/cone-apex + freeform (circular + asymmetric + transposed + interior-pinch) chart singularities, S4-f robust closure + self-intersection guard + completeness critic) DONE AT THE BAR; S4-d general branches + S4-e higher-order/edge-seam + S4-f general topology repair pending
 Near-tangent stepping (n₁×n₂→0: step control, higher-order predictor),
 coincident/overlapping-surface detection, branch points & singularities,
 self-intersection guards. **This is the moat** — OCCT's decades of tuning. Lands
@@ -533,7 +533,7 @@ already cancels odd-order terms, κ at B is O(δ²)-accurate ~1e-7) and is NOT s
 - **Unlocks:** **Steinmetz is now unblocked** natively; the multi-arm `TraceSet` +
   `BranchNode` connectivity is available to S5 curved booleans for self-crossing loci.
 
-#### S4-e — Singularities · ◐ FOUR HONEST SLICES DONE AT THE BAR (analytic sphere-pole + cone-apex crossed; FREEFORM circular parametric pole crossed; ASYMMETRIC / non-circular freeform pole crossed; TRANSPOSED V-collapse pole (‖dV‖→0 on a u-edge) crossed; curve cusp declined by IFT; higher-order + seam degeneracies remain)
+#### S4-e — Singularities · ◐ FIVE HONEST SLICES DONE AT THE BAR (analytic sphere-pole + cone-apex crossed; FREEFORM circular parametric pole crossed; ASYMMETRIC / non-circular freeform pole crossed; TRANSPOSED V-collapse pole (‖dV‖→0 on a u-edge) crossed; FREEFORM INTERIOR PINCH (collapsed interior row — the apex analog, previously a SILENT wrong-branch turn) crossed; curve cusp declined by IFT; higher-order + seam degeneracies remain)
 A **chart (removable) singularity** is where ONE surface's own `(u,v)` parametrization
 degenerates while its 3D point + normal stay finite: a **sphere parametric pole**
 (`v = ±π/2`, where `‖dU‖ = R·cos v → 0`) or a **cone apex** (signed radius
@@ -679,6 +679,53 @@ NOT even deferred). This slice makes the whole S4-e path TRANSPOSE-SYMMETRIC, st
   surface never trips `collapsedV`; the plane / cylinder-cap / cone-apex are untouched). Regression:
   `s4e_transposed_v_collapse_pole_full_loop`.
 
+**Fifth slice — FREEFORM INTERIOR PINCH (this change, gated `CYBERCAD_HAS_NUMSCI`, additive):**
+all four prior slices put the collapsed row/column on a DOMAIN EDGE (a pole) or rely on the
+analytic cone's SIGNED radius (the apex, `v → −v`). A freeform surface can instead pinch at an
+INTERIOR v: a full-multiplicity interior knot whose control row is one 3D point (an "hourglass" /
+double-cone authoring, `R = |z| ≥ 0` — the spline analog of the cone apex, `‖dU‖ → 0` at
+`v = vPinch` with a finite point). **MEASURED before (the witness fixture: a NURBS pinched double
+cone — the exact 45° cone `x²+y² = z²`, `z∈[−1,1]`, authored as a NURBS revolution with the pinch
+row interpolated at interior knot `v=1` — `∩` the plane `x=0`, whose locus is the two straight
+lines `y = ±z` crossing at the pinch): the marcher SILENTLY WRONG-TURNED at the pinch — it glid
+across `v=1` on the SAME meridian (`u ≡ 1`), hopping from the seeded branch `y=+z` onto the OTHER
+branch `y=−z`. Every node still verifies on both surfaces pointwise (`onSurf ≈ 5e-10`), so nothing
+deferred and nothing flagged — the emitted curve mixes two intersection branches with a C0 corner
+at the pinch (max `|y−z| ≈ 2`), a DISAGREED-class silent-wrong, worse than a truncation — and the
+S4-e switch ON behaved identically (the pointwise witness's 1e-3 band is overstepped by the finite
+march step, and the degenerate-v-EDGE augmentation cannot see an INTERIOR pinch: both v-edges are
+full circles).** Two strictly-additive, freeform-only (`uPeriod == 0`), default-gated pieces:
+- **Interior degenerate-row witness (`chartsing::interiorDegenerateVRow` + the
+  `chartCondAugmented` interior branch)** — the collapse is recognised as a SURFACE property of an
+  INTERIOR v-row: point-only minimisation of the u-row 3D spread over v in the approach band
+  (coarse scan + shrinking refine), TRUE iff the minimal spread collapses to essentially one point
+  (`< collapseFrac·scale`, the degenerateVEdge bar) — FALSE on any regular surface. Gated behind
+  the cheap `‖dU‖ < chartEdgeCollapseFrac·‖dV‖` pre-filter (off the hot path) and clipped
+  `≥ 2·band` away from both v-edges, so the landed edge-pole witnesses stay disjoint and
+  bit-identical; skipped entirely on analytic surfaces (`uPeriod > 0`).
+- **Pinch-reflected crossing + far map** — on the crossing step, `crossChartSingularity` pins the
+  fixed-plane reproject at the along-`t★` distance to the point REFLECTED through the located
+  pinch point (`2·P_pinch − anchor`, only ever WIDENING the pin, exactly the asymmetric-pole
+  idiom), and `chartFarUV` re-seeds the far side by REFLECTING the latitude about the pinch row
+  (`v_out = 2·vPinch − v`) and recovering the far azimuth POINT-ONLY (`freeformChartInvert` at the
+  reflected latitude — a freeform pinch has no signed radius, so crossing it the azimuth jumps by
+  half a turn, which the analytic `−v` flip cannot re-seed). The analytic apex keeps its exact
+  `−v` flip BIT-IDENTICAL; the verify-or-defer guard is unchanged (a wrong pick fails on both
+  surfaces and the march defers).
+
+**At the bar (host, NUMSCI ON):** the pinched-double-cone fixture now traces the seeded branch
+`y=+z` TANGENT-CONTINUOUSLY straight through the pinch onto the far nappe — the azimuth jumps to
+the antipodal meridian (`u: 1 → 3`), `singularitiesCrossed = 1`, `nearTangentGaps = 0`, one open
+boundary-to-boundary line, `len = 2.8283` vs the true `2√2 = 2.8284`, `v ∈ [0, 2]` (both nappes),
+every node on both surfaces ≤ 1e-6 AND on the straight line (`|y−z| ≤ 1e-6` — branch-true, no
+corner). All nine prior S4-e cases + the S4-c/S4-d controls stay green (the interior witness needs
+a genuinely collapsed interior row + the ratio pre-filter, so it never fires on them); the chart
+switch OFF keeps the measured wrong-turn byte-identical (pinned in the regression as the honest
+BEFORE map). Regression: `s4e_freeform_interior_pinch_straight_through`. Still deferred within
+this sub-family: a TRANSPOSED interior pinch (collapsed interior u-COLUMN — the `axisV` mirror,
+constructible the same way) and an interior pinch closer than `2·chartEdgeApproachV` to a v-edge
+(the disjointness margin; it defers the honest way).
+
 **Curve cusp — DECLINED (no dead code):** a cusp of the intersection curve (arclength velocity
 → 0) requires `‖n_A×n_B‖ → 0`; by the implicit-function theorem, with regular charts AND healthy
 pair sine the intersection is a smooth regular curve, so "a curve cusp with regular charts and
@@ -688,11 +735,13 @@ standalone single-surface cusp witness would be unreachable dead code, so NONE i
 cusps route to the existing S4-c/S4-d/OCCT path.
 
 - **Honest scope / risk:** the two **analytic chart singularities** (sphere pole, cone apex), the
-  **freeform circular parametric pole** (collapsed spline/NURBS row), and now the **asymmetric
+  **freeform circular parametric pole** (collapsed spline/NURBS row), the **asymmetric
   (non-circular / elliptical) freeform pole** (via the degenerate-`v`-edge witness + reflected-far
-  crossing pin), and now the **transposed (V-collapse, `‖dV‖→0` on a `u`-edge) pole** (via the
-  transpose-symmetric witness + `u`-edge reflect) are crossed, each verified node-by-node on both
-  surfaces + on the OCCT locus. Still
+  crossing pin), the **transposed (V-collapse, `‖dV‖→0` on a `u`-edge) pole** (via the
+  transpose-symmetric witness + `u`-edge reflect), and now the **freeform INTERIOR pinch**
+  (collapsed interior row — via the interior-degenerate-row witness + pinch-reflected far map,
+  fixing a MEASURED silent wrong-branch turn) are crossed, each verified node-by-node on both
+  surfaces + on the host numeric locus (the analytic slices also on the OCCT locus). Still
   DEFERRED → OCCT (reported, never faked): **higher-order / seam** degeneracies (and any
   asymmetric pole so extreme its reflected-far reproject does not verify — it defers the same
   honest way); a full brep **degenerate-pole B-spline SOLID

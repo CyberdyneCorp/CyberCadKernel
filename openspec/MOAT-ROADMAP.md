@@ -509,7 +509,7 @@ resolution. The curve *pipeline* exists; this is the *robustness* on adversarial
       prevents itself from swallowing a tangency, it does not prevent `detectOverlap` from doing
       so); and the reach is **Bézier-only** (rationals must return +∞ — the difference of two
       rationals is not a Bézier of pole differences, so the theorem does not hold).
-    - ✅ **SEPARATING-SLAB PRUNE — LANDED.** The AABB prune in `subdivide` is AXIS-ALIGNED, so on a
+    - ✅ **SEPARATING-SLAB PRUNE — LANDED** (`4338db5`; openspec `moat-a2-ssi-slab-prune`). The AABB prune in `subdivide` is AXIS-ALIGNED, so on a
       pair separated along no coordinate axis it never fires and the descent enumerates the whole
       4D box product. `slabSeparated` (`ssi/patch_gap.h`) projects both EXACT de Casteljau sub-nets
       onto ONE oriented direction — A's midpoint normal — and prunes when the projected intervals

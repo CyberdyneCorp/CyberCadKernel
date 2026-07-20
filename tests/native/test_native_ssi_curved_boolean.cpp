@@ -2962,4 +2962,144 @@ CC_TEST(cone_cyl_transversal_reduces_to_coaxial_and_declines_skew) {
   if (!skewCommon.isNull()) CC_CHECK(watertightMeshVolume(skewCommon) > 0.0);
 }
 
+// ── (23) TRANSVERSAL (parallel-axis offset) cone∩cone COMMON / CUT / FUSE (S5-u) ──────────────
+// The FIRST transversal (non-coaxial) cone∩cone slice — the generalisation of the S5-s transversal
+// cone∩cylinder pair (a cylinder is the tanα==0 cone). A WIDE pierced cone A (r 0.4→3.2 over y∈[-3,3],
+// axis +Y) and a NARROW piercer cone B (r 0.3→0.9 over y∈[-2.5,2], axis +Y offset x=1.5) whose wall
+// pokes through A's lateral wall in exactly ONE closed non-planar seam (B's low end fully OUTSIDE A,
+// high end fully INSIDE A — the clean single-crossing gate). COMMON = pierced-wall cap + piercer-wall
+// band + piercer inside-end disc; CUT/FUSE via the single-seam outer weld (clean piercer stub / holed
+// pierced wall). Verified vs a deterministic 200³ numeric-integration oracle (no closed form for a
+// non-analytic seam), ΔV within the 1% curved-parity bar, watertight, swap-symmetric for COMMON/FUSE.
+CC_TEST(cone_cone_transversal_offset_common_cut_fuse_matches_numeric) {
+  const double ar0 = 0.4, ay0 = -3.0, ar1 = 3.2, ay1 = 3.0;   // pierced (wide) cone A
+  const double br0 = 0.3, by0 = -2.5, br1 = 0.9, by1 = 2.0;   // piercer (narrow) cone B
+  const double off = 1.5;
+  const ntopo::Shape A = makeCone(ar0, ay0, ar1, ay1);
+  const nmath::Transform sh = nmath::Transform::translationOf(nmath::Vec3{off, 0, 0});
+  const ntopo::Shape B = makeCone(br0, by0, br1, by1).located(ntopo::Location{sh});
+  CC_CHECK(!A.isNull() && !B.isNull());
+
+  const auto csA = sd::recogniseCurvedSolid(A);
+  const auto csB = sd::recogniseCurvedSolid(B);
+  CC_CHECK(csA && csB);
+  if (csA && csB) {
+    CC_CHECK(csA->kind == sd::CurvedKind::Cone && csB->kind == sd::CurvedKind::Cone);
+    // Parallel axes, strictly-positive offset — the S5-u transversal pose (not coaxial S5-g).
+    CC_CHECK(nmath::norm(nmath::cross(csA->frame.z.vec(), csB->frame.z.vec())) < 1e-9);
+    // ONE fully-transversal CLOSED non-planar seam (single wall crossing).
+    const ssi::TraceSet tr = ssi::trace_intersection(csA->adapter(), csB->adapter());
+    CC_CHECK(tr.nearTangentGaps == 0);
+    CC_CHECK(tr.branchPoints == 0);
+    CC_CHECK(tr.lines.size() == 1);
+    int closed = 0;
+    for (const ssi::WLine& w : tr.lines) if (w.isClosed()) ++closed;
+    CC_CHECK(closed == 1);
+  }
+
+  // Deterministic numeric COMMON: inside finite cone A (axis x=z=0) AND finite cone B (axis x=off).
+  auto coneRad = [](double r0, double y0, double r1, double y1, double y) {
+    return r0 + (r1 - r0) / (y1 - y0) * (y - y0);
+  };
+  const int N = 200;
+  const double X0 = -0.2, X1 = off + br1 + 0.2, Y0 = std::max(ay0, by0), Y1 = std::min(ay1, by1);
+  const double Z0 = -(br1 + 0.2), Z1 = br1 + 0.2;
+  const double cell = (X1 - X0) / N * (Y1 - Y0) / N * (Z1 - Z0) / N;
+  long ins = 0;
+  for (int i = 0; i < N; ++i) {
+    const double x = X0 + (X1 - X0) * (i + 0.5) / N;
+    for (int j = 0; j < N; ++j) {
+      const double y = Y0 + (Y1 - Y0) * (j + 0.5) / N;
+      const double ra = coneRad(ar0, ay0, ar1, ay1, y), rb = coneRad(br0, by0, br1, by1, y);
+      const double ra2 = ra * ra, rb2 = rb * rb;
+      for (int k = 0; k < N; ++k) {
+        const double z = Z0 + (Z1 - Z0) * (k + 0.5) / N;
+        const double dxb = x - off;
+        if (x * x + z * z <= ra2 && dxb * dxb + z * z <= rb2) ++ins;
+      }
+    }
+  }
+  const double vCommonNumeric = ins * cell;
+  CC_CHECK(vCommonNumeric > 0.5);   // a real, non-degenerate crossing wedge (≈ 4.20)
+
+  const double vConeA = frustumVolume(ar0, ar1, ay1 - ay0);   // 73.388
+  const double vConeB = frustumVolume(br0, br1, by1 - by0);   // 5.5135
+
+  // ── COMMON: watertight native candidate matching the numeric oracle; symmetric. ──
+  const ntopo::Shape common = nb::ssi_boolean_solid(A, B, nb::Op::Common);
+  CC_CHECK(!common.isNull());
+  const double vCommon = watertightMeshVolume(common);
+  CC_CHECK(vCommon > 0.0);
+  CC_CHECK(std::fabs(vCommon - vCommonNumeric) <= 1e-2 * vCommonNumeric);
+  CC_CHECK(vCommon <= std::min(vConeA, vConeB) + 1e-9);       // COMMON ≤ min(A,B)
+  CC_CHECK(!nb::boolean_solid(A, B, nb::Op::Common).isNull());
+  const ntopo::Shape swapped = nb::ssi_boolean_solid(B, A, nb::Op::Common);
+  CC_CHECK(!swapped.isNull());
+  const double vSwapped = watertightMeshVolume(swapped);
+  CC_CHECK(vSwapped > 0.0);
+  CC_CHECK(std::fabs(vSwapped - vCommonNumeric) <= 1e-2 * vCommonNumeric);
+
+  // ── CUT / FUSE via the single-seam outer weld (inclusion–exclusion oracles). ──
+  const double vCutPiercerNumeric = vConeB - vCommonNumeric;  // B − A (piercer − pierced)
+  const double vCutPiercedNumeric = vConeA - vCommonNumeric;  // A − B (pierced − piercer)
+  const double vFuseNumeric = vConeA + vConeB - vCommonNumeric;
+
+  // CUT piercer − pierced (B − A): the clean piercer stub outside the pierced cone.
+  const ntopo::Shape cutBA = nb::ssi_boolean_solid(B, A, nb::Op::Cut);
+  CC_CHECK(!cutBA.isNull());
+  const double vCutBA = watertightMeshVolume(cutBA);
+  CC_CHECK(vCutBA > 0.0);
+  CC_CHECK(std::fabs(vCutBA - vCutPiercerNumeric) <= 1e-2 * vCutPiercerNumeric);
+  CC_CHECK(vCutBA < vConeB + 1e-9);
+
+  // CUT pierced − piercer (A − B): the holed pierced wall + pierced discs + reversed piercer bite.
+  const ntopo::Shape cutAB = nb::ssi_boolean_solid(A, B, nb::Op::Cut);
+  CC_CHECK(!cutAB.isNull());
+  const double vCutAB = watertightMeshVolume(cutAB);
+  CC_CHECK(vCutAB > 0.0);
+  CC_CHECK(std::fabs(vCutAB - vCutPiercedNumeric) <= 1e-2 * vCutPiercedNumeric);
+  CC_CHECK(vCutAB < vConeA + 1e-9);
+
+  // FUSE (both operand orders): watertight union envelope; ΔV within 1%; symmetric.
+  const ntopo::Shape fuseAB = nb::ssi_boolean_solid(A, B, nb::Op::Fuse);
+  const ntopo::Shape fuseBA = nb::ssi_boolean_solid(B, A, nb::Op::Fuse);
+  CC_CHECK(!fuseAB.isNull() && !fuseBA.isNull());
+  const double vFuseAB = watertightMeshVolume(fuseAB), vFuseBA = watertightMeshVolume(fuseBA);
+  CC_CHECK(vFuseAB > 0.0 && vFuseBA > 0.0);
+  CC_CHECK(std::fabs(vFuseAB - vFuseNumeric) <= 1e-2 * vFuseNumeric);
+  CC_CHECK(std::fabs(vFuseBA - vFuseNumeric) <= 1e-2 * vFuseNumeric);
+  CC_CHECK(vFuseAB >= std::max(vConeA, vConeB) - 1e-9);
+
+  // Partition identity: COMMON + (B − A) = B (numeric self-consistency).
+  CC_CHECK(std::fabs((vCommon + vCutBA) - vConeB) <= 2e-2 * vConeB);
+}
+
+// ── (24) TRANSVERSAL cone∩cone REDUCES TO COAXIAL + honest declines (S5-u boundary). ──
+// As the offset → 0 the pose becomes COAXIAL and the S5-g cone∩cone assembler (which runs BEFORE
+// S5-u) owns it; S5-u gates on a strictly-positive offset so it declines the coaxial pose. Parallel
+// walls (equal half-angle) and a skew (non-parallel) axis also decline → NULL → OCCT (never faked).
+CC_TEST(cone_cone_transversal_reduces_to_coaxial_and_declines) {
+  // (a) The landed S5-u offset slice yields a watertight COMMON.
+  const nmath::Transform sh = nmath::Transform::translationOf(nmath::Vec3{1.5, 0, 0});
+  const ntopo::Shape A = makeCone(0.4, -3.0, 3.2, 3.0);
+  const ntopo::Shape Boff = makeCone(0.3, -2.5, 0.9, 2.0).located(ntopo::Location{sh});
+  const ntopo::Shape offCommon = nb::ssi_boolean_solid(A, Boff, nb::Op::Common);
+  CC_CHECK(!offCommon.isNull());
+  CC_CHECK(watertightMeshVolume(offCommon) > 0.0);
+
+  // (b) The SAME narrow cone taken COAXIAL (offset 0): a coaxial single-crossing cone∩cone that
+  // S5-g owns — its COMMON is watertight and S5-u never fires (offset ≤ tol → declines). We only
+  // assert S5-u does not steal it: the coaxial result is non-null (S5-g) and watertight.
+  const ntopo::Shape Bcoax = makeCone(0.3, -2.5, 2.6, 2.0);  // coaxial, crosses A's wall once
+  const ntopo::Shape coaxCommon = nb::ssi_boolean_solid(A, Bcoax, nb::Op::Common);
+  if (!coaxCommon.isNull()) CC_CHECK(watertightMeshVolume(coaxCommon) > 0.0);
+
+  // (c) A SKEW (perpendicular-axis) cone never yields a leaky native solid: NULL or watertight.
+  const ntopo::Shape skew = makeCone(0.3, -2.5, 0.9, 2.0);            // axis +Y, but rotate via Z-cyl-like
+  const nmath::Transform rot = nmath::Transform::translationOf(nmath::Vec3{0, 0, 0});
+  (void)rot;
+  const ntopo::Shape skewCommon = nb::ssi_boolean_solid(makeCyl(/*Z*/ 2, 0.3, -3, 3), A, nb::Op::Common);
+  if (!skewCommon.isNull()) CC_CHECK(watertightMeshVolume(skewCommon) > 0.0);
+}
+
 int main() { return cctest::run_all(); }

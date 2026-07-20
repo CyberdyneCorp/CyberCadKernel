@@ -824,7 +824,7 @@ S4-f DETECTS + REPORTS + traces-through, it does not repair topology.
 
 Archived change `openspec/changes/archive/2026-07-05-add-native-ssi-s4f-completeness`.
 
-### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g/h/i/j landed + S5-k FIRST TRANSVERSAL (non-coaxial) slice + S5-l/m/n/o TORUS surface family (CONE surface family opened — coaxial cone∩cylinder, single- AND two-circle cone∩sphere, coaxial cone∩cone (frustum AND apex-to-apex hourglass), AND two-circle cylinder∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; S5-k lands the FIRST non-coaxial pose — the offset cylinder∩sphere, COMMON/CUT/FUSE now COMPLETE 3/3 native via the TRANS-BAND seam-band shell (`appendSphereOuterZoneBetweenSeams` tiles the sphere outer zone on-surface, ΔV <0.1%); S5-l opens the TORUS family — coaxial torus∩cylinder COMMON/FUSE/CUT COMPLETE 3/3 native; S5-m extends it — coaxial torus∩sphere (sphere at torus centre) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-n extends it again — coaxial torus∩cone (oblique-chord generalisation of S5-l) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-o closes the family with the FIRST curved∩curved pair where BOTH operands are tori — coaxial torus∩torus COMMON/FUSE/CUT COMPLETE 3/3 native; S5-p lands the SECOND transversal (non-coaxial) slice and the FIRST transversal TORUS pair — the offset (axis-parallel) torus∩cylinder COMMON/CUT/FUSE now COMPLETE 3/3 native (the KEY finding: the two seams are LOCALIZED in the torus (u,v) — u∈[−0.2,0.2], NOT azimuth-wrapping like the sphere family — so the outer zone is the FULL torus tube MINUS the two seam cap patches, tiled on-surface by a (u,v)-grid + loop-zipper hole-split, ΔV <0.8%; NOT a sphere-style between-seams band); S5-q lands the THIRD transversal (non-coaxial) slice and the FIRST transversal CONE pair — the offset cone∩sphere, COMMON/CUT/FUSE now COMPLETE 3/3 native via the SAME TRANS-BAND seam-band shell about the cone axis (ΔV <0.15%); S5-r lands the FIRST curved∩PLANAR-half-space slice — the coaxial torus∩(axis-perpendicular plane) COMMON+CUT as a Pappus-exact revolution (tube-arc + annulus cap), FUSE + the plane-parallel/degenerate poses honest-decline; S5-s lands the FOURTH transversal (non-coaxial) slice and the FIRST transversal cone∩cylinder pair — the offset (axis-parallel) cone∩cylinder COMMON/CUT/FUSE now COMPLETE 3/3 native (a SINGLE-SEAM pose: a parallel-axis cone∩cyl crosses in ONE loop because the cone wall is monotonic; COMMON = cone cap + cyl band + end disc; cyl−cone = a clean seam-driven cyl stub (reversed cone cap); cone−cyl + FUSE = the FULL cone wall MINUS the seam cap (a HOLED cone surface, the SAME (u,v)-grid + loop-zipper hole-split as S5-p, in AXIAL cone coords) + cone discs + reversed cyl bite, ΔV <0.7%); BOOL-COMPLETE lands the NATIVE TORUS PRIMITIVE — `construct::build_torus` + the ADDITIVE facade `cc_torus` emit a bare periodic `Kind::Torus` face (a revolve builds B-spline bands that decline), so the coaxial torus∩{cyl/sphere/cone/torus} families now fire in the PURE-NATIVE path from a SHIPPING primitive (not just the in-test fixture); it also closes two order-sensitive reverse CUTs — `cyl−torus` (grooved cylinder, `buildCylTorusCut`) and `sphere−cyl` (tunnelled sphere, `buildSphereCyl2Cut`); BOOL-TAIL then lands the LAST three reverse CUTs the audit flagged — coaxial `sphere−torus` (grooved ball, `buildSphereTorusCut`) + coaxial `cone−torus` (grooved cone, `buildConeTorusCut`) via the hole-split-of-the-outer-surface + reversed-inner-tube-arc idiom, and transversal `cyl−torus` (lens-bitten cylinder, `buildTransCylTorusCut`) via the reversed tube inner-cap patches — all watertight, partition-correct, ΔV <1%, DISAGREED=0, so the ELEMENTARY curved boolean (cyl/sphere/cone/torus/plane, coaxial+transversal, COMMON/CUT/FUSE incl. order-sensitive reverses) is now FULLY complete on the pure-native path); S5-t closes the last coaxial sphere-minuend reverse CUT the audit flagged — `sphere − cone` on BOTH coaxial poses (single-circle notched ball `buildSphereConeCut` + two-circle conical tunnel `buildSphereCone2Cut`, the tanα≠0 sibling of `buildSphereCyl2Cut`), reusing the S5-f/S5-h setups verbatim, ΔV <0.1%, watertight, DISAGREED=0
+### S5 — Curved booleans via SSI (the payoff) · ◐ NATIVE SLICES S5-a/b/c/d/e/f/g/h/i/j landed + S5-k FIRST TRANSVERSAL (non-coaxial) slice + S5-l/m/n/o TORUS surface family (CONE surface family opened — coaxial cone∩cylinder, single- AND two-circle cone∩sphere, coaxial cone∩cone (frustum AND apex-to-apex hourglass), AND two-circle cylinder∩sphere op-sets COMMON/FUSE/CUT now COMPLETE 3/3 native; S5-k lands the FIRST non-coaxial pose — the offset cylinder∩sphere, COMMON/CUT/FUSE now COMPLETE 3/3 native via the TRANS-BAND seam-band shell (`appendSphereOuterZoneBetweenSeams` tiles the sphere outer zone on-surface, ΔV <0.1%); S5-l opens the TORUS family — coaxial torus∩cylinder COMMON/FUSE/CUT COMPLETE 3/3 native; S5-m extends it — coaxial torus∩sphere (sphere at torus centre) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-n extends it again — coaxial torus∩cone (oblique-chord generalisation of S5-l) COMMON/FUSE/CUT COMPLETE 3/3 native; S5-o closes the family with the FIRST curved∩curved pair where BOTH operands are tori — coaxial torus∩torus COMMON/FUSE/CUT COMPLETE 3/3 native; S5-p lands the SECOND transversal (non-coaxial) slice and the FIRST transversal TORUS pair — the offset (axis-parallel) torus∩cylinder COMMON/CUT/FUSE now COMPLETE 3/3 native (the KEY finding: the two seams are LOCALIZED in the torus (u,v) — u∈[−0.2,0.2], NOT azimuth-wrapping like the sphere family — so the outer zone is the FULL torus tube MINUS the two seam cap patches, tiled on-surface by a (u,v)-grid + loop-zipper hole-split, ΔV <0.8%; NOT a sphere-style between-seams band); S5-q lands the THIRD transversal (non-coaxial) slice and the FIRST transversal CONE pair — the offset cone∩sphere, COMMON/CUT/FUSE now COMPLETE 3/3 native via the SAME TRANS-BAND seam-band shell about the cone axis (ΔV <0.15%); S5-r lands the FIRST curved∩PLANAR-half-space slice — the coaxial torus∩(axis-perpendicular plane) COMMON+CUT as a Pappus-exact revolution (tube-arc + annulus cap), FUSE + the plane-parallel/degenerate poses honest-decline; S5-s lands the FOURTH transversal (non-coaxial) slice and the FIRST transversal cone∩cylinder pair — the offset (axis-parallel) cone∩cylinder COMMON/CUT/FUSE now COMPLETE 3/3 native (a SINGLE-SEAM pose: a parallel-axis cone∩cyl crosses in ONE loop because the cone wall is monotonic; COMMON = cone cap + cyl band + end disc; cyl−cone = a clean seam-driven cyl stub (reversed cone cap); cone−cyl + FUSE = the FULL cone wall MINUS the seam cap (a HOLED cone surface, the SAME (u,v)-grid + loop-zipper hole-split as S5-p, in AXIAL cone coords) + cone discs + reversed cyl bite, ΔV <0.7%); BOOL-COMPLETE lands the NATIVE TORUS PRIMITIVE — `construct::build_torus` + the ADDITIVE facade `cc_torus` emit a bare periodic `Kind::Torus` face (a revolve builds B-spline bands that decline), so the coaxial torus∩{cyl/sphere/cone/torus} families now fire in the PURE-NATIVE path from a SHIPPING primitive (not just the in-test fixture); it also closes two order-sensitive reverse CUTs — `cyl−torus` (grooved cylinder, `buildCylTorusCut`) and `sphere−cyl` (tunnelled sphere, `buildSphereCyl2Cut`); BOOL-TAIL then lands the LAST three reverse CUTs the audit flagged — coaxial `sphere−torus` (grooved ball, `buildSphereTorusCut`) + coaxial `cone−torus` (grooved cone, `buildConeTorusCut`) via the hole-split-of-the-outer-surface + reversed-inner-tube-arc idiom, and transversal `cyl−torus` (lens-bitten cylinder, `buildTransCylTorusCut`) via the reversed tube inner-cap patches — all watertight, partition-correct, ΔV <1%, DISAGREED=0, so the ELEMENTARY curved boolean (cyl/sphere/cone/torus/plane, coaxial+transversal, COMMON/CUT/FUSE incl. order-sensitive reverses) is now FULLY complete on the pure-native path); S5-t closes the last coaxial sphere-minuend reverse CUT the audit flagged — `sphere − cone` on BOTH coaxial poses (single-circle notched ball `buildSphereConeCut` + two-circle conical tunnel `buildSphereCone2Cut`, the tanα≠0 sibling of `buildSphereCyl2Cut`), reusing the S5-f/S5-h setups verbatim, ΔV <0.1%, watertight, DISAGREED=0; S5-u lands the FIRST transversal (non-coaxial) CONE∩CONE pair — the parallel-axis offset cone∩cone COMMON/CUT/FUSE now COMPLETE 3/3 native (the generalisation of S5-s: a cylinder is the tanα==0 cone, both walls monotone so a parallel-offset cone crosses in ONE closed seam; roles GEOMETRIC — the piercer is the cone whose end discs straddle (out,in); COMMON = pierced cap + piercer band + piercer disc; CUT/FUSE = clean piercer stub / holed pierced wall via the S5-s outer weld, ΔV <1%, DISAGREED=0)
 Use SSI curves to **split** the curved faces of two solids, **classify**
 fragments inside/outside (reuse the BSP-CSG classifier + a curved point-in-solid
 test), **assemble** the surviving shell watertight (curved-seam weld from the
@@ -1545,6 +1545,47 @@ harness runs each of the sphere FUSE/CUT as an equal-R AND an unequal-R fixture;
   DISAGREED=0, no tolerance weakened. A non-coaxial / off-axis sphere, an apex-tangent seam, and a
   pose that is not the clean single- or two-crossing config all decline → NULL → OCCT (honest, never
   faked). The `sphere − cone` CUT op-set is now COMPLETE across both coaxial poses.
+- **S5-u — TRANSVERSAL (parallel-axis offset) CONE(frustum)∩CONE(frustum) COMMON / CUT / FUSE**
+  (the FIRST transversal / non-coaxial CONE∩CONE slice; op-set COMPLETE 3/3 native). The direct
+  generalisation of the S5-s transversal cone∩cylinder pair — a cylinder is the tanα==0 special
+  case of a cone, so where S5-s pierces the (pierced) cone wall with a CYLINDER, S5-u pierces it
+  with a SECOND cone whose axis is PARALLEL to (but perpendicular-DISPLACED from) the first. **KEY
+  STRUCTURAL FINDING (measured, matching S5-s):** both cone walls are MONOTONIC in radius vs axial
+  station, so a parallel-offset cone crosses the other cone wall in exactly ONE closed non-planar
+  loop (a single wall crossing — verified across the probed poses; a shared / too-narrow finite
+  extent yields a BoundaryExit open arc, gated out) — NOT the two-loop poke-through of S5-k/S5-q.
+  S5-u is therefore the SINGLE-seam assembler with the PIERCER cone in the S5-s cylinder role. Pose:
+  a WIDE pierced cone A and a NARROW piercer cone B poking through A's lateral wall so B's near end
+  is fully OUTSIDE A and its far end fully INSIDE A (the clean single-crossing gate), both fully
+  transversal (`nearTangentGaps==0`, `branchPoints==0`, Closed). Roles are GEOMETRIC (both operands
+  are cones): the new prologue `transConeConeSetup` identifies the PIERCER as the unique cone whose
+  two end discs straddle the other as (outside, inside); it gates parallel axes + strictly-positive
+  offset + non-degenerate half-angles, resamples the seam onto the piercer azimuth grid
+  (`resampleByAzimuth`, shared with S5-k/p/q/s), and survival-samples the band midpoint inside the
+  pierced cone. The piercer rings/discs use the AXIAL wall convention (r=radius+s·tanα placed at
+  origin+z·s) since `cone.point(u,v)` treats v as the SLANT parameter (v·cosα short of the axial
+  station — the codebase convention also used by `appendConeWallOuterZone`).
+  - **COMMON (A∩B)** — `buildTransConeConeCommon`: the pierced-wall CAP (`appendTransConeCap`,
+    bounded by the traced seam) + the piercer-wall BAND (`appendRevolvedBand`, seam → inside-end
+    rim; a straight ruling is exact on the cone wall) + the piercer inside-end DISC (`appendAxisDiscCap`).
+  - **CUT (A−B, order-sensitive)** — `buildTransConeConeCut`: piercer−pierced = the clean piercer
+    STUB outside the pierced cone (outside-end disc + wall band outside-rim→seam + the COMMON cap
+    REVERSED); pierced−piercer = the HOLED pierced wall (`appendConeWallOuterZone`, the S5-p/S5-s
+    (u,v)-grid + loop-zipper hole-split in AXIAL cone coords) + pierced end discs + reversed piercer bite.
+  - **FUSE (A∪B)** — `buildTransConeConeFuse`: the HOLED pierced wall + pierced end discs + the
+    piercer STUB outside the pierced cone. `V = V(A)+V(B)−V(∩)`.
+  REDUCTION: as the offset → 0 the pose becomes coaxial and S5-g's `coneConeSetup` claims it FIRST
+  in the dispatch (S5-u gates on a STRICTLY-POSITIVE offset) — a pinned regression. Verified vs a
+  deterministic 200³ numerical-integration oracle (no closed form for a non-analytic seam; OCCT-parity
+  encoded structurally per the S5-q/S5-s pattern, host numeric oracle primary): host fixture (pierced
+  cone A r(y)=0.4→3.2 over y∈[−3,3] about +Y; piercer cone B r(y)=0.3→0.9 over y∈[−2.5,2] about +Y,
+  axis offset x=1.5), COMMON volN≈4.198 vs numeric 4.198 (ΔV≈0.02%), CUT/FUSE via inclusion–exclusion
+  (B−A≈1.32, A−B≈69.2, FUSE≈74.7) all ΔV<1%, watertight, COMMON/FUSE swap-symmetric, COMMON≤min(A,B),
+  partition-consistent (COMMON+(B−A)=B), DISAGREED=0, no tolerance weakened. A skew (non-parallel)
+  axis, equal half-angles (parallel walls, no proper crossing), the coaxial pose (offset≤tol, S5-g),
+  and any pose that is not a clean single-crossing (≠1 closed loop / end discs not straddling) all
+  decline → NULL → OCCT (honest, never faked). The general TRANSVERSAL (skew / apex-crossing) cone∩cone
+  quartic space curve is a later slice.
 
 Honest scope still declining → OCCT (measured NULL fallbacks, never faked):
 - **the TRANSVERSAL (offset) cylinder∩sphere CUT + FUSE** (the sphere-outer-zone weld between two
@@ -1557,9 +1598,12 @@ Honest scope still declining → OCCT (measured NULL fallbacks, never faked):
   same class) and the LARGER-offset / near-cylindrical / single-loop transversal cone∩sphere COMMON (the
   co-resident second-loop recall + the two-non-planar-seam band watertight gate); the pierce-both-ends
   small-offset COMMON is now native — S5-q. Plus **oblique / multi-tube cyl∩cyl**, and
-  other curved-curved families (sphere∩box, freeform), the TRANSVERSAL (non-coaxial) cone∩cylinder /
-  cone∩cone quartic space curve, apex-crossing / apex-in-extent frustums, parallel-wall (equal-half-angle)
-  coaxial cone∩cone, the APEX-SPANNING / internally-tangent coaxial cone∩sphere crossing (the
+  other curved-curved families (sphere∩box, freeform); the TRANSVERSAL (offset) cone∩cylinder now
+  LANDS (single-seam outer weld — S5-s) and the TRANSVERSAL (parallel-axis offset) cone∩cone now
+  LANDS COMMON/CUT/FUSE (the single-seam pierced-cap + piercer-stub / holed-wall weld — S5-u); the
+  general SKEW / apex-crossing cone∩cone quartic space curve, apex-crossing / apex-in-extent frustums,
+  parallel-wall (equal-half-angle) coaxial cone∩cone, the APEX-SPANNING / internally-tangent coaxial
+  cone∩sphere crossing (the
   two-circle POKE-THROUGH pose is now native — S5-h; only the apex-spanning / tangent sub-configs
   still decline). The sphere-minuend `sphere − cone` CUT now LANDS on BOTH coaxial poses — S5-t
   (see below): the single-circle notched ball (`buildSphereConeCut`) and the two-circle conical
@@ -1573,9 +1617,9 @@ Honest scope still declining → OCCT (measured NULL fallbacks, never faked):
   op-sets are now COMPLETE 3/3 NATIVE — see S5-c/S5-d/S5-e/S5-f/S5-g/S5-h/S5-i/S5-l/S5-m/S5-n above.)
 Remaining S5 work: the transversal (offset) cyl∩sphere CUT/FUSE + larger-offset COMMON (the
 S5-k sphere-outer-zone weld + the co-resident second-loop recall), the OFF-CENTRE coaxial (sc≠0)
-torus∩sphere spiric section, general (non-Steinmetz) branched pairs, transversal/apex cone pairs,
-the apex-spanning / tangent cone∩sphere sub-configs, transversal (non-coaxial) cone pairs, and more
-curved-curved families.
+torus∩sphere spiric section, general (non-Steinmetz) branched pairs, the SKEW / apex-crossing cone
+pairs (the parallel-axis offset cone∩cone now LANDS — S5-u), the apex-spanning / tangent cone∩sphere
+sub-configs, and more curved-curved families.
 
 ## NURBS Layer 2 — general-freeform measurement pass (empirical decline map) · ✅ MEASURED 2026-07-10 · ⛔ POST-HOC RECALL CAMPAIGN DECLINED 2026-07-11 · ✅ SCALE-ADAPTIVE INITIAL SEEDING LANDED 2026-07-11 (decline 28.5%→18.8%, DISAGREED==0) · ✅ LOCUS-COVERAGE ORACLE AUDIT + FREEFORM-PAIR SEEDING EXTENSION LANDED 2026-07-11 (true decline 18.8%; audit → 0 over-counts, residual 100% genuine; extension → 18.8%→16.7%/17.4% combined, DISAGREED==0) · ✅ SEED-CLUSTER DISTINCT-BRANCH SPLIT LANDED 2026-07-11 (decline 16.7%→13.9%, multi-branch declines 19→14, DISAGREED==0)
 

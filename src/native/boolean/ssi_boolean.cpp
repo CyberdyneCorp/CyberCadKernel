@@ -4599,6 +4599,264 @@ topo::Shape buildTransConeCylFuse(const CurvedSolid& A, const CurvedSolid& B,
   return topo::ShapeBuilder::makeSolid({shell});
 }
 
+// ═══ S5-u — TRANSVERSAL (parallel-axis offset) CONE ∩ CONE (COMMON / FUSE / CUT) ══════
+// The FIRST transversal (non-coaxial) CONE∩CONE slice, and the direct generalisation of the
+// S5-s transversal cone∩cylinder pair: a cylinder is the tanα==0 special case of a cone, so
+// where S5-s pierces the (pierced) cone wall with a CYLINDER, S5-u pierces it with a second
+// CONE whose axis is PARALLEL to (but perpendicular-DISPLACED from) the first. Both cone walls
+// are MONOTONIC in radius vs axial station, so — measured, matching the S5-s finding — a
+// parallel-offset cone crosses the other cone wall in exactly ONE closed loop (a single wall
+// crossing), NOT the two-loop poke-through of S5-k/S5-q. S5-u is therefore the SINGLE-seam
+// assembler with the PIERCER cone in the S5-s cylinder role.
+//
+// PIERCED (wide) cone = gets the seam CAP (appendTransConeCap); PIERCER (narrow, offset) cone =
+// gets the wall BAND (seam → its inside-end rim, appendRevolvedBand — a straight ruling is exact
+// on the cone wall) + its inside-end DISC. The clean single-crossing gate: the PIERCER's two end
+// discs bracket the crossing — one fully OUTSIDE the pierced cone, the other fully INSIDE — so the
+// COMMON region is a bounded wedge capped by the piercer inside disc. Roles are GEOMETRIC (both
+// operands are cones): the piercer is the unique cone whose (loEnd,hiEnd) straddle is (out,in).
+// REDUCTION: as the offset → 0 the pose becomes coaxial and S5-g's coneConeSetup owns it (it runs
+// BEFORE S5-u), so S5-u gates on a STRICTLY-POSITIVE offset. A skew axis, ≠1 closed seam, equal
+// half-angles (parallel walls, no proper crossing), or a pose failing the survival samples all
+// decline → OCCT. CUT/FUSE reuse the S5-s single-seam outer weld (holed pierced wall via
+// appendConeWallOuterZone + a clean piercer stub). Nothing is faked; the engine owns the
+// watertight + volume gate + OCCT fallback.
+struct TransConeConeSetup {
+  bool ok = false;
+  const CurvedSolid* pierced = nullptr;  ///< wide cone — gets the seam CAP
+  const CurvedSolid* piercer = nullptr;  ///< narrow offset cone — gets the BAND + end disc
+  bool piercedIsA = true;                ///< which operand is the pierced cone (seam (u,v) track)
+  bool piercerIsB = true;                ///< which seam (u,v) track is the piercer's (azimuth resample)
+  math::Point3 Op;                       ///< piercer frame origin
+  math::Vec3 zp;                         ///< piercer axis (unit) — parallel to the pierced axis
+  math::Vec3 zc;                         ///< pierced axis (unit)
+  double offset = 0.0;                   ///< perpendicular distance of the piercer axis from the pierced axis
+  double piercerR0 = 0.0, piercerTanA = 0.0;  ///< piercer wall radius r(s)=piercerR0 + s·tanα (AXIAL s)
+  double sInside = 0.0, sOutside = 0.0;  ///< piercer AXIAL stations of the inside / outside end discs
+  double piercedLo = 0.0, piercedHi = 0.0;  ///< pierced wall AXIAL extent, ordered lo≤hi
+  int N = 0;                             ///< common azimuth sample count (seam-chord bounded)
+  Seam seam{};                           ///< the single traced seam, resampled onto the piercer azimuth grid
+
+  /// The PIERCER wall ring at AXIAL station s (N azimuth samples on the seam grid). Uses the axial
+  /// convention (r=piercerR0+s·tanα, placed at Op+zp·s) — NOT piercer->point(u,s) whose v is SLANT.
+  std::vector<math::Point3> piercerRing(double s) const {
+    const math::Vec3 X = piercer->frame.x.vec(), Y = piercer->frame.y.vec(), Z = piercer->frame.z.vec();
+    const double r = piercerR0 + s * piercerTanA;
+    std::vector<math::Point3> ring(N);
+    for (int i = 0; i < N; ++i) {
+      const double u = kSsiTwoPi * i / N;
+      ring[i] = math::Point3{Op.x + X.x * r * std::cos(u) + Y.x * r * std::sin(u) + Z.x * s,
+                             Op.y + X.y * r * std::cos(u) + Y.y * r * std::sin(u) + Z.y * s,
+                             Op.z + X.z * r * std::cos(u) + Y.z * r * std::sin(u) + Z.z * s};
+    }
+    return ring;
+  }
+  math::Point3 piercerAxisPt(double s) const {
+    return math::Point3{Op.x + zp.x * s, Op.y + zp.y * s, Op.z + zp.z * s};
+  }
+  math::Point3 piercedAxisPt(double s) const {
+    return math::Point3{pierced->frame.origin.x + zc.x * s, pierced->frame.origin.y + zc.y * s,
+                        pierced->frame.origin.z + zc.z * s};
+  }
+};
+
+// Ring count for the transversal cone∩cone cap (mirror of transConeCylCapRings on the PIERCED cone).
+int transConeConeCapRings(const TransConeConeSetup& s) {
+  const auto& uv = s.piercedIsA ? s.seam.uvA : s.seam.uvB;
+  const double u0 = uv.front().first;
+  double uSum = 0.0, vSum = 0.0;
+  for (const auto& p : uv) { uSum += nearU(u0, p.first); vSum += p.second; }
+  const math::Point3 centre = s.pierced->point(uSum / uv.size(), vSum / uv.size());
+  double span = 0.0;
+  for (const auto& p : s.seam.pts)
+    span = std::max(span, math::norm(math::Vec3{p.x - centre.x, p.y - centre.y, p.z - centre.z}));
+  return std::clamp(
+      static_cast<int>(std::ceil(std::max(span, 1e-6) * std::sqrt(1.0 / (2.0 * kCapSagitta)))), 4,
+      48);
+}
+
+// Recognise the transversal (offset, axis-parallel) cone∩cone single-crossing pose from the one
+// traced seam. Both operands must be cones with parallel axes and a strictly-positive perpendicular
+// offset (the coaxial pose is owned by S5-g). The piercer is the unique cone whose two end discs
+// straddle the other as (outside, inside); if neither cone qualifies, decline. Mirrors the S5-s
+// prologue: a linear pose-recognition + resample + survival gate.
+TransConeConeSetup transConeConeSetup(const CurvedSolid& A, const CurvedSolid& B,
+                                      const std::vector<Seam>& seams) {
+  TransConeConeSetup st;
+  if (seams.size() != 1) return st;                       // single wall crossing → exactly one loop
+  if (!seams[0].closed || seams[0].pts.size() < 8) return st;
+  if (A.kind != CurvedKind::Cone || B.kind != CurvedKind::Cone) return st;
+
+  const math::Vec3 zA = A.frame.z.vec(), zB = B.frame.z.vec();
+  if (math::norm(math::cross(zA, zB)) > 1e-6) return st;  // skew / non-parallel axes → decline
+  const double tanAa = std::tan(A.semiAngle), tanBb = std::tan(B.semiAngle);
+  if (std::fabs(tanAa) < 1e-6 || std::fabs(tanBb) < 1e-6) return st;  // near-cylinder → S5-s/S5-a
+  // Perpendicular offset between the two parallel axes.
+  const math::Vec3 d{B.frame.origin.x - A.frame.origin.x, B.frame.origin.y - A.frame.origin.y,
+                     B.frame.origin.z - A.frame.origin.z};
+  const double offset = math::norm(d - zA * math::dot(d, zA));
+  if (offset <= 1e-4) return st;                          // coaxial → S5-g owns it → decline
+
+  // Try each cone as the PIERCER: its two end discs (sampled on the AXIAL wall ring) must be one
+  // fully OUTSIDE / one fully INSIDE the OTHER (pierced) cone — the clean single-crossing gate.
+  auto axialRing = [](const CurvedSolid& c, double s, int n) {
+    const math::Vec3 X = c.frame.x.vec(), Y = c.frame.y.vec(), Z = c.frame.z.vec();
+    const double r = c.radius + s * std::tan(c.semiAngle);
+    std::vector<math::Point3> ring(n);
+    for (int i = 0; i < n; ++i) {
+      const double u = kSsiTwoPi * i / n;
+      ring[i] = math::Point3{c.frame.origin.x + X.x * r * std::cos(u) + Y.x * r * std::sin(u) + Z.x * s,
+                             c.frame.origin.y + X.y * r * std::cos(u) + Y.y * r * std::sin(u) + Z.y * s,
+                             c.frame.origin.z + X.z * r * std::cos(u) + Y.z * r * std::sin(u) + Z.z * s};
+    }
+    return ring;
+  };
+  auto endDiscSide = [&](const CurvedSolid& piercer, double s, const CurvedSolid& other) -> int {
+    const math::Point3 axisPt{piercer.frame.origin.x + piercer.frame.z.vec().x * s,
+                              piercer.frame.origin.y + piercer.frame.z.vec().y * s,
+                              piercer.frame.origin.z + piercer.frame.z.vec().z * s};
+    int cc = classifyPoint(other, axisPt, kSsiTol);
+    bool allIn = (cc == 1), allOut = (cc == -1);
+    for (const math::Point3& p : axialRing(piercer, s, 16)) {
+      const int r = classifyPoint(other, p, kSsiTol);
+      allIn = allIn && (r == 1);
+      allOut = allOut && (r == -1);
+    }
+    return allIn ? 1 : (allOut ? -1 : 0);
+  };
+  const CurvedSolid* pierPtr = nullptr;
+  const CurvedSolid* wallPtr = nullptr;
+  double sIn = 0.0, sOut = 0.0;
+  for (const CurvedSolid* P : {&A, &B}) {
+    const CurvedSolid& O = (P == &A) ? B : A;
+    const int lo = endDiscSide(*P, P->vLo, O);
+    const int hi = endDiscSide(*P, P->vHi, O);
+    if (lo == -1 && hi == 1) { pierPtr = P; wallPtr = &O; sOut = P->vLo; sIn = P->vHi; break; }
+    if (lo == 1 && hi == -1) { pierPtr = P; wallPtr = &O; sOut = P->vHi; sIn = P->vLo; break; }
+  }
+  if (!pierPtr) return st;                                 // no clean single-crossing → decline
+
+  st.pierced = wallPtr; st.piercer = pierPtr;
+  st.piercedIsA = (wallPtr == &A);
+  st.piercerIsB = (pierPtr == &B);
+  st.Op = pierPtr->frame.origin; st.zp = pierPtr->frame.z.vec();
+  st.zc = wallPtr->frame.z.vec();
+  st.offset = offset;
+  st.piercerR0 = pierPtr->radius; st.piercerTanA = std::tan(pierPtr->semiAngle);
+  st.sInside = sIn; st.sOutside = sOut;
+  st.piercedLo = std::min(wallPtr->vLo, wallPtr->vHi);
+  st.piercedHi = std::max(wallPtr->vLo, wallPtr->vHi);
+
+  const double Rref = std::max(std::fabs(pierPtr->radius + sIn * st.piercerTanA), 1e-6);
+  const double chord = std::sqrt(std::max(8.0 * kCapSagitta * Rref, 1e-12));
+  st.N = std::clamp(static_cast<int>(std::ceil(kSsiTwoPi * Rref / chord)), 24, 200);
+  st.seam = resampleByAzimuth(seams[0], st.piercerIsB, st.N);
+
+  // Survival gate: the band midpoint on the piercer AXIS (between the seam mean and the inside end)
+  // must be INSIDE the pierced cone (the band is a COMMON boundary), the honest inside-the-other test.
+  double seamMeanS = 0.0;
+  for (const auto& p : st.seam.pts)
+    seamMeanS += math::dot(math::Vec3{p.x - st.Op.x, p.y - st.Op.y, p.z - st.Op.z}, st.zp);
+  seamMeanS /= static_cast<double>(st.seam.pts.size());
+  const double sMid = 0.5 * (seamMeanS + st.sInside);
+  if (classifyPoint(*wallPtr, st.piercerAxisPt(sMid), kSsiTol) != 1) return st;
+
+  st.ok = true;
+  return st;
+}
+
+// buildTransConeConeCommon(A,B) = COMMON of the transversal (offset) cone∩cone single-crossing pose:
+// the PIERCED cone-wall cap (bounded by the traced seam) + the PIERCER cone-wall band (seam →
+// inside-end rim) + the PIERCER inside-end disc. All fragments share their boundary rings through
+// one VertexPool → watertight. The first transversal cone∩cone slice.
+topo::Shape buildTransConeConeCommon(const CurvedSolid& A, const CurvedSolid& B,
+                                     const std::vector<Seam>& seams) {
+  const TransConeConeSetup s = transConeConeSetup(A, B, seams);
+  if (!s.ok) return {};
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const std::vector<math::Point3> insideRim = s.piercerRing(s.sInside);
+  const auto& piercedUv = s.piercedIsA ? s.seam.uvA : s.seam.uvB;
+  appendTransConeCap(*s.pierced, s.seam, piercedUv, transConeConeCapRings(s), pool, faces);
+  appendRevolvedBand(s.seam.pts, insideRim, s.Op, s.zp, pool, faces, 1.0);
+  const bool endIsHi = (s.sInside > 0.5 * (s.piercer->vLo + s.piercer->vHi));
+  const math::Vec3 discOut = endIsHi ? s.zp : math::Vec3{-s.zp.x, -s.zp.y, -s.zp.z};
+  appendAxisDiscCap(s.piercerAxisPt(s.sInside), insideRim, discOut, pool, faces);
+  if (faces.size() < 4) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildTransConeConeCut(A,B) = A − B (order-sensitive), the S5-s single-seam outer weld generalised:
+//   * PIERCER − PIERCED (A = piercer): the piercer stub OUTSIDE the pierced cone — a clean seam-driven
+//     solid (piercer outside-end disc + piercer wall band outside-rim→seam + the COMMON pierced cap
+//     REVERSED). No hole.
+//   * PIERCED − PIERCER (A = pierced): the pierced cone with a conical bite — the HOLED pierced wall
+//     (full wall minus the seam cap) + pierced end discs + reversed piercer band + reversed inside disc.
+topo::Shape buildTransConeConeCut(const CurvedSolid& A, const CurvedSolid& B,
+                                  const std::vector<Seam>& seams) {
+  const TransConeConeSetup s = transConeConeSetup(A, B, seams);
+  if (!s.ok) return {};
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  const auto& piercedUv = s.piercedIsA ? s.seam.uvA : s.seam.uvB;
+  if (&A == s.piercer) {
+    // PIERCER − PIERCED: the piercer stub OUTSIDE the pierced cone.
+    const std::vector<math::Point3> rimOut = s.piercerRing(s.sOutside);
+    const bool outIsHi = (s.sOutside > 0.5 * (s.piercer->vLo + s.piercer->vHi));
+    appendAxisDiscCap(s.piercerAxisPt(s.sOutside), rimOut,
+                      outIsHi ? s.zp : math::Vec3{-s.zp.x, -s.zp.y, -s.zp.z}, pool, faces);
+    appendRevolvedBand(rimOut, s.seam.pts, s.Op, s.zp, pool, faces, 1.0);  // piercer wall (outside)
+    appendTransConeCap(*s.pierced, s.seam, piercedUv, transConeConeCapRings(s), pool, faces,
+                       /*reversed=*/true);
+    if (faces.size() < 4) return {};
+  } else {
+    // PIERCED − PIERCER: the holed pierced wall + pierced end discs + reversed piercer bite.
+    std::vector<math::Point3> capLo, capHi;
+    if (!appendConeWallOuterZone(*s.pierced, s.piercedLo, s.piercedHi, s.seam, s.piercedIsA, pool,
+                                 faces, capLo, capHi))
+      return {};
+    appendAxisDiscCap(s.piercedAxisPt(s.piercedLo), capLo,
+                      math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool, faces);
+    appendAxisDiscCap(s.piercedAxisPt(s.piercedHi), capHi, s.zc, pool, faces);
+    const std::vector<math::Point3> insideRim = s.piercerRing(s.sInside);
+    appendRevolvedBand(s.seam.pts, insideRim, s.Op, s.zp, pool, faces, /*outwardSign=*/-1.0);
+    const bool endIsHi = (s.sInside > 0.5 * (s.piercer->vLo + s.piercer->vHi));
+    appendAxisDiscCap(s.piercerAxisPt(s.sInside), insideRim,
+                      endIsHi ? math::Vec3{-s.zp.x, -s.zp.y, -s.zp.z} : s.zp, pool, faces);
+    if (faces.size() < 6) return {};
+  }
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
+// buildTransConeConeFuse(A,B) = A ∪ B: the HOLED pierced wall (full wall minus the seam cap) + pierced
+// end discs + the piercer stub OUTSIDE the pierced cone (outside-end disc + piercer wall band
+// outside-rim→seam). The pierced cap patch and the piercer band inside the pierced cone are interior →
+// dropped. V = V(A)+V(B)−V(∩).
+topo::Shape buildTransConeConeFuse(const CurvedSolid& A, const CurvedSolid& B,
+                                   const std::vector<Seam>& seams) {
+  const TransConeConeSetup s = transConeConeSetup(A, B, seams);
+  if (!s.ok) return {};
+  VertexPool pool;
+  std::vector<topo::Shape> faces;
+  std::vector<math::Point3> capLo, capHi;
+  if (!appendConeWallOuterZone(*s.pierced, s.piercedLo, s.piercedHi, s.seam, s.piercedIsA, pool,
+                               faces, capLo, capHi))
+    return {};
+  appendAxisDiscCap(s.piercedAxisPt(s.piercedLo), capLo, math::Vec3{-s.zc.x, -s.zc.y, -s.zc.z}, pool,
+                    faces);
+  appendAxisDiscCap(s.piercedAxisPt(s.piercedHi), capHi, s.zc, pool, faces);
+  const std::vector<math::Point3> rimOut = s.piercerRing(s.sOutside);
+  const bool outIsHi = (s.sOutside > 0.5 * (s.piercer->vLo + s.piercer->vHi));
+  appendAxisDiscCap(s.piercerAxisPt(s.sOutside), rimOut,
+                    outIsHi ? s.zp : math::Vec3{-s.zp.x, -s.zp.y, -s.zp.z}, pool, faces);
+  appendRevolvedBand(rimOut, s.seam.pts, s.Op, s.zp, pool, faces, 1.0);
+  if (faces.size() < 6) return {};
+  const topo::Shape shell = topo::ShapeBuilder::makeShell(std::move(faces));
+  return topo::ShapeBuilder::makeSolid({shell});
+}
+
 // ═══ S5-l — COAXIAL TORUS ∩ CYLINDER (COMMON / FUSE / CUT) ══════════════════════
 // The TORUS surface family opened. A ring torus (major R, minor r, axis = frame Z) and a
 // coaxial cylinder (radius Rc, same axis) whose wall crosses the torus TUBE at TWO
@@ -6801,6 +7059,9 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-s: TRANSVERSAL (offset/non-coaxial) cone∩cylinder COMMON (traced non-planar seams).
       const topo::Shape transConeCyl = buildTransConeCylCommon(*csA, *csB, seams);
       if (!transConeCyl.isNull()) return transConeCyl;
+      // S5-u: TRANSVERSAL (parallel-axis offset) cone∩cone COMMON (single traced seam).
+      const topo::Shape transConeCone = buildTransConeConeCommon(*csA, *csB, seams);
+      if (!transConeCone.isNull()) return transConeCone;
       // S5-i: TWO-CIRCLE coaxial cylinder∩sphere COMMON (sphere lower cap + cyl band + sphere upper cap).
       const topo::Shape cylSph2 = buildCylSphere2Common(*csA, *csB, seams);
       if (!cylSph2.isNull()) return cylSph2;
@@ -6847,9 +7108,12 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-q: TRANSVERSAL cone∩sphere FUSE (honest-decline — sphere-outer-zone residual → OCCT).
       const topo::Shape transConeSph = buildTransConeSphereFuse(*csA, *csB, seams);
       if (!transConeSph.isNull()) return transConeSph;
-      // S5-s: TRANSVERSAL cone∩cylinder FUSE (honest-decline — cone-outer-zone residual → OCCT).
+      // S5-s: TRANSVERSAL cone∩cylinder FUSE (single-seam outer weld: holed cone wall + cyl stub).
       const topo::Shape transConeCyl = buildTransConeCylFuse(*csA, *csB, seams);
       if (!transConeCyl.isNull()) return transConeCyl;
+      // S5-u: TRANSVERSAL (parallel-axis offset) cone∩cone FUSE (holed pierced wall + piercer stub).
+      const topo::Shape transConeCone = buildTransConeConeFuse(*csA, *csB, seams);
+      if (!transConeCone.isNull()) return transConeCone;
       // S5-i: TWO-CIRCLE coaxial cylinder∩sphere FUSE (cyl walls + sphere zone bulge + discs).
       const topo::Shape cylSph2 = buildCylSphere2Fuse(*csA, *csB, seams);
       if (!cylSph2.isNull()) return cylSph2;
@@ -6901,9 +7165,12 @@ topo::Shape ssi_boolean_solid(const topo::Shape& a, const topo::Shape& b, Op op)
       // S5-q: TRANSVERSAL cone∩sphere CUT (honest-decline — sphere-outer-zone residual → OCCT).
       const topo::Shape transConeSph = buildTransConeSphereCut(*csA, *csB, seams);
       if (!transConeSph.isNull()) return transConeSph;
-      // S5-s: TRANSVERSAL cone∩cylinder CUT (honest-decline — cone-outer-zone residual → OCCT).
+      // S5-s: TRANSVERSAL cone∩cylinder CUT (single-seam outer weld: clean stub / holed cone wall).
       const topo::Shape transConeCyl = buildTransConeCylCut(*csA, *csB, seams);
       if (!transConeCyl.isNull()) return transConeCyl;
+      // S5-u: TRANSVERSAL (parallel-axis offset) cone∩cone CUT (clean stub / holed pierced wall).
+      const topo::Shape transConeCone = buildTransConeConeCut(*csA, *csB, seams);
+      if (!transConeCone.isNull()) return transConeCone;
       // S5-i: TWO-CIRCLE coaxial cylinder∩sphere CUT (two disconnected cyl-end dimpled pieces).
       const topo::Shape cylSph2 = buildCylSphere2Cut(*csA, *csB, seams);
       if (!cylSph2.isNull()) return cylSph2;

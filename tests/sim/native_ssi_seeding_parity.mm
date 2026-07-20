@@ -47,31 +47,53 @@
 // "== N passed, M failed ==". Flushes and std::_Exit (OCCT static teardown in the
 // trimmed static build is not exit-clean — same rationale as native_ssi_parity).
 //
-// ⚠ READ BEFORE ACTING ON A FAILURE HERE — THE RECALL DENOMINATOR IS WRONG.
+// ── DENOMINATOR REPAIRED 2026-07-19; ONE REAL GAP REMAINS (bspline ∩ plane) ────────
 //
 // This harness did not compile from the day it was written until 2026-07-19 (gp_Dir has no
-// Magnitude(); see the fixed line below), so it had NEVER RUN. Its first execution reports
-// 1 passed / 3 failed — but TWO of those three failures are ARTIFACTS OF THIS HARNESS, not
-// seeder misses, because `occtCurves` counts OCCT's arc pieces rather than connected components:
+// Magnitude(); see the fixed line below), so it had NEVER RUN. Its first execution reported
+// 1 passed / 3 failed. TWO of those failures were ARTIFACTS OF THIS HARNESS — it counted
+// OCCT arc PIECES as branches — and are fixed by mergeArcsIntoBranches below. Measured:
 //
-//   * sphere x sphere  recall=0.50 (1/2). Two unit spheres meet in EXACTLY ONE circle. OCCT
-//     returns it as 2 trimmed curves on x=0.5, r=0.866, t=[0,pi] and [pi,2pi], sharing both
-//     endpoints — 1 component, 0 junctions. It bisected the circle at the parameter seam. The
-//     native seed lies on it to 1.57e-16. Native is RIGHT and the denominator is wrong.
-//   * skew cyl unequal recall=0.67 (2/3). 3 arcs, 3 nodes, 0 junctions = 2 true loops. Native
-//     emitted one seed on each. Native is RIGHT.
+//   * sphere x sphere  was 0.50 (1/2). Two unit spheres meet in EXACTLY ONE circle; OCCT
+//     bisects it at the parameter seam into t=[0,pi] and [pi,2pi] on x=0.5, r=0.866, sharing
+//     both endpoints. Measured: 2 arcs, 2 nodes, both degree 2, 0 junctions. Now 1 branch,
+//     recall 1.00, seed on it to 1.11e-16.
+//   * skew cyl unequal was 0.67 (2/3). Measured: 3 arcs, 3 nodes, all degree 2, 0 junctions,
+//     2 loops (one closed arc + two arcs meeting end-to-end). Now 2 branches, recall 1.00.
 //
-// The sibling gate `native_ssi_seeding_recall`, which DOES compile and run, passes these same
-// pairs at recall=1.00 — an in-repo gate already disagrees with this one's model.
+// The sibling gate `native_ssi_seeding_recall` always passed these same pairs at 1.00 — an
+// in-repo gate already disagreed with this one's model, and it was this one that was wrong.
 //
-//   * bspline x plane  recall=0.03 (1/40) is PLAUSIBLY REAL and is the one worth working: 40 arcs
-//     over 32 nodes with 16 junctions of degree > 2, i.e. one connected saddle network. Marching
-//     terminates at junctions, so a single seed cannot cover it. No currently-executing gate
-//     covers this case.
+// ── THE REMAINING FAILURE IS REAL AND IS NOT A SEEDING-DENSITY PROBLEM ─────────────
 //
-// DO NOT "fix" the seeder to raise the first two numbers. The repair belongs here: merge arcs
-// meeting at degree-2 nodes into one component and keep arcs at genuine junctions distinct. The
-// hardcoded expectations (1, 2, 1) are already correct against TRUE components.
+//   * bspline x plane  recall=0.03 (1/40). The egg-carton cut at z=0.5 is ONE connected
+//     saddle network: 40 arcs over 32 nodes = 16 degree-4 saddles + 16 degree-1 boundary
+//     exits (16·4+16·1 = 80 = 2·40 ✓). There is NO degree-2 node, so nothing merges and all
+//     40 arcs stay distinct branches. The level set passes exactly through surface saddles,
+//     where the normals are parallel — sampled ‖n₁×n₂‖ bottoms out at 0.0000.
+//
+//     MEASURED, so the next reader does not re-litigate it: raising seeder resolution does
+//     NOTHING. Candidate regions 30352 → 164268 across five configurations (8x8 @1/48,
+//     8x8 @1/96, 16x16 @1/96, 16x16 @1/192, 32x32 @1/192), and at every one of them
+//     seeds=1, refinedAccepted=1, arcs covered = 1/40. The completeness critic and the M1c
+//     targeted re-seed change nothing either. Two independent reasons, both confirmed by
+//     CYBERCAD_SSI_SEED_DIAG:
+//       (a) all candidates fall in ONE cluster (clusters=1), which is topologically CORRECT
+//           — the locus really is one connected component — so "≈1 seed per branch" gives 1;
+//       (b) the distinct-branch split that could emit more than one seed per cluster is
+//           gated on `bothFreeform` (seeding.cpp), and a PLANE is not freeform, so doSplit=0
+//           and the cluster collapses to its single tightest seed regardless of resolution.
+//
+//     It is therefore a MARCHING/branch-point problem, not a seeding one. Measured reach
+//     from the one seed: plain S3 stalls at the first saddle (status NearTangent) and covers
+//     2/40 arcs; MarchOptions.enableBranchPoints (S4-d) localizes 1 branch point, routes 3
+//     arms and reaches 7/40, then stalls again with nearTangentGaps=3 — branch-point
+//     localization is applied to the SEED's arm but is not re-applied to the arms it routes.
+//     Closing this needs S4-d made ITERATIVE: a work list where every arm ending in a
+//     near-tangent stall is re-tested for a branch point and its unvisited arms enqueued,
+//     with visited-arc dedup to terminate. On this graph that walks all 16 junctions and
+//     covers all 40 arcs from the single seed. See the S4-d work in openspec/MOAT-ROADMAP.md.
+//     Until then this pair FAILS HONESTLY at 1/40 rather than being merged away.
 //
 #include "native/ssi/native_ssi.h"
 
@@ -186,14 +208,146 @@ OcctBranch classifyBranch(const Handle(Geom_Curve)& c,
   double maxSine = 0.0;
   for (int i = 0; i <= kSamplesPerCurve; ++i) {
     const double t = f + (l - f) * (double(i) / kSamplesPerCurve);
-    gp_Pnt q;
-    try { q = c->Value(t); } catch (...) { continue; }
-    const double s = crossingSineOnOcct(sa, sb, q);
+    // The guard covers crossingSineOnOcct as well as Value(): GeomAPI_ProjectPointOnSurf and
+    // GeomLProp_SLProps both raise on a degenerate patch (a projection that fails to converge,
+    // a first-derivative pair that spans no plane), and a throw out of here aborts the whole
+    // gate rather than skipping one sample. LATENT, NOT A LIVE FIX: no pair in this corpus
+    // throws today — all four run clean with the narrow guard. Note the corpus DOES reach the
+    // degenerate regime without tripping it: sampled ‖n₁×n₂‖ bottoms out at 0.0000 on the
+    // bspline∩plane arcs (the 16 saddle junctions are exact tangencies), where OCCT still
+    // returns defined normals and a finite sine rather than raising. So this widens the guard
+    // ahead of a pair whose projection actually fails; it does not repair an observed crash.
+    double s = -1.0;
+    try {
+      const gp_Pnt q = c->Value(t);
+      s = crossingSineOnOcct(sa, sb, q);
+    } catch (...) { continue; }
     if (s >= 0.0) maxSine = std::max(maxSine, s);
   }
   b.maxCrossingSine = maxSine;
   b.transversal = (maxSine > tangentSine);
   return b;
+}
+
+// ── ARC → BRANCH MERGE (the recall denominator) ───────────────────────────────────
+//
+// GeomAPI_IntSS returns arc PIECES, not branches. It bisects a closed circle at the
+// parameter seam and splits a locus at every junction, so `NbLines()` overcounts the
+// branches a seeder is expected to cover — that is what made this gate report 0.50 on a
+// sphere pair that meets in exactly ONE circle.
+//
+// The branch a seed is expected to cover is a maximal chain of arcs joined end-to-end
+// where the join is UNAMBIGUOUS. Weld arc endpoints into shared nodes, then union two
+// arcs iff they meet at a node of degree EXACTLY 2: there the continuation is unique, so
+// the marcher runs straight through and one seed anywhere on the chain covers all of it.
+// A node of degree > 2 is a genuine JUNCTION where the continuation is NOT unique — the
+// marcher must stop and choose, so the arcs on either side stay DISTINCT branches, each
+// needing its own seed. Degree-1 nodes are domain-boundary exits and merge nothing.
+//
+// This is deliberately NOT "connected components". On the bspline∩plane egg-carton the
+// whole locus IS one connected component, so a component denominator would read 1, the
+// single native seed would score 1/1, and the gate would PASS while the seeder in fact
+// covers 1 arc in 40. The degree-2 rule keeps that case at 40 and keeps it failing.
+//
+// WELD TOLERANCE. Measured on this corpus, arc-endpoint separations that are meant to be
+// the same node are either EXACTLY 0 or in [2.07e-7 median, 3.65e-7 max]; the next-larger
+// separation between endpoints that are genuinely distinct is above 1e-3. So the verdict
+// is identical for any weld tolerance in [4e-7, 1e-3] — checked at 1e-6, 1e-5, 1e-4 and
+// 1e-3, all giving 32 nodes / 16 junctions on bspline∩plane — and kWeldTol sits
+// mid-plateau, three orders of magnitude clear on both sides.
+//
+// Which pairs the tolerance actually binds on: the sphere and skew-cylinder joins are
+// EXACT (separation 0), because there OCCT splits one analytic curve at a parameter seam
+// and both pieces evaluate to the identical point. They stay correct even at a 1e-12
+// weld. It is only the bspline∩plane SADDLES that need the 4e-7 floor, because there
+// OCCT's marcher halts near — not exactly at — the degeneracy. Dropping the tolerance to
+// 1e-12 splits that locus into 39 branches over 6 junctions instead of 40 over 16, which
+// the hardcoded 40 in pairBSplinePlane catches.
+constexpr double kWeldTol = 1e-5;
+
+// Union-find over arcs.
+struct ArcMerge {
+  std::vector<int> parent;
+  explicit ArcMerge(std::size_t n) : parent(n) {
+    for (std::size_t i = 0; i < n; ++i) parent[i] = static_cast<int>(i);
+  }
+  int find(int a) {
+    while (parent[static_cast<std::size_t>(a)] != a) {
+      parent[static_cast<std::size_t>(a)] = parent[static_cast<std::size_t>(parent[static_cast<std::size_t>(a)])];
+      a = parent[static_cast<std::size_t>(a)];
+    }
+    return a;
+  }
+  void unite(int a, int b) { a = find(a); b = find(b); if (a != b) parent[static_cast<std::size_t>(a)] = b; }
+};
+
+// Clamp an unbounded/infinite parameter range the way classifyBranch does, so endpoint
+// extraction and transversality sampling agree on where an arc starts and ends.
+void clampedRange(const Handle(Geom_Curve)& c, double& f, double& l) {
+  f = c->FirstParameter();
+  l = c->LastParameter();
+  if (!std::isfinite(f) || f < -1e6) f = -1e6;
+  if (!std::isfinite(l) || l > 1e6) l = 1e6;
+}
+
+// Group OCCT arcs into branches by the degree-2 rule above. Returns a group id per arc
+// (dense, 0..groupCount-1) and sets `junctions` to the number of degree-(>2) nodes — the
+// structural witness the caller reports so a merge that silently over- or under-merges
+// is visible in the log rather than hidden inside a passing recall figure.
+std::vector<int> mergeArcsIntoBranches(const std::vector<OcctBranch>& branches,
+                                       int& groupCount, int& junctions) {
+  const std::size_t n = branches.size();
+  std::vector<gp_Pnt> nodes;
+  std::vector<int> degree;
+  // Endpoint → node index, welding onto an existing node within kWeldTol. Linear scan:
+  // this corpus tops out at 64 endpoints, so a spatial index would be pure overhead.
+  auto nodeOf = [&](const gp_Pnt& p) {
+    for (std::size_t i = 0; i < nodes.size(); ++i)
+      if (nodes[i].Distance(p) < kWeldTol) return static_cast<int>(i);
+    nodes.push_back(p);
+    degree.push_back(0);
+    return static_cast<int>(nodes.size()) - 1;
+  };
+
+  // Pass 1 — build the node set and node degrees.
+  std::vector<std::pair<int, int>> ends(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    double f = 0.0, l = 0.0;
+    clampedRange(branches[i].curve, f, l);
+    const int a = nodeOf(branches[i].curve->Value(f));
+    const int b = nodeOf(branches[i].curve->Value(l));
+    // A CLOSED arc welds both ends onto one node, contributing degree 2 there. It then
+    // unites with itself below (a no-op) and stays its own branch — which is right: a full
+    // closed loop is exactly one branch needing exactly one seed.
+    ++degree[static_cast<std::size_t>(a)];
+    ++degree[static_cast<std::size_t>(b)];
+    ends[i] = {a, b};
+  }
+
+  // Pass 2 — union arcs meeting at a degree-2 node (unique continuation).
+  ArcMerge merge(n);
+  std::vector<int> firstArcAtNode(nodes.size(), -1);
+  for (std::size_t i = 0; i < n; ++i)
+    for (const int nd : {ends[i].first, ends[i].second}) {
+      if (degree[static_cast<std::size_t>(nd)] != 2) continue;
+      int& slot = firstArcAtNode[static_cast<std::size_t>(nd)];
+      if (slot < 0) slot = static_cast<int>(i); else merge.unite(slot, static_cast<int>(i));
+    }
+
+  junctions = 0;
+  for (const int d : degree) if (d > 2) ++junctions;
+
+  // Densify the union-find roots into 0..groupCount-1.
+  std::vector<int> group(n, -1);
+  std::vector<int> rootToGroup(n, -1);
+  groupCount = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const int r = merge.find(static_cast<int>(i));
+    int& g = rootToGroup[static_cast<std::size_t>(r)];
+    if (g < 0) g = groupCount++;
+    group[i] = g;
+  }
+  return group;
 }
 
 // Report one pair. Runs native seeding + OCCT GeomAPI_IntSS, classifies OCCT branches,
@@ -214,8 +368,20 @@ void reportPair(const std::string& pairName,
   // Classify every OCCT branch as transversal (recall denominator) or tangential (S4).
   std::vector<OcctBranch> branches;
   for (int i = 1; i <= occtN; ++i) branches.push_back(classifyBranch(iss.Line(i), sa, sb, tangentSine));
+
+  // Collapse OCCT's arc PIECES into the branches a seeder is expected to cover (see
+  // mergeArcsIntoBranches). Everything below counts merged branches, never arcs.
+  int groupCount = 0, junctions = 0;
+  const std::vector<int> group = mergeArcsIntoBranches(branches, groupCount, junctions);
+
+  // A merged branch is transversal if ANY of its arcs is — consistent with the per-arc
+  // rule, which already takes the MAX crossing sine along the arc (a branch that crosses
+  // anywhere is a crossing locus, even where it grazes).
+  std::vector<char> groupTransversal(static_cast<std::size_t>(groupCount), 0);
+  for (std::size_t i = 0; i < branches.size(); ++i)
+    if (branches[i].transversal) groupTransversal[static_cast<std::size_t>(group[i])] = 1;
   int transversal = 0, tangential = 0;
-  for (const auto& b : branches) (b.transversal ? transversal : tangential)++;
+  for (const char t : groupTransversal) (t ? transversal : tangential)++;
 
   // Worst on-both-surfaces residual over the emitted seeds (a seed OFF a surface fails).
   double worstOnSurf = 0.0;
@@ -225,18 +391,23 @@ void reportPair(const std::string& pairName,
 
   // PER-BRANCH recall: a transversal branch is COVERED iff some native seed lies on its
   // OCCT curve (< onCurveTol) and on both surfaces (< onSurfTol).
-  int covered = 0;
-  for (const auto& b : branches) {
-    if (!b.transversal) continue;
-    bool hit = false;
+  // A merged transversal branch is COVERED iff some native seed lies on ANY of its arcs
+  // (< onCurveTol) and on both surfaces (< onSurfTol). "Any arc" is the whole point of the
+  // merge: the arcs of one branch are joined at degree-2 nodes, so a seed on any of them
+  // seeds the entire branch.
+  std::vector<char> groupCovered(static_cast<std::size_t>(groupCount), 0);
+  for (std::size_t i = 0; i < branches.size(); ++i) {
+    const auto g = static_cast<std::size_t>(group[i]);
+    if (!groupTransversal[g] || groupCovered[g]) continue;
     for (const auto& s : ss.seeds) {
-      const bool onCurve = distToOcctCurve(b.curve, s.point) < onCurveTol;
+      const bool onCurve = distToOcctCurve(branches[i].curve, s.point) < onCurveTol;
       const bool onBoth = distToOcctSurface(sa, s.point) < onSurfTol &&
                           distToOcctSurface(sb, s.point) < onSurfTol;
-      if (onCurve && onBoth) { hit = true; break; }
+      if (onCurve && onBoth) { groupCovered[g] = 1; break; }
     }
-    if (hit) ++covered;
   }
+  int covered = 0;
+  for (const char c : groupCovered) if (c) ++covered;
   const double recall = transversal > 0 ? double(covered) / double(transversal) : 1.0;
 
   bool ok = true;
@@ -245,10 +416,14 @@ void reportPair(const std::string& pairName,
   if (transversal != expectTransversalBranches) ok = false;  // oracle disagreed with analytic truth
   if (ok) ++g_pass; else ++g_fail;
 
+  // `occtArcs` vs `occtBranches` are both printed on purpose: their RATIO is the diagnostic
+  // that tells a reader whether a failure is a seeder miss or an arc-splitting artifact,
+  // and `junctions` says which of the two the merge could not collapse.
   std::printf("[NSEED] %-4s %-20s recall=%.2f (%d/%d transversal) tang=%d nativeSeeds=%d "
-              "occtCurves=%d deferredTangent=%d worstOnSurf=%.2e\n",
+              "occtArcs=%d occtBranches=%d junctions=%d deferredTangent=%d worstOnSurf=%.2e\n",
               ok ? "PASS" : "FAIL", pairName.c_str(), recall, covered, transversal,
-              tangential, ss.branchCount(), occtN, ss.deferredTangent, worstOnSurf);
+              tangential, ss.branchCount(), occtN, groupCount, junctions,
+              ss.deferredTangent, worstOnSurf);
   std::fflush(stdout);
 }
 
@@ -350,16 +525,20 @@ void pairBSplinePlane() {
 
   // Multi-loop: pre-split finely and subdivide deeper so every small loop is reached.
   ssi::SeedOptions opt; opt.initialGridU = 8; opt.initialGridV = 8; opt.minPatchFrac = 1.0 / 48.0;
-  // Denominator is whatever OCCT reports as transversal for this egg-carton (loop count
-  // depends on how many humps clear z=0.5); cross-checked below by the classifier, not a
-  // hardcoded analytic count — pass expect = the classifier's transversal tally.
-  // We assert full recall of THAT set. See note in reportPair (expect == transversal).
-  // Determine expected transversal branches from the oracle itself:
-  GeomAPI_IntSS iss(sa, sb, 1e-7);
-  int transversal = 0;
-  for (int i = 1; i <= (iss.IsDone() ? iss.NbLines() : 0); ++i)
-    if (classifyBranch(iss.Line(i), sa, sb, 1e-2).transversal) ++transversal;
-  reportPair("bspline x plane", A, B, sa, sb, transversal, 1e-6, 1e-5, 1e-2, opt);
+  // 40 = the MEASURED branch count of this egg-carton's saddle network, not a guess and not
+  // a number this file re-derives from the oracle at run time. The locus is one connected
+  // component whose graph has 32 nodes — 16 degree-4 saddles (where the level set z=0.5
+  // passes exactly through a saddle of the surface, so the two normals are parallel and
+  // ‖n₁×n₂‖ → 0) and 16 degree-1 domain-boundary exits. Handshake: 16·4 + 16·1 = 80 = 2·40
+  // edges, so 40 arcs with NO degree-2 node anywhere — nothing merges, and 40 branches each
+  // require their own seed.
+  //
+  // The previous expectation was computed by re-running GeomAPI_IntSS here and counting what
+  // the classifier called transversal. That made the `transversal != expect` check in
+  // reportPair compare the oracle against itself: it could not fail, whatever the seeder or
+  // OCCT did. A hardcoded 40 is what makes that assertion load-bearing — if OCCT's arc
+  // splitting or the merge rule shifts, this pair now says so instead of silently absorbing it.
+  reportPair("bspline x plane", A, B, sa, sb, /*branches=*/40, 1e-6, 1e-5, 1e-2, opt);
 }
 
 // skew cyl ∩ cyl — orthogonal unequal-radius cylinders → 2 transversal loops (the
